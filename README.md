@@ -58,6 +58,7 @@ curl http://localhost:3000/api/v1/health
 
 ```bash
 npm run lint
+npm run typecheck
 npm test
 npm run build
 npm run test:e2e # requires the PostgreSQL container
@@ -105,3 +106,9 @@ See [.env.example](.env.example) for all required variables.
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development conventions.
+
+## Engineering Governance
+
+Before any change, read [AGENTS.md](AGENTS.md) and the repository-specific
+[AI Technical Guide](docs/AI-TECHNICAL-GUIDE.md). Pull requests are gated by this repository's own
+GitHub Actions workflow for lint, type check, unit tests, build, and PostgreSQL-backed E2E tests.

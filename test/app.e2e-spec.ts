@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AppModule } from './../dist/app.module.js';
 
 process.env.JWT_SECRET ||= 'fixhome-e2e-only-secret';
