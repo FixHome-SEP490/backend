@@ -2,6 +2,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { DatabaseModule } from './database/database.module';
+import { validate } from './config';
 
 // Feature modules
 import { AuthModule } from './modules/auth/auth.module';
@@ -20,6 +21,7 @@ import { CategoriesModule } from './modules/categories/categories.module';
 import { MediaModule } from './modules/media/media.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { HealthModule } from './modules/health/health.module';
+import { TechnicianVerificationsModule } from './modules/technician-verifications/technician-verifications.module';
 
 @Module({
   imports: [
@@ -27,6 +29,7 @@ import { HealthModule } from './modules/health/health.module';
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
+      validate,
     }),
 
     // Database
@@ -49,6 +52,7 @@ import { HealthModule } from './modules/health/health.module';
     MediaModule,
     DashboardModule,
     HealthModule,
+    TechnicianVerificationsModule,
   ],
 })
 export class AppModule {}
