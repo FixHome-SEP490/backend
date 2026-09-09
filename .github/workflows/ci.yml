@@ -40,6 +40,8 @@ jobs:
         run: npm run lint
       - name: Type check
         run: npm run typecheck
+      - name: Runtime dependency security gate
+        run: npm audit --omit=dev --audit-level=high
       - name: Unit tests
         run: npm test
       - name: Build
@@ -53,4 +55,5 @@ jobs:
           DATABASE_USER: postgres
           DATABASE_PASSWORD: postgres
           DATABASE_NAME: fixhome
-          JWT_SECRET: ci-only-secret
+          JWT_ACCESS_SECRET: ci-only-access-secret-at-least-32-characters
+          JWT_REFRESH_SECRET: ci-only-refresh-secret-at-least-32-characters
