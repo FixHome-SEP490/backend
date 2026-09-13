@@ -1,5 +1,5 @@
 // src/modules/categories/categories.controller.ts
-import { Controller, Get, Param, ParseUUIDPipe } from '@nestjs/common';
+import { Controller, Get, Param } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { CategoriesService } from './categories.service';
 
@@ -15,14 +15,14 @@ export class CategoriesController {
     return this.categoriesService.findAll(true);
   }
 
-  @Get(':id')
-  @ApiOperation({ summary: 'Public: Get category details with services' })
+  @Get(':idOrSlug')
+  @ApiOperation({ summary: 'Public: Get category details with services by ID or slug' })
   @ApiResponse({
     status: 200,
     description: 'Category detail fetched successfully',
   })
   @ApiResponse({ status: 404, description: 'Category not found' })
-  async findById(@Param('id', ParseUUIDPipe) id: string) {
-    return this.categoriesService.findById(id, true);
+  async findByIdOrSlug(@Param('idOrSlug') idOrSlug: string) {
+    return this.categoriesService.findByIdOrSlug(idOrSlug, true);
   }
 }

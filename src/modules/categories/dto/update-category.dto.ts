@@ -1,11 +1,10 @@
-import { Trim } from '../../../shared/validation/input.transforms';
-import { MaxLength, MinLength, ValidateIf } from 'class-validator';
 // src/modules/categories/dto/update-category.dto.ts
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsString } from 'class-validator';
+import { IsBoolean, IsInt, IsOptional, IsString, MaxLength, Min, MinLength, ValidateIf } from 'class-validator';
+import { Trim } from '../../../shared/validation/input.transforms';
 
 export class UpdateCategoryDto {
-  @ApiPropertyOptional({ example: 'Äiá»‡n láº¡nh dÃ¢n dá»¥ng' })
+  @ApiPropertyOptional({ example: 'Điện lạnh dân dụng' })
   @ValidateIf((_dto, value) => value !== undefined)
   @IsString()
   @Trim()
@@ -13,7 +12,25 @@ export class UpdateCategoryDto {
   @MaxLength(200)
   name?: string;
 
-  @ApiPropertyOptional({ example: 'MÃ´ táº£ chi tiáº¿t cáº­p nháº­t' })
+  @ApiPropertyOptional({ example: 'dien-lanh' })
+  @IsOptional()
+  @IsString()
+  @Trim()
+  slug?: string;
+
+  @ApiPropertyOptional({ example: 'Snowflake' })
+  @IsOptional()
+  @IsString()
+  @Trim()
+  iconKey?: string;
+
+  @ApiPropertyOptional({ example: 1 })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  sortOrder?: number;
+
+  @ApiPropertyOptional({ example: 'Mô tả chi tiết cập nhật' })
   @ValidateIf((_dto, value) => value !== undefined)
   @IsString()
   description?: string;

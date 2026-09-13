@@ -18,25 +18,29 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { ServicesService } from './services.service';
-import { CreateServiceDto, UpdateServiceDto } from './dto';
-import { JwtAuthGuard, RolesGuard } from '../../common/guards';
-import { Roles } from '../../common/decorators';
+import { CreateServiceDto, UpdateServiceDto, QueryServicesDto } from './dto';
+import { JwtAuthGuard, RolesGuard, PermissionGuard } from '../../common/guards';
+import { CurrentUser, RequirePermission, Roles } from '../../common/decorators';
 import { Role } from '../../shared/enums';
 import { UpdateActiveStatusDto } from '../../shared/dto/update-active-status.dto';
-import { QueryServicesDto } from './dto';
+import { User } from '../users/entities/user.entity';
 
 @ApiTags('Admin / Services')
 @Controller('admin/services')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionGuard)
 @Roles(Role.ADMIN, Role.SERVICE_MANAGER)
+@RequirePermission('service:manage')
 @ApiBearerAuth()
 export class AdminServicesController {
   constructor(private readonly servicesService: ServicesService) {}
 
   @Delete(':id')
   @ApiOperation({ summary: 'Deactivate a service without deleting referenced data' })
-  deactivate(@Param('id', ParseUUIDPipe) id: string) {
-    return this.servicesService.toggleStatus(id, false);
+  deactivate(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.servicesService.toggleStatus(id, false, user);
   }
 
   @Get()
@@ -56,8 +60,11 @@ export class AdminServicesController {
   @ApiResponse({ status: 201, description: 'Service created successfully' })
   @ApiResponse({ status: 404, description: 'Category not found' })
   @ApiResponse({ status: 409, description: 'Service code already exists' })
-  async create(@Body() dto: CreateServiceDto) {
-    return this.servicesService.create(dto);
+  async create(
+    @Body() dto: CreateServiceDto,
+    @CurrentUser() user: User,
+  ) {
+    return this.servicesService.create(dto, user);
   }
 
   @Patch(':id')
@@ -67,8 +74,9 @@ export class AdminServicesController {
   async update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateServiceDto,
+    @CurrentUser() user: User,
   ) {
-    return this.servicesService.update(id, dto);
+    return this.servicesService.update(id, dto, user);
   }
 
   @Patch(':id/status')
@@ -80,7 +88,8 @@ export class AdminServicesController {
   async toggleStatus(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateActiveStatusDto,
+    @CurrentUser() user: User,
   ) {
-    return this.servicesService.toggleStatus(id, dto.isActive);
+    return this.servicesService.toggleStatus(id, dto.isActive, user);
   }
 }

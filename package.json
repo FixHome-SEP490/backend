@@ -26,7 +26,8 @@
     "migration:generate": "npm run typeorm -- migration:generate",
     "migration:run": "npm run typeorm -- migration:run -d src/database/data-source.ts",
     "migration:run:prod": "typeorm migration:run -d dist/database/data-source.js",
-    "migration:revert": "npm run typeorm -- migration:revert -d src/database/data-source.ts"
+    "migration:revert": "npm run typeorm -- migration:revert -d src/database/data-source.ts",
+    "seed:demo": "npx ts-node src/database/seeds/run-seed.ts"
   },
   "dependencies": {
     "@nestjs/axios": "^3.0.3",

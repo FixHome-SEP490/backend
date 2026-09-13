@@ -28,7 +28,7 @@ export default new DataSource({
   password: process.env.DATABASE_PASSWORD,
   database: process.env.DATABASE_NAME || 'fixhome',
   ssl:
-    process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: true } : false,
+    process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false,
   entities: [__dirname + '/../**/*.entity{.ts,.js}'],
   migrations: [__dirname + '/migrations/*{.ts,.js}'],
   migrationsTableName: 'migrations',

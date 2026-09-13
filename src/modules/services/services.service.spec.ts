@@ -15,6 +15,9 @@ describe('ServicesService', () => {
     id: 'cat-uuid-1',
     name: 'Điện lạnh',
     code: 'DIEN_LANH',
+    slug: 'dien-lanh',
+    iconKey: 'Snowflake',
+    sortOrder: 1,
     description: 'Sửa điều hòa, tủ lạnh',
     isActive: true,
     createdAt: new Date(),
@@ -28,13 +31,17 @@ describe('ServicesService', () => {
     category: mockCategory,
     name: 'Sửa điều hòa',
     code: 'SUA_DH',
+    slug: 'sua-dieu-hoa',
     description: 'Sửa điều hòa tại nhà',
     basePrice: 150000,
     minPrice: 100000,
     maxPrice: 500000,
+    estimatedMinutes: 60,
     isActive: true,
     createdAt: new Date(),
     updatedAt: new Date(),
+    basePriceMin: 100000,
+    basePriceMax: 500000,
   });
 
   beforeEach(() => {
