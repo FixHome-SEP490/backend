@@ -5,6 +5,7 @@ import { ConflictException, NotFoundException } from '@nestjs/common';
 import { ServicesService } from './services.service';
 import { Service } from './entities/service.entity';
 import { ServiceCategory } from '../categories/entities/category.entity';
+import { ServicePricingMode } from '../../shared/enums';
 
 describe('ServicesService', () => {
   let servicesService: ServicesService;
@@ -36,6 +37,10 @@ describe('ServicesService', () => {
     basePrice: 150000,
     minPrice: 100000,
     maxPrice: 500000,
+    pricingMode: ServicePricingMode.INSPECTION_REQUIRED,
+    unit: 'lần',
+    fixedPrice: null,
+    scopeDescription: null,
     estimatedMinutes: 60,
     isActive: true,
     createdAt: new Date(),
