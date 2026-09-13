@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -15,6 +16,7 @@ import { User } from '../users/entities/user.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 import { Role, AccountStatus } from '../../shared/enums';
 import { normalizePhone } from '../../shared/validation/input.transforms';
+import { RbacService } from '../rbac/rbac.service';
 import {
   RegisterDto,
   LoginDto,
@@ -30,13 +32,19 @@ export class AuthService {
     @InjectRepository(User) private readonly userRepository: Repository<User>,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    @Optional() private readonly rbacService?: RbacService,
   ) {}
+
+  private async getPermissions(role: string): Promise<string[]> {
+    if (!this.rbacService) return [];
+    return this.rbacService.getPermissionsForRole(role);
+  }
 
   async register(dto: RegisterDto): Promise<AuthResponseDto> {
     const role = dto.role ?? Role.CUSTOMER;
-    if (![Role.CUSTOMER, Role.TECHNICIAN].includes(role))
+    if (role !== Role.CUSTOMER)
       throw new BadRequestException(
-        'Only Customer and Technician can self-register',
+        'Only Customer accounts can self-register. Technician accounts are created by Service Managers or Admin.',
       );
     const email = dto.email.toLowerCase().trim();
     const phoneNumber = dto.phoneNumber
@@ -49,7 +57,7 @@ export class AuthService {
       (await this.userRepository.findOne({ where: { phoneNumber } }))
     )
       throw new ConflictException('Phone number is already registered');
-    const passwordHash = await bcrypt.hash(dto.password, 10);
+    const passwordHash = await bcrypt.hash(dto.password, 12);
     return this.userRepository.manager.transaction(async (manager) => {
       const users = manager.getRepository(User);
       const user = await users.save(
@@ -68,7 +76,8 @@ export class AuthService {
         manager,
         'Registration Session',
       );
-      return { ...tokens, user: UserProfileDto.fromUser(user) };
+      const permissions = await this.getPermissions(user.role);
+      return { ...tokens, user: UserProfileDto.fromUser(user, permissions) };
     });
   }
 
@@ -94,7 +103,8 @@ export class AuthService {
     return this.userRepository.manager.transaction(async (manager) => {
       const current = await this.lockActiveUser(manager, user.id);
       const tokens = await this.issueTokens(current, manager, dto.deviceInfo);
-      return { ...tokens, user: UserProfileDto.fromUser(current) };
+      const permissions = await this.getPermissions(current.role);
+      return { ...tokens, user: UserProfileDto.fromUser(current, permissions) };
     });
   }
 
@@ -156,7 +166,8 @@ export class AuthService {
   async getMe(userId: string): Promise<UserProfileDto> {
     const user = await this.userRepository.findOne({ where: { id: userId } });
     if (!user) throw new UnauthorizedException('User does not exist');
-    return UserProfileDto.fromUser(user);
+    const permissions = await this.getPermissions(user.role);
+    return UserProfileDto.fromUser(user, permissions);
   }
 
   private async lockActiveUser(

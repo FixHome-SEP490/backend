@@ -16,7 +16,7 @@ import { ConfigService } from '@nestjs/config';
         database: configService.get<string>('DATABASE_NAME', 'fixhome'),
         ssl:
           configService.get<boolean>('DATABASE_SSL') === true
-            ? { rejectUnauthorized: true }
+            ? { rejectUnauthorized: false }
             : false,
         entities: [__dirname + '/../**/*.entity{.ts,.js}'],
         // Use migrations in production, synchronize only in development

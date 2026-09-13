@@ -31,7 +31,16 @@ export class UserProfileDto {
   @ApiProperty()
   isActive: boolean;
 
-  static fromUser(user: User): UserProfileDto {
+  @ApiProperty({ nullable: true, example: null })
+  avatarUrl?: string | null;
+
+  @ApiProperty({ nullable: true, example: null })
+  bookingSuspendedUntil?: Date | null;
+
+  @ApiProperty({ type: [String], example: ['booking:create', 'profile:read_own'] })
+  permissions?: string[];
+
+  static fromUser(user: User, permissions?: string[]): UserProfileDto {
     return {
       id: user.id,
       email: user.email,
@@ -40,6 +49,9 @@ export class UserProfileDto {
       role: user.role,
       status: user.status,
       isActive: user.isActive,
+      avatarUrl: user.avatarUrl ?? null,
+      bookingSuspendedUntil: user.bookingSuspendedUntil ?? null,
+      permissions: permissions ?? [],
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };

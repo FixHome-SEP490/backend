@@ -1,13 +1,21 @@
-import { Trim } from '../../../shared/validation/input.transforms';
-import { MaxLength, MinLength, ValidateIf } from 'class-validator';
-// src/modules/categories/dto/create-category.dto.ts
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsNotEmpty, IsString } from 'class-validator';
+import {
+  IsBoolean,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+  Min,
+  MinLength,
+  ValidateIf,
+} from 'class-validator';
+import { Trim } from '../../../shared/validation/input.transforms';
 
 export class CreateCategoryDto {
   @ApiProperty({
-    example: 'Äiá»‡n láº¡nh',
-    description: 'TÃªn danh má»¥c dá»‹ch vá»¥',
+    example: 'Điện lạnh',
+    description: 'Tên danh mục dịch vụ',
   })
   @IsString()
   @IsNotEmpty({ message: 'name is required' })
@@ -18,7 +26,7 @@ export class CreateCategoryDto {
 
   @ApiProperty({
     example: 'DIEN_LANH',
-    description: 'MÃ£ Ä‘á»‹nh danh danh má»¥c (duy nháº¥t)',
+    description: 'Mã định danh danh mục (duy nhất)',
   })
   @IsString()
   @IsNotEmpty({ message: 'code is required' })
@@ -28,7 +36,34 @@ export class CreateCategoryDto {
   code: string;
 
   @ApiPropertyOptional({
-    example: 'Dá»‹ch vá»¥ sá»­a chá»¯a Ä‘iá»u hÃ²a, tá»§ láº¡nh, mÃ¡y giáº·t',
+    example: 'dien-lanh',
+    description: 'URL slug thân thiện',
+  })
+  @IsOptional()
+  @IsString()
+  @Trim()
+  slug?: string;
+
+  @ApiPropertyOptional({
+    example: 'Snowflake',
+    description: 'Lucide icon key',
+  })
+  @IsOptional()
+  @IsString()
+  @Trim()
+  iconKey?: string;
+
+  @ApiPropertyOptional({
+    example: 1,
+    description: 'Thứ tự sắp xếp hiển thị',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  sortOrder?: number;
+
+  @ApiPropertyOptional({
+    example: 'Dịch vụ sửa chữa điều hòa, tủ lạnh, máy giặt',
   })
   @ValidateIf((_dto, value) => value !== undefined)
   @IsString()

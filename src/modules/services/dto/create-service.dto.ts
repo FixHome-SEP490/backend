@@ -1,28 +1,33 @@
-import { Trim } from '../../../shared/validation/input.transforms';
-import { MaxLength, MinLength, ValidateIf, Max } from 'class-validator';
 // src/modules/services/dto/create-service.dto.ts
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsBoolean,
+  IsInt,
   IsNotEmpty,
   IsNumber,
+  IsOptional,
   IsString,
   IsUUID,
+  Max,
+  MaxLength,
   Min,
+  MinLength,
+  ValidateIf,
 } from 'class-validator';
+import { Trim } from '../../../shared/validation/input.transforms';
 
 export class CreateServiceDto {
   @ApiProperty({
     example: 'a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d',
-    description: 'ID danh má»¥c',
+    description: 'ID danh mục',
   })
   @IsUUID('4', { message: 'categoryId must be a valid UUID' })
   @IsNotEmpty({ message: 'categoryId is required' })
   categoryId: string;
 
   @ApiProperty({
-    example: 'Sá»­a Ä‘iá»u hÃ²a khÃ´ng mÃ¡t',
-    description: 'TÃªn dá»‹ch vá»¥',
+    example: 'Sửa điều hòa không mát',
+    description: 'Tên dịch vụ',
   })
   @IsString()
   @IsNotEmpty({ message: 'name is required' })
@@ -33,7 +38,7 @@ export class CreateServiceDto {
 
   @ApiProperty({
     example: 'SUA_DH_KHONG_MAT',
-    description: 'MÃ£ Ä‘á»‹nh danh duy nháº¥t cá»§a dá»‹ch vá»¥',
+    description: 'Mã định danh duy nhất của dịch vụ',
   })
   @IsString()
   @IsNotEmpty({ message: 'code is required' })
@@ -43,7 +48,16 @@ export class CreateServiceDto {
   code: string;
 
   @ApiPropertyOptional({
-    example: 'Kiá»ƒm tra gas, block, vá»‡ sinh lÆ°á»›i lá»c',
+    example: 'sua-dieu-hoa-khong-mat',
+    description: 'URL slug thân thiện',
+  })
+  @IsOptional()
+  @IsString()
+  @Trim()
+  slug?: string;
+
+  @ApiPropertyOptional({
+    example: 'Kiểm tra gas, block, vệ sinh lưới lọc',
   })
   @ValidateIf((_dto, value) => value !== undefined)
   @IsString()
@@ -51,7 +65,7 @@ export class CreateServiceDto {
 
   @ApiPropertyOptional({
     example: 150000,
-    description: 'GiÃ¡ sÃ n/kháº£o sÃ¡t cÆ¡ sá»Ÿ',
+    description: 'Giá sàn/khảo sát cơ sở',
   })
   @ValidateIf((_dto, value) => value !== undefined)
   @IsNumber({ maxDecimalPlaces: 2 })
@@ -61,7 +75,7 @@ export class CreateServiceDto {
 
   @ApiPropertyOptional({
     example: 100000,
-    description: 'Khoáº£ng giÃ¡ tá»‘i thiá»ƒu',
+    description: 'Khoảng giá tối thiểu (basePriceMin)',
   })
   @ValidateIf((_dto, value) => value !== undefined)
   @IsNumber({ maxDecimalPlaces: 2 })
@@ -71,13 +85,23 @@ export class CreateServiceDto {
 
   @ApiPropertyOptional({
     example: 500000,
-    description: 'Khoáº£ng giÃ¡ tá»‘i Ä‘a',
+    description: 'Khoảng giá tối đa (basePriceMax)',
   })
   @ValidateIf((_dto, value) => value !== undefined)
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
   @Max(9999999999.99)
   maxPrice?: number;
+
+  @ApiPropertyOptional({
+    example: 60,
+    description: 'Thời gian ước tính hoàn thành (phút)',
+    default: 60,
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  estimatedMinutes?: number;
 
   @ApiPropertyOptional({ default: true })
   @ValidateIf((_dto, value) => value !== undefined)

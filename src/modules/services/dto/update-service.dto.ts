@@ -1,8 +1,19 @@
-import { Trim } from '../../../shared/validation/input.transforms';
-import { MaxLength, MinLength, ValidateIf, Max } from 'class-validator';
 // src/modules/services/dto/update-service.dto.ts
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsNumber, IsString, IsUUID, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Max,
+  MaxLength,
+  Min,
+  MinLength,
+  ValidateIf,
+} from 'class-validator';
+import { Trim } from '../../../shared/validation/input.transforms';
 
 export class UpdateServiceDto {
   @ApiPropertyOptional({ example: 'a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d' })
@@ -10,7 +21,7 @@ export class UpdateServiceDto {
   @IsUUID('4')
   categoryId?: string;
 
-  @ApiPropertyOptional({ example: 'Sá»­a Ä‘iá»u hÃ²a rÃ² nÆ°á»›c' })
+  @ApiPropertyOptional({ example: 'Sửa điều hòa rò nước' })
   @ValidateIf((_dto, value) => value !== undefined)
   @IsString()
   @Trim()
@@ -18,8 +29,14 @@ export class UpdateServiceDto {
   @MaxLength(200)
   name?: string;
 
+  @ApiPropertyOptional({ example: 'sua-dieu-hoa-ro-nuoc' })
+  @IsOptional()
+  @IsString()
+  @Trim()
+  slug?: string;
+
   @ApiPropertyOptional({
-    example: 'ThÃ´ng táº¯c Ä‘Æ°á»ng á»‘ng thoÃ¡t nÆ°á»›c',
+    example: 'Thông tắc đường ống thoát nước',
   })
   @ValidateIf((_dto, value) => value !== undefined)
   @IsString()
@@ -45,6 +62,12 @@ export class UpdateServiceDto {
   @Min(0)
   @Max(9999999999.99)
   maxPrice?: number;
+
+  @ApiPropertyOptional({ example: 60 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  estimatedMinutes?: number;
 
   @ApiPropertyOptional({ example: true })
   @ValidateIf((_dto, value) => value !== undefined)

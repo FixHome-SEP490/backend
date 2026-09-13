@@ -112,17 +112,15 @@ describe('AuthService', () => {
       expect((result.user as any).passwordHash).toBeUndefined();
     });
 
-    it('registers a new Technician successfully', async () => {
-      userRepository.findOne.mockResolvedValue(null);
-
-      const result = await authService.register({
-        email: 'tech@fixhome.vn',
-        password: 'SecurePassword123!',
-        fullName: 'Tran Van Tech',
-        role: Role.TECHNICIAN,
-      });
-
-      expect(result.user.role).toBe(Role.TECHNICIAN);
+    it('rejects public registration for TECHNICIAN role (P4.3: created by SM/Admin)', async () => {
+      await expect(
+        authService.register({
+          email: 'tech@fixhome.vn',
+          password: 'SecurePassword123!',
+          fullName: 'Tran Van Tech',
+          role: Role.TECHNICIAN,
+        }),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('rejects public registration for ADMIN role', async () => {

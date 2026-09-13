@@ -39,6 +39,16 @@ export class User extends BaseEntity {
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;
 
+  @Column({ name: 'avatar_url', type: 'varchar', nullable: true })
+  avatarUrl?: string | null;
+
+  @Column({
+    name: 'booking_suspended_until',
+    type: 'timestamptz',
+    nullable: true,
+  })
+  bookingSuspendedUntil?: Date | null;
+
   @OneToMany(() => RefreshToken, (token) => token.user)
   refreshTokens: RefreshToken[];
 }

@@ -18,7 +18,7 @@ import {
 import { UsersService } from './users.service';
 import { QueryUsersDto, UpdateUserStatusDto } from './dto';
 import { JwtAuthGuard, RolesGuard } from '../../common/guards';
-import { Roles } from '../../common/decorators';
+import { CurrentUser, Roles } from '../../common/decorators';
 import { Role } from '../../shared/enums';
 import { UserProfileDto } from '../auth/dto';
 
@@ -39,7 +39,7 @@ export class AdminUsersController {
   async findUsers(@Query() query: QueryUsersDto) {
     const { data, meta } = await this.usersService.findUsers(query);
     return {
-      data: data.map(UserProfileDto.fromUser),
+      data: data.map((u) => UserProfileDto.fromUser(u)),
       meta,
     };
   }
@@ -70,8 +70,12 @@ export class AdminUsersController {
   async updateUserStatus(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateUserStatusDto,
+    @CurrentUser() adminUser: any,
   ) {
-    const user = await this.usersService.updateUserStatus(id, dto);
+    const user = await this.usersService.updateUserStatus(id, dto, {
+      id: adminUser.id,
+      role: adminUser.role,
+    });
     return UserProfileDto.fromUser(user);
   }
 }

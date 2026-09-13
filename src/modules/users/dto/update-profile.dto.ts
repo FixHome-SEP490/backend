@@ -32,4 +32,13 @@ export class UpdateProfileDto {
     message: 'phoneNumber must be a valid Vietnamese phone number',
   })
   phoneNumber?: string;
+
+  @ApiPropertyOptional({
+    example: 'https://res.cloudinary.com/demo/image/upload/avatar.jpg',
+    description: 'Updated avatar URL',
+  })
+  @ValidateIf((_dto, value) => value !== undefined)
+  @IsString()
+  avatarUrl?: string;
 }
+

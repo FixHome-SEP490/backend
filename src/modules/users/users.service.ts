@@ -12,12 +12,14 @@ import { AccountStatus } from '../../shared/enums';
 import { normalizePhone } from '../../shared/validation/input.transforms';
 import { PaginationMeta } from '../../shared/dto';
 import { UpdateProfileDto, QueryUsersDto, UpdateUserStatusDto } from './dto';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 @Injectable()
 export class UsersService {
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    private readonly auditLogService: AuditLogService,
   ) {}
 
   async getProfile(userId: string): Promise<User> {
@@ -52,9 +54,14 @@ export class UsersService {
       user.fullName = dto.fullName.trim();
     }
 
+    if (dto.avatarUrl !== undefined) {
+      user.avatarUrl = dto.avatarUrl;
+    }
+
     await this.userRepository.update(userId, {
       fullName: user.fullName,
       phoneNumber: user.phoneNumber,
+      avatarUrl: user.avatarUrl,
     });
     return this.getProfile(userId);
   }
@@ -107,7 +114,11 @@ export class UsersService {
     return user;
   }
 
-  async updateUserStatus(id: string, dto: UpdateUserStatusDto): Promise<User> {
+  async updateUserStatus(
+    id: string,
+    dto: UpdateUserStatusDto,
+    actor?: { id: string; role: string },
+  ): Promise<User> {
     return this.userRepository.manager.transaction(async (manager) => {
       const users = manager.getRepository(User);
       const user = await users.findOne({
@@ -115,6 +126,7 @@ export class UsersService {
         lock: { mode: 'pessimistic_write' },
       });
       if (!user) throw new NotFoundException('User not found');
+      const previousStatus = user.status;
       user.status = dto.status;
       user.isActive = dto.status === AccountStatus.ACTIVE;
       await users.save(user);
@@ -122,6 +134,17 @@ export class UsersService {
         await manager
           .getRepository(RefreshToken)
           .update({ userId: id, isRevoked: false }, { isRevoked: true });
+
+      await this.auditLogService.logWithManager(manager, {
+        actorUserId: actor?.id ?? null,
+        actorRole: actor?.role ?? null,
+        action: 'USER_STATUS_CHANGE',
+        resourceType: 'user',
+        resourceId: id,
+        before: { status: previousStatus },
+        after: { status: dto.status },
+      });
+
       return user;
     });
   }

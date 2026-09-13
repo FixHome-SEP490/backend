@@ -13,6 +13,15 @@ export class ServiceCategory extends BaseEntity {
   @Column({ name: 'code', type: 'varchar' })
   code: string;
 
+  @Column({ name: 'slug', type: 'varchar', nullable: true, unique: true })
+  slug?: string | null;
+
+  @Column({ name: 'icon_key', type: 'varchar', nullable: true })
+  iconKey?: string | null;
+
+  @Column({ name: 'sort_order', type: 'int', default: 0 })
+  sortOrder: number;
+
   @Column({ name: 'description', type: 'text', nullable: true })
   description: string;
 

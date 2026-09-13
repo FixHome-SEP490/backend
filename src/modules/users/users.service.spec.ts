@@ -57,7 +57,11 @@ describe('UsersService', () => {
     userRepository.manager = {
       transaction: (fn: (m: typeof manager) => unknown) => fn(manager),
     };
-    usersService = new UsersService(userRepository);
+    const auditLogService = {
+      log: vi.fn().mockResolvedValue(undefined),
+      logWithManager: vi.fn().mockResolvedValue(undefined),
+    };
+    usersService = new UsersService(userRepository, auditLogService as any);
   });
 
   describe('getProfile', () => {

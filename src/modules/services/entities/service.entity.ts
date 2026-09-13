@@ -27,6 +27,9 @@ export class Service extends BaseEntity {
   @Column({ name: 'code', type: 'varchar' })
   code: string;
 
+  @Column({ name: 'slug', type: 'varchar', nullable: true, unique: true })
+  slug?: string | null;
+
   @Column({ name: 'description', type: 'text', nullable: true })
   description: string;
 
@@ -57,6 +60,17 @@ export class Service extends BaseEntity {
   })
   maxPrice: number;
 
+  @Column({ name: 'estimated_minutes', type: 'int', default: 60 })
+  estimatedMinutes: number;
+
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;
+
+  get basePriceMin(): number {
+    return Number(this.minPrice ?? this.basePrice ?? 0);
+  }
+
+  get basePriceMax(): number {
+    return Number(this.maxPrice ?? this.basePrice ?? 0);
+  }
 }
