@@ -39,6 +39,13 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     fileSize: 1024,
     mimeType: 'image/jpeg',
   };
+  const facePhoto = {
+    documentType: 'face_photo',
+    fileUrl: 'https://res.cloudinary.com/audit-test/image/upload/face_photo.jpg',
+    fileName: 'face_photo.jpg',
+    fileSize: 1024,
+    mimeType: 'image/jpeg',
+  };
   const http = () => request(app.getHttpServer());
   const bearer = (session: Session) => `Bearer ${session.accessToken}`;
   const register = async (
@@ -94,7 +101,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     http()
       .post('/api/v1/technicians/me/verification')
       .set('Authorization', bearer(session))
-      .send({ documents: [document] });
+      .send({ documents: [document, facePhoto] });
   const review = (id: string, action: string, session = admin) =>
     http()
       .patch(`/api/v1/admin/technician-verifications/${id}/${action}`)
@@ -587,7 +594,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
       .get(`/api/v1/admin/technician-verifications/${id}`)
       .set('Authorization', bearer(admin))
       .expect(200);
-    expect(detail.body.data.documents).toHaveLength(1);
+    expect(detail.body.data.documents).toHaveLength(2);
     expect(JSON.stringify(detail.body)).not.toContain('passwordHash');
     expect(
       (
@@ -620,11 +627,11 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     );
     expect(
       await app
-        .get<{ isApproved(id: string): Promise<boolean> }>(
+        .get<{ isVerified(id: string): Promise<boolean> }>(
           TechnicianVerificationsService,
         )
-        .isApproved(tech.user.id),
-    ).toBe(stored.status === 'approved');
+        .isVerified(tech.user.id),
+    ).toBe(stored.status === 'verified');
   });
   it('requires reject reason and permits corrected resubmission after rejection', async () => {
     const tech = await register('technician');
