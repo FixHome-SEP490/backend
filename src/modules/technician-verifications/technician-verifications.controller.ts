@@ -5,6 +5,8 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Param,
+  ParseUUIDPipe,
   Post,
   UseGuards,
 } from '@nestjs/common';
@@ -57,5 +59,24 @@ export class TechnicianVerificationsController {
   })
   async getMyVerification(@CurrentUser('id') technicianId: string) {
     return this.verificationsService.getMyVerification(technicianId);
+  }
+
+  @Get('documents/:documentId/access')
+  @ApiOperation({
+    summary: 'Technician: Get short-lived access to an own KYC document',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Signed private document access returned',
+  })
+  @ApiResponse({ status: 403, description: 'Document owner access required' })
+  async getDocumentAccess(
+    @Param('documentId', ParseUUIDPipe) documentId: string,
+    @CurrentUser() user: { id: string; role: Role },
+  ) {
+    return this.verificationsService.getSignedDocumentAccess(
+      documentId,
+      user,
+    );
   }
 }

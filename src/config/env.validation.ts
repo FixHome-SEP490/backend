@@ -9,6 +9,7 @@ import {
   IsOptional,
   IsString,
   MinLength,
+  Matches,
   validateSync,
 } from 'class-validator';
 
@@ -84,6 +85,26 @@ export class EnvironmentVariables {
   @IsString()
   @IsOptional()
   AI_SERVICE_URL: string = 'http://localhost:8000';
+
+  // Private Supabase Storage for KYC (credentials are server-only)
+  @IsString()
+  @IsOptional()
+  SUPABASE_URL?: string;
+
+  @IsString()
+  @IsOptional()
+  SUPABASE_SERVICE_ROLE_KEY?: string;
+
+  @IsString()
+  @IsOptional()
+  @Matches(/^[A-Za-z0-9][A-Za-z0-9._-]{1,62}$/)
+  SUPABASE_KYC_BUCKET: string = 'kyc-private';
+
+  @IsInt()
+  @Min(60)
+  @Max(3600)
+  @IsOptional()
+  SUPABASE_KYC_SIGNED_URL_TTL_SECONDS: number = 300;
 
   // Cloudinary (Optional)
   @IsString()

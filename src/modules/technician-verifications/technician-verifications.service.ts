@@ -3,7 +3,6 @@ import {
   ConflictException,
   BadRequestException,
   ForbiddenException,
-  ServiceUnavailableException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -18,10 +17,10 @@ import {
   Role,
 } from '../../shared/enums';
 import { User } from '../users/entities/user.entity';
-import { ConfigService } from '@nestjs/config';
 import { PaginationMeta } from '../../shared/dto';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import { KycStorageService, KycSignedAccess } from './kyc-storage.service';
 import {
   SubmitVerificationDto,
   RejectVerificationDto,
@@ -33,8 +32,10 @@ export class TechnicianVerificationsService {
   constructor(
     @InjectRepository(TechnicianVerification)
     private readonly verificationRepository: Repository<TechnicianVerification>,
-    private readonly config: ConfigService,
+    @InjectRepository(VerificationDocument)
+    private readonly documentRepository: Repository<VerificationDocument>,
     private readonly auditLogService: AuditLogService,
+    private readonly storageService: KycStorageService,
   ) {}
 
   async submitVerification(
@@ -43,11 +44,6 @@ export class TechnicianVerificationsService {
   ): Promise<TechnicianVerification> {
     this.validateSubmissionDocuments(dto);
 
-    const cloud = this.config.get<string>('CLOUDINARY_CLOUD_NAME');
-    if (!cloud)
-      throw new ServiceUnavailableException(
-        'Verification storage is not configured',
-      );
     const extensions: Record<string, string[]> = {
       'image/jpeg': ['jpg', 'jpeg'],
       'image/png': ['png'],
@@ -55,19 +51,10 @@ export class TechnicianVerificationsService {
       'application/pdf': ['pdf'],
     };
     for (const doc of dto.documents) {
-      const url = new URL(doc.fileUrl);
-      if (
-        url.protocol !== 'https:' ||
-        url.hostname !== 'res.cloudinary.com' ||
-        url.pathname.split('/')[1] !== cloud ||
-        url.username ||
-        url.password ||
-        url.search ||
-        url.hash
-      )
-        throw new BadRequestException(
-          'Document must belong to configured Cloudinary storage',
-        );
+      this.storageService.validateObjectPath(
+        doc.storageObjectPath,
+        technicianId,
+      );
       if (
         !extensions[doc.mimeType]?.includes(
           doc.fileName.split('.').pop()?.toLowerCase(),
@@ -123,7 +110,7 @@ export class TechnicianVerificationsService {
         documentRepository.create({
           verificationId: savedVerification.id,
           documentType: doc.documentType,
-          fileUrl: doc.fileUrl,
+          storageObjectPath: doc.storageObjectPath,
           fileName: doc.fileName,
           fileSize: doc.fileSize,
           mimeType: doc.mimeType,
@@ -270,7 +257,7 @@ export class TechnicianVerificationsService {
       if (profileResult.affected !== 1)
         throw new NotFoundException('Technician profile not found');
 
-      await this.auditLogService.logWithManager(manager, {
+      await this.auditLogService.logWithManagerStrict(manager, {
         actorUserId: reviewerId,
         actorRole: Role.ADMIN,
         action:
@@ -296,6 +283,46 @@ export class TechnicianVerificationsService {
         throw new NotFoundException('Verification request not found');
       return updated;
     });
+  }
+
+  async getSignedDocumentAccess(
+    documentId: string,
+    actor: { id: string; role: Role },
+    expectedVerificationId?: string,
+  ): Promise<KycSignedAccess> {
+    const document = await this.documentRepository.findOne({
+      where: { id: documentId },
+      relations: ['verification'],
+    });
+    if (!document || !document.verification) {
+      throw new NotFoundException('Verification document not found');
+    }
+    if (
+      expectedVerificationId &&
+      document.verificationId !== expectedVerificationId
+    ) {
+      throw new NotFoundException('Verification document not found');
+    }
+
+    const isAdmin = actor.role === Role.ADMIN;
+    const isOwner =
+      actor.role === Role.TECHNICIAN &&
+      document.verification.technicianId === actor.id;
+    if (!isAdmin && !isOwner) {
+      throw new ForbiddenException(
+        'You do not have permission to access this KYC document',
+      );
+    }
+    if (!document.storageObjectPath) {
+      throw new NotFoundException(
+        'This KYC document has no private storage reference',
+      );
+    }
+
+    return this.storageService.createSignedAccess(
+      document.storageObjectPath,
+      document.verification.technicianId,
+    );
   }
 
   private validateSubmissionDocuments(dto: SubmitVerificationDto): void {

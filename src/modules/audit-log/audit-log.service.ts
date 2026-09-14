@@ -92,6 +92,39 @@ export class AuditLogService {
     }
   }
 
+  /**
+   * Strict transactional variant for KYC review only.
+   * Uses the caller's EntityManager so the audit row joins the ambient
+   * transaction; logs the failure, then rethrows so the transaction aborts
+   * instead of silently succeeding without an audit trail.
+   * All other callers (Booking/ServiceOrders/users) keep fail-open
+   * `logWithManager` behavior unchanged.
+   */
+  async logWithManagerStrict(
+    manager: import('typeorm').EntityManager,
+    entry: AuditEntry,
+  ): Promise<void> {
+    try {
+      await manager.insert(AuditLog, {
+        actorUserId: entry.actorUserId,
+        actorRole: entry.actorRole,
+        action: entry.action,
+        resourceType: entry.resourceType,
+        resourceId: entry.resourceId ?? null,
+        before: entry.before ?? null,
+        after: entry.after ?? null,
+        ip: entry.ip ?? null,
+        userAgent: entry.userAgent ?? null,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to record strict transactional audit: ${entry.action} on ${entry.resourceType}`,
+        error,
+      );
+      throw error;
+    }
+  }
+
   /** Query audit logs (for admin UI). */
   async findAll(options: {
     page: number;

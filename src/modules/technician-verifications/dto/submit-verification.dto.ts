@@ -9,7 +9,6 @@ import {
   IsIn,
   IsNotEmpty,
   IsInt,
-  IsUrl,
   Matches,
   MaxLength,
   IsString,
@@ -34,17 +33,14 @@ export class DocumentMetadataDto {
   documentType: DocumentType;
 
   @ApiProperty({
-    example: 'https://res.cloudinary.com/demo/image/upload/id_front.jpg',
+    example: 'kyc/technician-uuid/opaque-document-id.jpg',
+    description:
+      'Private Supabase Storage object path; the server validates its technician KYC prefix',
   })
   @IsString()
-  @IsNotEmpty({ message: 'fileUrl is required' })
-  @IsUrl({ protocols: ['https'], require_protocol: true, disallow_auth: true })
-  @Matches(
-    /^https:\/\/res\.cloudinary\.com\/[a-zA-Z0-9_-]+\/(image|raw)\/upload\//,
-    { message: 'fileUrl must be a Cloudinary upload URL' },
-  )
-  @MaxLength(2048)
-  fileUrl: string;
+  @IsNotEmpty({ message: 'storageObjectPath is required' })
+  @MaxLength(512)
+  storageObjectPath: string;
 
   @ApiProperty({ example: 'citizen_id_front.jpg' })
   @IsString()

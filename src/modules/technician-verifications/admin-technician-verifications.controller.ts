@@ -52,6 +52,26 @@ export class AdminTechnicianVerificationsController {
     return this.verificationsService.findById(id);
   }
 
+  @Get(':id/documents/:documentId/access')
+  @ApiOperation({
+    summary: 'Admin: Get short-lived access to a private KYC document',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Signed private document access returned',
+  })
+  async getDocumentAccess(
+    @Param('id', ParseUUIDPipe) verificationId: string,
+    @Param('documentId', ParseUUIDPipe) documentId: string,
+    @CurrentUser() user: { id: string; role: Role },
+  ) {
+    return this.verificationsService.getSignedDocumentAccess(
+      documentId,
+      user,
+      verificationId,
+    );
+  }
+
   @Patch(':id/approve')
   @ApiOperation({ summary: 'Admin: Approve technician verification request' })
   @ApiResponse({

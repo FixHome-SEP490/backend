@@ -24,8 +24,18 @@ export class VerificationDocument extends BaseEntity {
   })
   documentType: DocumentType;
 
-  @Column({ name: 'file_url', type: 'varchar' })
-  fileUrl: string;
+  @Column({
+    name: 'storage_object_path',
+    type: 'varchar',
+    length: 512,
+    nullable: true,
+  })
+  storageObjectPath: string | null;
+
+  // Retained only for rows created before K2. It is never selected or used as
+  // an access identifier by the application.
+  @Column({ name: 'file_url', type: 'varchar', nullable: true, select: false })
+  legacyFileUrl: string | null;
 
   @Column({ name: 'file_name', type: 'varchar' })
   fileName: string;

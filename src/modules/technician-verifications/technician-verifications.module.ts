@@ -7,6 +7,7 @@ import { TechnicianVerificationsService } from './technician-verifications.servi
 import { TechnicianVerification } from './entities/technician-verification.entity';
 import { VerificationDocument } from './entities/verification-document.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
+import { KycStorageService } from './kyc-storage.service';
 
 @Module({
   imports: [
@@ -20,7 +21,7 @@ import { TechnicianProfile } from '../technicians/entities/technician-profile.en
     TechnicianVerificationsController,
     AdminTechnicianVerificationsController,
   ],
-  providers: [TechnicianVerificationsService],
+  providers: [TechnicianVerificationsService, KycStorageService],
   exports: [TechnicianVerificationsService, TypeOrmModule],
 })
 export class TechnicianVerificationsModule {}
