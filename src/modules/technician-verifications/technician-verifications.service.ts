@@ -11,10 +11,17 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { TechnicianVerification } from './entities/technician-verification.entity';
 import { VerificationDocument } from './entities/verification-document.entity';
-import { VerificationStatus, AccountStatus, Role } from '../../shared/enums';
+import {
+  VerificationStatus,
+  DocumentType,
+  AccountStatus,
+  Role,
+} from '../../shared/enums';
 import { User } from '../users/entities/user.entity';
 import { ConfigService } from '@nestjs/config';
 import { PaginationMeta } from '../../shared/dto';
+import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
+import { AuditLogService } from '../audit-log/audit-log.service';
 import {
   SubmitVerificationDto,
   RejectVerificationDto,
@@ -27,12 +34,15 @@ export class TechnicianVerificationsService {
     @InjectRepository(TechnicianVerification)
     private readonly verificationRepository: Repository<TechnicianVerification>,
     private readonly config: ConfigService,
+    private readonly auditLogService: AuditLogService,
   ) {}
 
   async submitVerification(
     technicianId: string,
     dto: SubmitVerificationDto,
   ): Promise<TechnicianVerification> {
+    this.validateSubmissionDocuments(dto);
+
     const cloud = this.config.get<string>('CLOUDINARY_CLOUD_NAME');
     if (!cloud)
       throw new ServiceUnavailableException(
@@ -93,14 +103,12 @@ export class TechnicianVerificationsService {
         );
       }
 
-      // Check if already approved
-      const approved = await verifications.findOne({
-        where: { technicianId, status: VerificationStatus.APPROVED },
+      // Check if already verified
+      const verified = await verifications.findOne({
+        where: { technicianId, status: VerificationStatus.VERIFIED },
       });
-      if (approved) {
-        throw new ConflictException(
-          'Your technician account is already verified and approved.',
-        );
+      if (verified) {
+        throw new ConflictException('Your technician account is already verified.');
       }
 
       const verification = verifications.create({
@@ -184,7 +192,7 @@ export class TechnicianVerificationsService {
     id: string,
     reviewerId: string,
   ): Promise<TechnicianVerification> {
-    return this.review(id, reviewerId, VerificationStatus.APPROVED, null);
+    return this.review(id, reviewerId, VerificationStatus.VERIFIED, null);
   }
 
   async rejectVerification(
@@ -202,11 +210,11 @@ export class TechnicianVerificationsService {
     );
   }
 
-  async isApproved(technicianId: string): Promise<boolean> {
+  async isVerified(technicianId: string): Promise<boolean> {
     return this.verificationRepository.exists({
       where: {
         technicianId,
-        status: VerificationStatus.APPROVED,
+        status: VerificationStatus.VERIFIED,
         technician: {
           role: Role.TECHNICIAN,
           status: AccountStatus.ACTIVE,
@@ -252,6 +260,34 @@ export class TechnicianVerificationsService {
         throw new ConflictException(
           'Verification request is already processed',
         );
+
+      const profileResult = await manager
+        .getRepository(TechnicianProfile)
+        .update(
+          { userId: verification.technicianId },
+          { verificationStatus: status },
+        );
+      if (profileResult.affected !== 1)
+        throw new NotFoundException('Technician profile not found');
+
+      await this.auditLogService.logWithManager(manager, {
+        actorUserId: reviewerId,
+        actorRole: Role.ADMIN,
+        action:
+          status === VerificationStatus.VERIFIED
+            ? 'KYC_VERIFICATION_APPROVED'
+            : 'KYC_VERIFICATION_REJECTED',
+        resourceType: 'technician_verification',
+        resourceId: id,
+        before: { status: verification.status },
+        after: {
+          status,
+          profileVerificationStatus: status,
+          reviewedById: reviewerId,
+          rejectionReason,
+        },
+      });
+
       const updated = await verifications.findOne({
         where: { id },
         relations: ['documents', 'technician', 'reviewedBy'],
@@ -260,5 +296,25 @@ export class TechnicianVerificationsService {
         throw new NotFoundException('Verification request not found');
       return updated;
     });
+  }
+
+  private validateSubmissionDocuments(dto: SubmitVerificationDto): void {
+    const documents = dto.documents ?? [];
+    const hasCitizenId = documents.some(
+      (document) =>
+        document.documentType === DocumentType.CITIZEN_ID_FRONT ||
+        document.documentType === DocumentType.CITIZEN_ID_BACK,
+    );
+    if (!hasCitizenId)
+      throw new BadRequestException(
+        'At least one CCCD image is required for verification',
+      );
+
+    if (
+      !documents.some(
+        (document) => document.documentType === DocumentType.FACE_PHOTO,
+      )
+    )
+      throw new BadRequestException('A face photo is required for verification');
   }
 }

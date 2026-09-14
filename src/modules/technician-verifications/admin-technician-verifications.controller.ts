@@ -59,7 +59,7 @@ export class AdminTechnicianVerificationsController {
     description: 'Verification approved successfully',
   })
   @ApiResponse({ status: 404, description: 'Verification not found' })
-  @ApiResponse({ status: 409, description: 'Already approved' })
+  @ApiResponse({ status: 409, description: 'Already processed' })
   async approve(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser('id') reviewerId: string,

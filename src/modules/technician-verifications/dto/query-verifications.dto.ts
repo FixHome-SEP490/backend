@@ -7,7 +7,7 @@ import { VerificationStatus } from '../../../shared/enums';
 export class QueryVerificationsDto extends PaginationDto {
   @ApiPropertyOptional({
     enum: VerificationStatus,
-    description: 'Filter by verification status (PENDING, APPROVED, REJECTED)',
+    description: 'Filter by verification status (PENDING, VERIFIED, REJECTED)',
   })
   @IsOptional()
   @IsEnum(VerificationStatus)

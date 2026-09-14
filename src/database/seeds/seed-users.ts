@@ -80,7 +80,7 @@ export async function seedUsers(dataSource: DataSource): Promise<void> {
       [
         profileId,
         techId,
-        VerificationStatus.APPROVED,
+        VerificationStatus.VERIFIED,
         3 + (i % 10),
         `Kỹ thuật viên chuyên nghiệp với hơn ${3 + (i % 10)} năm kinh nghiệm sửa chữa điện lạnh, điện nước gia đình.`,
         rating,

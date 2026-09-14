@@ -39,7 +39,7 @@ export class TechnicianVerificationsController {
     status: 201,
     description: 'Verification submitted successfully',
   })
-  @ApiResponse({ status: 409, description: 'Already pending or approved' })
+  @ApiResponse({ status: 409, description: 'Already pending or verified' })
   async submit(
     @CurrentUser('id') technicianId: string,
     @Body() dto: SubmitVerificationDto,
