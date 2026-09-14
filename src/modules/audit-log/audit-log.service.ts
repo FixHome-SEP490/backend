@@ -98,6 +98,7 @@ export class AuditLogService {
     limit: number;
     resourceType?: string;
     actorUserId?: string;
+    action?: string;
   }): Promise<{ data: AuditLog[]; total: number }> {
     const qb = this.auditRepo.createQueryBuilder('log');
 
@@ -111,6 +112,9 @@ export class AuditLogService {
         actorUserId: options.actorUserId,
       });
     }
+    if (options.action) {
+      qb.andWhere('log.action = :action', { action: options.action });
+    }
 
     qb.orderBy('log.createdAt', 'DESC')
       .skip((options.page - 1) * options.limit)
@@ -118,5 +122,10 @@ export class AuditLogService {
 
     const [data, total] = await qb.getManyAndCount();
     return { data, total };
+  }
+
+  /** Find a single audit log by ID. Returns null if not found. */
+  async findById(id: string): Promise<AuditLog | null> {
+    return this.auditRepo.findOneBy({ id });
   }
 }
