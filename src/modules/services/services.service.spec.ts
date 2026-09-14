@@ -47,7 +47,6 @@ describe('ServicesService', () => {
     updatedAt: new Date(),
     basePriceMin: 100000,
     basePriceMax: 500000,
-    pricingMode: ServicePricingMode.INSPECTION_REQUIRED,
   });
 
   beforeEach(() => {
