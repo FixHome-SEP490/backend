@@ -28,7 +28,7 @@ import { User } from '../users/entities/user.entity';
 @ApiTags('Admin / Services')
 @Controller('admin/services')
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionGuard)
-@Roles(Role.ADMIN, Role.SERVICE_MANAGER)
+@Roles(Role.ADMIN)
 @RequirePermission('service:manage')
 @ApiBearerAuth()
 export class AdminServicesController {

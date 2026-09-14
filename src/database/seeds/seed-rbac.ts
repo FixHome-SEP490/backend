@@ -141,7 +141,7 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     'profile:read_own', 'profile:update_own',
     'user:read_all',
     'technician:verify', 'technician:assign',
-    'service:read', 'service:manage',
+    'service:read',
     'booking:read_all',
     'ai_diagnosis:read_related',
     'assignment:override',
