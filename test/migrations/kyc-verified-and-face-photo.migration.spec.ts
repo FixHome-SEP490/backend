@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { KycVerifiedAndFacePhoto1725896000000 } from './1725896000000-KycVerifiedAndFacePhoto';
+import { KycVerifiedAndFacePhoto1725896000000 } from '../../src/database/migrations/1725896000000-KycVerifiedAndFacePhoto';
 
 describe('KycVerifiedAndFacePhoto1725896000000', () => {
   it('emits a forward-only schema conversion for KYC status, face photo, profile status, and the open-request index', async () => {

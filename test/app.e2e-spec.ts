@@ -32,20 +32,20 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
   let technician: Session;
   let admin: Session;
   let jwt: JwtService;
-  const document = {
+  const documentFor = (technicianId: string) => ({
     documentType: 'citizen_id_front',
-    fileUrl: 'https://res.cloudinary.com/audit-test/image/upload/id_front.jpg',
-    fileName: 'id_front.jpg',
+    storageObjectPath: `kyc/${technicianId}/id-front.jpg`,
+    fileName: 'id-front.jpg',
     fileSize: 1024,
     mimeType: 'image/jpeg',
-  };
-  const facePhoto = {
+  });
+  const facePhotoFor = (technicianId: string) => ({
     documentType: 'face_photo',
-    fileUrl: 'https://res.cloudinary.com/audit-test/image/upload/face_photo.jpg',
-    fileName: 'face_photo.jpg',
+    storageObjectPath: `kyc/${technicianId}/face-photo.jpg`,
+    fileName: 'face-photo.jpg',
     fileSize: 1024,
     mimeType: 'image/jpeg',
-  };
+  });
   const http = () => request(app.getHttpServer());
   const bearer = (session: Session) => `Bearer ${session.accessToken}`;
   const register = async (
@@ -101,7 +101,12 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     http()
       .post('/api/v1/technicians/me/verification')
       .set('Authorization', bearer(session))
-      .send({ documents: [document, facePhoto] });
+      .send({
+        documents: [
+          documentFor(session.user.id),
+          facePhotoFor(session.user.id),
+        ],
+      });
   const review = (id: string, action: string, session = admin) =>
     http()
       .patch(`/api/v1/admin/technician-verifications/${id}/${action}`)
@@ -119,7 +124,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
       JWT_REFRESH_SECRET: refreshSecret,
       JWT_ACCESS_EXPIRES_IN: '15m',
       JWT_REFRESH_EXPIRES_IN: '7d',
-      CLOUDINARY_CLOUD_NAME: 'audit-test',
+      SUPABASE_KYC_BUCKET: 'kyc-private',
       CORS_ORIGIN: 'http://localhost:5173',
       DATABASE_SSL: 'false',
     });
@@ -660,7 +665,12 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
   });
   it.each([
     { fileUrl: 'javascript:alert(1)' },
-    { fileUrl: 'https://res.cloudinary.com/other-cloud/image/upload/id.jpg' },
+    {
+      storageObjectPath:
+        'https://project.supabase.co/storage/v1/object/public/kyc-private/id.jpg',
+    },
+    { storageObjectPath: 'kyc/other-technician/id.jpg' },
+    { storageObjectPath: 'kyc/technician/../id.jpg' },
     { fileSize: 10485761 },
     { fileSize: 1.5 },
     { mimeType: 'text/html' },
@@ -670,11 +680,16 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     await http()
       .post('/api/v1/technicians/me/verification')
       .set('Authorization', bearer(technician))
-      .send({ documents: [{ ...document, ...invalid }] })
+      .send({
+        documents: [{ ...documentFor(technician.user.id), ...invalid }],
+      })
       .expect(400);
   });
   it('bounds document counts', async () => {
-    for (const documents of [[], Array.from({ length: 11 }, () => document)])
+    for (const documents of [
+      [],
+      Array.from({ length: 11 }, () => documentFor(technician.user.id)),
+    ])
       await http()
         .post('/api/v1/technicians/me/verification')
         .set('Authorization', bearer(technician))

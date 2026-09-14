@@ -71,6 +71,69 @@ describe('AuditLogService', () => {
     });
   });
 
+  describe('logWithManager', () => {
+    const entry = {
+      actorUserId: 'admin-uuid-1',
+      actorRole: 'admin',
+      action: 'KYC_VERIFICATION_APPROVED',
+      resourceType: 'technician_verification',
+      resourceId: 'verif-uuid-1',
+    };
+
+    it('inserts via the provided transaction manager', async () => {
+      const manager = { insert: vi.fn().mockResolvedValue(undefined) };
+
+      await auditLogService.logWithManager(manager as any, entry);
+
+      expect(manager.insert).toHaveBeenCalledTimes(1);
+    });
+
+    it('stays fail-open when the manager insert fails', async () => {
+      const manager = {
+        insert: vi.fn().mockRejectedValue(new Error('DB error')),
+      };
+
+      await expect(
+        auditLogService.logWithManager(manager as any, entry),
+      ).resolves.toBeUndefined();
+    });
+  });
+
+  describe('logWithManagerStrict', () => {
+    const entry = {
+      actorUserId: 'admin-uuid-1',
+      actorRole: 'admin',
+      action: 'KYC_VERIFICATION_APPROVED',
+      resourceType: 'technician_verification',
+      resourceId: 'verif-uuid-1',
+    };
+
+    it('inserts via the provided transaction manager', async () => {
+      const manager = { insert: vi.fn().mockResolvedValue(undefined) };
+
+      await auditLogService.logWithManagerStrict(manager as any, entry);
+
+      expect(manager.insert).toHaveBeenCalledWith(
+        AuditLog,
+        expect.objectContaining({
+          action: 'KYC_VERIFICATION_APPROVED',
+          resourceType: 'technician_verification',
+          resourceId: 'verif-uuid-1',
+        }),
+      );
+    });
+
+    it('rethrows when the manager insert fails so the transaction aborts', async () => {
+      const manager = {
+        insert: vi.fn().mockRejectedValue(new Error('audit insert failed')),
+      };
+
+      await expect(
+        auditLogService.logWithManagerStrict(manager as any, entry),
+      ).rejects.toThrow('audit insert failed');
+    });
+  });
+
   describe('findAll', () => {
     it('returns paginated results', async () => {
       const result = await auditLogService.findAll({ page: 1, limit: 10 });
