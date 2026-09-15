@@ -9,11 +9,15 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  ApiBadRequestResponse,
   ApiBearerAuth,
+  ApiForbiddenResponse,
+  ApiNotFoundResponse,
+  ApiOkResponse,
   ApiOperation,
   ApiParam,
-  ApiResponse,
   ApiTags,
+  ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { JwtAuthGuard, RolesGuard, PermissionGuard } from '../../common/guards';
 import { CurrentUser, RequirePermission, Roles } from '../../common/decorators';
@@ -22,6 +26,7 @@ import { User } from '../users/entities/user.entity';
 import { AdminConfigService } from './admin-config.service';
 import { UpdateConfigDto } from './dto/update-config.dto';
 import { QueryConfigDto } from './dto/query-config.dto';
+import { SystemConfigResponseDto } from './dto/system-config-response.dto';
 
 @ApiTags('Admin / System Config')
 @Controller('admin/config')
@@ -40,7 +45,14 @@ export class AdminConfigController {
       'ACTIVE (consumed at runtime), TO_WIRE (hard-coded consumer remains — see consumerEvidence), ' +
       'NOT_IMPLEMENTED (feature not built yet), STALE_REVIEW (semantics corrected per v1.4).',
   })
-  @ApiResponse({ status: 200, description: 'Config registry returned' })
+  @ApiOkResponse({
+    description: 'Config registry returned',
+    type: SystemConfigResponseDto,
+    isArray: true,
+  })
+  @ApiBadRequestResponse({ description: 'Invalid config search query' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Admin config permission required' })
   async findAll(@Query() query: QueryConfigDto) {
     return this.adminConfigService.findAll(query.search);
   }
@@ -48,8 +60,14 @@ export class AdminConfigController {
   @Get(':key')
   @ApiOperation({ summary: 'Admin: Get a single config key with effect metadata' })
   @ApiParam({ name: 'key', example: 'commission.rate_bps' })
-  @ApiResponse({ status: 200, description: 'Config key returned' })
-  @ApiResponse({ status: 404, description: 'Config key not found' })
+  @ApiOkResponse({
+    description: 'Config key returned',
+    type: SystemConfigResponseDto,
+  })
+  @ApiBadRequestResponse({ description: 'Invalid config key' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Admin config permission required' })
+  @ApiNotFoundResponse({ description: 'Config key not found' })
   async findOne(@Param('key') key: string) {
     return this.adminConfigService.findOne(key);
   }
@@ -63,9 +81,14 @@ export class AdminConfigController {
       'Writes an audit log entry with before/after values.',
   })
   @ApiParam({ name: 'key', example: 'commission.rate_bps' })
-  @ApiResponse({ status: 200, description: 'Config key updated' })
-  @ApiResponse({ status: 400, description: 'Validation failed for key type/range' })
-  @ApiResponse({ status: 404, description: 'Config key not found' })
+  @ApiOkResponse({
+    description: 'Config key updated',
+    type: SystemConfigResponseDto,
+  })
+  @ApiBadRequestResponse({ description: 'Validation failed for key type/range' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Config update permission required' })
+  @ApiNotFoundResponse({ description: 'Config key not found' })
   async update(
     @Param('key') key: string,
     @Body() dto: UpdateConfigDto,
