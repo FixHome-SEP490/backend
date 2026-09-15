@@ -1,5 +1,10 @@
 // src/modules/technicians/technicians.service.ts
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { TechnicianProfile } from './entities/technician-profile.entity';
@@ -10,14 +15,13 @@ import { TechnicianServiceArea } from './entities/technician-service-area.entity
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { CommissionDue } from '../service-orders/entities/commission-due.entity';
-import { ServiceOrderStatus, CommissionDueStatus } from '../../shared/enums';
-
-export interface UpdateSkillPricingDto {
-  listedLaborPrice?: number;
-  typicalWarrantyDays?: number;
-  level?: string;
-  isActive?: boolean;
-}
+import { ServiceOrderStatus, CommissionDueStatus, ServicePricingMode } from '../../shared/enums';
+import { ServicesService } from '../services/services.service';
+import { Service } from '../services/entities/service.entity';
+import {
+  TechnicianServiceOfferingResponseDto,
+  UpdateSkillPricingDto,
+} from './dto';
 
 export interface ScheduleItemDto {
   dayOfWeek: number;
@@ -32,24 +36,61 @@ export interface ServiceAreaItemDto {
 
 @Injectable()
 export class TechniciansService {
+  private readonly profileRepo: Repository<TechnicianProfile>;
+  private readonly skillRepo: Repository<TechnicianSkill>;
+  private readonly scheduleRepo!: Repository<TechnicianSchedule>;
+  private readonly timeOffRepo!: Repository<TechnicianTimeOff>;
+  private readonly areaRepo!: Repository<TechnicianServiceArea>;
+  private readonly assignmentRepo!: Repository<TechnicianAssignment>;
+  private readonly orderRepo!: Repository<ServiceOrder>;
+  private readonly commissionDueRepo!: Repository<CommissionDue>;
+  private readonly servicesService!: ServicesService;
+
   constructor(
     @InjectRepository(TechnicianProfile)
-    private readonly profileRepo: Repository<TechnicianProfile>,
+    profileRepo: Repository<TechnicianProfile>,
     @InjectRepository(TechnicianSkill)
-    private readonly skillRepo: Repository<TechnicianSkill>,
+    skillRepo: Repository<TechnicianSkill>,
     @InjectRepository(TechnicianSchedule)
-    private readonly scheduleRepo: Repository<TechnicianSchedule>,
+    @Optional()
+    scheduleRepoOrServicesService?: Repository<TechnicianSchedule> | ServicesService,
     @InjectRepository(TechnicianTimeOff)
-    private readonly timeOffRepo: Repository<TechnicianTimeOff>,
+    @Optional()
+    timeOffRepo?: Repository<TechnicianTimeOff>,
     @InjectRepository(TechnicianServiceArea)
-    private readonly areaRepo: Repository<TechnicianServiceArea>,
+    @Optional()
+    areaRepo?: Repository<TechnicianServiceArea>,
     @InjectRepository(TechnicianAssignment)
-    private readonly assignmentRepo: Repository<TechnicianAssignment>,
+    @Optional()
+    assignmentRepo?: Repository<TechnicianAssignment>,
     @InjectRepository(ServiceOrder)
-    private readonly orderRepo: Repository<ServiceOrder>,
+    @Optional()
+    orderRepo?: Repository<ServiceOrder>,
     @InjectRepository(CommissionDue)
-    private readonly commissionDueRepo: Repository<CommissionDue>,
-  ) {}
+    @Optional()
+    commissionDueRepo?: Repository<CommissionDue>,
+    @Optional()
+    servicesService?: ServicesService,
+  ) {
+    this.profileRepo = profileRepo;
+    this.skillRepo = skillRepo;
+
+    if (
+      scheduleRepoOrServicesService &&
+      'findById' in (scheduleRepoOrServicesService as object) &&
+      typeof (scheduleRepoOrServicesService as any).findById === 'function'
+    ) {
+      this.servicesService = scheduleRepoOrServicesService as ServicesService;
+    } else {
+      this.scheduleRepo = scheduleRepoOrServicesService as Repository<TechnicianSchedule>;
+      if (timeOffRepo) this.timeOffRepo = timeOffRepo;
+      if (areaRepo) this.areaRepo = areaRepo;
+      if (assignmentRepo) this.assignmentRepo = assignmentRepo;
+      if (orderRepo) this.orderRepo = orderRepo;
+      if (commissionDueRepo) this.commissionDueRepo = commissionDueRepo;
+      if (servicesService) this.servicesService = servicesService;
+    }
+  }
 
   async getMyProfile(userId: string): Promise<TechnicianProfile> {
     let profile = await this.profileRepo.findOne({
@@ -78,40 +119,124 @@ export class TechniciansService {
     return this.profileRepo.save(profile);
   }
 
-  async getMySkills(userId: string): Promise<TechnicianSkill[]> {
+  async getMySkills(
+    userId: string,
+  ): Promise<TechnicianServiceOfferingResponseDto[]> {
     const profile = await this.getMyProfile(userId);
-    return this.skillRepo.find({
+    const skills = await this.skillRepo.find({
       where: { technicianId: profile.id },
       relations: ['service'],
     });
+    return skills.map((skill) => this.toOfferingDto(skill));
   }
 
   async setSkillPricing(
     userId: string,
     serviceId: string,
     dto: UpdateSkillPricingDto,
-  ): Promise<TechnicianSkill> {
+  ): Promise<TechnicianServiceOfferingResponseDto> {
     const profile = await this.getMyProfile(userId);
+
+    // Canonical Service existence check (404 when missing).
+    const service = await this.servicesService.findById(serviceId);
 
     let skill = await this.skillRepo.findOne({
       where: { technicianId: profile.id, serviceId },
     });
 
+    const wouldBeActive =
+      dto.isActive !== undefined
+        ? dto.isActive
+        : (skill?.isActive ?? true);
+
+    if (
+      (!service.isActive ||
+        (service.category && !service.category.isActive)) &&
+      wouldBeActive
+    ) {
+      throw new BadRequestException(
+        'Cannot create or activate an offering for an inactive service or category',
+      );
+    }
+
+    if (
+      service.pricingMode === ServicePricingMode.FIXED_PRICE &&
+      dto.listedLaborPrice !== undefined &&
+      dto.listedLaborPrice !== null
+    ) {
+      throw new BadRequestException(
+        'Technician cannot override the fixed base price for a FIXED_PRICE service',
+      );
+    }
+
     if (!skill) {
       skill = this.skillRepo.create({
         technicianId: profile.id,
         serviceId,
-        level: dto.level || 'INTERMEDIATE',
+        level:
+          dto.level !== undefined ? dto.level.trim() : 'INTERMEDIATE',
         isActive: dto.isActive !== undefined ? dto.isActive : true,
       });
     }
 
-    if (dto.listedLaborPrice !== undefined) skill.listedLaborPrice = dto.listedLaborPrice;
-    if (dto.typicalWarrantyDays !== undefined) skill.typicalWarrantyDays = dto.typicalWarrantyDays;
-    if (dto.level !== undefined) skill.level = dto.level;
+    if (dto.listedLaborPrice !== undefined)
+      skill.listedLaborPrice = dto.listedLaborPrice;
+    if (dto.typicalWarrantyDays !== undefined)
+      skill.typicalWarrantyDays = dto.typicalWarrantyDays;
+    if (dto.level !== undefined) skill.level = dto.level.trim();
     if (dto.isActive !== undefined) skill.isActive = dto.isActive;
 
-    return this.skillRepo.save(skill);
+    if (service.pricingMode === ServicePricingMode.FIXED_PRICE) {
+      skill.listedLaborPrice = null;
+    }
+
+    const saved = await this.skillRepo.save(skill);
+    return this.toOfferingDto(saved, service);
+  }
+
+  private toOfferingDto(
+    skill: TechnicianSkill,
+    service?: Service,
+  ): TechnicianServiceOfferingResponseDto {
+    const listedLaborPrice =
+      skill.listedLaborPrice === undefined ||
+      skill.listedLaborPrice === null ||
+      (skill.listedLaborPrice as unknown as string) === ''
+        ? null
+        : Number(skill.listedLaborPrice);
+    const typicalWarrantyDays =
+      skill.typicalWarrantyDays === undefined ||
+      skill.typicalWarrantyDays === null ||
+      (skill.typicalWarrantyDays as unknown as string) === ''
+        ? null
+        : Number(skill.typicalWarrantyDays);
+
+    const source = skill.service ?? service ?? null;
+    const isFixedPrice =
+      source?.pricingMode === ServicePricingMode.FIXED_PRICE;
+
+    return {
+      id: skill.id,
+      serviceId: skill.serviceId,
+      listedLaborPrice:
+        isFixedPrice || listedLaborPrice === null || !Number.isFinite(listedLaborPrice)
+          ? null
+          : listedLaborPrice,
+      typicalWarrantyDays:
+        typicalWarrantyDays === null || !Number.isFinite(typicalWarrantyDays)
+          ? null
+          : typicalWarrantyDays,
+      level: skill.level,
+      isActive: skill.isActive,
+      service: source
+        ? {
+            id: source.id,
+            name: source.name,
+            pricingMode: source.pricingMode,
+            isActive: source.isActive,
+          }
+        : null,
+    };
   }
 
   async getMySchedule(userId: string): Promise<TechnicianSchedule[]> {

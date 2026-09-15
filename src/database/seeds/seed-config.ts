@@ -18,7 +18,8 @@ export interface ConfigSeedItem {
  */
 export const CONFIG_SEED: ConfigSeedItem[] = [
   { key: 'matching.max_shortlist', value: '5', valueType: 'int', description: 'Maximum number of technicians in shortlist' },
-  { key: 'matching.mode', value: 'SIMULTANEOUS', valueType: 'enum', description: 'Matching mode: SIMULTANEOUS or SEQUENTIAL' },
+  // v1.4 §10: Invitation is sequential (not simultaneous). Corrected from legacy SIMULTANEOUS default.
+  { key: 'matching.mode', value: 'SEQUENTIAL', valueType: 'enum', description: 'Matching mode: SEQUENTIAL (v1.4 canonical). SIMULTANEOUS is removed.' },
   { key: 'matching.invitation_ttl_minutes', value: '30', valueType: 'int', description: 'Invitation expiration in minutes' },
   { key: 'geofence.radius_meters', value: '300', valueType: 'int', description: 'Geofence radius for arrival check-in' },
   { key: 'geofence.min_gps_accuracy_meters', value: '100', valueType: 'int', description: 'Minimum GPS accuracy for valid check-in' },
@@ -31,9 +32,12 @@ export const CONFIG_SEED: ConfigSeedItem[] = [
   { key: 'customer.suspension.hours', value: '72', valueType: 'int', description: 'Customer suspension duration in hours' },
   { key: 'technician.suspension.hours', value: '72', valueType: 'int', description: 'Technician suspension duration in hours' },
   { key: 'cancel.grace_minutes_after_accept', value: '15', valueType: 'int', description: 'Grace period for free cancellation after accept (minutes)' },
-  { key: 'compensation.arrival.amount', value: '50000', valueType: 'bigint', description: 'Arrival compensation amount (VND) — awaiting PO decision' },
-  { key: 'commission.base', value: 'LABOR', valueType: 'enum', description: 'Commission base: LABOR or TOTAL — awaiting PO decision' },
-  { key: 'commission.rate_bps', value: '1000', valueType: 'int', description: 'Commission rate in basis points (1000 = 10%) — awaiting PO decision' },
+  // v1.4 §4: Monetary Customer arrival-cancellation compensation removed. Value set to 0; key preserved for any reader.
+  { key: 'compensation.arrival.amount', value: '0', valueType: 'bigint', description: 'Arrival compensation amount (VND) — set to 0 per v1.4 (monetary compensation removed)' },
+  // v1.4 §3: Commission base is LABOR only. Parts are non-commissionable.
+  { key: 'commission.base', value: 'LABOR', valueType: 'enum', description: 'Commission base: LABOR (v1.4 canonical — Parts excluded)' },
+  // v1.4: 10% commission = 1000 bps. Snapshot required at invoice finalization.
+  { key: 'commission.rate_bps', value: '1000', valueType: 'int', description: 'Commission rate in basis points (1000 = 10% labor). Must be snapshotted at invoice finalization.' },
   { key: 'additional_cost.approval_ttl_minutes', value: '60', valueType: 'int', description: 'Additional cost approval timeout (minutes)' },
   { key: 'warranty.default_days', value: '30', valueType: 'int', description: 'Default warranty period in days' },
   { key: 'warranty.max_days', value: '365', valueType: 'int', description: 'Maximum warranty period in days' },

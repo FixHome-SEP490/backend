@@ -14,8 +14,6 @@ import { WarrantyCoverage } from './entities/warranty-coverage.entity';
 import { AdditionalCostRequest } from './entities/additional-cost-request.entity';
 import { Quotation } from '../quotations/entities/quotation.entity';
 import { AdditionalCostItem } from './entities/additional-cost-item.entity';
-import { CashSettlement } from './entities/cash-settlement.entity';
-import { CommissionDue } from './entities/commission-due.entity';
 import { WarrantyClaim } from './entities/warranty-claim.entity';
 import { CustomerServiceConfirmation } from './entities/customer-service-confirmation.entity';
 import { BookingInvitation } from '../bookings/entities/booking-invitation.entity';
@@ -42,14 +40,22 @@ import {
   CostItemType,
   WarrantyStatus,
   ServicePricingMode,
-  CashSettlementStatus,
-  CommissionDueStatus,
   WarrantyClaimStatus,
   PartSource,
   PartWarrantyOption,
 } from '../../shared/enums';
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import { FinanceService, FinanceActor } from '../finance/finance.service';
+import {
+  CashSettlementConfirmationDto,
+  CashSettlementDeclarationDto,
+  CommissionDueResponseDto,
+  InitiatePaymentDto,
+  InvoiceResponseDto,
+  PaymentResponseDto,
+  CashSettlementResponseDto,
+} from '../finance/dto';
 import type { EntityManager } from 'typeorm';
 import { OrderEvidenceStorage, EvidenceFile } from '../media/order-evidence-storage.service';
 import { expireAdditionalCosts } from './expire-additional-costs';
@@ -82,10 +88,6 @@ export class ServiceOrdersService {
     private readonly warrantyRepo: Repository<WarrantyCoverage>,
     @InjectRepository(AdditionalCostRequest)
     private readonly additionalCostRepo: Repository<AdditionalCostRequest>,
-    @InjectRepository(CashSettlement)
-    private readonly cashSettlementRepo: Repository<CashSettlement>,
-    @InjectRepository(CommissionDue)
-    private readonly commissionDueRepo: Repository<CommissionDue>,
     @InjectRepository(WarrantyClaim)
     private readonly warrantyClaimRepo: Repository<WarrantyClaim>,
     @InjectRepository(User)
@@ -98,6 +100,7 @@ export class ServiceOrdersService {
     private readonly configService: BusinessConfigService,
     private readonly auditLogService: AuditLogService,
     private readonly evidenceStorage: OrderEvidenceStorage,
+    private readonly financeService: FinanceService,
   ) {}
 
   // ── Queries ──
@@ -360,26 +363,22 @@ export class ServiceOrdersService {
   }
 
   /**
-   * Get invoice for an order.
+   * Finance delegates keep the existing Service Orders public surface while
+   * keeping money-state authority in the Finance module.
    */
-  async getInvoice(orderId: string, actor: { id: string; role: string }): Promise<Invoice | null> {
-    await authorizeOrder(this.dataSource.manager, orderId, actor);
-    return this.invoiceRepo.findOne({
-      where: { serviceOrderId: orderId },
-      relations: ['items'],
-    });
+  async getInvoice(
+    orderId: string,
+    actor: FinanceActor,
+  ): Promise<InvoiceResponseDto | null> {
+    return this.financeService.getInvoice(orderId, actor);
   }
 
-  /**
-   * Pay invoice (Online Payment verification & settlement).
-   * Direct simulation is disabled until official payment gateway webhook integration.
-   */
-  async payInvoice(invoiceId: string, actor: { id: string; role: string }, _paymentMethod = 'VNPAY_SANDBOX'): Promise<Invoice> {
-    await authorizeOrder(this.dataSource.manager, (await this.dataSource.manager.findOneByOrFail(Invoice, { id: invoiceId })).serviceOrderId, actor, 'customer');
-    throw new BusinessException(
-      ErrorCodes.VALIDATION_FAILED,
-      'Cổng thanh toán trực tuyến đang trong quá trình tích hợp chính thức. Vui lòng sử dụng phương thức Thanh toán tiền mặt (Dual-Confirmation) hoặc liên hệ Quản lý dịch vụ.',
-    );
+  async payInvoice(
+    invoiceId: string,
+    actor: FinanceActor,
+    dto: InitiatePaymentDto,
+  ): Promise<PaymentResponseDto> {
+    return this.financeService.initiateInvoicePayment(invoiceId, actor, dto);
   }
 
 
@@ -393,92 +392,41 @@ export class ServiceOrdersService {
 
   // ── Spec v1.2: Cash Settlement & Commission Tracking ──
 
-  async declareCashSettlement(orderId: string, dto: { declaredAmount: number; technicianNotes?: string; receiptEvidenceUrl?: string }, actor: { id: string; role: string }): Promise<CashSettlement> {
-    return this.dataSource.transaction(async manager => {
-      const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
-      if (order.status !== ServiceOrderStatus.UNDER_REPAIR || !order.completionRequestedAt) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Completion request and final invoice required before cash declaration');
-      if (!Number.isFinite(dto.declaredAmount) || dto.declaredAmount < 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid cash amount');
-      const invoice = await manager.findOneBy(Invoice, { serviceOrderId: orderId });
-      if (!invoice || invoice.paymentStatus === PaymentStatus.PAID) throw new BusinessException(ErrorCodes.CONFLICT, 'Invoice unavailable or already paid');
-      let settlement = await manager.findOneBy(CashSettlement, { serviceOrderId: orderId });
-      if (settlement) {
-        if (Number(settlement.declaredAmount) === dto.declaredAmount && settlement.status === CashSettlementStatus.PENDING_CONFIRMATION) return settlement;
-        throw new BusinessException(ErrorCodes.CONFLICT, 'Cash declaration already exists; disputed amounts require Manager resolution');
-      }
-      settlement = manager.create(CashSettlement, { serviceOrderId: orderId, declaredByTechnicianId: actor.id, declaredAmount: dto.declaredAmount, declaredAt: new Date(), technicianNotes: dto.technicianNotes || null, receiptEvidenceUrl: dto.receiptEvidenceUrl || null, status: CashSettlementStatus.PENDING_CONFIRMATION });
-      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'CASH_DECLARED', resourceType: 'service_order', resourceId: orderId, after: { declaredAmount: dto.declaredAmount } });
-      return manager.save(settlement);
-    });
+  async declareCashSettlement(
+    orderId: string,
+    dto: CashSettlementDeclarationDto,
+    actor: FinanceActor,
+  ): Promise<CashSettlementResponseDto> {
+    return this.financeService.declareCashSettlement(orderId, dto, actor);
   }
 
-
-  async confirmCashSettlement(orderId: string, dto: { agreed: boolean; disputeReason?: string; confirmedAmount?: number }, actor: { id: string; role: string }): Promise<CashSettlement> {
-    return this.dataSource.transaction(async manager => {
-      const order = await authorizeOrder(manager, orderId, actor, 'customer', true);
-      const settlement = await manager.findOneBy(CashSettlement, { serviceOrderId: orderId });
-      if (!settlement) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Cash declaration not found');
-      if (settlement.status === CashSettlementStatus.CONFIRMED && dto.agreed && (dto.confirmedAmount == null || dto.confirmedAmount === Number(settlement.confirmedAmount))) return settlement;
-      if (settlement.status !== CashSettlementStatus.PENDING_CONFIRMATION) throw new BusinessException(ErrorCodes.CONFLICT, 'Cash decision already resolved');
-      if (order.status !== ServiceOrderStatus.UNDER_REPAIR || !order.completionRequestedAt) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Order is not awaiting payment');
-      const invoice = await manager.findOneByOrFail(Invoice, { serviceOrderId: orderId });
-      const amount = dto.confirmedAmount ?? Number(settlement.declaredAmount);
-      const matches = Number(settlement.declaredAmount) === Number(invoice.grandTotal) && amount === Number(invoice.grandTotal);
-      settlement.confirmedByCustomerId = actor.id;
-      settlement.confirmedAmount = amount;
-      settlement.confirmedAt = new Date();
-      if (!dto.agreed || !matches) {
-        settlement.status = CashSettlementStatus.DISPUTED;
-        settlement.managerResolutionReason = dto.disputeReason || 'Cash amount does not match final invoice';
-        await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'CASH_DISPUTED', resourceType: 'service_order', resourceId: orderId });
-        return manager.save(settlement);
-      }
-      settlement.status = CashSettlementStatus.CONFIRMED;
-      const saved = await manager.save(settlement);
-      await manager.update(Invoice, invoice.id, { paymentStatus: PaymentStatus.PAID, paidAt: new Date() });
-      await manager.update(ServiceOrder, orderId, { paymentStatus: PaymentStatus.PAID });
-      order.paymentStatus = PaymentStatus.PAID;
-      // Same User lock as Accept: new due and job acceptance have one serial order.
-      await manager.findOne(User, { where: { id: settlement.declaredByTechnicianId }, lock: { mode: 'pessimistic_write' } });
-      const dueAmount = Number(invoice.commissionAmount) + Number(invoice.fixHomePartsTotal);
-      if (dueAmount > 0 && !await manager.findOneBy(CommissionDue, { serviceOrderId: orderId })) {
-        await manager.save(CommissionDue, manager.create(CommissionDue, { technicianId: settlement.declaredByTechnicianId, serviceOrderId: orderId, cashSettlementId: saved.id, laborTotalSnapshot: Number(invoice.laborTotal), commissionRateSnapshot: Number(invoice.commissionRateSnapshot), dueAmount, status: CommissionDueStatus.PENDING }));
-      }
-      await this.finalizeIfSatisfied(manager, order, actor);
-      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'CASH_CONFIRMED', resourceType: 'service_order', resourceId: orderId, after: { amount, dueAmount } });
-      return saved;
-    });
+  async confirmCashSettlement(
+    orderId: string,
+    dto: CashSettlementConfirmationDto,
+    actor: FinanceActor,
+  ): Promise<CashSettlementResponseDto> {
+    return this.financeService.confirmCashSettlement(orderId, dto, actor);
   }
 
-
-  async getCashSettlement(orderId: string, actor: { id: string; role: string }): Promise<CashSettlement | null> {
-    await authorizeOrder(this.dataSource.manager, orderId, actor);
-    return this.cashSettlementRepo.findOne({
-      where: { serviceOrderId: orderId },
-
-    });
+  async getCashSettlement(
+    orderId: string,
+    actor: FinanceActor,
+  ): Promise<CashSettlementResponseDto | null> {
+    return this.financeService.getCashSettlement(orderId, actor);
   }
 
   async getCommissionDues(
-    technicianId: string,
-  ): Promise<{ data: CommissionDue[]; totalDue: number }> {
-    const dues = await this.commissionDueRepo.find({
-      where: { technicianId },
-      relations: ['serviceOrder'],
-      order: { createdAt: 'DESC' },
-    });
-    const totalDue = dues
-      .filter((d) => d.status === CommissionDueStatus.PENDING)
-      .reduce((sum, d) => sum + Number(d.dueAmount), 0);
-    return { data: dues, totalDue };
+    actor: FinanceActor,
+  ): Promise<{ data: CommissionDueResponseDto[]; totalDue: number }> {
+    return this.financeService.getCommissionDues(actor);
   }
 
-  async payCommissionDue(dueId: string, technicianId: string, _paymentMethod = 'VNPAY_SANDBOX'): Promise<CommissionDue> {
-    const due = await this.commissionDueRepo.findOneBy({ id: dueId, technicianId });
-    if (!due) throw new ForbiddenException('CommissionDue not found');
-    throw new BusinessException(
-      ErrorCodes.VALIDATION_FAILED,
-      'Cổng thanh toán công nợ trực tuyến đang trong quá trình tích hợp. Vui lòng chuyển khoản đối soát với Quản lý dịch vụ FixHome.',
-    );
+  async payCommissionDue(
+    dueId: string,
+    actor: FinanceActor,
+    dto: InitiatePaymentDto,
+  ): Promise<PaymentResponseDto> {
+    return this.financeService.initiateCommissionDuePayment(dueId, actor, dto);
   }
 
 

@@ -1,7 +1,13 @@
 // src/modules/categories/categories.controller.ts
 import { Controller, Get, Param } from '@nestjs/common';
-import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import {
+  ApiNotFoundResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 import { CategoriesService } from './categories.service';
+import { CategoryResponseDto } from './dto';
 
 @ApiTags('Service Categories')
 @Controller(['service-categories', 'categories'])
@@ -10,18 +16,22 @@ export class CategoriesController {
 
   @Get()
   @ApiOperation({ summary: 'Public: List active service categories' })
-  @ApiResponse({ status: 200, description: 'Categories fetched successfully' })
+  @ApiOkResponse({
+    description: 'Categories fetched successfully',
+    type: CategoryResponseDto,
+    isArray: true,
+  })
   async findAll() {
     return this.categoriesService.findAll(true);
   }
 
   @Get(':idOrSlug')
   @ApiOperation({ summary: 'Public: Get category details with services by ID or slug' })
-  @ApiResponse({
-    status: 200,
+  @ApiOkResponse({
     description: 'Category detail fetched successfully',
+    type: CategoryResponseDto,
   })
-  @ApiResponse({ status: 404, description: 'Category not found' })
+  @ApiNotFoundResponse({ description: 'Category not found' })
   async findByIdOrSlug(@Param('idOrSlug') idOrSlug: string) {
     return this.categoriesService.findByIdOrSlug(idOrSlug, true);
   }

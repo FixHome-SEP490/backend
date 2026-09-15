@@ -50,6 +50,8 @@ describe('Environment Validation', () => {
     expect(config.DATABASE_USER).toBe('postgres');
     expect(config.JWT_ACCESS_EXPIRES_IN).toBe('15m');
     expect(config.JWT_REFRESH_EXPIRES_IN).toBe('7d');
+    expect(config.SUPABASE_KYC_BUCKET).toBe('kyc-private');
+    expect(config.SUPABASE_KYC_SIGNED_URL_TTL_SECONDS).toBe(300);
   });
 
   it.each(['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'])(
@@ -72,6 +74,9 @@ describe('Environment Validation', () => {
     { DATABASE_SSL: 'yes' },
     { CORS_ORIGIN: '*' },
     { JWT_REFRESH_SECRET: validConfig.JWT_ACCESS_SECRET },
+    { SUPABASE_KYC_SIGNED_URL_TTL_SECONDS: 59 },
+    { SUPABASE_KYC_SIGNED_URL_TTL_SECONDS: 3601 },
+    { SUPABASE_KYC_BUCKET: 'invalid/bucket' },
   ])('rejects invalid config %j', (invalid) => {
     expect(() => validate({ ...validConfig, ...invalid })).toThrow();
   });

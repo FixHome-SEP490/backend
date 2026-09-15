@@ -19,7 +19,7 @@ export async function technicianEligibility(
   const user = await manager.findOneBy(User, { id: technicianId });
   if (!user || user.role !== Role.TECHNICIAN || user.status !== AccountStatus.ACTIVE) return fail('Technician account is not active');
   const profile = await manager.findOneBy(TechnicianProfile, { userId: technicianId });
-  if (!profile || profile.verificationStatus !== VerificationStatus.APPROVED) return fail('Technician is not verified');
+  if (!profile || (profile.verificationStatus !== VerificationStatus.VERIFIED && (profile.verificationStatus as string) !== 'approved')) return fail('Technician is not verified');
   if (!profile.isAvailable || (profile.workSuspendedUntil && profile.workSuspendedUntil > new Date())) return fail('Technician is unavailable or suspended');
   if (!await manager.findOneBy(TechnicianSkill, { technicianId: profile.id, serviceId: booking.serviceId, isActive: true })) return fail('Service is not offered');
   if (await manager.count(CommissionDue, { where: { technicianId, status: CommissionDueStatus.PENDING } })) return fail('Active unpaid PlatformDue');

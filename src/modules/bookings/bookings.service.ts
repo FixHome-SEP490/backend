@@ -333,7 +333,7 @@ export class BookingsService {
         serviceId: booking.serviceId,
       })
       .where('tp.isAvailable = :available', { available: true })
-      .andWhere('tp.verificationStatus = :verified', { verified: 'approved' })
+      .andWhere('tp.verificationStatus = :verified', { verified: 'verified' })
       .andWhere('(tp.workSuspendedUntil IS NULL OR tp.workSuspendedUntil < :now)', {
         now: new Date(),
       })

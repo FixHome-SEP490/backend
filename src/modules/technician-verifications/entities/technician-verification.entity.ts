@@ -18,7 +18,7 @@ import { VerificationDocument } from './verification-document.entity';
 @Index(['status'])
 @Index('idx_one_open_verification', ['technicianId'], {
   unique: true,
-  where: "\"status\" IN ('pending', 'approved')",
+  where: "\"status\" IN ('pending', 'verified')",
 })
 export class TechnicianVerification extends BaseEntity {
   @Column({ name: 'technician_id', type: 'uuid' })

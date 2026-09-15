@@ -3,6 +3,7 @@ import { Module, Global } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuditLog } from './entities/audit-log.entity';
 import { AuditLogService } from './audit-log.service';
+import { AdminAuditLogController } from './admin-audit-log.controller';
 
 /**
  * Global module so any service can inject AuditLogService
@@ -11,6 +12,7 @@ import { AuditLogService } from './audit-log.service';
 @Global()
 @Module({
   imports: [TypeOrmModule.forFeature([AuditLog])],
+  controllers: [AdminAuditLogController],
   providers: [AuditLogService],
   exports: [AuditLogService],
 })
