@@ -86,16 +86,18 @@ export class KycStorageService {
       );
     }
 
-    const encodedPath = storageObjectPath
-      .split('/')
-      .map((segment) => encodeURIComponent(segment))
-      .join('/');
-    const encodedBucket = encodeURIComponent(bucket);
-    const endpoint = `${providerUrl.origin}/storage/v1/object/sign/${encodedBucket}/${encodedPath}`;
+    const expectedSignedPath = this.getExpectedSignedPath(
+      bucket,
+      storageObjectPath,
+    );
+    const endpoint = `${providerUrl.origin}${expectedSignedPath}`;
 
     let signedUrlValue: unknown;
     try {
-      const response = await axios.post<{ signedURL?: string; signedUrl?: string }>(
+      const response = await axios.post<{
+        signedURL?: string;
+        signedUrl?: string;
+      }>(
         endpoint,
         { expiresIn },
         {
@@ -123,10 +125,11 @@ export class KycStorageService {
     const signedUrl = this.resolveProviderSignedUrl(
       signedUrlValue,
       providerUrl,
+      expectedSignedPath,
     );
 
     return {
-      signedUrl: signedUrl.toString(),
+      signedUrl,
       expiresIn,
       expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
     };
@@ -136,57 +139,72 @@ export class KycStorageService {
    * Compose the final signed URL from the Supabase provider response.
    *
    * Supabase normally returns a relative path rooted at `/object/sign/...`
-   * (without the `/storage/v1` API prefix), so naive `new URL(value, origin)`
-   * composition drops the prefix and produces an unusable URL. Responses
-   * already carrying `/storage/v1/...` are joined as-is. Absolute URLs are
-   * accepted only when same-origin; anything cross-origin or malformed is
-   * rejected fail-closed.
+   * (without the `/storage/v1` API prefix). Responses already carrying
+   * `/storage/v1/...` are also supported. The raw provider base is bound to
+   * the exact private object before any URL parsing can normalize it.
    */
+  private getExpectedSignedPath(
+    bucket: string,
+    storageObjectPath: string,
+  ): string {
+    const encodedPath = storageObjectPath
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+    const encodedBucket = encodeURIComponent(bucket);
+    return `${SUPABASE_STORAGE_API_PREFIX}${SUPABASE_OBJECT_SIGN_PREFIX}${encodedBucket}/${encodedPath}`;
+  }
+
   private resolveProviderSignedUrl(
     signedUrlValue: string,
     providerUrl: URL,
-  ): URL {
+    expectedSignedPath: string,
+  ): string {
     const invalid = () =>
       new ServiceUnavailableException(
         'Private KYC storage returned an invalid signed access response',
       );
 
-    const raw = signedUrlValue.trim();
-    if (!raw) throw invalid();
-
-    // Absolute URL (carries a scheme): accept only when same-origin.
-    if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(raw)) {
-      let absolute: URL;
-      try {
-        absolute = new URL(raw);
-      } catch {
-        throw invalid();
-      }
-      if (absolute.origin !== providerUrl.origin) throw invalid();
-      if (absolute.pathname.startsWith(SUPABASE_OBJECT_SIGN_PREFIX)) {
-        return new URL(
-          `${providerUrl.origin}${SUPABASE_STORAGE_API_PREFIX}${absolute.pathname}${absolute.search}${absolute.hash}`,
-        );
-      }
-      return absolute;
+    const raw = signedUrlValue;
+    const hasRawControlCharacter = [...raw].some((character) => {
+      const code = character.charCodeAt(0);
+      return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+    });
+    if (!raw || raw.includes('#') || hasRawControlCharacter) {
+      throw invalid();
     }
 
-    // Relative provider paths must be rooted; bare paths are malformed.
-    if (!raw.startsWith('/') || raw.startsWith('//')) throw invalid();
-    if (raw.startsWith(`${SUPABASE_STORAGE_API_PREFIX}/`)) {
-      const resolved = new URL(raw, providerUrl.origin);
-      if (resolved.origin !== providerUrl.origin) throw invalid();
-      return resolved;
+    const querySeparator = raw.indexOf('?');
+    if (querySeparator <= 0) throw invalid();
+
+    const rawBase = raw.slice(0, querySeparator);
+    const rawQuery = raw.slice(querySeparator + 1);
+    const expectedRelativePath = expectedSignedPath.slice(
+      SUPABASE_STORAGE_API_PREFIX.length,
+    );
+    const allowedBases = new Set([
+      expectedRelativePath,
+      expectedSignedPath,
+      `${providerUrl.origin}${expectedRelativePath}`,
+      `${providerUrl.origin}${expectedSignedPath}`,
+    ]);
+
+    // Compare the untrusted base as raw text. Parsing it first could normalize
+    // backslashes or dot segments and turn a malformed absolute value into a
+    // trusted-looking origin/path.
+    if (!allowedBases.has(rawBase) || rawQuery.split('&').length !== 1) {
+      throw invalid();
     }
-    if (raw.startsWith(SUPABASE_OBJECT_SIGN_PREFIX)) {
-      const resolved = new URL(
-        `${SUPABASE_STORAGE_API_PREFIX}${raw}`,
-        providerUrl.origin,
-      );
-      if (resolved.origin !== providerUrl.origin) throw invalid();
-      return resolved;
+
+    const tokenSeparator = rawQuery.indexOf('=');
+    if (tokenSeparator < 0 || rawQuery.slice(0, tokenSeparator) !== 'token') {
+      throw invalid();
     }
-    throw invalid();
+
+    const rawToken = rawQuery.slice(tokenSeparator + 1);
+    if (!rawToken) throw invalid();
+
+    return `${providerUrl.origin}${expectedSignedPath}?token=${rawToken}`;
   }
 
   private getBucket(): string {

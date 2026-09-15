@@ -14,6 +14,7 @@ import {
   ApiBadRequestResponse,
   ApiBearerAuth,
   ApiConflictResponse,
+  ApiExtraModels,
   ApiForbiddenResponse,
   ApiNotFoundResponse,
   ApiCreatedResponse,
@@ -31,13 +32,124 @@ import {
 } from './dto';
 import { JwtAuthGuard, RolesGuard } from '../../common/guards';
 import { CurrentUser, Roles } from '../../common/decorators';
-import { Role } from '../../shared/enums';
+import {
+  AccountStatus,
+  DocumentType,
+  Role,
+  VerificationStatus,
+} from '../../shared/enums';
+
+const technicianVerificationNullableSchema = {
+  type: 'object',
+  nullable: true,
+  required: [
+    'id',
+    'technicianId',
+    'status',
+    'submittedAt',
+    'reviewedAt',
+    'reviewedById',
+    'rejectionReason',
+    'documents',
+    'createdAt',
+    'updatedAt',
+  ],
+  properties: {
+    id: { type: 'string', format: 'uuid' },
+    technicianId: { type: 'string', format: 'uuid' },
+    status: {
+      type: 'string',
+      enum: Object.values(VerificationStatus),
+      example: VerificationStatus.PENDING,
+    },
+    submittedAt: { type: 'string', format: 'date-time' },
+    reviewedAt: { type: 'string', format: 'date-time', nullable: true },
+    reviewedById: { type: 'string', format: 'uuid', nullable: true },
+    rejectionReason: { type: 'string', nullable: true },
+    documents: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: [
+          'id',
+          'verificationId',
+          'documentType',
+          'fileName',
+          'fileSize',
+          'mimeType',
+          'createdAt',
+          'updatedAt',
+        ],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          verificationId: { type: 'string', format: 'uuid' },
+          documentType: {
+            type: 'string',
+            enum: Object.values(DocumentType),
+            example: DocumentType.CITIZEN_ID_FRONT,
+          },
+          fileName: { type: 'string', example: 'citizen_id_front.jpg' },
+          fileSize: { type: 'integer', minimum: 1, example: 1048576 },
+          mimeType: { type: 'string', example: 'image/jpeg' },
+          createdAt: { type: 'string', format: 'date-time' },
+          updatedAt: { type: 'string', format: 'date-time' },
+        },
+      },
+    },
+    technician: {
+      type: 'object',
+      required: ['id', 'email', 'fullName', 'role', 'status', 'isActive'],
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        email: { type: 'string', example: 'tech@example.com' },
+        fullName: { type: 'string', example: 'Nguyen Van A' },
+        role: {
+          type: 'string',
+          enum: Object.values(Role),
+          example: Role.TECHNICIAN,
+        },
+        status: {
+          type: 'string',
+          enum: Object.values(AccountStatus),
+          example: AccountStatus.ACTIVE,
+        },
+        isActive: { type: 'boolean', example: true },
+        avatarUrl: { type: 'string', nullable: true },
+      },
+    },
+    reviewedBy: {
+      type: 'object',
+      nullable: true,
+      required: ['id', 'email', 'fullName', 'role', 'status', 'isActive'],
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        email: { type: 'string', example: 'tech@example.com' },
+        fullName: { type: 'string', example: 'Nguyen Van A' },
+        role: {
+          type: 'string',
+          enum: Object.values(Role),
+          example: Role.TECHNICIAN,
+        },
+        status: {
+          type: 'string',
+          enum: Object.values(AccountStatus),
+          example: AccountStatus.ACTIVE,
+        },
+        isActive: { type: 'boolean', example: true },
+        avatarUrl: { type: 'string', nullable: true },
+      },
+    },
+    createdAt: { type: 'string', format: 'date-time' },
+    updatedAt: { type: 'string', format: 'date-time' },
+  },
+};
 
 @ApiTags('Technician Verification')
 @Controller(['technicians/me/verification', 'technician/verification'])
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.TECHNICIAN)
 @ApiBearerAuth()
+@ApiExtraModels(TechnicianVerificationResponseDto)
 export class TechnicianVerificationsController {
   constructor(
     private readonly verificationsService: TechnicianVerificationsService,
@@ -69,7 +181,7 @@ export class TechnicianVerificationsController {
   })
   @ApiOkResponse({
     description: 'Verification status fetched successfully',
-    type: TechnicianVerificationResponseDto,
+    schema: technicianVerificationNullableSchema,
   })
   @ApiUnauthorizedResponse({ description: 'Authentication required' })
   @ApiForbiddenResponse({ description: 'Technician role required' })
@@ -96,9 +208,6 @@ export class TechnicianVerificationsController {
     @Param('documentId', ParseUUIDPipe) documentId: string,
     @CurrentUser() user: { id: string; role: Role },
   ) {
-    return this.verificationsService.getSignedDocumentAccess(
-      documentId,
-      user,
-    );
+    return this.verificationsService.getSignedDocumentAccess(documentId, user);
   }
 }

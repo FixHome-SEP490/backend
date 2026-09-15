@@ -29,12 +29,12 @@ export class KycPrivateStorageReference1725897000000
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    const [legacyRows] = await queryRunner.query(`
+    const [privateRows] = await queryRunner.query(`
       SELECT COUNT(*)::int AS count
       FROM "verification_documents"
-      WHERE "file_url" IS NULL
+      WHERE "storage_object_path" IS NOT NULL
     `);
-    if (Number(legacyRows?.count) > 0) {
+    if (Number(privateRows?.count) > 0) {
       throw new Error(
         'Refusing to revert private KYC storage reference because the reversal would be lossy',
       );
