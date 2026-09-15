@@ -89,6 +89,9 @@ const PERMISSIONS: [string, string, string, string][] = [
   ['config:update', 'config', 'update', 'Update system configuration'],
   // Audit
   ['audit:read', 'audit', 'read', 'Read audit logs'],
+  // Support cases
+  ['support:read_all', 'support', 'read_all', 'Read all support cases'],
+  ['support:resolve', 'support', 'resolve', 'Resolve support cases'],
   // Dashboard
   ['dashboard:read_own', 'dashboard', 'read_own', 'Read own dashboard'],
   ['dashboard:read_operational', 'dashboard', 'read_operational', 'Read operational dashboard'],
@@ -158,6 +161,7 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     'history:read_related',
     'config:read',
     'audit:read',
+    'support:read_all', 'support:resolve',
     'dashboard:read_operational',
   ],
   admin: [
@@ -182,6 +186,7 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     'history:read_related',
     'config:read', 'config:update',
     'audit:read',
+    'support:read_all',
     'dashboard:read_operational', 'dashboard:read_system',
   ],
 };

@@ -19,3 +19,5 @@ export * from './service-pricing-mode.enum';
 export * from './cash-settlement-status.enum';
 export * from './commission-due-status.enum';
 export * from './warranty-claim-status.enum';
+export * from './support-case-type.enum';
+export * from './support-case-status.enum';
