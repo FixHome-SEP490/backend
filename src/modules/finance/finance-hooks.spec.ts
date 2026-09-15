@@ -3,31 +3,47 @@ import { BusinessException } from '../../common/exceptions/business.exception';
 import {
   CommissionDueStatus,
   PaymentStatus,
-  PlatformDueStatus,
 } from '../../shared/enums';
-import { CommissionDue } from '../service-orders/entities/commission-due.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { PlatformDue } from './entities/platform-due.entity';
 import { FinanceService } from './finance.service';
 
 const makeHooksService = (options: {
-  commissionDues?: CommissionDue[];
-  assignments?: { serviceOrderId: string }[];
+  legacyPending?: boolean;
+  activeAssignment?: boolean;
   pendingPlatformDue?: PlatformDue | null;
   order?: ServiceOrder | null;
   invoice?: Invoice | null;
 }) => {
   const commissionDueRepository = {
-    find: vi.fn().mockResolvedValue(options.commissionDues ?? []),
+    exists: vi.fn().mockResolvedValue(options.legacyPending ?? false),
+  };
+  // Emulates the bounded inner-join semantics: the canonical pending due is
+  // reachable only through an ACTIVE assignment for this technician.
+  const qb = {
+    innerJoin: vi.fn(),
+    where: vi.fn(),
+    select: vi.fn(),
+    limit: vi.fn(),
+    getOne: vi.fn().mockResolvedValue(
+      options.activeAssignment && options.pendingPlatformDue
+        ? options.pendingPlatformDue
+        : null,
+    ),
+  };
+  qb.innerJoin.mockReturnValue(qb);
+  qb.where.mockReturnValue(qb);
+  qb.select.mockReturnValue(qb);
+  qb.limit.mockReturnValue(qb);
+  const platformDueRepository = {
+    createQueryBuilder: vi.fn().mockReturnValue(qb),
+    findOne: vi.fn(),
+    findAndCount: vi.fn(),
   };
   const assignmentRepository = {
     findOne: vi.fn(),
-    find: vi.fn().mockResolvedValue(options.assignments ?? []),
-  };
-  const platformDueRepository = {
-    findOne: vi.fn().mockResolvedValue(options.pendingPlatformDue ?? null),
-    findAndCount: vi.fn(),
+    find: vi.fn().mockResolvedValue([]),
   };
   const serviceOrderRepository = {
     findOne: vi.fn().mockResolvedValue(options.order ?? null),
@@ -61,19 +77,11 @@ const makeHooksService = (options: {
     commissionDueRepository,
     assignmentRepository,
     platformDueRepository,
+    qb,
     serviceOrderRepository,
     invoiceRepository,
   };
 };
-
-const due = (overrides: Partial<CommissionDue> = {}): CommissionDue =>
-  ({
-    id: 'due-1',
-    serviceOrderId: 'order-1',
-    technicianId: 'technician-1',
-    status: CommissionDueStatus.PENDING,
-    ...overrides,
-  }) as CommissionDue;
 
 describe('FinanceService Dev1 integration hooks', () => {
   it('exposes read-only hook contracts without mutating state', () => {
@@ -83,42 +91,64 @@ describe('FinanceService Dev1 integration hooks', () => {
   });
 
   it('reports legacy pending commission debt even without a platform due row', async () => {
-    const hooks = makeHooksService({
-      commissionDues: [due({ status: CommissionDueStatus.PENDING })],
-      pendingPlatformDue: null,
-    });
+    const hooks = makeHooksService({ legacyPending: true });
 
     await expect(
       hooks.service.hasActiveUnpaidPlatformDue('technician-1'),
     ).resolves.toBe(true);
-    expect(hooks.platformDueRepository.findOne).not.toHaveBeenCalled();
+    expect(hooks.commissionDueRepository.exists).toHaveBeenCalledWith({
+      where: {
+        technicianId: 'technician-1',
+        status: CommissionDueStatus.PENDING,
+      },
+    });
+    // Short-circuits before touching the canonical platform-due query.
+    expect(hooks.platformDueRepository.createQueryBuilder).not.toHaveBeenCalled();
   });
 
-  it('reports canonical pending platform dues when legacy debt is clear', async () => {
+  it('reports canonical pending platform dues only through an ACTIVE assignment', async () => {
     const hooks = makeHooksService({
-      commissionDues: [
-        due({ serviceOrderId: 'order-1', status: CommissionDueStatus.PAID }),
-      ],
-      assignments: [{ serviceOrderId: 'order-1' }],
+      legacyPending: false,
+      activeAssignment: true,
       pendingPlatformDue: { id: 'platform-due-1' } as PlatformDue,
     });
 
     await expect(
       hooks.service.hasActiveUnpaidPlatformDue('technician-1'),
     ).resolves.toBe(true);
-    expect(hooks.platformDueRepository.findOne).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ status: PlatformDueStatus.PENDING }),
-      }),
+    expect(hooks.platformDueRepository.createQueryBuilder).toHaveBeenCalledWith(
+      'due',
     );
+    const joinCondition = hooks.qb.innerJoin.mock.calls[0][2] as string;
+    const joinParams = hooks.qb.innerJoin.mock.calls[0][3] as Record<
+      string,
+      unknown
+    >;
+    expect(joinCondition).toContain('isActive');
+    expect(joinParams).toMatchObject({
+      technicianId: 'technician-1',
+      isActive: true,
+    });
+  });
+
+  it('ignores canonical pending dues after reassignment (historic inactive assignment)', async () => {
+    const hooks = makeHooksService({
+      legacyPending: false,
+      activeAssignment: false,
+      pendingPlatformDue: { id: 'platform-due-1' } as PlatformDue,
+    });
+
+    await expect(
+      hooks.service.hasActiveUnpaidPlatformDue('technician-1'),
+    ).resolves.toBe(false);
+    // No unbounded history load: the hook never pulls assignment/order arrays.
+    expect(hooks.assignmentRepository.find).not.toHaveBeenCalled();
   });
 
   it('reports eligible when legacy dues are settled and no platform due is pending', async () => {
     const hooks = makeHooksService({
-      commissionDues: [
-        due({ serviceOrderId: 'order-1', status: CommissionDueStatus.PAID }),
-      ],
-      assignments: [{ serviceOrderId: 'order-1' }],
+      legacyPending: false,
+      activeAssignment: true,
       pendingPlatformDue: null,
     });
 
@@ -133,7 +163,7 @@ describe('FinanceService Dev1 integration hooks', () => {
     await expect(
       hooks.service.hasActiveUnpaidPlatformDue('technician-1'),
     ).resolves.toBe(false);
-    expect(hooks.platformDueRepository.findOne).not.toHaveBeenCalled();
+    expect(hooks.qb.getOne).toHaveBeenCalled();
   });
 
   it('rejects blank hook input instead of silently reporting eligible', async () => {

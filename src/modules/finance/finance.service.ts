@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, In, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes, FINANCE_COMMISSION_RATE } from '../../shared/constants';
 import {
@@ -627,10 +627,11 @@ export class FinanceService {
   /**
    * Read-only eligibility hook for Dev1 server-side integration.
    * Returns true when the technician carries any active unpaid platform debt:
-   * a canonical PlatformDue in PENDING status reachable through the
-   * technician's commission/assignment history, or a legacy CommissionDue in
-   * PENDING status. Bounded queries only; no cache, no mutation, no
-   * ServiceOrder status change.
+   * a canonical PlatformDue in PENDING status on a service order where this
+   * technician holds an ACTIVE assignment (isActive=true), or a legacy
+   * CommissionDue in PENDING status. Bounded single-row/EXISTS queries only;
+   * historic (isActive=false) assignments never attribute debt, no unbounded
+   * In(list), no cache, no mutation, no ServiceOrder status change.
    */
   async hasActiveUnpaidPlatformDue(technicianId: string): Promise<boolean> {
     if (typeof technicianId !== 'string' || technicianId.trim().length === 0) {
@@ -640,37 +641,29 @@ export class FinanceService {
       );
     }
 
-    const dues = await this.commissionDueRepository.find({
-      where: { technicianId },
-      select: ['serviceOrderId', 'status'],
+    const legacyPending = await this.commissionDueRepository.exists({
+      where: { technicianId, status: CommissionDueStatus.PENDING },
     });
-    if (
-      dues.some((due) => due.status === CommissionDueStatus.PENDING)
-    ) {
+    if (legacyPending) {
       return true;
     }
 
-    const assignments = await this.assignmentRepository.find({
-      where: { technicianId },
-      select: ['serviceOrderId'],
-    });
-    const orderIds = Array.from(
-      new Set([
-        ...dues.map((due) => due.serviceOrderId),
-        ...assignments.map((assignment) => assignment.serviceOrderId),
-      ]),
-    );
-    if (orderIds.length === 0) {
-      return false;
-    }
-
-    const pendingPlatformDue = await this.platformDueRepository.findOne({
-      where: {
-        serviceOrderId: In(orderIds),
-        status: PlatformDueStatus.PENDING,
-      },
-      select: ['id'],
-    });
+    const pendingPlatformDue = await this.platformDueRepository
+      .createQueryBuilder('due')
+      .innerJoin(
+        TechnicianAssignment,
+        'activeAssignment',
+        'activeAssignment.serviceOrderId = due.serviceOrderId ' +
+          'AND activeAssignment.technicianId = :technicianId ' +
+          'AND activeAssignment.isActive = :isActive',
+        { technicianId, isActive: true },
+      )
+      .where('due.status = :pendingStatus', {
+        pendingStatus: PlatformDueStatus.PENDING,
+      })
+      .select('due.id')
+      .limit(1)
+      .getOne();
     return pendingPlatformDue !== null;
   }
 
