@@ -11,13 +11,24 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  ApiBadRequestResponse,
   ApiBearerAuth,
+  ApiConflictResponse,
+  ApiCreatedResponse,
+  ApiForbiddenResponse,
+  ApiNotFoundResponse,
+  ApiOkResponse,
   ApiOperation,
-  ApiResponse,
+  ApiParam,
   ApiTags,
+  ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { CategoriesService } from './categories.service';
-import { CreateCategoryDto, UpdateCategoryDto } from './dto';
+import {
+  CategoryResponseDto,
+  CreateCategoryDto,
+  UpdateCategoryDto,
+} from './dto';
 import { JwtAuthGuard, RolesGuard, PermissionGuard } from '../../common/guards';
 import { CurrentUser, RequirePermission, Roles } from '../../common/decorators';
 import { Role } from '../../shared/enums';
@@ -35,6 +46,12 @@ export class AdminCategoriesController {
 
   @Delete(':id')
   @ApiOperation({ summary: 'Deactivate a category without deleting referenced data' })
+  @ApiParam({ name: 'id', format: 'uuid', description: 'Category UUID' })
+  @ApiOkResponse({ description: 'Category deactivated successfully', type: CategoryResponseDto })
+  @ApiBadRequestResponse({ description: 'Invalid category UUID' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Admin service management permission required' })
+  @ApiNotFoundResponse({ description: 'Category not found' })
   deactivate(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: User,
@@ -44,14 +61,24 @@ export class AdminCategoriesController {
 
   @Get()
   @ApiOperation({ summary: 'Admin: List active and inactive categories' })
+  @ApiOkResponse({
+    description: 'Categories returned with active and inactive entries',
+    type: CategoryResponseDto,
+    isArray: true,
+  })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Admin service management permission required' })
   findAll() {
     return this.categoriesService.findAll(false);
   }
 
   @Post()
   @ApiOperation({ summary: 'Admin: Create a new service category' })
-  @ApiResponse({ status: 201, description: 'Category created successfully' })
-  @ApiResponse({ status: 409, description: 'Category code already exists' })
+  @ApiCreatedResponse({ description: 'Category created successfully', type: CategoryResponseDto })
+  @ApiBadRequestResponse({ description: 'Request validation failed' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Admin service management permission required' })
+  @ApiConflictResponse({ description: 'Category code or slug already exists' })
   async create(
     @Body() dto: CreateCategoryDto,
     @CurrentUser() user: User,
@@ -61,8 +88,13 @@ export class AdminCategoriesController {
 
   @Patch(':id')
   @ApiOperation({ summary: 'Admin: Update service category details' })
-  @ApiResponse({ status: 200, description: 'Category updated successfully' })
-  @ApiResponse({ status: 404, description: 'Category not found' })
+  @ApiParam({ name: 'id', format: 'uuid', description: 'Category UUID' })
+  @ApiOkResponse({ description: 'Category updated successfully', type: CategoryResponseDto })
+  @ApiBadRequestResponse({ description: 'Invalid UUID or request validation failed' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Admin service management permission required' })
+  @ApiNotFoundResponse({ description: 'Category not found' })
+  @ApiConflictResponse({ description: 'Category slug already exists' })
   async update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateCategoryDto,
@@ -73,10 +105,15 @@ export class AdminCategoriesController {
 
   @Patch(':id/status')
   @ApiOperation({ summary: 'Admin: Toggle service category active status' })
-  @ApiResponse({
-    status: 200,
+  @ApiParam({ name: 'id', format: 'uuid', description: 'Category UUID' })
+  @ApiOkResponse({
     description: 'Category status updated successfully',
+    type: CategoryResponseDto,
   })
+  @ApiBadRequestResponse({ description: 'Invalid UUID or status payload' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Admin service management permission required' })
+  @ApiNotFoundResponse({ description: 'Category not found' })
   async toggleStatus(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateActiveStatusDto,
