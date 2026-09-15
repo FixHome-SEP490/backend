@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { TechniciansService } from './technicians.service';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
-import { ServiceOrderStatus, CommissionDueStatus } from '../../shared/enums';
+import { CommissionDueStatus } from '../../shared/enums';
 
 describe('TechniciansService', () => {
   let service: TechniciansService;

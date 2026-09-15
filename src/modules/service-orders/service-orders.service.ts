@@ -1,7 +1,6 @@
-// src/modules/service-orders/service-orders.service.ts
-import { Injectable, Logger, ForbiddenException, NotImplementedException } from '@nestjs/common';
+import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, Repository, In } from 'typeorm';
 import { ServiceOrder } from './entities/service-order.entity';
 import { TechnicianAssignment } from './entities/technician-assignment.entity';
 import { OrderStatusHistory } from './entities/order-status-history.entity';
@@ -372,37 +371,15 @@ export class ServiceOrdersService {
   }
 
   /**
-   * Pay invoice (Sandbox Online Payment verification & settlement).
+   * Pay invoice (Online Payment verification & settlement).
+   * Direct simulation is disabled until official payment gateway webhook integration.
    */
-  async payInvoice(invoiceId: string, actor: { id: string; role: string }, paymentMethod = 'VNPAY_SANDBOX'): Promise<Invoice> {
-    return this.dataSource.transaction(async manager => {
-      const invoice = await manager.findOneBy(Invoice, { id: invoiceId });
-      if (!invoice) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Invoice not found');
-      const order = await authorizeOrder(manager, invoice.serviceOrderId, actor, 'customer', true);
-      if (invoice.paymentStatus === PaymentStatus.PAID) throw new BusinessException(ErrorCodes.CONFLICT, 'Invoice is already paid');
-      if (order.status !== ServiceOrderStatus.UNDER_REPAIR || !order.completionRequestedAt) {
-        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Order is not awaiting payment');
-      }
-
-      await manager.update(Invoice, invoice.id, {
-        paymentStatus: PaymentStatus.PAID,
-        paidAt: new Date(),
-      });
-      await manager.update(ServiceOrder, order.id, { paymentStatus: PaymentStatus.PAID });
-      order.paymentStatus = PaymentStatus.PAID;
-
-      await this.auditLogService.logWithManager(manager, {
-        actorUserId: actor.id,
-        actorRole: actor.role,
-        action: 'INVOICE_PAID_ONLINE',
-        resourceType: 'invoice',
-        resourceId: invoice.id,
-        after: { paymentMethod, amount: invoice.grandTotal },
-      });
-
-      await this.finalizeIfSatisfied(manager, order, actor);
-      return manager.findOneByOrFail(Invoice, { id: invoiceId });
-    });
+  async payInvoice(invoiceId: string, actor: { id: string; role: string }, _paymentMethod = 'VNPAY_SANDBOX'): Promise<Invoice> {
+    await authorizeOrder(this.dataSource.manager, (await this.dataSource.manager.findOneByOrFail(Invoice, { id: invoiceId })).serviceOrderId, actor, 'customer');
+    throw new BusinessException(
+      ErrorCodes.VALIDATION_FAILED,
+      'Cổng thanh toán trực tuyến đang trong quá trình tích hợp chính thức. Vui lòng sử dụng phương thức Thanh toán tiền mặt (Dual-Confirmation) hoặc liên hệ Quản lý dịch vụ.',
+    );
   }
 
 
@@ -495,31 +472,13 @@ export class ServiceOrdersService {
     return { data: dues, totalDue };
   }
 
-  async payCommissionDue(dueId: string, technicianId: string, paymentMethod = 'VNPAY_SANDBOX'): Promise<CommissionDue> {
+  async payCommissionDue(dueId: string, technicianId: string, _paymentMethod = 'VNPAY_SANDBOX'): Promise<CommissionDue> {
     const due = await this.commissionDueRepo.findOneBy({ id: dueId, technicianId });
-    if (!due) throw new ForbiddenException('PlatformDue not found');
-    if (due.status === CommissionDueStatus.PAID) return due;
-
-    return this.dataSource.transaction(async manager => {
-      await manager.findOne(User, { where: { id: technicianId }, lock: { mode: 'pessimistic_write' } });
-      const lockedDue = await manager.findOneOrFail(CommissionDue, { where: { id: dueId, technicianId }, lock: { mode: 'pessimistic_write' } });
-      if (lockedDue.status === CommissionDueStatus.PAID) return lockedDue;
-
-      lockedDue.status = CommissionDueStatus.PAID;
-      lockedDue.paidAt = new Date();
-      const saved = await manager.save(CommissionDue, lockedDue);
-
-      await this.auditLogService.logWithManager(manager, {
-        actorUserId: technicianId,
-        actorRole: Role.TECHNICIAN,
-        action: 'PLATFORM_DUE_PAID',
-        resourceType: 'commission_due',
-        resourceId: dueId,
-        after: { dueAmount: saved.dueAmount, paymentMethod, status: saved.status },
-      });
-
-      return saved;
-    });
+    if (!due) throw new ForbiddenException('CommissionDue not found');
+    throw new BusinessException(
+      ErrorCodes.VALIDATION_FAILED,
+      'Cổng thanh toán công nợ trực tuyến đang trong quá trình tích hợp. Vui lòng chuyển khoản đối soát với Quản lý dịch vụ FixHome.',
+    );
   }
 
 
@@ -528,9 +487,18 @@ export class ServiceOrdersService {
     dto: { description: string },
     customer: { id: string },
   ): Promise<WarrantyClaim> {
+    if (!dto.description?.trim()) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Vui lòng cung cấp mô tả chi tiết sự cố bảo hành');
+    }
     const order = await this.orderRepo.findOneBy({ id: orderId });
     if (!order) {
       throw new BusinessException(ErrorCodes.NOT_FOUND, 'Service order not found');
+    }
+    if (order.status !== ServiceOrderStatus.COMPLETED) {
+      throw new BusinessException(
+        ErrorCodes.ORDER_INVALID_TRANSITION,
+        'Chỉ đơn hàng đã hoàn tất (COMPLETED) mới được yêu cầu bảo hành',
+      );
     }
     const booking = await this.dataSource
       .getRepository(Booking)
@@ -542,6 +510,36 @@ export class ServiceOrdersService {
       );
     }
 
+    // Validate that order has active and non-expired warranty coverage
+    const coverages = await this.warrantyRepo.find({
+      where: { serviceOrderId: orderId, status: WarrantyStatus.ACTIVE },
+    });
+    const validCoverages = coverages.filter((c) => new Date(c.expiresAt) > new Date());
+    if (validCoverages.length === 0) {
+      throw new BusinessException(
+        ErrorCodes.VALIDATION_FAILED,
+        'Đơn hàng không có gói bảo hành nào còn hiệu lực hoặc thời hạn bảo hành đã kết thúc',
+      );
+    }
+
+    // Check for duplicate active claim
+    const existingActiveClaim = await this.warrantyClaimRepo.findOne({
+      where: {
+        serviceOrderId: orderId,
+        status: In([
+          WarrantyClaimStatus.SUBMITTED,
+          WarrantyClaimStatus.ACCEPTED,
+          WarrantyClaimStatus.IN_PROGRESS,
+        ]),
+      },
+    });
+    if (existingActiveClaim) {
+      throw new BusinessException(
+        ErrorCodes.CONFLICT,
+        'Đơn hàng này đang có một yêu cầu bảo hành đang được xử lý',
+      );
+    }
+
     const assignment = await this.assignmentRepo.findOne({
       where: { serviceOrderId: orderId, isActive: true },
     });
@@ -550,7 +548,7 @@ export class ServiceOrdersService {
       serviceOrderId: orderId,
       customerId: customer.id,
       technicianId: assignment?.technicianId || '',
-      description: dto.description,
+      description: dto.description.trim(),
       status: WarrantyClaimStatus.SUBMITTED,
     });
     return this.warrantyClaimRepo.save(claim);
