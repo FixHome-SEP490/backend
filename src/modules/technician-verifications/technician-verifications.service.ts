@@ -25,7 +25,12 @@ import {
   SubmitVerificationDto,
   RejectVerificationDto,
   QueryVerificationsDto,
+  TechnicianVerificationResponseDto,
 } from './dto';
+import {
+  toTechnicianVerificationResponse,
+  toTechnicianVerificationResponseList,
+} from './technician-verifications.mapper';
 
 @Injectable()
 export class TechnicianVerificationsService {
@@ -41,7 +46,7 @@ export class TechnicianVerificationsService {
   async submitVerification(
     technicianId: string,
     dto: SubmitVerificationDto,
-  ): Promise<TechnicianVerification> {
+  ): Promise<TechnicianVerificationResponseDto> {
     this.validateSubmissionDocuments(dto);
 
     const extensions: Record<string, string[]> = {
@@ -64,7 +69,7 @@ export class TechnicianVerificationsService {
           'Document extension does not match MIME type',
         );
     }
-    return this.verificationRepository.manager.transaction(async (manager) => {
+    const verification = await this.verificationRepository.manager.transaction(async (manager) => {
       const technician = await manager
         .getRepository(User)
         .findOne({
@@ -120,21 +125,27 @@ export class TechnicianVerificationsService {
       savedVerification.documents = await documentRepository.save(documents);
       return savedVerification;
     });
+
+    return toTechnicianVerificationResponse(verification);
   }
 
   async getMyVerification(
     technicianId: string,
-  ): Promise<TechnicianVerification | null> {
-    return this.verificationRepository.findOne({
+  ): Promise<TechnicianVerificationResponseDto | null> {
+    const verification = await this.verificationRepository.findOne({
       where: { technicianId },
       order: { submittedAt: 'DESC' },
       relations: ['documents'],
     });
+    return verification ? toTechnicianVerificationResponse(verification) : null;
   }
 
   async findAll(
     query: QueryVerificationsDto,
-  ): Promise<{ data: TechnicianVerification[]; meta: PaginationMeta }> {
+  ): Promise<{
+    data: TechnicianVerificationResponseDto[];
+    meta: PaginationMeta;
+  }> {
     const qb = this.verificationRepository
       .createQueryBuilder('v')
       .leftJoinAndSelect('v.technician', 'technician')
@@ -157,10 +168,10 @@ export class TechnicianVerificationsService {
       totalPages: Math.ceil(total / query.limit),
     };
 
-    return { data, meta };
+    return { data: toTechnicianVerificationResponseList(data), meta };
   }
 
-  async findById(id: string): Promise<TechnicianVerification> {
+  async findById(id: string): Promise<TechnicianVerificationResponseDto> {
     const verification = await this.verificationRepository.findOne({
       where: { id },
       relations: ['technician', 'documents', 'reviewedBy'],
@@ -172,29 +183,36 @@ export class TechnicianVerificationsService {
       );
     }
 
-    return verification;
+    return toTechnicianVerificationResponse(verification);
   }
 
   async approveVerification(
     id: string,
     reviewerId: string,
-  ): Promise<TechnicianVerification> {
-    return this.review(id, reviewerId, VerificationStatus.VERIFIED, null);
+  ): Promise<TechnicianVerificationResponseDto> {
+    const verification = await this.review(
+      id,
+      reviewerId,
+      VerificationStatus.VERIFIED,
+      null,
+    );
+    return toTechnicianVerificationResponse(verification);
   }
 
   async rejectVerification(
     id: string,
     reviewerId: string,
     dto: RejectVerificationDto,
-  ): Promise<TechnicianVerification> {
+  ): Promise<TechnicianVerificationResponseDto> {
     if (!dto.rejectionReason || dto.rejectionReason.trim().length < 5)
       throw new BadRequestException('Rejection reason is required');
-    return this.review(
+    const verification = await this.review(
       id,
       reviewerId,
       VerificationStatus.REJECTED,
       dto.rejectionReason.trim(),
     );
+    return toTechnicianVerificationResponse(verification);
   }
 
   async isVerified(technicianId: string): Promise<boolean> {

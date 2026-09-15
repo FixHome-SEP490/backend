@@ -10,13 +10,24 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  ApiBadRequestResponse,
   ApiBearerAuth,
+  ApiConflictResponse,
+  ApiForbiddenResponse,
+  ApiNotFoundResponse,
+  ApiOkResponse,
   ApiOperation,
-  ApiResponse,
+  ApiServiceUnavailableResponse,
   ApiTags,
+  ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { TechnicianVerificationsService } from './technician-verifications.service';
-import { QueryVerificationsDto, RejectVerificationDto } from './dto';
+import {
+  KycSignedAccessResponseDto,
+  QueryVerificationsDto,
+  RejectVerificationDto,
+  TechnicianVerificationResponseDto,
+} from './dto';
 import { JwtAuthGuard, RolesGuard } from '../../common/guards';
 import { CurrentUser, Roles } from '../../common/decorators';
 import { Role } from '../../shared/enums';
@@ -33,21 +44,28 @@ export class AdminTechnicianVerificationsController {
 
   @Get()
   @ApiOperation({ summary: 'Admin: List all technician verification requests' })
-  @ApiResponse({
-    status: 200,
+  @ApiOkResponse({
     description: 'List of verifications fetched successfully',
+    type: TechnicianVerificationResponseDto,
+    isArray: true,
   })
+  @ApiBadRequestResponse({ description: 'Invalid verification filters or pagination' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Admin role required' })
   async findAll(@Query() query: QueryVerificationsDto) {
     return this.verificationsService.findAll(query);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Admin: View details of a verification request' })
-  @ApiResponse({
-    status: 200,
+  @ApiOkResponse({
     description: 'Verification detail fetched successfully',
+    type: TechnicianVerificationResponseDto,
   })
-  @ApiResponse({ status: 404, description: 'Verification not found' })
+  @ApiBadRequestResponse({ description: 'Invalid verification UUID' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Admin role required' })
+  @ApiNotFoundResponse({ description: 'Verification not found' })
   async findById(@Param('id', ParseUUIDPipe) id: string) {
     return this.verificationsService.findById(id);
   }
@@ -56,9 +74,16 @@ export class AdminTechnicianVerificationsController {
   @ApiOperation({
     summary: 'Admin: Get short-lived access to a private KYC document',
   })
-  @ApiResponse({
-    status: 200,
+  @ApiOkResponse({
     description: 'Signed private document access returned',
+    type: KycSignedAccessResponseDto,
+  })
+  @ApiBadRequestResponse({ description: 'Invalid verification or document UUID' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Admin role required' })
+  @ApiNotFoundResponse({ description: 'Verification document not found' })
+  @ApiServiceUnavailableResponse({
+    description: 'Private KYC storage could not issue signed access',
   })
   async getDocumentAccess(
     @Param('id', ParseUUIDPipe) verificationId: string,
@@ -74,12 +99,15 @@ export class AdminTechnicianVerificationsController {
 
   @Patch(':id/approve')
   @ApiOperation({ summary: 'Admin: Approve technician verification request' })
-  @ApiResponse({
-    status: 200,
+  @ApiOkResponse({
     description: 'Verification approved successfully',
+    type: TechnicianVerificationResponseDto,
   })
-  @ApiResponse({ status: 404, description: 'Verification not found' })
-  @ApiResponse({ status: 409, description: 'Already processed' })
+  @ApiBadRequestResponse({ description: 'Invalid verification UUID' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Admin role required' })
+  @ApiNotFoundResponse({ description: 'Verification not found' })
+  @ApiConflictResponse({ description: 'Already processed' })
   async approve(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser('id') reviewerId: string,
@@ -89,12 +117,15 @@ export class AdminTechnicianVerificationsController {
 
   @Patch(':id/reject')
   @ApiOperation({ summary: 'Admin: Reject technician verification request' })
-  @ApiResponse({
-    status: 200,
+  @ApiOkResponse({
     description: 'Verification rejected successfully',
+    type: TechnicianVerificationResponseDto,
   })
-  @ApiResponse({ status: 404, description: 'Verification not found' })
-  @ApiResponse({ status: 409, description: 'Already rejected' })
+  @ApiBadRequestResponse({ description: 'Invalid verification UUID or rejection reason' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Admin role required' })
+  @ApiNotFoundResponse({ description: 'Verification not found' })
+  @ApiConflictResponse({ description: 'Already processed' })
   async reject(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser('id') reviewerId: string,
