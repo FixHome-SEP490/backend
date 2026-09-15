@@ -67,9 +67,9 @@ export class SupportCasesController {
   async create(
     @Body() dto: CreateSupportCaseDto,
     @CurrentUser() actor: SupportCaseActor,
-  ): Promise<{ data: SupportCaseDetailDto }> {
+  ): Promise<SupportCaseDetailDto> {
     const created = await this.supportCasesService.openCaseForActor(dto, actor);
-    return { data: await this.supportCasesService.findById(created.id) };
+    return this.supportCasesService.findById(created.id);
   }
 
   @Get()
@@ -120,8 +120,8 @@ export class SupportCasesController {
   @ApiNotFoundResponse({ description: 'Support case not found' })
   async findOne(
     @Param('id', ParseUUIDPipe) id: string,
-  ): Promise<{ data: SupportCaseDetailDto }> {
-    return { data: await this.supportCasesService.findById(id) };
+  ): Promise<SupportCaseDetailDto> {
+    return this.supportCasesService.findById(id);
   }
 
   @Post(':id/resolve')
@@ -147,9 +147,7 @@ export class SupportCasesController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: ResolveSupportCaseDto,
     @CurrentUser() actor: SupportCaseActor,
-  ): Promise<{ data: SupportCaseDetailDto }> {
-    return {
-      data: await this.supportCasesService.resolveCase(id, dto, actor),
-    };
+  ): Promise<SupportCaseDetailDto> {
+    return this.supportCasesService.resolveCase(id, dto, actor);
   }
 }
