@@ -6,16 +6,22 @@ import { AdminTechnicianVerificationsController } from './admin-technician-verif
 import { TechnicianVerificationsService } from './technician-verifications.service';
 import { TechnicianVerification } from './entities/technician-verification.entity';
 import { VerificationDocument } from './entities/verification-document.entity';
+import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
+import { KycStorageService } from './kyc-storage.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([TechnicianVerification, VerificationDocument]),
+    TypeOrmModule.forFeature([
+      TechnicianVerification,
+      VerificationDocument,
+      TechnicianProfile,
+    ]),
   ],
   controllers: [
     TechnicianVerificationsController,
     AdminTechnicianVerificationsController,
   ],
-  providers: [TechnicianVerificationsService],
+  providers: [TechnicianVerificationsService, KycStorageService],
   exports: [TechnicianVerificationsService, TypeOrmModule],
 })
 export class TechnicianVerificationsModule {}

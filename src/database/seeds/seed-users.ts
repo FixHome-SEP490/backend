@@ -16,7 +16,7 @@ export async function seedUsers(dataSource: DataSource): Promise<void> {
   // 1. Admin
   await queryRunner.query(
     `INSERT INTO "users" ("id", "email", "password_hash", "full_name", "phone_number", "role", "status", "is_active")
-     VALUES ('a0000000-0000-0000-0000-000000000001', 'admin@fixhome.vn', $1, 'Admin FixHome', '0901000001', $2, $3, true)
+     VALUES ('a0000000-0000-4000-8000-000000000001', 'admin@fixhome.vn', $1, 'Admin FixHome', '0901000001', $2, $3, true)
      ON CONFLICT ("email") DO UPDATE SET "password_hash" = EXCLUDED."password_hash"`,
     [passwordHash, Role.ADMIN, AccountStatus.ACTIVE],
   );
@@ -24,7 +24,7 @@ export async function seedUsers(dataSource: DataSource): Promise<void> {
   // 2. Service Managers
   const smAccounts = [
     {
-      id: 'b0000000-0000-0000-0000-000000000001',
+      id: 'b0000000-0000-4000-8000-000000000001',
       email: 'sm.hcm@fixhome.vn',
       fullName: 'Quan Ly HCM',
       phone: '0902000001',
@@ -32,7 +32,7 @@ export async function seedUsers(dataSource: DataSource): Promise<void> {
       provinceCodes: null,
     },
     {
-      id: 'b0000000-0000-0000-0000-000000000002',
+      id: 'b0000000-0000-4000-8000-000000000002',
       email: 'sm.hn@fixhome.vn',
       fullName: 'Quan Ly Ha Noi',
       phone: '0902000002',
@@ -59,8 +59,8 @@ export async function seedUsers(dataSource: DataSource): Promise<void> {
 
   // 3. Technicians (12 accounts)
   for (let i = 1; i <= 12; i++) {
-    const techId = `c0000000-0000-0000-0000-${i.toString().padStart(12, '0')}`;
-    const profileId = `c1000000-0000-0000-0000-${i.toString().padStart(12, '0')}`;
+    const techId = `c0000000-0000-4000-8000-${i.toString().padStart(12, '0')}`;
+    const profileId = `c1000000-0000-4000-8000-${i.toString().padStart(12, '0')}`;
     const email = `tech${i}@fixhome.vn`;
     const phone = `0903${i.toString().padStart(6, '0')}`;
     const name = `Tho Dien Lanh ${i}`;
@@ -80,7 +80,7 @@ export async function seedUsers(dataSource: DataSource): Promise<void> {
       [
         profileId,
         techId,
-        VerificationStatus.APPROVED,
+        VerificationStatus.VERIFIED,
         3 + (i % 10),
         `Kỹ thuật viên chuyên nghiệp với hơn ${3 + (i % 10)} năm kinh nghiệm sửa chữa điện lạnh, điện nước gia đình.`,
         rating,
@@ -111,7 +111,7 @@ export async function seedUsers(dataSource: DataSource): Promise<void> {
   const suspendUntil = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days from now
 
   for (let i = 1; i <= 8; i++) {
-    const custId = `d0000000-0000-0000-0000-${i.toString().padStart(12, '0')}`;
+    const custId = `d0000000-0000-4000-8000-${i.toString().padStart(12, '0')}`;
     const email = i === 8 ? 'customer.suspended@fixhome.vn' : `customer${i}@fixhome.vn`;
     const phone = `0904${i.toString().padStart(6, '0')}`;
     const name = i === 8 ? 'Khach Hang Bi Khoa' : `Khach Hang ${i}`;

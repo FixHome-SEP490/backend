@@ -3,6 +3,8 @@ import { Module, Global } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { SystemConfig } from './entities/system-config.entity';
 import { BusinessConfigService } from './business-config.service';
+import { AdminConfigService } from './admin-config.service';
+import { AdminConfigController } from './admin-config.controller';
 
 /**
  * Global module so that any service can inject BusinessConfigService
@@ -11,7 +13,8 @@ import { BusinessConfigService } from './business-config.service';
 @Global()
 @Module({
   imports: [TypeOrmModule.forFeature([SystemConfig])],
-  providers: [BusinessConfigService],
-  exports: [BusinessConfigService],
+  controllers: [AdminConfigController],
+  providers: [BusinessConfigService, AdminConfigService],
+  exports: [BusinessConfigService, AdminConfigService],
 })
 export class SystemConfigModule {}

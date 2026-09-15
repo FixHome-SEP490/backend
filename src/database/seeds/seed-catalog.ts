@@ -563,7 +563,7 @@ export async function seedCatalog(dataSource: DataSource): Promise<void> {
     for (const profile of techProfiles) {
       for (const svc of allInsertedServiceIds) {
         await queryRunner.query(
-          `INSERT INTO "technician_skills" ("technician_id", "service_id", "skill_level", "is_active", "listed_labor_price", "typical_warranty_days")
+          `INSERT INTO "technician_skills" ("technician_id", "service_id", "level", "is_active", "listed_labor_price", "typical_warranty_days")
            VALUES ($1, $2, 'EXPERT', true, $3, 30)
            ON CONFLICT DO NOTHING`,
           [

@@ -10,9 +10,11 @@ import {
   TechnicianSchedule,
   TechnicianTimeOff,
 } from './entities';
+import { ServicesModule } from '../services/services.module';
 
 @Module({
   imports: [
+    ServicesModule,
     TypeOrmModule.forFeature([
       TechnicianProfile,
       TechnicianSkill,

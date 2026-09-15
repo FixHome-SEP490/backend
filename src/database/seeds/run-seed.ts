@@ -8,6 +8,7 @@ import { seedConfig } from './seed-config';
 import { seedRbac } from './seed-rbac';
 import { seedUsers } from './seed-users';
 import { seedCatalog } from './seed-catalog';
+import { seedPartsCatalog } from './seed-parts-catalog';
 
 async function runSeed(): Promise<void> {
   console.log('🌱 Starting FixHome seed...\n');
@@ -42,6 +43,10 @@ async function runSeed(): Promise<void> {
 
     // Seed Service Catalog & Areas (Phase 2)
     await seedCatalog(dataSource);
+    console.log();
+
+    // Seed bounded Part Catalog demo fixture (Dev2)
+    await seedPartsCatalog(dataSource);
     console.log();
 
     console.log('🎉 Seed complete!\n');

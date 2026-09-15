@@ -57,6 +57,15 @@ export class CashSettlement extends BaseEntity {
   @Column({ name: 'confirmed_at', type: 'timestamptz', nullable: true })
   confirmedAt?: Date | null;
 
+  @Column({ name: 'dispute_reason', type: 'text', nullable: true })
+  disputeReason?: string | null;
+
+  @Column({ name: 'disputed_by_customer_id', type: 'uuid', nullable: true })
+  disputedByCustomerId?: string | null;
+
+  @Column({ name: 'disputed_at', type: 'timestamptz', nullable: true })
+  disputedAt?: Date | null;
+
   @Column({
     type: 'enum',
     enum: CashSettlementStatus,

@@ -92,12 +92,45 @@ export class AuditLogService {
     }
   }
 
+  /**
+   * Strict transactional variant for governance/security-sensitive actions.
+   * Uses the caller's EntityManager so the audit row joins the ambient
+   * transaction; logs the failure, then rethrows so the transaction aborts
+   * instead of silently succeeding without an audit trail. Callers opt in
+   * explicitly; legacy normal-flow callers keep fail-open `logWithManager`.
+   */
+  async logWithManagerStrict(
+    manager: import('typeorm').EntityManager,
+    entry: AuditEntry,
+  ): Promise<void> {
+    try {
+      await manager.insert(AuditLog, {
+        actorUserId: entry.actorUserId,
+        actorRole: entry.actorRole,
+        action: entry.action,
+        resourceType: entry.resourceType,
+        resourceId: entry.resourceId ?? null,
+        before: entry.before ?? null,
+        after: entry.after ?? null,
+        ip: entry.ip ?? null,
+        userAgent: entry.userAgent ?? null,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to record strict transactional audit: ${entry.action} on ${entry.resourceType}`,
+        error,
+      );
+      throw error;
+    }
+  }
+
   /** Query audit logs (for admin UI). */
   async findAll(options: {
     page: number;
     limit: number;
     resourceType?: string;
     actorUserId?: string;
+    action?: string;
   }): Promise<{ data: AuditLog[]; total: number }> {
     const qb = this.auditRepo.createQueryBuilder('log');
 
@@ -111,6 +144,9 @@ export class AuditLogService {
         actorUserId: options.actorUserId,
       });
     }
+    if (options.action) {
+      qb.andWhere('log.action = :action', { action: options.action });
+    }
 
     qb.orderBy('log.createdAt', 'DESC')
       .skip((options.page - 1) * options.limit)
@@ -118,5 +154,10 @@ export class AuditLogService {
 
     const [data, total] = await qb.getManyAndCount();
     return { data, total };
+  }
+
+  /** Find a single audit log by ID. Returns null if not found. */
+  async findById(id: string): Promise<AuditLog | null> {
+    return this.auditRepo.findOneBy({ id });
   }
 }

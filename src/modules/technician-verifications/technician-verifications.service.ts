@@ -3,7 +3,6 @@ import {
   ConflictException,
   BadRequestException,
   ForbiddenException,
-  ServiceUnavailableException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -11,33 +10,45 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { TechnicianVerification } from './entities/technician-verification.entity';
 import { VerificationDocument } from './entities/verification-document.entity';
-import { VerificationStatus, AccountStatus, Role } from '../../shared/enums';
+import {
+  VerificationStatus,
+  DocumentType,
+  AccountStatus,
+  Role,
+} from '../../shared/enums';
 import { User } from '../users/entities/user.entity';
-import { ConfigService } from '@nestjs/config';
 import { PaginationMeta } from '../../shared/dto';
+import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
+import { AuditLogService } from '../audit-log/audit-log.service';
+import { KycStorageService, KycSignedAccess } from './kyc-storage.service';
 import {
   SubmitVerificationDto,
   RejectVerificationDto,
   QueryVerificationsDto,
+  TechnicianVerificationResponseDto,
 } from './dto';
+import {
+  toTechnicianVerificationResponse,
+  toTechnicianVerificationResponseList,
+} from './technician-verifications.mapper';
 
 @Injectable()
 export class TechnicianVerificationsService {
   constructor(
     @InjectRepository(TechnicianVerification)
     private readonly verificationRepository: Repository<TechnicianVerification>,
-    private readonly config: ConfigService,
+    @InjectRepository(VerificationDocument)
+    private readonly documentRepository: Repository<VerificationDocument>,
+    private readonly auditLogService: AuditLogService,
+    private readonly storageService: KycStorageService,
   ) {}
 
   async submitVerification(
     technicianId: string,
     dto: SubmitVerificationDto,
-  ): Promise<TechnicianVerification> {
-    const cloud = this.config.get<string>('CLOUDINARY_CLOUD_NAME');
-    if (!cloud)
-      throw new ServiceUnavailableException(
-        'Verification storage is not configured',
-      );
+  ): Promise<TechnicianVerificationResponseDto> {
+    this.validateSubmissionDocuments(dto);
+
     const extensions: Record<string, string[]> = {
       'image/jpeg': ['jpg', 'jpeg'],
       'image/png': ['png'],
@@ -45,19 +56,10 @@ export class TechnicianVerificationsService {
       'application/pdf': ['pdf'],
     };
     for (const doc of dto.documents) {
-      const url = new URL(doc.fileUrl);
-      if (
-        url.protocol !== 'https:' ||
-        url.hostname !== 'res.cloudinary.com' ||
-        url.pathname.split('/')[1] !== cloud ||
-        url.username ||
-        url.password ||
-        url.search ||
-        url.hash
-      )
-        throw new BadRequestException(
-          'Document must belong to configured Cloudinary storage',
-        );
+      this.storageService.validateObjectPath(
+        doc.storageObjectPath,
+        technicianId,
+      );
       if (
         !extensions[doc.mimeType]?.includes(
           doc.fileName.split('.').pop()?.toLowerCase(),
@@ -67,7 +69,7 @@ export class TechnicianVerificationsService {
           'Document extension does not match MIME type',
         );
     }
-    return this.verificationRepository.manager.transaction(async (manager) => {
+    const verification = await this.verificationRepository.manager.transaction(async (manager) => {
       const technician = await manager
         .getRepository(User)
         .findOne({
@@ -93,14 +95,12 @@ export class TechnicianVerificationsService {
         );
       }
 
-      // Check if already approved
-      const approved = await verifications.findOne({
-        where: { technicianId, status: VerificationStatus.APPROVED },
+      // Check if already verified
+      const verified = await verifications.findOne({
+        where: { technicianId, status: VerificationStatus.VERIFIED },
       });
-      if (approved) {
-        throw new ConflictException(
-          'Your technician account is already verified and approved.',
-        );
+      if (verified) {
+        throw new ConflictException('Your technician account is already verified.');
       }
 
       const verification = verifications.create({
@@ -115,7 +115,7 @@ export class TechnicianVerificationsService {
         documentRepository.create({
           verificationId: savedVerification.id,
           documentType: doc.documentType,
-          fileUrl: doc.fileUrl,
+          storageObjectPath: doc.storageObjectPath,
           fileName: doc.fileName,
           fileSize: doc.fileSize,
           mimeType: doc.mimeType,
@@ -125,21 +125,27 @@ export class TechnicianVerificationsService {
       savedVerification.documents = await documentRepository.save(documents);
       return savedVerification;
     });
+
+    return toTechnicianVerificationResponse(verification);
   }
 
   async getMyVerification(
     technicianId: string,
-  ): Promise<TechnicianVerification | null> {
-    return this.verificationRepository.findOne({
+  ): Promise<TechnicianVerificationResponseDto | null> {
+    const verification = await this.verificationRepository.findOne({
       where: { technicianId },
       order: { submittedAt: 'DESC' },
       relations: ['documents'],
     });
+    return verification ? toTechnicianVerificationResponse(verification) : null;
   }
 
   async findAll(
     query: QueryVerificationsDto,
-  ): Promise<{ data: TechnicianVerification[]; meta: PaginationMeta }> {
+  ): Promise<{
+    data: TechnicianVerificationResponseDto[];
+    meta: PaginationMeta;
+  }> {
     const qb = this.verificationRepository
       .createQueryBuilder('v')
       .leftJoinAndSelect('v.technician', 'technician')
@@ -162,10 +168,10 @@ export class TechnicianVerificationsService {
       totalPages: Math.ceil(total / query.limit),
     };
 
-    return { data, meta };
+    return { data: toTechnicianVerificationResponseList(data), meta };
   }
 
-  async findById(id: string): Promise<TechnicianVerification> {
+  async findById(id: string): Promise<TechnicianVerificationResponseDto> {
     const verification = await this.verificationRepository.findOne({
       where: { id },
       relations: ['technician', 'documents', 'reviewedBy'],
@@ -177,36 +183,43 @@ export class TechnicianVerificationsService {
       );
     }
 
-    return verification;
+    return toTechnicianVerificationResponse(verification);
   }
 
   async approveVerification(
     id: string,
     reviewerId: string,
-  ): Promise<TechnicianVerification> {
-    return this.review(id, reviewerId, VerificationStatus.APPROVED, null);
+  ): Promise<TechnicianVerificationResponseDto> {
+    const verification = await this.review(
+      id,
+      reviewerId,
+      VerificationStatus.VERIFIED,
+      null,
+    );
+    return toTechnicianVerificationResponse(verification);
   }
 
   async rejectVerification(
     id: string,
     reviewerId: string,
     dto: RejectVerificationDto,
-  ): Promise<TechnicianVerification> {
+  ): Promise<TechnicianVerificationResponseDto> {
     if (!dto.rejectionReason || dto.rejectionReason.trim().length < 5)
       throw new BadRequestException('Rejection reason is required');
-    return this.review(
+    const verification = await this.review(
       id,
       reviewerId,
       VerificationStatus.REJECTED,
       dto.rejectionReason.trim(),
     );
+    return toTechnicianVerificationResponse(verification);
   }
 
-  async isApproved(technicianId: string): Promise<boolean> {
+  async isVerified(technicianId: string): Promise<boolean> {
     return this.verificationRepository.exists({
       where: {
         technicianId,
-        status: VerificationStatus.APPROVED,
+        status: VerificationStatus.VERIFIED,
         technician: {
           role: Role.TECHNICIAN,
           status: AccountStatus.ACTIVE,
@@ -252,6 +265,34 @@ export class TechnicianVerificationsService {
         throw new ConflictException(
           'Verification request is already processed',
         );
+
+      const profileResult = await manager
+        .getRepository(TechnicianProfile)
+        .update(
+          { userId: verification.technicianId },
+          { verificationStatus: status },
+        );
+      if (profileResult.affected !== 1)
+        throw new NotFoundException('Technician profile not found');
+
+      await this.auditLogService.logWithManagerStrict(manager, {
+        actorUserId: reviewerId,
+        actorRole: Role.ADMIN,
+        action:
+          status === VerificationStatus.VERIFIED
+            ? 'KYC_VERIFICATION_APPROVED'
+            : 'KYC_VERIFICATION_REJECTED',
+        resourceType: 'technician_verification',
+        resourceId: id,
+        before: { status: verification.status },
+        after: {
+          status,
+          profileVerificationStatus: status,
+          reviewedById: reviewerId,
+          rejectionReason,
+        },
+      });
+
       const updated = await verifications.findOne({
         where: { id },
         relations: ['documents', 'technician', 'reviewedBy'],
@@ -260,5 +301,65 @@ export class TechnicianVerificationsService {
         throw new NotFoundException('Verification request not found');
       return updated;
     });
+  }
+
+  async getSignedDocumentAccess(
+    documentId: string,
+    actor: { id: string; role: Role },
+    expectedVerificationId?: string,
+  ): Promise<KycSignedAccess> {
+    const document = await this.documentRepository.findOne({
+      where: { id: documentId },
+      relations: ['verification'],
+    });
+    if (!document || !document.verification) {
+      throw new NotFoundException('Verification document not found');
+    }
+    if (
+      expectedVerificationId &&
+      document.verificationId !== expectedVerificationId
+    ) {
+      throw new NotFoundException('Verification document not found');
+    }
+
+    const isAdmin = actor.role === Role.ADMIN;
+    const isOwner =
+      actor.role === Role.TECHNICIAN &&
+      document.verification.technicianId === actor.id;
+    if (!isAdmin && !isOwner) {
+      throw new ForbiddenException(
+        'You do not have permission to access this KYC document',
+      );
+    }
+    if (!document.storageObjectPath) {
+      throw new NotFoundException(
+        'This KYC document has no private storage reference',
+      );
+    }
+
+    return this.storageService.createSignedAccess(
+      document.storageObjectPath,
+      document.verification.technicianId,
+    );
+  }
+
+  private validateSubmissionDocuments(dto: SubmitVerificationDto): void {
+    const documents = dto.documents ?? [];
+    const hasCitizenId = documents.some(
+      (document) =>
+        document.documentType === DocumentType.CITIZEN_ID_FRONT ||
+        document.documentType === DocumentType.CITIZEN_ID_BACK,
+    );
+    if (!hasCitizenId)
+      throw new BadRequestException(
+        'At least one CCCD image is required for verification',
+      );
+
+    if (
+      !documents.some(
+        (document) => document.documentType === DocumentType.FACE_PHOTO,
+      )
+    )
+      throw new BadRequestException('A face photo is required for verification');
   }
 }
