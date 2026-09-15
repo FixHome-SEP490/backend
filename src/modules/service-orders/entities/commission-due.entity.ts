@@ -64,6 +64,9 @@ export class CommissionDue extends BaseEntity {
   @Column({ name: 'paid_at', type: 'timestamptz', nullable: true })
   paidAt?: Date | null;
 
+  @Column({ name: 'payment_reference', type: 'text', nullable: true })
+  paymentReference?: string | null;
+
   @Column({ name: 'due_date', type: 'timestamptz', nullable: true })
   dueDate?: Date | null;
 }
