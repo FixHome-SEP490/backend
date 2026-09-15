@@ -92,6 +92,24 @@ export class SupportCaseCashSettlementContextDto {
 
   @ApiPropertyOptional({ nullable: true })
   receiptEvidenceUrl: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  disputeReason: string | null;
+
+  @ApiPropertyOptional({ format: 'uuid', nullable: true })
+  disputedByCustomerId: string | null;
+
+  @ApiPropertyOptional({ format: 'date-time', nullable: true })
+  disputedAt: Date | null;
+
+  @ApiPropertyOptional({ format: 'uuid', nullable: true })
+  resolvedByManagerId: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  managerResolutionReason: string | null;
+
+  @ApiPropertyOptional({ format: 'date-time', nullable: true })
+  resolvedAt: Date | null;
 }
 
 export class SupportCaseSummaryDto {

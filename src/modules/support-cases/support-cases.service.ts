@@ -32,13 +32,28 @@ import {
   SUPPORT_CASE_MAX_RESOLUTION_REASON_LENGTH,
 } from './support-case.constants';
 import {
+  CASH_SETTLEMENT_MANAGER_CONFIRMATION_CODE,
+  DEFAULT_PAGE_SIZE,
+  FINANCE_COMMISSION_RATE,
+  MAX_PAGE_SIZE,
+} from '../../shared/constants';
+import { CommissionDue } from '../service-orders/entities/commission-due.entity';
+import { PlatformDue } from '../finance/entities/platform-due.entity';
+import { Payment } from '../finance/entities/payment.entity';
+import {
+  CashSettlementStatus,
+  CommissionDueStatus,
+  PaymentAttemptStatus,
+  PaymentMode,
+  PaymentPurpose,
+  PaymentStatus,
+  PlatformDueStatus,
   Role,
   SUPPORT_CASE_FINAL_STATUSES,
   SupportCaseFinalStatus,
   SupportCaseStatus,
   SupportCaseType,
 } from '../../shared/enums';
-import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '../../shared/constants';
 
 export interface SupportCaseActor {
   id: string;
@@ -78,12 +93,17 @@ export class SupportCasesService {
    * Internal creation hook for future exception integrations.
    * There is deliberately no public controller route for this operation.
    */
-  async openCase(input: OpenSupportCaseInput): Promise<SupportCase> {
+  async openCase(
+    input: OpenSupportCaseInput,
+    transactionManager?: EntityManager,
+  ): Promise<SupportCase> {
     if (!Object.values(SupportCaseType).includes(input.caseType)) {
       throw new BadRequestException('Invalid support case type');
     }
 
-    const supportCase = this.supportCaseRepository.create({
+    const repository = transactionManager?.getRepository(SupportCase) ??
+      this.supportCaseRepository;
+    const supportCase = repository.create({
       caseType: input.caseType,
       status: SupportCaseStatus.OPEN,
       bookingId: input.bookingId ?? null,
@@ -109,7 +129,7 @@ export class SupportCasesService {
       resolvedAt: null,
     });
 
-    return this.supportCaseRepository.save(supportCase);
+    return repository.save(supportCase);
   }
 
   async findAll(
@@ -237,6 +257,15 @@ export class SupportCasesService {
         if (updateResult.affected !== 1) {
           throw new ConflictException('Support case is already terminal');
         }
+
+        await this.applyCashSettlementResolution(
+          manager,
+          supportCase,
+          finalStatus,
+          resolutionCode,
+          actor,
+          reason,
+        );
 
         await this.auditLogService.logWithManagerStrict(manager, {
           actorUserId: actor.id,
@@ -372,7 +401,193 @@ export class SupportCasesService {
       confirmedAt: settlement.confirmedAt ?? null,
       technicianNotes: settlement.technicianNotes ?? null,
       receiptEvidenceUrl: settlement.receiptEvidenceUrl ?? null,
+      disputeReason: settlement.disputeReason ?? null,
+      disputedByCustomerId: settlement.disputedByCustomerId ?? null,
+      disputedAt: settlement.disputedAt ?? null,
+      resolvedByManagerId: settlement.resolvedByManagerId ?? null,
+      managerResolutionReason: settlement.managerResolutionReason ?? null,
+      resolvedAt: settlement.resolvedAt ?? null,
     };
+  }
+
+  private async applyCashSettlementResolution(
+    manager: EntityManager,
+    supportCase: SupportCase,
+    finalStatus: SupportCaseStatus,
+    resolutionCode: string,
+    actor: SupportCaseActor,
+    reason: string,
+  ): Promise<void> {
+    if (
+      !supportCase.serviceOrderId ||
+      (supportCase.caseType !== SupportCaseType.CASH_MISMATCH &&
+        supportCase.caseType !== SupportCaseType.CASH_NON_RESPONSE)
+    ) {
+      return;
+    }
+
+    if (
+      finalStatus !== SupportCaseStatus.RESOLVED ||
+      resolutionCode !== CASH_SETTLEMENT_MANAGER_CONFIRMATION_CODE
+    ) {
+      return;
+    }
+
+    const settlementRepository = manager.getRepository(CashSettlement);
+    const invoiceRepository = manager.getRepository(Invoice);
+    const orderRepository = manager.getRepository(ServiceOrder);
+    const commissionDueRepository = manager.getRepository(CommissionDue);
+    const platformDueRepository = manager.getRepository(PlatformDue);
+    const paymentRepository = manager.getRepository(Payment);
+    const settlement = await settlementRepository.findOne({
+      where: { serviceOrderId: supportCase.serviceOrderId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    const invoice = await invoiceRepository.findOne({
+      where: { serviceOrderId: supportCase.serviceOrderId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!settlement || !invoice) {
+      throw new NotFoundException(
+        'Cash settlement or invoice is not available for manager resolution',
+      );
+    }
+    if (settlement.status === CashSettlementStatus.CONFIRMED) {
+      throw new ConflictException('Cash settlement is already confirmed');
+    }
+
+    const now = new Date();
+    const invoiceAmount = this.requireWholeVnd(invoice.grandTotal, 'Invoice amount');
+    const laborTotal = this.requireWholeVnd(invoice.laborTotal, 'Labor total');
+    const partsTotal = this.requireWholeVnd(invoice.partsTotal, 'Parts total');
+    const commissionAmount = this.requireWholeVnd(
+      invoice.commissionAmount,
+      'Commission amount',
+    );
+    if (invoiceAmount !== laborTotal + partsTotal) {
+      throw new ConflictException('Invoice total snapshot is inconsistent');
+    }
+    if (commissionAmount !== Math.round(laborTotal * FINANCE_COMMISSION_RATE)) {
+      throw new ConflictException('Invoice commission snapshot is inconsistent');
+    }
+    const commissionRate = FINANCE_COMMISSION_RATE;
+
+    settlement.status = CashSettlementStatus.CONFIRMED;
+    settlement.confirmedByCustomerId = null;
+    settlement.confirmedAmount = invoiceAmount;
+    settlement.confirmedAt = now;
+    settlement.resolvedByManagerId = actor.id;
+    settlement.managerResolutionReason = reason;
+    settlement.resolvedAt = now;
+    await settlementRepository.save(settlement);
+
+    if (invoice.paymentStatus !== PaymentStatus.PAID) {
+      invoice.paymentStatus = PaymentStatus.PAID;
+      invoice.paidAt = now;
+      await invoiceRepository.save(invoice);
+      await orderRepository.update(
+        { id: supportCase.serviceOrderId },
+        { paymentStatus: PaymentStatus.PAID },
+      );
+    }
+
+    const cashPaymentKey = `cash-settlement:${settlement.id}`;
+    const existingCashPayment = await paymentRepository.findOne({
+      where: { idempotencyKey: cashPaymentKey },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (existingCashPayment) {
+      if (
+        existingCashPayment.invoiceId !== invoice.id ||
+        existingCashPayment.purpose !== PaymentPurpose.INVOICE
+      ) {
+        throw new ConflictException(
+          'Cash settlement payment reference is already bound to another payment',
+        );
+      }
+    } else {
+      await paymentRepository.save(
+        paymentRepository.create({
+          invoiceId: invoice.id,
+          commissionDueId: null,
+          purpose: PaymentPurpose.INVOICE,
+          amount: invoiceAmount,
+          currency: 'VND',
+          mode: PaymentMode.DEMO,
+          provider: null,
+          status: PaymentAttemptStatus.VERIFIED,
+          idempotencyKey: cashPaymentKey,
+          providerReference: null,
+          requestedByUserId: actor.id,
+          failureCode: null,
+          requestedAt: settlement.declaredAt ?? now,
+          verifiedAt: now,
+        }),
+      );
+    }
+
+    if (supportCase.technicianId && commissionAmount > 0) {
+      const existingDue = await commissionDueRepository.findOne({
+        where: { serviceOrderId: supportCase.serviceOrderId },
+      });
+      if (existingDue) {
+        if (
+          Number(existingDue.laborTotalSnapshot) !== laborTotal ||
+          Number(existingDue.commissionRateSnapshot) !== commissionRate ||
+          Number(existingDue.dueAmount) !== commissionAmount
+        ) {
+          throw new ConflictException(
+            'Historical commission snapshot cannot be changed',
+          );
+        }
+      } else {
+        const dueDate = new Date(now);
+        dueDate.setDate(dueDate.getDate() + 7);
+        await commissionDueRepository.save(
+          commissionDueRepository.create({
+            technicianId: supportCase.technicianId,
+            serviceOrderId: supportCase.serviceOrderId,
+            cashSettlementId: settlement.id,
+            laborTotalSnapshot: laborTotal,
+            commissionRateSnapshot: commissionRate,
+            dueAmount: commissionAmount,
+            status: CommissionDueStatus.PENDING,
+            dueDate,
+          }),
+        );
+      }
+    }
+
+    const existingPlatformDue = await platformDueRepository.findOne({
+      where: { serviceOrderId: supportCase.serviceOrderId },
+    });
+    if (existingPlatformDue) {
+      if (
+        existingPlatformDue.invoiceId !== invoice.id ||
+        Number(existingPlatformDue.laborTotalSnapshot) !== laborTotal ||
+        Number(existingPlatformDue.fixHomePartsTotalSnapshot) !== partsTotal ||
+        Number(existingPlatformDue.commissionRateSnapshot) !== commissionRate ||
+        Number(existingPlatformDue.commissionAmountSnapshot) !== commissionAmount ||
+        Number(existingPlatformDue.dueAmount) !== commissionAmount + partsTotal
+      ) {
+        throw new ConflictException(
+          'Historical platform due snapshot cannot be changed',
+        );
+      }
+    } else {
+      await platformDueRepository.save(
+        platformDueRepository.create({
+          invoiceId: invoice.id,
+          serviceOrderId: supportCase.serviceOrderId,
+          laborTotalSnapshot: laborTotal,
+          fixHomePartsTotalSnapshot: partsTotal,
+          commissionRateSnapshot: commissionRate,
+          commissionAmountSnapshot: commissionAmount,
+          dueAmount: commissionAmount + partsTotal,
+          status: PlatformDueStatus.PENDING,
+        }),
+      );
+    }
   }
 
   private validateFinalStatus(
@@ -411,6 +626,14 @@ export class SupportCasesService {
   ): string | null {
     if (value === undefined || value === null) return null;
     return this.requireBoundedText(value, field, 1, maxLength);
+  }
+
+  private requireWholeVnd(value: unknown, field: string): number {
+    const amount = Number(value);
+    if (!Number.isSafeInteger(amount) || amount < 0 || amount > 999999999999) {
+      throw new BadRequestException(`${field} must be a whole VND amount`);
+    }
+    return amount;
   }
 
   private normalizeEvidenceRefs(value: unknown): string[] | null {
