@@ -20,6 +20,8 @@ export class Dev1Integrity1725897000000 implements MigrationInterface {
   }
   async down(q: QueryRunner): Promise<void> {
     // Reverting repeated matching rounds requires explicit cleanup by the operator; no history deletion.
+    const duplicates = await q.query('SELECT 1 FROM booking_invitations GROUP BY booking_id, technician_id HAVING count(*) > 1 LIMIT 1');
+    if (duplicates.length) throw new Error('Cannot downgrade: repeated invitation history is incompatible with the legacy unique key. Preserve history and use a forward migration.');
     await q.query(`
       ALTER TABLE bookings DROP CONSTRAINT ck_booking_window, DROP CONSTRAINT ck_booking_quantity;
       DROP INDEX uq_invoice_order;

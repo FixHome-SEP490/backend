@@ -34,3 +34,9 @@ Part Catalog, private Supabase Storage, verified online invoice/PlatformDue prov
 Manager support resolution and notification transport. Do not duplicate these authorities.
 The current code places cash/invoice handlers inside service-orders; security fixes there
 must preserve route names and document tightened behavior for DEV2 consumers.
+
+## Sau khi sửa
+
+Giữ bảng trên làm bằng chứng audit trước khi sửa. Kết quả triển khai, các kiểm thử,
+API/DB thay đổi và phần chưa hoàn thành được ghi tại [DEV1 FINAL REPORT](DEV1-FINAL-REPORT.md).
+Không diễn giải PLANNED trong bảng lịch sử là trạng thái hiện tại.

@@ -1,3 +1,4 @@
+import { expireAdditionalCosts } from '../service-orders/expire-additional-costs';
 import { Injectable, ForbiddenException, NotImplementedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
@@ -137,8 +138,11 @@ export class QuotationsService {
   }
 
   async findAdditionalCostsByOrderId(orderId: string, actor: Actor): Promise<AdditionalCostRequest[]> {
-    await authorizeOrder(this.dataSource.manager, orderId, actor);
-    return this.additionalCostRepo.find({ where: { serviceOrderId: orderId }, relations: ['items'], order: { createdAt: 'DESC' } });
+    return this.dataSource.transaction(async manager => {
+      await authorizeOrder(manager, orderId, actor, 'read', true);
+      await expireAdditionalCosts(manager, orderId);
+      return manager.find(AdditionalCostRequest, { where: { serviceOrderId: orderId }, relations: ['items'], order: { createdAt: 'DESC' } });
+    });
   }
 
   async decideAdditionalCost(id: string, action: 'APPROVE' | 'REJECT', actor: Actor, paidWarrantyItemIds: string[] = []): Promise<AdditionalCostRequest> {

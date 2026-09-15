@@ -14,6 +14,7 @@ import { ErrorCodes } from '../../shared/constants';
 import { InvitationStatus, BookingStatus, ServiceOrderStatus, Role } from '../../shared/enums';
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import { activateNextInvitation } from './activate-next-invitation';
 import { technicianEligibility } from './technician-eligibility';
 
 @Injectable()
@@ -32,7 +33,9 @@ export class InvitationsService {
     return this.dataSource.transaction(async manager => {
       const booking = await manager.findOne(Booking, { where: { id: bookingId, customerId: customer.id }, lock: { mode: 'pessimistic_write' } });
       if (!booking) throw new ForbiddenException('Booking not found');
-      if (![BookingStatus.SUBMITTED, BookingStatus.MATCHING, BookingStatus.CLOSED].includes(booking.status) || await manager.findOneBy(ServiceOrder, { bookingId })) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Booking cannot be shortlisted');
+      if (![BookingStatus.SUBMITTED, BookingStatus.MATCHING, BookingStatus.CLOSED].includes(booking.status)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Booking cannot be shortlisted');
+      const existing = await manager.findOneBy(ServiceOrder, { bookingId });
+      if (existing && (![ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(existing.status) || await manager.count(TechnicianAssignment, { where: { serviceOrderId: existing.id, isActive: true } }))) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Order already has an active technician');
       const previous = await manager.find(BookingInvitation, { where: { bookingId } });
       if (previous.some(i => [InvitationStatus.PENDING, InvitationStatus.STANDBY].includes(i.status))) throw new BusinessException(ErrorCodes.CONFLICT, 'Current matching round is still active');
       for (const id of technicianIds) {
@@ -103,12 +106,14 @@ export class InvitationsService {
       }
       const eligibility = await technicianEligibility(manager, technician.id, booking);
       if (!eligibility.eligible) throw new BusinessException(ErrorCodes.WORK_SUSPENDED, eligibility.reason!);
-      if (await manager.findOneBy(ServiceOrder, { bookingId: booking.id })) throw new BusinessException(ErrorCodes.INVITATION_ALREADY_TAKEN, 'Booking already assigned');
+      let serviceOrder = await manager.findOneBy(ServiceOrder, { bookingId: booking.id });
       const now = new Date();
-      const code = 'FH-' + now.toISOString().slice(0, 10).replace(/-/g, '') + '-' + randomUUID().slice(0, 8).toUpperCase();
-      const serviceOrder = await manager.save(ServiceOrder, manager.create(ServiceOrder, { bookingId: booking.id, code, status: ServiceOrderStatus.ACCEPTED, scheduledAt: booking.preferredStartAt }));
+      const code = serviceOrder?.code ?? 'FH-' + now.toISOString().slice(0, 10).replace(/-/g, '') + '-' + randomUUID().slice(0, 8).toUpperCase();
+      const replacement = !!serviceOrder;
+      if (serviceOrder && (![ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(serviceOrder.status) || await manager.count(TechnicianAssignment, { where: { serviceOrderId: serviceOrder.id, isActive: true } }))) throw new BusinessException(ErrorCodes.INVITATION_ALREADY_TAKEN, 'Booking already assigned');
+      serviceOrder ??= await manager.save(ServiceOrder, manager.create(ServiceOrder, { bookingId: booking.id, code, status: ServiceOrderStatus.ACCEPTED, scheduledAt: booking.preferredStartAt }));
       await manager.save(TechnicianAssignment, manager.create(TechnicianAssignment, { serviceOrderId: serviceOrder.id, technicianId: technician.id, isActive: true, assignedAt: now }));
-      await manager.insert(OrderStatusHistory, { serviceOrderId: serviceOrder.id, fromStatus: null, toStatus: ServiceOrderStatus.ACCEPTED, actorUserId: technician.id, actorRole: technician.role, reason: 'Technician accepted invitation' });
+      await manager.insert(OrderStatusHistory, { serviceOrderId: serviceOrder.id, fromStatus: replacement ? serviceOrder.status : null, toStatus: serviceOrder.status, actorUserId: technician.id, actorRole: technician.role, reason: replacement ? 'Replacement technician accepted invitation' : 'Technician accepted invitation' });
       invitation.status = InvitationStatus.ACCEPTED;
       invitation.respondedAt = now;
       await manager.save(invitation);
@@ -132,18 +137,6 @@ export class InvitationsService {
   }
 
   private async activateNext(manager: EntityManager, booking: Booking): Promise<void> {
-    if (booking.status !== BookingStatus.MATCHING) return;
-    if (await manager.findOneBy(BookingInvitation, { bookingId: booking.id, status: InvitationStatus.PENDING })) return;
-    const standby = await manager.find(BookingInvitation, { where: { bookingId: booking.id, status: InvitationStatus.STANDBY }, order: { priorityOrder: 'ASC' } });
-    for (const invitation of standby) {
-      if (!(await technicianEligibility(manager, invitation.technicianId, booking)).eligible) {
-        await manager.update(BookingInvitation, invitation.id, { status: InvitationStatus.EXPIRED, respondedAt: new Date() });
-        continue;
-      }
-      const ttl = await this.configService.getInt('matching.invitation_ttl_minutes', 30);
-      await manager.update(BookingInvitation, invitation.id, { status: InvitationStatus.PENDING, invitedAt: new Date(), expiresAt: new Date(Date.now() + ttl * 60000) });
-      return;
-    }
-    await manager.update(Booking, booking.id, { status: BookingStatus.CLOSED });
+    await activateNextInvitation(manager, booking, await this.configService.getInt('matching.invitation_ttl_minutes', 30));
   }
 }

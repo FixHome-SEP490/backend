@@ -19,6 +19,8 @@ import { CashSettlement } from './entities/cash-settlement.entity';
 import { CommissionDue } from './entities/commission-due.entity';
 import { WarrantyClaim } from './entities/warranty-claim.entity';
 import { CustomerServiceConfirmation } from './entities/customer-service-confirmation.entity';
+import { BookingInvitation } from '../bookings/entities/booking-invitation.entity';
+import { activateNextInvitation } from '../bookings/activate-next-invitation';
 import { Booking } from '../bookings/entities/booking.entity';
 import { User } from '../users/entities/user.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
@@ -27,6 +29,8 @@ import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import {
   ServiceOrderStatus,
+  BookingStatus,
+  InvitationStatus,
   CheckInResult,
   EvidenceType,
   CancelActor,
@@ -49,6 +53,7 @@ import { BusinessConfigService } from '../system-config/business-config.service'
 import { AuditLogService } from '../audit-log/audit-log.service';
 import type { EntityManager } from 'typeorm';
 import { OrderEvidenceStorage, EvidenceFile } from '../media/order-evidence-storage.service';
+import { expireAdditionalCosts } from './expire-additional-costs';
 import { authorizeOrder } from './order-access';
 
 @Injectable()
@@ -277,14 +282,34 @@ export class ServiceOrdersService {
 
   async cancel(orderId: string, body: { reason: string }, actor: { id: string; role: string }): Promise<ServiceOrder> {
     if (!body.reason?.trim()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Cancellation reason required');
+    const reference = await authorizeOrder(this.dataSource.manager, orderId, actor);
     return this.dataSource.transaction(async manager => {
+      const booking = await manager.findOneOrFail(Booking, { where: { id: reference.bookingId }, lock: { mode: 'pessimistic_write' } });
       const order = await authorizeOrder(manager, orderId, actor, actor.role === Role.TECHNICIAN ? 'technician' : 'read', true);
       if (order.status === ServiceOrderStatus.CANCELLED) return order;
       const arrived = await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, result: CheckInResult.VALID });
       if (actor.role === Role.TECHNICIAN && arrived) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'After arrival, request Service Manager exception handling');
       if (actor.role === Role.CUSTOMER && order.status === ServiceOrderStatus.UNDER_REPAIR) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'During repair, request Service Manager exception handling');
       const from = order.status;
+      if (actor.role === Role.TECHNICIAN && !arrived && [ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(from)) {
+        await manager.update(TechnicianAssignment, { serviceOrderId: orderId, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: body.reason });
+        await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: CancelActor.TECHNICIAN, actorUserId: actor.id, reason: body.reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
+        const previous = await manager.find(BookingInvitation, { where: { bookingId: booking.id }, order: { priorityOrder: 'ASC' } });
+        const last = Math.max(0, ...previous.filter(inv => inv.status === InvitationStatus.ACCEPTED).map(inv => inv.priorityOrder));
+        // Append a fresh invitation round; the original dispatch history stays immutable.
+        const remaining = previous.filter(inv => inv.priorityOrder > last && inv.status === InvitationStatus.CANCELLED);
+        const offset = Math.max(0, ...previous.map(inv => inv.priorityOrder));
+        for (const [index, candidate] of remaining.entries()) await manager.save(BookingInvitation, manager.create(BookingInvitation, { bookingId: booking.id, technicianId: candidate.technicianId, priorityOrder: offset + index + 1, status: InvitationStatus.STANDBY, invitedAt: new Date(), expiresAt: null }));
+        booking.status = BookingStatus.MATCHING;
+        await manager.save(booking);
+        await activateNextInvitation(manager, booking, await this.configService.getInt('matching.invitation_ttl_minutes', 30));
+        await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from, actorUserId: actor.id, actorRole: actor.role, reason: 'Technician withdrew before arrival; awaiting replacement: ' + body.reason });
+        await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'TECHNICIAN_WITHDRAWAL_REMATCH', resourceType: 'service_order', resourceId: orderId, after: { reason: body.reason, strikeApplied: false } });
+        return order;
+      }
       await this.commitTransition(manager, order, ServiceOrderStatus.CANCELLED, actor, body.reason);
+      await manager.update(Booking, booking.id, { status: BookingStatus.CANCELLED });
+      await manager.createQueryBuilder().update(BookingInvitation).set({ status: InvitationStatus.CANCELLED, respondedAt: new Date() }).where('booking_id = :id AND status IN (:...states)', { id: booking.id, states: [InvitationStatus.PENDING, InvitationStatus.STANDBY] }).execute();
       await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: actor.role as unknown as CancelActor, actorUserId: actor.id, reason: body.reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
       await manager.update(TechnicianAssignment, { serviceOrderId: orderId, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: body.reason });
       await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: arrived ? 'CANCELLATION_REQUIRES_REVIEW' : 'ORDER_CANCEL', resourceType: 'service_order', resourceId: orderId, after: { reason: body.reason, strikeApplied: false } });
@@ -305,7 +330,7 @@ export class ServiceOrdersService {
       if (body.capturedAt && new Date(body.capturedAt) > new Date()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Evidence timestamp cannot be in the future');
       this.evidenceStorage.validate(file);
       const mediaUrl = await this.evidenceStorage.upload(orderId, actor.id, file);
-      return manager.save(RepairEvidence, manager.create(RepairEvidence, { serviceOrderId: orderId, uploaderId: actor.id, type: body.type, mediaUrl, note: body.note || null, capturedAt: body.capturedAt ? new Date(body.capturedAt) : new Date() }));
+      return manager.save(RepairEvidence, manager.create(RepairEvidence, { serviceOrderId: orderId, uploaderId: actor.id, type: body.type, mediaUrl, mimeType: file.mimetype, fileSize: file.size, note: body.note || null, capturedAt: body.capturedAt ? new Date(body.capturedAt) : new Date() }));
     });
   }
 
@@ -520,6 +545,8 @@ export class ServiceOrdersService {
     },
     actor: { id: string; role: string },
   ): Promise<Cancellation> {
+    if (![Role.ADMIN, Role.SERVICE_MANAGER].includes(actor.role as Role)) throw new ForbiddenException('Staff review required');
+    if (body.compensationDecision === 'GRANTED') throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Monetary cancellation compensation is not supported by MASTER v1.4');
     const cancellation = await this.cancellationRepo.findOneBy({
       id: cancellationId,
     });
@@ -530,10 +557,7 @@ export class ServiceOrdersService {
     cancellation.reviewedByUserId = actor.id;
 
     if (body.compensationDecision) {
-      cancellation.compensationStatus =
-        body.compensationDecision === 'GRANTED'
-          ? CompensationStatus.GRANTED
-          : CompensationStatus.REJECTED;
+      cancellation.compensationStatus = CompensationStatus.REJECTED;
     }
 
     // Spec v1.2: Grant Priority Boost to technician if requested
@@ -669,13 +693,17 @@ export class ServiceOrdersService {
     const [data, total] = await qb.getManyAndCount();
 
     // Return as plain objects matching the read model
-    const result = data.map((order) => ({
-      orderId: order.id,
-      code: order.code,
-      laborTotal: Number(order.laborTotal),
-      partsTotal: Number(order.partsTotal),
-      grandTotal: Number(order.grandTotal),
-      completedAt: order.completedAt,
+    const result = await Promise.all(data.map(async order => {
+      const booking = await this.dataSource.manager.findOneBy(Booking, { id: order.bookingId });
+      const assignment = await this.assignmentRepo.findOne({ where: { serviceOrderId: order.id }, order: { assignedAt: 'DESC' } });
+      const technician = assignment ? await this.userRepo.findOneBy({ id: assignment.technicianId }) : null;
+      return {
+        orderId: order.id, bookingId: order.bookingId, code: order.code, status: order.status,
+        serviceName: booking?.serviceNameSnapshot, technicianName: technician?.fullName,
+        addressSummary: booking?.addressTextSnapshot,
+        laborTotal: Number(order.laborTotal), partsTotal: Number(order.partsTotal), grandTotal: Number(order.grandTotal),
+        completedAt: order.completedAt, cancelledAt: order.cancelledAt,
+      };
     }));
 
     return { data: result, total };
@@ -714,6 +742,7 @@ export class ServiceOrdersService {
   }
 
   private async assertCompletionReady(manager: EntityManager, order: ServiceOrder): Promise<void> {
+    await expireAdditionalCosts(manager, order.id);
     const required = await this.configService.getInt('evidence.after.min_count', 1);
     if (await manager.count(RepairEvidence, { where: { serviceOrderId: order.id, type: EvidenceType.AFTER } }) < required) throw new BusinessException(ErrorCodes.EVIDENCE_REQUIRED_AFTER, 'AFTER evidence required');
     if (await manager.count(AdditionalCostRequest, { where: { serviceOrderId: order.id, status: AdditionalCostStatus.PENDING_APPROVAL } }) || await manager.count(Quotation, { where: { serviceOrderId: order.id, status: QuotationStatus.SENT } })) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Pending financial approval');
@@ -877,7 +906,8 @@ export class ServiceOrdersService {
 
     // Spec v1.4 BRX-026: Platform commission is 10% on Final Labor Total. 0% on parts. Rate snapshotted.
     const commissionBase = 'LABOR';
-    const commissionRateSnapshot = 0.1;
+    const commissionRateSnapshot = (await this.configService.getInt('commission.rate_bps', 1000)) / 10000;
+    if (commissionRateSnapshot < 0 || commissionRateSnapshot > 1) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid commission configuration');
     const commissionAmount = Math.round(laborTotal * commissionRateSnapshot);
 
     // Create invoice

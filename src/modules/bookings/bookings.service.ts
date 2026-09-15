@@ -232,7 +232,9 @@ export class BookingsService {
       }
     }
 
-    return booking;
+    if (actor.role === Role.TECHNICIAN) booking.invitations = booking.invitations?.filter(invitation => invitation.technicianId === actor.id);
+    const order = await this.dataSource.manager.findOneBy(ServiceOrder, { bookingId: id });
+    return Object.assign(booking, { serviceOrderId: order?.id });
   }
 
   /**
@@ -271,8 +273,7 @@ export class BookingsService {
       'DESC',
     )
       .addOrderBy('tp.averageRating', 'DESC')
-      .addOrderBy('tp.reliabilityScore', 'DESC')
-      .take(20); // Return up to 20 candidates for customer to pick ≤5
+      .addOrderBy('tp.reliabilityScore', 'DESC'); // Apply the result limit only after all hard filters.
 
     const ranked = await qb.getMany();
     const profiles: TechnicianProfile[] = [];

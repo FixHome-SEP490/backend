@@ -11,6 +11,7 @@ import { getStorageToken, ThrottlerStorageService } from '@nestjs/throttler';
 import * as bcrypt from 'bcrypt';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { registerDev1Cases } from './dev1-cases';
 
 // Always use a new schema; never synchronize/drop the configured database.
 const schema = `member1_e2e_${randomUUID().replace(/-/g, '')}`;
@@ -182,6 +183,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     storage.onApplicationShutdown();
     storage.storage.clear();
   });
+  registerDev1Cases(() => ({ app, db, register, provisionTechnician }));
 
   afterAll(async () => {
     if (app) await app.close();
@@ -761,6 +763,12 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
   });
 
   it('reverts all migrations, adopts legacy users and preserves account state and timestamps', async () => {
+    // New matching rounds cannot fit the legacy unique key; rollback must preserve history.
+    await db.undoLastMigration(); // Additive evidence/due metadata migration.
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot downgrade');
+    expect(await db.runMigrations()).toHaveLength(1);
+    // This schema is a disposable test fixture, never the configured application schema.
+    await db.query('DELETE FROM booking_invitations');
     for (let i = 0; i < db.migrations.length; i++) await db.undoLastMigration();
     await db.query(
       `CREATE TYPE users_role_enum AS ENUM ('customer','technician','service_manager','admin')`,
