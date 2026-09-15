@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes, FINANCE_COMMISSION_RATE } from '../../shared/constants';
 import {
@@ -622,6 +622,89 @@ export class FinanceService {
       take: query.limit,
     });
     return { data: dues.map(toPlatformDueResponse), total };
+  }
+
+  /**
+   * Read-only eligibility hook for Dev1 server-side integration.
+   * Returns true when the technician carries any active unpaid platform debt:
+   * a canonical PlatformDue in PENDING status reachable through the
+   * technician's commission/assignment history, or a legacy CommissionDue in
+   * PENDING status. Bounded queries only; no cache, no mutation, no
+   * ServiceOrder status change.
+   */
+  async hasActiveUnpaidPlatformDue(technicianId: string): Promise<boolean> {
+    if (typeof technicianId !== 'string' || technicianId.trim().length === 0) {
+      throw new BusinessException(
+        ErrorCodes.VALIDATION_FAILED,
+        'Technician id must be provided',
+      );
+    }
+
+    const dues = await this.commissionDueRepository.find({
+      where: { technicianId },
+      select: ['serviceOrderId', 'status'],
+    });
+    if (
+      dues.some((due) => due.status === CommissionDueStatus.PENDING)
+    ) {
+      return true;
+    }
+
+    const assignments = await this.assignmentRepository.find({
+      where: { technicianId },
+      select: ['serviceOrderId'],
+    });
+    const orderIds = Array.from(
+      new Set([
+        ...dues.map((due) => due.serviceOrderId),
+        ...assignments.map((assignment) => assignment.serviceOrderId),
+      ]),
+    );
+    if (orderIds.length === 0) {
+      return false;
+    }
+
+    const pendingPlatformDue = await this.platformDueRepository.findOne({
+      where: {
+        serviceOrderId: In(orderIds),
+        status: PlatformDueStatus.PENDING,
+      },
+      select: ['id'],
+    });
+    return pendingPlatformDue !== null;
+  }
+
+  /**
+   * Read-only payment hook for Dev1 server-side integration.
+   * Server authoritative: the single truth source is the canonical Invoice
+   * paymentStatus. A CONFIRMED cash settlement always marks the invoice PAID
+   * in the same transaction, so cash follows invoice semantics here instead
+   * of a second truth source. Never trusts client success, never transitions
+   * ServiceOrder.status. Unknown orders and missing invoices report false.
+   */
+  async isOrderPaymentSatisfied(serviceOrderId: string): Promise<boolean> {
+    if (typeof serviceOrderId !== 'string' || serviceOrderId.trim().length === 0) {
+      throw new BusinessException(
+        ErrorCodes.VALIDATION_FAILED,
+        'Service order id must be provided',
+      );
+    }
+
+    const order = await this.serviceOrderRepository.findOne({
+      where: { id: serviceOrderId },
+      select: ['id'],
+    });
+    if (!order) {
+      return false;
+    }
+    const invoice = await this.invoiceRepository.findOne({
+      where: { serviceOrderId },
+      select: ['paymentStatus'],
+    });
+    if (!invoice) {
+      return false;
+    }
+    return invoice.paymentStatus === PaymentStatus.PAID;
   }
 
   private async assertOrderAccess(
