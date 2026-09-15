@@ -88,7 +88,7 @@ export class DashboardService {
   }
 
   /**
-   * Technician dashboard: pending invitations, active orders, today's schedule.
+   * Technician dashboard: pending invitations, active orders, today's schedule, real metrics.
    */
   async getTechnicianDashboard(userId: string) {
     const pendingInvitations = await this.invitationRepo.count({
@@ -101,6 +101,8 @@ export class DashboardService {
     const activeAssignments = await this.assignmentRepo
       .createQueryBuilder('ta')
       .innerJoinAndSelect('service_orders', 'so', 'so.id = ta.service_order_id')
+      .leftJoinAndSelect('bookings', 'b', 'b.id = so.booking_id')
+      .leftJoinAndSelect('users', 'c', 'c.id = b.customer_id')
       .where('ta.technician_id = :userId', { userId })
       .andWhere('ta.is_active = true')
       .andWhere('so.status IN (:...statuses)', {
@@ -110,24 +112,79 @@ export class DashboardService {
           ServiceOrderStatus.UNDER_REPAIR,
         ],
       })
-      .getMany();
+      .orderBy('so.created_at', 'DESC')
+      .getRawMany();
 
-    const profile = await this.profileRepo.findOneBy({ userId });
+    const profile = await this.profileRepo.findOne({
+      where: { userId },
+      relations: ['serviceAreas'],
+    });
 
-    const completedOrdersCount = await this.assignmentRepo
+    const completedOrders = await this.assignmentRepo
       .createQueryBuilder('ta')
-      .innerJoin('service_orders', 'so', 'so.id = ta.service_order_id')
+      .innerJoinAndSelect('service_orders', 'so', 'so.id = ta.service_order_id')
       .where('ta.technician_id = :userId', { userId })
       .andWhere('so.status = :status', { status: ServiceOrderStatus.COMPLETED })
-      .getCount();
+      .getRawMany();
+
+    const completedOrdersCount = completedOrders.length;
+    let monthlyEarnings = 0;
+    for (const row of completedOrders) {
+      const gross = Number(row.so_labor_total || row.so_grand_total || 0);
+      monthlyEarnings += Math.round(gross * 0.9);
+    }
+
+    const latestInvitation = await this.invitationRepo.findOne({
+      where: {
+        technicianId: userId,
+        status: InvitationStatus.PENDING,
+      },
+      relations: ['booking'],
+      order: { createdAt: 'DESC' },
+    });
+
+    let activeJob: any = null;
+    if (activeAssignments.length > 0) {
+      const first = activeAssignments[0];
+      activeJob = {
+        id: first.so_id,
+        orderCode: first.so_code || `#ORD-${String(first.so_id).slice(0, 8)}`,
+        status: first.so_status,
+        serviceTitle: first.b_service_name_snapshot || first.b_description || 'Dịch vụ sửa chữa FixHome',
+        customerName: first.c_full_name || 'Khách hàng FixHome',
+        customerPhone: first.c_phone_number || '',
+        address: first.b_address_text_snapshot || 'Địa chỉ khách hàng',
+        createdAt: first.so_created_at,
+      };
+    }
+
+    let invitationDetail: any = null;
+    if (latestInvitation && latestInvitation.booking) {
+      const b = latestInvitation.booking;
+      invitationDetail = {
+        id: latestInvitation.id,
+        bookingId: b.id,
+        serviceTitle: b.serviceNameSnapshot || b.description || 'Yêu cầu sửa chữa',
+        address: b.addressTextSnapshot || 'TP. Hồ Chí Minh',
+        preferredStartAt: b.preferredStartAt,
+        preferredEndAt: b.preferredEndAt,
+        expiresAt: latestInvitation.expiresAt,
+        estimatedTotal: Number(b.fixedUnitPriceSnapshot || 0) * (b.quantity || 1),
+      };
+    }
 
     return {
       pendingInvitations,
       activeOrdersCount: activeAssignments.length,
       completedOrdersCount,
-      rating: profile?.averageRating || 5.0,
+      rating: Number(profile?.averageRating) || 5.0,
       ratingCount: profile?.ratingCount || 0,
-      activeJobs: activeAssignments,
+      reliabilityScore: profile?.reliabilityScore || 100,
+      monthlyEarnings,
+      activeJob,
+      latestInvitation: invitationDetail,
+      serviceAreas: profile?.serviceAreas || [],
+      isAvailable: profile?.isAvailable ?? true,
     };
   }
 

@@ -20,6 +20,7 @@ import { QuotationStatus, AdditionalCostStatus, CostItemType, ServiceOrderStatus
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { CreateCostItemDto, CreateQuotationDto, CreateAdditionalCostDto } from './quotation.dto';
+import { PartCatalog } from '../services/entities/part-catalog.entity';
 export { CreateCostItemDto, CreateQuotationDto, CreateAdditionalCostDto } from './quotation.dto';
 type Actor = { id: string; role: string };
 
@@ -38,29 +39,50 @@ export class QuotationsService {
     private readonly auditLogService: AuditLogService,
   ) {}
 
-  private validateItems(items: CreateCostItemDto[]): CreateCostItemDto[] {
+  private async validateItems(manager: EntityManager, items: CreateCostItemDto[]): Promise<CreateCostItemDto[]> {
     if (!items?.length) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'At least one cost item required');
-    return items.map(input => {
+    const validated: CreateCostItemDto[] = [];
+    for (const input of items) {
       const item = { ...input };
-      if (!Object.values(CostItemType).includes(item.type) || !Number.isInteger(item.quantity) || item.quantity < 1 || !Number.isInteger(item.unitPrice) || item.unitPrice < 0 || !item.description?.trim()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid cost item');
+      if (!Object.values(CostItemType).includes(item.type) || !Number.isInteger(item.quantity) || item.quantity < 1 || !item.description?.trim()) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid cost item');
+      }
       if (item.type === CostItemType.LABOR) {
-        if (item.partSource || item.partCatalogId || item.partWarrantyOption || item.warrantyFee || item.warrantyTermDays) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Part warranty fields are not allowed on labor');
+        if (!Number.isInteger(item.unitPrice) || item.unitPrice < 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid labor unit price');
+        if (item.partSource || item.partCatalogId || item.partWarrantyOption || item.warrantyFee || item.warrantyTermDays) {
+          throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Part warranty fields are not allowed on labor');
+        }
       } else {
         if (!Object.values(PartSource).includes(item.partSource!)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Part source required');
-        // DEV2 Part Catalog is absent: never accept a client-supplied platform price.
-        if (item.partSource === PartSource.FIXHOME) throw new NotImplementedException('FixHome Part Catalog authority is not connected');
-        if (item.partCatalogId) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Technician parts cannot reference FixHome catalog');
-        item.partNameSnapshot = item.partNameSnapshot?.trim() || item.description.trim();
-        item.partWarrantyOption ??= PartWarrantyOption.NO_WARRANTY;
-        if (item.partWarrantyOption === PartWarrantyOption.PAID_WARRANTY) {
-          if (!item.warrantyFee || item.warrantyFee <= 0 || !item.warrantyTermDays || item.warrantyTermDays <= 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Paid warranty requires fee and term');
-        } else if (item.partWarrantyOption !== PartWarrantyOption.NO_WARRANTY || item.warrantyFee || item.warrantyTermDays || item.warrantyDays) {
-          throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Technician parts have no included warranty');
+        if (item.partSource === PartSource.FIXHOME) {
+          if (!item.partCatalogId) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'FixHome parts require a valid partCatalogId');
+          const catalogPart = await manager.findOne(PartCatalog, { where: { id: item.partCatalogId, isActive: true } });
+          if (!catalogPart) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Part not found in FixHome catalog');
+          item.unitPrice = Number(catalogPart.price);
+          item.partNameSnapshot = catalogPart.name;
+          item.description = catalogPart.name;
+          item.warrantyDays = catalogPart.warrantyDays;
+          item.partWarrantyOption = PartWarrantyOption.INCLUDED;
+          item.warrantyFee = 0;
+          item.warrantyTermDays = catalogPart.warrantyDays;
+        } else {
+          if (!Number.isInteger(item.unitPrice) || item.unitPrice < 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid part unit price');
+          if (item.partCatalogId) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Technician parts cannot reference FixHome catalog');
+          item.partNameSnapshot = item.partNameSnapshot?.trim() || item.description.trim();
+          item.partWarrantyOption ??= PartWarrantyOption.NO_WARRANTY;
+          if (item.partWarrantyOption === PartWarrantyOption.PAID_WARRANTY) {
+            if (!item.warrantyFee || item.warrantyFee <= 0 || !item.warrantyTermDays || item.warrantyTermDays <= 0) {
+              throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Paid warranty requires fee and term');
+            }
+          } else if (item.partWarrantyOption !== PartWarrantyOption.NO_WARRANTY || item.warrantyFee || item.warrantyTermDays || item.warrantyDays) {
+            throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Technician parts have no included warranty');
+          }
+          item.warrantyDays = 0;
         }
-        item.warrantyDays = 0;
       }
-      return item;
-    });
+      validated.push(item);
+    }
+    return validated;
   }
 
   async createQuotation(orderId: string, dto: CreateQuotationDto, actor: Actor): Promise<Quotation> {
@@ -70,7 +92,7 @@ export class QuotationsService {
       if (booking.pricingModeSnapshot !== ServicePricingMode.INSPECTION_REQUIRED || order.status !== ServiceOrderStatus.EN_ROUTE) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Official quotation requires inspection service in EN_ROUTE');
       if (!await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, result: CheckInResult.VALID })) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Verified arrival required before quotation');
       if (await manager.findOneBy(Quotation, { serviceOrderId: orderId, status: QuotationStatus.APPROVED })) throw new BusinessException(ErrorCodes.ADDITIONAL_COST_IMMUTABLE, 'Approved base quotation is immutable; use additional costs');
-      const items = this.validateItems(dto.items);
+      const items = await this.validateItems(manager, dto.items);
       const laborTotal = items.filter(i => i.type === CostItemType.LABOR).reduce((v,i) => v+i.quantity*i.unitPrice,0);
       const partsTotal = items.filter(i => i.type === CostItemType.PARTS_EQUIPMENT).reduce((v,i) => v+i.quantity*i.unitPrice,0);
       const version = await manager.count(Quotation, { where: { serviceOrderId: orderId } }) + 1;
@@ -127,7 +149,7 @@ export class QuotationsService {
   private async saveAdditional(manager: EntityManager, order: ServiceOrder, dto: CreateAdditionalCostDto, actor: Actor, supersedesId?: string): Promise<AdditionalCostRequest> {
     if (order.status !== ServiceOrderStatus.UNDER_REPAIR || order.completionRequestedAt) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Additional cost requires ongoing repair before completion request');
     if (!dto.reason?.trim()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Reason required');
-    const items = this.validateItems(dto.items);
+    const items = await this.validateItems(manager, dto.items);
     const labor = items.filter(i=>i.type===CostItemType.LABOR).reduce((v,i)=>v+i.quantity*i.unitPrice,0);
     const parts = items.filter(i=>i.type===CostItemType.PARTS_EQUIPMENT).reduce((v,i)=>v+i.quantity*i.unitPrice,0);
     const ttl = await this.configService.getInt('additional_cost.ttl_minutes',120);

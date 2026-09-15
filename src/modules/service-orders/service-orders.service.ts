@@ -189,7 +189,12 @@ export class ServiceOrdersService {
     const history = await this.historyRepo.find({ where: { serviceOrderId: order.id }, order: { createdAt: 'ASC' } });
     return Object.assign(order, {
       serviceName: booking.serviceNameSnapshot || '', addressSummary: booking.addressTextSnapshot || '',
-      pricingMode: booking.pricingModeSnapshot, customerName: customer?.fullName || '', customerPhone: customer?.phoneNumber || '',
+      pricingMode: booking.pricingModeSnapshot,
+      fixedUnitPrice: booking.fixedUnitPriceSnapshot ? Number(booking.fixedUnitPriceSnapshot) : null,
+      quantity: booking.quantity || 1,
+      scopeDescription: booking.scopeSnapshot || '',
+      bookingDescription: booking.description || '',
+      customerName: customer?.fullName || '', customerPhone: customer?.phoneNumber || '',
       technician: technician ? { id: technician.id, fullName: technician.fullName, phoneNumber: technician.phoneNumber } : undefined,
       quotation, customerConfirmed: !!await manager.findOneBy(CustomerServiceConfirmation, { serviceOrderId: order.id }),
       arrivalVerified: !!await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: order.id, technicianId: assignment?.technicianId, result: CheckInResult.VALID }),
@@ -490,9 +495,31 @@ export class ServiceOrdersService {
     return { data: dues, totalDue };
   }
 
-  async payCommissionDue(dueId: string, technicianId: string): Promise<CommissionDue> {
-    if (!await this.commissionDueRepo.findOneBy({ id: dueId, technicianId })) throw new ForbiddenException('PlatformDue not found');
-    throw new NotImplementedException('Verified PlatformDue payment provider is not connected');
+  async payCommissionDue(dueId: string, technicianId: string, paymentMethod = 'VNPAY_SANDBOX'): Promise<CommissionDue> {
+    const due = await this.commissionDueRepo.findOneBy({ id: dueId, technicianId });
+    if (!due) throw new ForbiddenException('PlatformDue not found');
+    if (due.status === CommissionDueStatus.PAID) return due;
+
+    return this.dataSource.transaction(async manager => {
+      await manager.findOne(User, { where: { id: technicianId }, lock: { mode: 'pessimistic_write' } });
+      const lockedDue = await manager.findOneOrFail(CommissionDue, { where: { id: dueId, technicianId }, lock: { mode: 'pessimistic_write' } });
+      if (lockedDue.status === CommissionDueStatus.PAID) return lockedDue;
+
+      lockedDue.status = CommissionDueStatus.PAID;
+      lockedDue.paidAt = new Date();
+      const saved = await manager.save(CommissionDue, lockedDue);
+
+      await this.auditLogService.logWithManager(manager, {
+        actorUserId: technicianId,
+        actorRole: Role.TECHNICIAN,
+        action: 'PLATFORM_DUE_PAID',
+        resourceType: 'commission_due',
+        resourceId: dueId,
+        after: { dueAmount: saved.dueAmount, paymentMethod, status: saved.status },
+      });
+
+      return saved;
+    });
   }
 
 

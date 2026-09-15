@@ -348,29 +348,30 @@ export class ServiceOrdersController {
     return { data: settlement };
   }
 
-  // ── Spec v1.2: Commission Dues (Technician 10% Labor Debt) ──
+  // ── Spec v1.2 & v1.4: PlatformDues / Commission Dues (Technician 10% Labor Debt) ──
 
-  @Get('commission-dues/my')
+  @Get(['commission-dues/my', 'platform-dues/my'])
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('order:read_related')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get my commission dues (Technician)' })
+  @ApiOperation({ summary: 'Get my platform / commission dues (Technician)' })
   async getMyCommissionDues(@Req() req: { user: { id: string } }) {
     const result = await this.serviceOrdersService.getCommissionDues(req.user.id);
     return { data: result.data, meta: { totalDue: result.totalDue } };
   }
 
-  @Post('commission-dues/:id/pay')
+  @Post(['commission-dues/:id/pay', 'platform-dues/:id/pay'])
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('order:read_related')
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Pay commission due debt' })
+  @ApiOperation({ summary: 'Pay platform / commission due debt' })
   async payCommissionDue(
     @Param('id', ParseUUIDPipe) id: string,
     @Req() req: { user: { id: string } },
+    @Body() body?: { paymentMethod?: string },
   ) {
-    const due = await this.serviceOrdersService.payCommissionDue(id, req.user.id);
+    const due = await this.serviceOrdersService.payCommissionDue(id, req.user.id, body?.paymentMethod);
     return { data: due };
   }
 

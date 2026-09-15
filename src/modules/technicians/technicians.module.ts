@@ -11,6 +11,10 @@ import {
   TechnicianTimeOff,
 } from './entities';
 
+import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
+import { ServiceOrder } from '../service-orders/entities/service-order.entity';
+import { CommissionDue } from '../service-orders/entities/commission-due.entity';
+
 @Module({
   imports: [
     TypeOrmModule.forFeature([
@@ -19,6 +23,9 @@ import {
       TechnicianServiceArea,
       TechnicianSchedule,
       TechnicianTimeOff,
+      TechnicianAssignment,
+      ServiceOrder,
+      CommissionDue,
     ]),
   ],
   controllers: [TechniciansController],
