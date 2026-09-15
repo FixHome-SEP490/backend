@@ -1,5 +1,8 @@
 import 'reflect-metadata';
-import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import axios from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { KycStorageService } from './kyc-storage.service';
@@ -38,10 +41,7 @@ describe('KycStorageService', () => {
 
   it('accepts a path under the technician KYC prefix', () => {
     expect(() =>
-      storage.validateObjectPath(
-        'kyc/tech-uuid-1/id-front.jpg',
-        'tech-uuid-1',
-      ),
+      storage.validateObjectPath('kyc/tech-uuid-1/id-front.jpg', 'tech-uuid-1'),
     ).not.toThrow();
   });
 
@@ -111,11 +111,47 @@ describe('KycStorageService', () => {
     );
   });
 
-  it('rejects a cross-origin absolute provider URL', async () => {
+  it('accepts a same-origin absolute provider URL without the storage prefix', async () => {
     vi.spyOn(axios, 'post').mockResolvedValue({
       data: {
         signedURL:
-          'https://evil.example.com/storage/v1/object/sign/kyc-private/kyc/tech-uuid-1/id-front.jpg?token=opaque',
+          'https://project.supabase.co/object/sign/kyc-private/kyc/tech-uuid-1/id-front.jpg?token=opaque',
+      },
+    } as never);
+
+    const result = await storage.createSignedAccess(
+      'kyc/tech-uuid-1/id-front.jpg',
+      'tech-uuid-1',
+    );
+
+    expect(result.signedUrl).toBe(
+      'https://project.supabase.co/storage/v1/object/sign/kyc-private/kyc/tech-uuid-1/id-front.jpg?token=opaque',
+    );
+  });
+
+  it('preserves an opaque percent-encoded token byte-for-byte', async () => {
+    const rawToken = 'opaque%2fToken%3D%2B%25';
+    vi.spyOn(axios, 'post').mockResolvedValue({
+      data: {
+        signedURL: `/object/sign/kyc-private/kyc/tech-uuid-1/id-front.jpg?token=${rawToken}`,
+      },
+    } as never);
+
+    const result = await storage.createSignedAccess(
+      'kyc/tech-uuid-1/id-front.jpg',
+      'tech-uuid-1',
+    );
+
+    expect(result.signedUrl).toBe(
+      `https://project.supabase.co/storage/v1/object/sign/kyc-private/kyc/tech-uuid-1/id-front.jpg?token=${rawToken}`,
+    );
+  });
+
+  it('rejects an Astra-style malformed absolute base before URL normalization', async () => {
+    vi.spyOn(axios, 'post').mockResolvedValue({
+      data: {
+        signedURL:
+          'https://project.supabase.co\\../storage/v1/object/sign/kyc-private/kyc/tech-uuid-1/id-front.jpg?token=opaque',
       },
     } as never);
 
@@ -125,12 +161,87 @@ describe('KycStorageService', () => {
   });
 
   it.each([
-    'object/sign/kyc-private/kyc/tech-uuid-1/id-front.jpg?token=opaque',
-    'not-a-signed-url',
-    '//evil.example.com/storage/v1/object/sign/x?token=opaque',
-    '/object/public/kyc-private/kyc/tech-uuid-1/id-front.jpg',
-    '',
-  ])('rejects malformed relative provider response %s', async (signedURL) => {
+    [
+      'wrong bucket',
+      '/object/sign/other-private/kyc/tech-uuid-1/id-front.jpg?token=opaque',
+    ],
+    [
+      'wrong object',
+      '/object/sign/kyc-private/kyc/tech-uuid-1/other.jpg?token=opaque',
+    ],
+    [
+      'public endpoint',
+      '/object/public/kyc-private/kyc/tech-uuid-1/id-front.jpg?token=opaque',
+    ],
+    [
+      'authenticated endpoint',
+      '/object/authenticated/kyc-private/kyc/tech-uuid-1/id-front.jpg?token=opaque',
+    ],
+    [
+      'render endpoint',
+      '/render/image/public/kyc-private/kyc/tech-uuid-1/id-front.jpg?token=opaque',
+    ],
+    ['generic storage endpoint', '/storage/v1/anything?token=opaque'],
+    [
+      'traversal endpoint',
+      '/storage/v1/object/sign/kyc-private/kyc/tech-uuid-1/../other.jpg?token=opaque',
+    ],
+    [
+      'raw extra dot traversal to expected object',
+      '/object/sign/kyc-private/kyc/tech-uuid-1/extra/../id-front.jpg?token=opaque',
+    ],
+    [
+      'encoded dot traversal',
+      '/object/sign/kyc-private/kyc/tech-uuid-1/extra/%2e%2e/id-front.jpg?token=opaque',
+    ],
+    [
+      'mixed encoded traversal',
+      '/object/sign/kyc-private/kyc/tech-uuid-1/extra/%2E%2e/id-front.jpg?token=opaque',
+    ],
+    [
+      'double encoded traversal',
+      '/object/sign/kyc-private/kyc/tech-uuid-1/extra/%252e%252e/id-front.jpg?token=opaque',
+    ],
+    [
+      'cross-origin absolute URL',
+      'https://evil.example.com/storage/v1/object/sign/kyc-private/kyc/tech-uuid-1/id-front.jpg?token=opaque',
+    ],
+    [
+      'protocol-relative URL',
+      '//project.supabase.co/storage/v1/object/sign/kyc-private/kyc/tech-uuid-1/id-front.jpg?token=opaque',
+    ],
+    ['missing token', '/object/sign/kyc-private/kyc/tech-uuid-1/id-front.jpg'],
+    [
+      'empty token',
+      '/object/sign/kyc-private/kyc/tech-uuid-1/id-front.jpg?token=',
+    ],
+    [
+      'duplicate token',
+      '/object/sign/kyc-private/kyc/tech-uuid-1/id-front.jpg?token=opaque&token=second',
+    ],
+    [
+      'fragment',
+      '/object/sign/kyc-private/kyc/tech-uuid-1/id-front.jpg?token=opaque#fragment',
+    ],
+    [
+      'raw CR LF in token',
+      '/object/sign/kyc-private/kyc/tech-uuid-1/id-front.jpg?token=opaque\r\ninjected',
+    ],
+    [
+      'raw control character in token',
+      '/object/sign/kyc-private/kyc/tech-uuid-1/id-front.jpg?token=opaque\u0000injected',
+    ],
+    [
+      'userinfo',
+      'https://user:pass@project.supabase.co/storage/v1/object/sign/kyc-private/kyc/tech-uuid-1/id-front.jpg?token=opaque',
+    ],
+    [
+      'bare relative path',
+      'object/sign/kyc-private/kyc/tech-uuid-1/id-front.jpg?token=opaque',
+    ],
+    ['malformed value', 'not-a-signed-url'],
+    ['empty value', ''],
+  ])('rejects %s provider response', async (_label, signedURL) => {
     vi.spyOn(axios, 'post').mockResolvedValue({
       data: { signedURL },
     } as never);

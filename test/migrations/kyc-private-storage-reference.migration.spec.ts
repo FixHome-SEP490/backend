@@ -20,15 +20,37 @@ describe('KycPrivateStorageReference1725897000000', () => {
     expect(sql).not.toContain('DROP TABLE');
   });
 
-  it('refuses a lossy down migration when legacy URLs are nullable', async () => {
+  it('refuses a lossy down migration when a row has both legacy and private references', async () => {
     const queryRunner = {
       query: vi.fn(async (sql: string) =>
-        sql.includes('"file_url" IS NULL') ? [{ count: '1' }] : [],
+        sql.includes('"storage_object_path" IS NOT NULL')
+          ? [{ count: '1' }]
+          : [],
       ),
     } as any;
 
     await expect(
       new KycPrivateStorageReference1725897000000().down(queryRunner),
     ).rejects.toThrow('reversal would be lossy');
+    expect(queryRunner.query).toHaveBeenCalledTimes(1);
+    expect(queryRunner.query.mock.calls[0][0]).not.toContain(
+      '"file_url" IS NULL',
+    );
+  });
+
+  it('allows down migration only when no private storage reference exists', async () => {
+    const queries: string[] = [];
+    const queryRunner = {
+      query: vi.fn(async (sql: string) => {
+        queries.push(sql);
+        return [];
+      }),
+    } as any;
+
+    await new KycPrivateStorageReference1725897000000().down(queryRunner);
+
+    expect(queries[0]).toContain('"storage_object_path" IS NOT NULL');
+    expect(queries.join('\n')).toContain('DROP COLUMN IF EXISTS "storage_object_path"');
+    expect(queries.join('\n')).toContain('ALTER COLUMN "file_url" SET NOT NULL');
   });
 });

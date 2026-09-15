@@ -87,8 +87,47 @@ describe('Technician verification safe response projection', () => {
       AdminTechnicianVerificationsController.prototype.findAll,
     );
 
-    expect(selfStatus['200']).toMatchObject({
-      type: TechnicianVerificationResponseDto,
+    const selfSchema = selfStatus['200'].schema;
+    expect(selfSchema).toMatchObject({
+      type: 'object',
+      nullable: true,
+      required: expect.arrayContaining([
+        'id',
+        'technicianId',
+        'status',
+        'submittedAt',
+        'reviewedAt',
+        'reviewedById',
+        'rejectionReason',
+        'documents',
+        'createdAt',
+        'updatedAt',
+      ]),
+    });
+    expect(selfSchema).not.toHaveProperty('allOf');
+    expect(selfSchema).not.toHaveProperty('oneOf');
+    expect(selfSchema).not.toHaveProperty('$ref');
+    expect(selfSchema.properties).toMatchObject({
+      id: { type: 'string', format: 'uuid' },
+      technicianId: { type: 'string', format: 'uuid' },
+      status: { type: 'string', enum: expect.any(Array) },
+      submittedAt: { type: 'string', format: 'date-time' },
+      reviewedAt: { type: 'string', format: 'date-time', nullable: true },
+      reviewedById: { type: 'string', format: 'uuid', nullable: true },
+      rejectionReason: { type: 'string', nullable: true },
+      documents: { type: 'array' },
+      technician: { type: 'object' },
+      reviewedBy: { type: 'object', nullable: true },
+      createdAt: { type: 'string', format: 'date-time' },
+      updatedAt: { type: 'string', format: 'date-time' },
+    });
+    expect(selfSchema.properties.documents.items).toMatchObject({
+      type: 'object',
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        documentType: { type: 'string', enum: expect.any(Array) },
+        fileName: { type: 'string' },
+      },
     });
     expect(submit['201']).toMatchObject({
       type: TechnicianVerificationResponseDto,
