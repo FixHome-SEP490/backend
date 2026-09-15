@@ -1,6 +1,7 @@
 // src/modules/quotations/quotations.controller.ts
 import {
   Controller,
+  ParseUUIDPipe,
   Get,
   Post,
   Body,
@@ -14,11 +15,8 @@ import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionGuard } from '../../common/guards/permission.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
-import {
-  QuotationsService,
-  CreateQuotationDto,
-  CreateAdditionalCostDto,
-} from './quotations.service';
+import { QuotationsService } from './quotations.service';
+import { CreateQuotationDto, CreateAdditionalCostDto, FinancialDecisionDto } from './quotation.dto';
 
 @ApiTags('Quotations & Additional Costs')
 @Controller()
@@ -34,7 +32,7 @@ export class QuotationsController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Technician creates quotation for service order' })
   async createQuotation(
-    @Param('id') orderId: string,
+    @Param('id', ParseUUIDPipe) orderId: string,
     @Body() dto: CreateQuotationDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
@@ -51,8 +49,8 @@ export class QuotationsController {
   @RequirePermission('quotation:read_related')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get all quotations for service order' })
-  async getQuotations(@Param('id') orderId: string) {
-    const quotations = await this.quotationsService.findByOrderId(orderId);
+  async getQuotations(@Param('id', ParseUUIDPipe) orderId: string, @Req() req: { user: { id: string; role: string } }) {
+    const quotations = await this.quotationsService.findByOrderId(orderId, req.user);
     return { data: quotations };
   }
 
@@ -61,8 +59,8 @@ export class QuotationsController {
   @RequirePermission('quotation:read_related')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get quotation by ID' })
-  async getQuotationById(@Param('id') id: string) {
-    const quotation = await this.quotationsService.findById(id);
+  async getQuotationById(@Param('id', ParseUUIDPipe) id: string, @Req() req: { user: { id: string; role: string } }) {
+    const quotation = await this.quotationsService.findById(id, req.user);
     return { data: quotation };
   }
 
@@ -72,14 +70,15 @@ export class QuotationsController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Customer decides on quotation (APPROVE / REJECT)' })
   async decideQuotation(
-    @Param('id') id: string,
-    @Body() body: { action: 'APPROVE' | 'REJECT' },
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: FinancialDecisionDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
     const quotation = await this.quotationsService.decideQuotation(
       id,
       body.action,
       req.user,
+      body.paidWarrantyItemIds,
     );
     return { data: quotation };
   }
@@ -93,7 +92,7 @@ export class QuotationsController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Technician requests additional costs (UNDER_REPAIR)' })
   async createAdditionalCost(
-    @Param('id') orderId: string,
+    @Param('id', ParseUUIDPipe) orderId: string,
     @Body() dto: CreateAdditionalCostDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
@@ -110,8 +109,8 @@ export class QuotationsController {
   @RequirePermission('order:read_related')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get additional cost requests for service order' })
-  async getAdditionalCosts(@Param('id') orderId: string) {
-    const requests = await this.quotationsService.findAdditionalCostsByOrderId(orderId);
+  async getAdditionalCosts(@Param('id', ParseUUIDPipe) orderId: string, @Req() req: { user: { id: string; role: string } }) {
+    const requests = await this.quotationsService.findAdditionalCostsByOrderId(orderId, req.user);
     return { data: requests };
   }
 
@@ -121,14 +120,15 @@ export class QuotationsController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Customer decides on additional cost (APPROVE / REJECT)' })
   async decideAdditionalCost(
-    @Param('id') id: string,
-    @Body() body: { action: 'APPROVE' | 'REJECT' },
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: FinancialDecisionDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
     const request = await this.quotationsService.decideAdditionalCost(
       id,
       body.action,
       req.user,
+      body.paidWarrantyItemIds,
     );
     return { data: request };
   }
@@ -142,7 +142,7 @@ export class QuotationsController {
     summary: 'Technician revises additional cost (creates new request supersedesId)',
   })
   async reviseAdditionalCost(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: CreateAdditionalCostDto,
     @Req() req: { user: { id: string; role: string } },
   ) {

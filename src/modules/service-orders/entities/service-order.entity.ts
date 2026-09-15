@@ -31,6 +31,12 @@ export class ServiceOrder extends BaseEntity {
   @Column({ name: 'started_at', type: 'timestamptz', nullable: true })
   startedAt?: Date | null;
 
+  @Column({ name: 'completion_requested_at', type: 'timestamptz', nullable: true })
+  completionRequestedAt?: Date | null;
+
+  @Column({ name: 'completion_note', type: 'text', nullable: true })
+  completionNote?: string | null;
+
   @Column({ name: 'completed_at', type: 'timestamptz', nullable: true })
   completedAt?: Date | null;
 

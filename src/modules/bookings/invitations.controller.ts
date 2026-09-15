@@ -1,6 +1,7 @@
 // src/modules/bookings/invitations.controller.ts
 import {
   Controller,
+  ParseUUIDPipe,
   Get,
   Post,
   Param,
@@ -14,6 +15,7 @@ import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionGuard } from '../../common/guards/permission.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { InvitationResponseDto } from './booking.dto';
 import { InvitationsService } from './invitations.service';
 
 @ApiTags('Invitations')
@@ -40,8 +42,8 @@ export class InvitationsController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Respond to invitation (ACCEPT / DECLINE)' })
   async respond(
-    @Param('id') id: string,
-    @Body() body: { action: 'ACCEPT' | 'DECLINE' },
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: InvitationResponseDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
     const result = await this.invitationsService.respond(

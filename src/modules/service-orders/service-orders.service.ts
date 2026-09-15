@@ -1,5 +1,5 @@
 // src/modules/service-orders/service-orders.service.ts
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, ForbiddenException, NotImplementedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { ServiceOrder } from './entities/service-order.entity';
@@ -18,6 +18,7 @@ import { AdditionalCostItem } from './entities/additional-cost-item.entity';
 import { CashSettlement } from './entities/cash-settlement.entity';
 import { CommissionDue } from './entities/commission-due.entity';
 import { WarrantyClaim } from './entities/warranty-claim.entity';
+import { CustomerServiceConfirmation } from './entities/customer-service-confirmation.entity';
 import { Booking } from '../bookings/entities/booking.entity';
 import { User } from '../users/entities/user.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
@@ -41,10 +42,14 @@ import {
   CashSettlementStatus,
   CommissionDueStatus,
   WarrantyClaimStatus,
+  PartSource,
+  PartWarrantyOption,
 } from '../../shared/enums';
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import type { EntityManager } from 'typeorm';
+import { OrderEvidenceStorage, EvidenceFile } from '../media/order-evidence-storage.service';
+import { authorizeOrder } from './order-access';
 
 @Injectable()
 export class ServiceOrdersService {
@@ -83,9 +88,12 @@ export class ServiceOrdersService {
     private readonly userRepo: Repository<User>,
     @InjectRepository(TechnicianProfile)
     private readonly techProfileRepo: Repository<TechnicianProfile>,
+    @InjectRepository(CustomerServiceConfirmation)
+    private readonly confirmationRepo: Repository<CustomerServiceConfirmation>,
     private readonly dataSource: DataSource,
     private readonly configService: BusinessConfigService,
     private readonly auditLogService: AuditLogService,
+    private readonly evidenceStorage: OrderEvidenceStorage,
   ) {}
 
   // ── Queries ──
@@ -113,7 +121,7 @@ export class ServiceOrdersService {
       .take(limit);
 
     const [data, total] = await qb.getManyAndCount();
-    return { data, total };
+    return { data: await Promise.all(data.map(order => this.presentOrder(order))), total };
   }
 
   async findMyOrders(
@@ -133,7 +141,7 @@ export class ServiceOrdersService {
       qb.innerJoin(
         'technician_assignments',
         'ta',
-        'ta.service_order_id = o.id AND ta.is_active = true',
+        'ta.service_order_id = o.id',
       ).where('ta.technician_id = :userId', { userId });
     }
 
@@ -146,7 +154,7 @@ export class ServiceOrdersService {
       .take(limit);
 
     const [data, total] = await qb.getManyAndCount();
-    return { data, total };
+    return { data: await Promise.all(data.map(order => this.presentOrder(order))), total };
   }
 
   async findById(
@@ -158,7 +166,7 @@ export class ServiceOrdersService {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Order not found');
     }
     await this.checkOrderAccess(order, actor);
-    return order;
+    return this.presentOrder(order);
   }
 
   // ── State Transitions (D-22: all within transaction) ──
@@ -166,6 +174,26 @@ export class ServiceOrdersService {
   /**
    * Transition to EN_ROUTE.
    */
+  private async presentOrder(order: ServiceOrder): Promise<ServiceOrder> {
+    const manager = this.dataSource.manager;
+    const booking = await manager.findOneByOrFail(Booking, { id: order.bookingId });
+    const assignment = await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: order.id }, order: { assignedAt: 'DESC' } });
+    const technician = assignment ? await manager.findOneBy(User, { id: assignment.technicianId }) : null;
+    const customer = await manager.findOneBy(User, { id: booking.customerId });
+    const quotation = await manager.findOne(Quotation, { where: { serviceOrderId: order.id }, relations: ['items'], order: { version: 'DESC' } });
+    const history = await this.historyRepo.find({ where: { serviceOrderId: order.id }, order: { createdAt: 'ASC' } });
+    return Object.assign(order, {
+      serviceName: booking.serviceNameSnapshot || '', addressSummary: booking.addressTextSnapshot || '',
+      pricingMode: booking.pricingModeSnapshot, customerName: customer?.fullName || '', customerPhone: customer?.phoneNumber || '',
+      technician: technician ? { id: technician.id, fullName: technician.fullName, phoneNumber: technician.phoneNumber } : undefined,
+      quotation, customerConfirmed: !!await manager.findOneBy(CustomerServiceConfirmation, { serviceOrderId: order.id }),
+      arrivalVerified: !!await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: order.id, technicianId: assignment?.technicianId, result: CheckInResult.VALID }),
+      beforeEvidenceCount: await manager.count(RepairEvidence, { where: { serviceOrderId: order.id, type: EvidenceType.BEFORE } }),
+      afterEvidenceCount: await manager.count(RepairEvidence, { where: { serviceOrderId: order.id, type: EvidenceType.AFTER } }),
+      timeline: history.map(h => ({ status: h.toStatus, title: h.reason, timestamp: h.createdAt.toISOString(), actor: h.actorRole })),
+    });
+  }
+
   async enRoute(
     orderId: string,
     actor: { id: string; role: string },
@@ -181,385 +209,121 @@ export class ServiceOrdersService {
   /**
    * GPS check-in. Creates ArrivalCheckIn record.
    */
-  async checkIn(
-    orderId: string,
-    body: { lat: number; lng: number; accuracyMeters: number; deviceInfo?: Record<string, unknown> },
-    actor: { id: string; role: string },
-  ): Promise<ArrivalCheckIn> {
-    const order = await this.findById(orderId, actor);
-
-    if (order.status !== ServiceOrderStatus.EN_ROUTE) {
-      throw new BusinessException(
-        ErrorCodes.ORDER_INVALID_TRANSITION,
-        'Order must be EN_ROUTE for check-in',
-      );
-    }
-
-    const _geofenceRadius = await this.configService.getInt(
-      'geofence.radius_meters',
-      300,
-    );
-    const minAccuracy = await this.configService.getInt(
-      'geofence.min_gps_accuracy_meters',
-      100,
-    );
-
-    // Determine check-in result
-    let result = CheckInResult.VALID;
-    if (body.accuracyMeters > minAccuracy) {
-      result = CheckInResult.LOW_ACCURACY;
-    }
-    // In production, compute distance from order address coordinates
-    // For now, we trust the client-provided data but log it
-    const distanceMeters = 0; // Would be computed from address lat/lng
-
-    if (result === CheckInResult.LOW_ACCURACY) {
-      // Still create the record but mark as low accuracy
-    }
-
-    const checkIn = this.checkInRepo.create({
-      serviceOrderId: orderId,
-      technicianId: actor.id,
-      lat: body.lat,
-      lng: body.lng,
-      accuracyMeters: body.accuracyMeters,
-      distanceMeters,
-      result,
-      checkedInAt: new Date(),
-      deviceInfo: body.deviceInfo || null,
+  async checkIn(orderId: string, body: { lat: number; lng: number; accuracyMeters: number; deviceInfo?: Record<string, unknown> }, actor: { id: string; role: string }): Promise<ArrivalCheckIn> {
+    return this.dataSource.transaction(async manager => {
+      const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
+      if (order.status !== ServiceOrderStatus.EN_ROUTE) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Order must be EN_ROUTE');
+      const booking = await manager.findOneByOrFail(Booking, { id: order.bookingId });
+      if (![body.lat, body.lng, body.accuracyMeters].every(Number.isFinite) || Math.abs(body.lat) > 90 || Math.abs(body.lng) > 180 || body.accuracyMeters < 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid GPS coordinates');
+      if (booking.latitudeSnapshot == null || booking.longitudeSnapshot == null) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Repair address has no verified coordinates');
+      const rad = (v: number) => v * Math.PI / 180;
+      const lat = Number(booking.latitudeSnapshot), lng = Number(booking.longitudeSnapshot);
+      const a = Math.sin(rad(body.lat-lat)/2)**2 + Math.cos(rad(lat))*Math.cos(rad(body.lat))*Math.sin(rad(body.lng-lng)/2)**2;
+      const distanceMeters = Math.round(6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1-a))));
+      const radius = await this.configService.getInt('geofence.radius_meters', 300);
+      const accuracy = await this.configService.getInt('geofence.min_gps_accuracy_meters', 100);
+      const result = body.accuracyMeters > accuracy ? CheckInResult.LOW_ACCURACY : distanceMeters > radius ? CheckInResult.OUT_OF_GEOFENCE : CheckInResult.VALID;
+      return manager.save(ArrivalCheckIn, manager.create(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, lat: body.lat, lng: body.lng, accuracyMeters: body.accuracyMeters, distanceMeters, result, checkedInAt: new Date(), deviceInfo: body.deviceInfo || null }));
     });
-
-    const saved = await this.checkInRepo.save(checkIn);
-
-    if (result === CheckInResult.LOW_ACCURACY) {
-      throw new BusinessException(
-        ErrorCodes.CHECKIN_LOW_ACCURACY,
-        'GPS accuracy is too low for check-in',
-        { accuracyMeters: body.accuracyMeters, required: minAccuracy },
-      );
-    }
-
-    return saved;
   }
 
-  /**
-   * Start repair — requires valid check-in + BEFORE evidence.
-   */
-  async startRepair(
-    orderId: string,
-    actor: { id: string; role: string },
-  ): Promise<ServiceOrder> {
-    const order = await this.findById(orderId, actor);
 
-    if (order.status !== ServiceOrderStatus.EN_ROUTE) {
-      throw new BusinessException(
-        ErrorCodes.ORDER_INVALID_TRANSITION,
-        'Order must be EN_ROUTE to start repair',
-      );
-    }
-
-    // Check valid check-in exists
-    const validCheckIn = await this.checkInRepo.findOne({
-      where: {
-        serviceOrderId: orderId,
-        technicianId: actor.id,
-        result: CheckInResult.VALID,
-      },
-    });
-    if (!validCheckIn) {
-      throw new BusinessException(
-        ErrorCodes.CHECKIN_OUT_OF_GEOFENCE,
-        'Valid check-in required before starting repair',
-      );
-    }
-
-    // D-07: Check BEFORE evidence
-    const minBefore = await this.configService.getInt(
-      'evidence.before.min_count',
-      1,
-    );
-    const beforeCount = await this.evidenceRepo.count({
-      where: { serviceOrderId: orderId, type: EvidenceType.BEFORE },
-    });
-    if (beforeCount < minBefore) {
-      throw new BusinessException(
-        ErrorCodes.EVIDENCE_REQUIRED_BEFORE,
-        `At least ${minBefore} BEFORE evidence photo(s) required`,
-        { required: minBefore, current: beforeCount },
-      );
-    }
-
-    return this.transitionStatus(
-      orderId,
-      ServiceOrderStatus.UNDER_REPAIR,
-      actor,
-      'Repair started',
-    );
+  async startRepair(orderId: string, actor: { id: string; role: string }): Promise<ServiceOrder> {
+    return this.transitionStatus(orderId, ServiceOrderStatus.UNDER_REPAIR, actor, 'Repair started');
   }
 
-  /**
-   * Complete order — requires AFTER evidence + no pending additional costs.
-   * Generates invoice on completion.
-   */
-  async complete(
-    orderId: string,
-    body: { completionNote?: string },
-    actor: { id: string; role: string },
-  ): Promise<ServiceOrder> {
-    const order = await this.findById(orderId, actor);
 
-    if (order.status !== ServiceOrderStatus.UNDER_REPAIR) {
-      throw new BusinessException(
-        ErrorCodes.ORDER_INVALID_TRANSITION,
-        'Order must be UNDER_REPAIR to complete',
-      );
-    }
-
-    // D-07: Check AFTER evidence
-    const minAfter = await this.configService.getInt(
-      'evidence.after.min_count',
-      1,
-    );
-    const afterCount = await this.evidenceRepo.count({
-      where: { serviceOrderId: orderId, type: EvidenceType.AFTER },
-    });
-    if (afterCount < minAfter) {
-      throw new BusinessException(
-        ErrorCodes.EVIDENCE_REQUIRED_AFTER,
-        `At least ${minAfter} AFTER evidence photo(s) required`,
-        { required: minAfter, current: afterCount },
-      );
-    }
-
-    // Check no pending additional costs
-    const pendingCosts = await this.additionalCostRepo.count({
-      where: {
-        serviceOrderId: orderId,
-        status: AdditionalCostStatus.PENDING_APPROVAL,
-      },
-    });
-    if (pendingCosts > 0) {
-      throw new BusinessException(
-        ErrorCodes.ORDER_INVALID_TRANSITION,
-        'All additional costs must be decided before completion',
-        { pendingCount: pendingCosts },
-      );
-    }
-
-    // Complete in transaction: transition + generate invoice
-    return this.dataSource.transaction(async (manager) => {
-      // Transition status
-      const now = new Date();
-      await manager.update(ServiceOrder, orderId, {
-        status: ServiceOrderStatus.COMPLETED,
-        completedAt: now,
-      });
-
-      // D-22: Record history
-      await manager.insert(OrderStatusHistory, {
-        serviceOrderId: orderId,
-        fromStatus: ServiceOrderStatus.UNDER_REPAIR,
-        toStatus: ServiceOrderStatus.COMPLETED,
-        actorUserId: actor.id,
-        actorRole: actor.role,
-        reason: body.completionNote || 'Order completed',
-      });
-
-      // Generate invoice
+  async requestCompletion(orderId: string, body: { completionNote?: string }, actor: { id: string; role: string }): Promise<ServiceOrder> {
+    return this.dataSource.transaction(async manager => {
+      const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
+      if (order.status !== ServiceOrderStatus.UNDER_REPAIR) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Order must be UNDER_REPAIR');
+      await this.assertCompletionReady(manager, order);
+      if (order.completionRequestedAt) return order;
       await this.generateInvoice(orderId, manager);
-
-      await this.auditLogService.logWithManager(manager, {
-        actorUserId: actor.id,
-        actorRole: actor.role,
-        action: 'ORDER_COMPLETE',
-        resourceType: 'service_order',
-        resourceId: orderId,
-      });
-
+      await manager.update(ServiceOrder, orderId, { completionRequestedAt: new Date(), completionNote: body.completionNote?.trim() || null });
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'ORDER_COMPLETION_REQUESTED', resourceType: 'service_order', resourceId: orderId });
       return manager.findOneByOrFail(ServiceOrder, { id: orderId });
     });
   }
 
-  /**
-   * Cancel order with strike/compensation logic per P5.5.
-   */
-  async cancel(
-    orderId: string,
-    body: { reason: string },
-    actor: { id: string; role: string },
-  ): Promise<ServiceOrder> {
-    const order = await this.findById(orderId, actor);
 
-    if (
-      order.status === ServiceOrderStatus.COMPLETED ||
-      order.status === ServiceOrderStatus.CANCELLED
-    ) {
-      throw new BusinessException(
-        ErrorCodes.ORDER_INVALID_TRANSITION,
-        'Cannot cancel a completed or already cancelled order',
-      );
-    }
-
-    // Determine cancel actor type
-    let cancelActorType: CancelActor;
-    if (actor.role === Role.CUSTOMER) cancelActorType = CancelActor.CUSTOMER;
-    else if (actor.role === Role.TECHNICIAN) cancelActorType = CancelActor.TECHNICIAN;
-    else if (actor.role === Role.SERVICE_MANAGER) cancelActorType = CancelActor.SERVICE_MANAGER;
-    else cancelActorType = CancelActor.ADMIN;
-
-    return this.dataSource.transaction(async (manager) => {
-      const stateAtCancel = order.status;
-      const now = new Date();
-
-      // Determine strike and compensation per P5.5
-      let strikeApplied = false;
-      let compensationStatus = CompensationStatus.NOT_ELIGIBLE;
-
-      if (cancelActorType === CancelActor.CUSTOMER) {
-        if (stateAtCancel === ServiceOrderStatus.ACCEPTED) {
-          // Check grace period
-          const graceMinutes = await this.configService.getInt(
-            'cancel.grace_minutes_after_accept',
-            15,
-          );
-          const assignment = await manager.findOne(TechnicianAssignment, {
-            where: { serviceOrderId: orderId, isActive: true },
-          });
-          if (
-            assignment &&
-            now.getTime() - assignment.assignedAt.getTime() > graceMinutes * 60 * 1000
-          ) {
-            strikeApplied = true;
-          }
-        } else if (
-          stateAtCancel === ServiceOrderStatus.EN_ROUTE ||
-          stateAtCancel === ServiceOrderStatus.UNDER_REPAIR
-        ) {
-          strikeApplied = true;
-          // Check if there's a valid arrival check-in per Spec v1.2 D-19 / BRX-034
-          // (No monetary compensation; Customer +1 strike, Technician receives Priority Boost ranking signal)
-          const validCheckIn = await manager.findOne(ArrivalCheckIn, {
-            where: { serviceOrderId: orderId, result: CheckInResult.VALID },
-          });
-          if (validCheckIn) {
-            compensationStatus = CompensationStatus.NOT_ELIGIBLE;
-            const assignment = await manager.findOne(TechnicianAssignment, {
-              where: { serviceOrderId: orderId, isActive: true },
-            });
-            if (assignment) {
-              const boostDays = await this.configService.getInt('priority_boost.duration_days', 7);
-              const boostUntil = new Date(now.getTime() + boostDays * 24 * 60 * 60 * 1000);
-              await manager.update(TechnicianProfile, { userId: assignment.technicianId }, {
-                priorityBoostUntil: boostUntil,
-              });
-            }
-          }
-        }
-      } else if (cancelActorType === CancelActor.TECHNICIAN) {
-        strikeApplied = true;
+  async confirmCompletion(orderId: string, body: { feedback?: string; rating?: number; signatureUrl?: string }, actor: { id: string; role: string }): Promise<{ confirmation: CustomerServiceConfirmation; order: ServiceOrder }> {
+    return this.dataSource.transaction(async manager => {
+      const order = await authorizeOrder(manager, orderId, actor, 'customer', true);
+      let confirmation = await manager.findOneBy(CustomerServiceConfirmation, { serviceOrderId: orderId });
+      if (order.status === ServiceOrderStatus.COMPLETED && confirmation) return { order, confirmation };
+      if (order.status !== ServiceOrderStatus.UNDER_REPAIR || !order.completionRequestedAt) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Technician completion request required');
+      await this.assertCompletionReady(manager, order);
+      if (!confirmation) {
+        confirmation = await manager.save(CustomerServiceConfirmation, manager.create(CustomerServiceConfirmation, { serviceOrderId: orderId, customerId: actor.id, confirmedAt: new Date(), feedback: body.feedback || null, rating: body.rating ?? null, signatureUrl: body.signatureUrl || null }));
+        await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'CUSTOMER_COMPLETION_CONFIRMED', resourceType: 'service_order', resourceId: orderId });
       }
+      await this.finalizeIfSatisfied(manager, order, actor);
+      return { confirmation, order: await manager.findOneByOrFail(ServiceOrder, { id: orderId }) };
+    });
+  }
 
-      // Update order status
-      await manager.update(ServiceOrder, orderId, {
-        status: ServiceOrderStatus.CANCELLED,
-        cancelledAt: now,
-      });
 
-      // D-22: Record history
-      await manager.insert(OrderStatusHistory, {
-        serviceOrderId: orderId,
-        fromStatus: stateAtCancel,
-        toStatus: ServiceOrderStatus.CANCELLED,
-        actorUserId: actor.id,
-        actorRole: actor.role,
-        reason: body.reason,
-      });
-
-      // Create cancellation record
-      const cancellation = manager.create(Cancellation, {
-        serviceOrderId: orderId,
-        actor: cancelActorType,
-        actorUserId: actor.id,
-        reason: body.reason,
-        stateAtCancel,
-        strikeApplied,
-        compensationStatus,
-      });
-      const savedCancellation = await manager.save(Cancellation, cancellation);
-
-      // Apply strike if needed
-      if (strikeApplied) {
-        const strikeWindowDays = await this.configService.getInt(
-          'strike.window.days',
-          30,
-        );
-        const expiresAt = new Date(
-          now.getTime() + strikeWindowDays * 24 * 60 * 60 * 1000,
-        );
-
-        await manager.insert(CancellationStrike, {
-          userId: actor.id,
-          cancellationId: savedCancellation.id,
-          role: actor.role,
-          status: StrikeStatus.ACTIVE,
-          expiresAt,
-        });
-
-        // Check threshold for suspension
-        await this.checkStrikeThreshold(actor.id, actor.role, manager);
-      }
-
-      // Deactivate assignment
-      await manager.update(
-        TechnicianAssignment,
-        { serviceOrderId: orderId, isActive: true },
-        { isActive: false, unassignedAt: now, unassignReason: 'Order cancelled' },
-      );
-
-      await this.auditLogService.logWithManager(manager, {
-        actorUserId: actor.id,
-        actorRole: actor.role,
-        action: 'ORDER_CANCEL',
-        resourceType: 'service_order',
-        resourceId: orderId,
-        after: {
-          stateAtCancel,
-          strikeApplied,
-          compensationStatus,
-          reason: body.reason,
-        },
-      });
-
+  /** Legacy route remains available, but cannot bypass the completion/payment gate. */
+  async complete(orderId: string, _body: { completionNote?: string }, actor: { id: string; role: string }): Promise<ServiceOrder> {
+    return this.dataSource.transaction(async manager => {
+      const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
+      if (order.status === ServiceOrderStatus.COMPLETED) return order;
+      if (!await this.finalizeIfSatisfied(manager, order, actor)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Customer confirmation and verified payment are required');
       return manager.findOneByOrFail(ServiceOrder, { id: orderId });
     });
   }
 
-  /**
-   * Upload evidence (BEFORE / AFTER / ADDITIONAL).
-   */
-  async uploadEvidence(
-    orderId: string,
-    body: { type: EvidenceType; mediaUrl: string; note?: string; capturedAt?: string },
-    actor: { id: string; role: string },
-  ): Promise<RepairEvidence> {
-    await this.findById(orderId, actor);
 
-    const evidence = this.evidenceRepo.create({
-      serviceOrderId: orderId,
-      uploaderId: actor.id,
-      type: body.type,
-      mediaUrl: body.mediaUrl,
-      note: body.note || null,
-      capturedAt: body.capturedAt ? new Date(body.capturedAt) : new Date(),
+  async cancel(orderId: string, body: { reason: string }, actor: { id: string; role: string }): Promise<ServiceOrder> {
+    if (!body.reason?.trim()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Cancellation reason required');
+    return this.dataSource.transaction(async manager => {
+      const order = await authorizeOrder(manager, orderId, actor, actor.role === Role.TECHNICIAN ? 'technician' : 'read', true);
+      if (order.status === ServiceOrderStatus.CANCELLED) return order;
+      const arrived = await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, result: CheckInResult.VALID });
+      if (actor.role === Role.TECHNICIAN && arrived) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'After arrival, request Service Manager exception handling');
+      if (actor.role === Role.CUSTOMER && order.status === ServiceOrderStatus.UNDER_REPAIR) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'During repair, request Service Manager exception handling');
+      const from = order.status;
+      await this.commitTransition(manager, order, ServiceOrderStatus.CANCELLED, actor, body.reason);
+      await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: actor.role as unknown as CancelActor, actorUserId: actor.id, reason: body.reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
+      await manager.update(TechnicianAssignment, { serviceOrderId: orderId, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: body.reason });
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: arrived ? 'CANCELLATION_REQUIRES_REVIEW' : 'ORDER_CANCEL', resourceType: 'service_order', resourceId: orderId, after: { reason: body.reason, strikeApplied: false } });
+      return manager.findOneByOrFail(ServiceOrder, { id: orderId });
     });
+  }
 
-    return this.evidenceRepo.save(evidence);
+
+  async uploadEvidence(orderId: string, body: { type: EvidenceType; note?: string; capturedAt?: string }, actor: { id: string; role: string }, file?: EvidenceFile): Promise<RepairEvidence> {
+    return this.dataSource.transaction(async manager => {
+      const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
+      const expected = body.type === EvidenceType.BEFORE ? ServiceOrderStatus.EN_ROUTE : ServiceOrderStatus.UNDER_REPAIR;
+      if (order.status !== expected || order.completionRequestedAt) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Evidence timing is invalid');
+      if (body.type === EvidenceType.BEFORE && !await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, result: CheckInResult.VALID })) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Valid arrival required before BEFORE evidence');
+      const count = await manager.count(RepairEvidence, { where: { serviceOrderId: orderId, type: body.type } });
+      const max = await this.configService.getInt('evidence.max_count_per_type', 20);
+      if (count >= max) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Evidence limit exceeded');
+      if (body.capturedAt && new Date(body.capturedAt) > new Date()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Evidence timestamp cannot be in the future');
+      this.evidenceStorage.validate(file);
+      const mediaUrl = await this.evidenceStorage.upload(orderId, actor.id, file);
+      return manager.save(RepairEvidence, manager.create(RepairEvidence, { serviceOrderId: orderId, uploaderId: actor.id, type: body.type, mediaUrl, note: body.note || null, capturedAt: body.capturedAt ? new Date(body.capturedAt) : new Date() }));
+    });
+  }
+
+
+  async getEvidence(
+    orderId: string,
+    actor: { id: string; role: string },
+  ): Promise<RepairEvidence[]> {
+    await authorizeOrder(this.dataSource.manager, orderId, actor);
+    const evidence = await this.evidenceRepo.find({ where: { serviceOrderId: orderId }, order: { createdAt: 'ASC' } });
+    return Promise.all(evidence.map(async item => ({ ...item, mediaUrl: await this.evidenceStorage.signedUrl(item.mediaUrl) })));
   }
 
   /**
    * Get status history for an order (D-22 audit trail).
    */
-  async getStatusHistory(orderId: string): Promise<OrderStatusHistory[]> {
+  async getStatusHistory(orderId: string, actor: { id: string; role: string }): Promise<OrderStatusHistory[]> {
+    await authorizeOrder(this.dataSource.manager, orderId, actor);
     return this.historyRepo.find({
       where: { serviceOrderId: orderId },
       order: { createdAt: 'ASC' },
@@ -569,7 +333,8 @@ export class ServiceOrdersService {
   /**
    * Get invoice for an order.
    */
-  async getInvoice(orderId: string): Promise<Invoice | null> {
+  async getInvoice(orderId: string, actor: { id: string; role: string }): Promise<Invoice | null> {
+    await authorizeOrder(this.dataSource.manager, orderId, actor);
     return this.invoiceRepo.findOne({
       where: { serviceOrderId: orderId },
       relations: ['items'],
@@ -579,35 +344,16 @@ export class ServiceOrdersService {
   /**
    * Pay invoice (DEMO mode — just mark as PAID).
    */
-  async payInvoice(
-    invoiceId: string,
-    _actor: { id: string; role: string },
-  ): Promise<Invoice> {
+  async payInvoice(invoiceId: string, actor: { id: string; role: string }): Promise<Invoice> {
     const invoice = await this.invoiceRepo.findOneBy({ id: invoiceId });
-    if (!invoice) {
-      throw new BusinessException(ErrorCodes.NOT_FOUND, 'Invoice not found');
-    }
-    if (invoice.paymentStatus === PaymentStatus.PAID) {
-      return invoice; // Idempotent
-    }
-
-    invoice.paymentStatus = PaymentStatus.PAID;
-    invoice.paidAt = new Date();
-    const saved = await this.invoiceRepo.save(invoice);
-
-    // Also update order payment status
-    await this.orderRepo.update(
-      { id: invoice.serviceOrderId },
-      { paymentStatus: PaymentStatus.PAID },
-    );
-
-    return saved;
+    if (!invoice) throw new ForbiddenException('Invoice not found');
+    await authorizeOrder(this.dataSource.manager, invoice.serviceOrderId, actor, 'customer');
+    throw new NotImplementedException('Verified online payment provider is not connected. Use cash dual confirmation.');
   }
 
-  /**
-   * Get warranties for an order.
-   */
-  async getWarranties(orderId: string): Promise<WarrantyCoverage[]> {
+
+  async getWarranties(orderId: string, actor: { id: string; role: string }): Promise<WarrantyCoverage[]> {
+    await authorizeOrder(this.dataSource.manager, orderId, actor);
     return this.warrantyRepo.find({
       where: { serviceOrderId: orderId },
       order: { expiresAt: 'ASC' },
@@ -616,162 +362,68 @@ export class ServiceOrdersService {
 
   // ── Spec v1.2: Cash Settlement & Commission Tracking ──
 
-  async declareCashSettlement(
-    orderId: string,
-    dto: { declaredAmount: number; technicianNotes?: string; receiptEvidenceUrl?: string },
-    actor: { id: string; role: string },
-  ): Promise<CashSettlement> {
-    const order = await this.orderRepo.findOneBy({ id: orderId });
-    if (!order) {
-      throw new BusinessException(ErrorCodes.NOT_FOUND, 'Service order not found');
-    }
-
-    // Verify actor is assigned technician
-    const assignment = await this.assignmentRepo.findOne({
-      where: { serviceOrderId: orderId, technicianId: actor.id, isActive: true },
+  async declareCashSettlement(orderId: string, dto: { declaredAmount: number; technicianNotes?: string; receiptEvidenceUrl?: string }, actor: { id: string; role: string }): Promise<CashSettlement> {
+    return this.dataSource.transaction(async manager => {
+      const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
+      if (order.status !== ServiceOrderStatus.UNDER_REPAIR || !order.completionRequestedAt) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Completion request and final invoice required before cash declaration');
+      if (!Number.isFinite(dto.declaredAmount) || dto.declaredAmount < 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid cash amount');
+      const invoice = await manager.findOneBy(Invoice, { serviceOrderId: orderId });
+      if (!invoice || invoice.paymentStatus === PaymentStatus.PAID) throw new BusinessException(ErrorCodes.CONFLICT, 'Invoice unavailable or already paid');
+      let settlement = await manager.findOneBy(CashSettlement, { serviceOrderId: orderId });
+      if (settlement) {
+        if (Number(settlement.declaredAmount) === dto.declaredAmount && settlement.status === CashSettlementStatus.PENDING_CONFIRMATION) return settlement;
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Cash declaration already exists; disputed amounts require Manager resolution');
+      }
+      settlement = manager.create(CashSettlement, { serviceOrderId: orderId, declaredByTechnicianId: actor.id, declaredAmount: dto.declaredAmount, declaredAt: new Date(), technicianNotes: dto.technicianNotes || null, receiptEvidenceUrl: dto.receiptEvidenceUrl || null, status: CashSettlementStatus.PENDING_CONFIRMATION });
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'CASH_DECLARED', resourceType: 'service_order', resourceId: orderId, after: { declaredAmount: dto.declaredAmount } });
+      return manager.save(settlement);
     });
-    if (!assignment && actor.role !== Role.ADMIN) {
-      throw new BusinessException(
-        ErrorCodes.OWNERSHIP_DENIED,
-        'Only assigned technician can declare cash received',
-      );
-    }
-    if (order.status !== ServiceOrderStatus.COMPLETED) {
-      throw new BusinessException(
-        ErrorCodes.ORDER_INVALID_TRANSITION,
-        'Order must be completed before settling cash payment',
-      );
-    }
-
-    let settlement = await this.cashSettlementRepo.findOne({
-      where: { serviceOrderId: orderId },
-    });
-    if (settlement && settlement.status === CashSettlementStatus.CONFIRMED) {
-      throw new BusinessException(
-        ErrorCodes.CONFLICT,
-        'Cash settlement is already confirmed',
-      );
-    }
-
-    if (!settlement) {
-      settlement = this.cashSettlementRepo.create({
-        serviceOrderId: orderId,
-        declaredByTechnicianId: actor.id,
-      });
-    }
-
-    settlement.declaredAmount = dto.declaredAmount;
-    settlement.declaredAt = new Date();
-    settlement.technicianNotes = dto.technicianNotes || null;
-    settlement.receiptEvidenceUrl = dto.receiptEvidenceUrl || null;
-    settlement.status = CashSettlementStatus.PENDING_CONFIRMATION;
-
-    return this.cashSettlementRepo.save(settlement);
   }
 
-  async confirmCashSettlement(
-    orderId: string,
-    dto: { agreed: boolean; disputeReason?: string; confirmedAmount?: number },
-    actor: { id: string; role: string },
-  ): Promise<CashSettlement> {
-    const order = await this.orderRepo.findOneBy({ id: orderId });
-    if (!order) {
-      throw new BusinessException(ErrorCodes.NOT_FOUND, 'Service order not found');
-    }
 
-    const booking = await this.dataSource
-      .getRepository(Booking)
-      .findOneBy({ id: order.bookingId });
-    if (
-      booking?.customerId !== actor.id &&
-      actor.role !== Role.ADMIN &&
-      actor.role !== Role.SERVICE_MANAGER
-    ) {
-      throw new BusinessException(
-        ErrorCodes.OWNERSHIP_DENIED,
-        'Only customer can confirm cash payment',
-      );
-    }
-
-    const settlement = await this.cashSettlementRepo.findOne({
-      where: { serviceOrderId: orderId },
-    });
-    if (!settlement) {
-      throw new BusinessException(
-        ErrorCodes.NOT_FOUND,
-        'No cash settlement declaration found for this order',
-      );
-    }
-
-    if (dto.agreed) {
-      settlement.status = CashSettlementStatus.CONFIRMED;
+  async confirmCashSettlement(orderId: string, dto: { agreed: boolean; disputeReason?: string; confirmedAmount?: number }, actor: { id: string; role: string }): Promise<CashSettlement> {
+    return this.dataSource.transaction(async manager => {
+      const order = await authorizeOrder(manager, orderId, actor, 'customer', true);
+      const settlement = await manager.findOneBy(CashSettlement, { serviceOrderId: orderId });
+      if (!settlement) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Cash declaration not found');
+      if (settlement.status === CashSettlementStatus.CONFIRMED && dto.agreed && (dto.confirmedAmount == null || dto.confirmedAmount === Number(settlement.confirmedAmount))) return settlement;
+      if (settlement.status !== CashSettlementStatus.PENDING_CONFIRMATION) throw new BusinessException(ErrorCodes.CONFLICT, 'Cash decision already resolved');
+      if (order.status !== ServiceOrderStatus.UNDER_REPAIR || !order.completionRequestedAt) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Order is not awaiting payment');
+      const invoice = await manager.findOneByOrFail(Invoice, { serviceOrderId: orderId });
+      const amount = dto.confirmedAmount ?? Number(settlement.declaredAmount);
+      const matches = Number(settlement.declaredAmount) === Number(invoice.grandTotal) && amount === Number(invoice.grandTotal);
       settlement.confirmedByCustomerId = actor.id;
-      settlement.confirmedAmount =
-        dto.confirmedAmount ?? settlement.declaredAmount;
+      settlement.confirmedAmount = amount;
       settlement.confirmedAt = new Date();
-      const savedSettlement = await this.cashSettlementRepo.save(settlement);
-
-      // Mark invoice and order as PAID
-      const invoice = await this.invoiceRepo.findOne({
-        where: { serviceOrderId: orderId },
-      });
-      if (invoice) {
-        invoice.paymentStatus = PaymentStatus.PAID;
-        invoice.paidAt = new Date();
-        await this.invoiceRepo.save(invoice);
+      if (!dto.agreed || !matches) {
+        settlement.status = CashSettlementStatus.DISPUTED;
+        settlement.managerResolutionReason = dto.disputeReason || 'Cash amount does not match final invoice';
+        await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'CASH_DISPUTED', resourceType: 'service_order', resourceId: orderId });
+        return manager.save(settlement);
       }
-      await this.orderRepo.update(
-        { id: orderId },
-        { paymentStatus: PaymentStatus.PAID },
-      );
-
-      // Create CommissionDue (10% on Labor Total)
-      const assignment = await this.assignmentRepo.findOne({
-        where: { serviceOrderId: orderId, isActive: true },
-      });
-      const technicianId = assignment?.technicianId || settlement.declaredByTechnicianId;
-      const laborTotal = invoice
-        ? Number(invoice.laborTotal)
-        : Number(order.laborTotal || 0);
-      const dueAmount = invoice?.commissionAmount
-        ? Number(invoice.commissionAmount)
-        : Math.round(laborTotal * 0.1);
-
-      if (technicianId && dueAmount > 0) {
-        const existingDue = await this.commissionDueRepo.findOne({
-          where: { serviceOrderId: orderId },
-        });
-        if (!existingDue) {
-          const dueDate = new Date();
-          dueDate.setDate(dueDate.getDate() + 7); // 7-day payment window
-
-          const commissionDue = this.commissionDueRepo.create({
-            technicianId,
-            serviceOrderId: orderId,
-            cashSettlementId: savedSettlement.id,
-            laborTotalSnapshot: laborTotal,
-            commissionRateSnapshot: 0.1,
-            dueAmount,
-            status: CommissionDueStatus.PENDING,
-            dueDate,
-          });
-          await this.commissionDueRepo.save(commissionDue);
-        }
+      settlement.status = CashSettlementStatus.CONFIRMED;
+      const saved = await manager.save(settlement);
+      await manager.update(Invoice, invoice.id, { paymentStatus: PaymentStatus.PAID, paidAt: new Date() });
+      await manager.update(ServiceOrder, orderId, { paymentStatus: PaymentStatus.PAID });
+      order.paymentStatus = PaymentStatus.PAID;
+      // Same User lock as Accept: new due and job acceptance have one serial order.
+      await manager.findOne(User, { where: { id: settlement.declaredByTechnicianId }, lock: { mode: 'pessimistic_write' } });
+      const dueAmount = Number(invoice.commissionAmount) + Number(invoice.fixHomePartsTotal);
+      if (dueAmount > 0 && !await manager.findOneBy(CommissionDue, { serviceOrderId: orderId })) {
+        await manager.save(CommissionDue, manager.create(CommissionDue, { technicianId: settlement.declaredByTechnicianId, serviceOrderId: orderId, cashSettlementId: saved.id, laborTotalSnapshot: Number(invoice.laborTotal), commissionRateSnapshot: Number(invoice.commissionRateSnapshot), dueAmount, status: CommissionDueStatus.PENDING }));
       }
-
-      return savedSettlement;
-    } else {
-      settlement.status = CashSettlementStatus.DISPUTED;
-      settlement.managerResolutionReason =
-        dto.disputeReason || 'Customer disputed declared cash amount';
-      return this.cashSettlementRepo.save(settlement);
-    }
+      await this.finalizeIfSatisfied(manager, order, actor);
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'CASH_CONFIRMED', resourceType: 'service_order', resourceId: orderId, after: { amount, dueAmount } });
+      return saved;
+    });
   }
 
-  async getCashSettlement(orderId: string): Promise<CashSettlement | null> {
+
+  async getCashSettlement(orderId: string, actor: { id: string; role: string }): Promise<CashSettlement | null> {
+    await authorizeOrder(this.dataSource.manager, orderId, actor);
     return this.cashSettlementRepo.findOne({
       where: { serviceOrderId: orderId },
-      relations: ['declaredByTechnician', 'confirmedByCustomer'],
+
     });
   }
 
@@ -789,26 +441,11 @@ export class ServiceOrdersService {
     return { data: dues, totalDue };
   }
 
-  async payCommissionDue(
-    dueId: string,
-    technicianId: string,
-  ): Promise<CommissionDue> {
-    const due = await this.commissionDueRepo.findOne({
-      where: { id: dueId, technicianId },
-    });
-    if (!due) {
-      throw new BusinessException(
-        ErrorCodes.NOT_FOUND,
-        'Commission due record not found',
-      );
-    }
-    if (due.status === CommissionDueStatus.PAID) {
-      return due;
-    }
-    due.status = CommissionDueStatus.PAID;
-    due.paidAt = new Date();
-    return this.commissionDueRepo.save(due);
+  async payCommissionDue(dueId: string, technicianId: string): Promise<CommissionDue> {
+    if (!await this.commissionDueRepo.findOneBy({ id: dueId, technicianId })) throw new ForbiddenException('PlatformDue not found');
+    throw new NotImplementedException('Verified PlatformDue payment provider is not connected');
   }
+
 
   async createWarrantyClaim(
     orderId: string,
@@ -843,7 +480,8 @@ export class ServiceOrdersService {
     return this.warrantyClaimRepo.save(claim);
   }
 
-  async getWarrantyClaims(orderId: string): Promise<WarrantyClaim[]> {
+  async getWarrantyClaims(orderId: string, actor: { id: string; role: string }): Promise<WarrantyClaim[]> {
+    await authorizeOrder(this.dataSource.manager, orderId, actor);
     return this.warrantyClaimRepo.find({
       where: { serviceOrderId: orderId },
       relations: ['customer', 'technician'],
@@ -1012,9 +650,7 @@ export class ServiceOrdersService {
       .createQueryBuilder('o')
       .leftJoinAndSelect('bookings', 'b', 'b.id = o.booking_id')
       .leftJoinAndSelect('services', 's', 's.id = b.service_id')
-      .where('o.status = :completed', {
-        completed: ServiceOrderStatus.COMPLETED,
-      });
+      .where('o.status IN (:...terminal)', { terminal: [ServiceOrderStatus.COMPLETED, ServiceOrderStatus.CANCELLED] });
 
     if (role === Role.CUSTOMER) {
       qb.andWhere('b.customer_id = :userId', { userId });
@@ -1050,77 +686,64 @@ export class ServiceOrdersService {
   /**
    * D-22: Central method for state transitions within a transaction.
    */
-  private async transitionStatus(
-    orderId: string,
-    nextStatus: ServiceOrderStatus,
-    actor: { id: string; role: string },
-    reason?: string,
-  ): Promise<ServiceOrder> {
-    return this.dataSource.transaction(async (manager) => {
-      const order = await manager.findOneByOrFail(ServiceOrder, {
-        id: orderId,
-      });
-
-      if (
-        !ServiceOrderStateMachine.canTransition(
-          order.status,
-          nextStatus,
-          actor.role as Role,
-        )
-      ) {
-        throw new BusinessException(
-          ErrorCodes.ORDER_INVALID_TRANSITION,
-          `Cannot transition from ${order.status} to ${nextStatus}`,
-          { from: order.status, to: nextStatus },
-        );
+  private async transitionStatus(orderId: string, nextStatus: ServiceOrderStatus, actor: { id: string; role: string }, reason?: string): Promise<ServiceOrder> {
+    return this.dataSource.transaction(async manager => {
+      const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
+      if (nextStatus === ServiceOrderStatus.UNDER_REPAIR) {
+        const booking = await manager.findOneByOrFail(Booking, { id: order.bookingId });
+        if (!await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, result: CheckInResult.VALID })) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Valid arrival required');
+        const required = await this.configService.getInt('evidence.before.min_count', 1);
+        if (await manager.count(RepairEvidence, { where: { serviceOrderId: orderId, type: EvidenceType.BEFORE, uploaderId: actor.id } }) < required) throw new BusinessException(ErrorCodes.EVIDENCE_REQUIRED_BEFORE, 'BEFORE evidence required');
+        if (booking.pricingModeSnapshot !== ServicePricingMode.FIXED_PRICE && !await manager.findOneBy(Quotation, { serviceOrderId: orderId, technicianId: actor.id, status: QuotationStatus.APPROVED })) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Approved official quotation required');
+        if (booking.pricingModeSnapshot === ServicePricingMode.FIXED_PRICE && booking.fixedUnitPriceSnapshot == null) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Fixed price snapshot missing');
+        if (await manager.count(AdditionalCostRequest, { where: { serviceOrderId: orderId, status: AdditionalCostStatus.PENDING_APPROVAL } })) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Additional approval required');
       }
-
-      const fromStatus = order.status;
-
-      // Update status
-      const updates: Partial<ServiceOrder> = { status: nextStatus };
-      if (nextStatus === ServiceOrderStatus.EN_ROUTE) {
-        // No extra fields
-      } else if (nextStatus === ServiceOrderStatus.UNDER_REPAIR) {
-        updates.startedAt = new Date();
-      }
-
-      await manager.update(ServiceOrder, orderId, updates);
-
-      // D-22: Record history in same transaction
-      await manager.insert(OrderStatusHistory, {
-        serviceOrderId: orderId,
-        fromStatus,
-        toStatus: nextStatus,
-        actorUserId: actor.id,
-        actorRole: actor.role,
-        reason: reason || null,
-      });
-
-      await this.auditLogService.logWithManager(manager, {
-        actorUserId: actor.id,
-        actorRole: actor.role,
-        action: `ORDER_TRANSITION_${nextStatus.toUpperCase()}`,
-        resourceType: 'service_order',
-        resourceId: orderId,
-        before: { status: fromStatus },
-        after: { status: nextStatus },
-      });
-
+      await this.commitTransition(manager, order, nextStatus, actor, reason || 'Order progress');
       return manager.findOneByOrFail(ServiceOrder, { id: orderId });
     });
   }
 
-  /**
-   * Generate invoice from fixed price or quotation items + additional costs.
-   */
+  private async commitTransition(manager: EntityManager, order: ServiceOrder, next: ServiceOrderStatus, actor: { id: string; role: string }, reason: string): Promise<void> {
+    if (!ServiceOrderStateMachine.canTransition(order.status, next)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Illegal order transition');
+    const previous = order.status;
+    const now = new Date();
+    await manager.update(ServiceOrder, order.id, { status: next, ...(next === ServiceOrderStatus.UNDER_REPAIR ? { startedAt: now } : {}), ...(next === ServiceOrderStatus.COMPLETED ? { completedAt: now } : {}), ...(next === ServiceOrderStatus.CANCELLED ? { cancelledAt: now } : {}) });
+    await manager.insert(OrderStatusHistory, { serviceOrderId: order.id, fromStatus: previous, toStatus: next, actorUserId: actor.id, actorRole: actor.role, reason });
+    await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'ORDER_TRANSITION', resourceType: 'service_order', resourceId: order.id, before: { status: previous }, after: { status: next, reason } });
+    order.status = next;
+  }
+
+  private async assertCompletionReady(manager: EntityManager, order: ServiceOrder): Promise<void> {
+    const required = await this.configService.getInt('evidence.after.min_count', 1);
+    if (await manager.count(RepairEvidence, { where: { serviceOrderId: order.id, type: EvidenceType.AFTER } }) < required) throw new BusinessException(ErrorCodes.EVIDENCE_REQUIRED_AFTER, 'AFTER evidence required');
+    if (await manager.count(AdditionalCostRequest, { where: { serviceOrderId: order.id, status: AdditionalCostStatus.PENDING_APPROVAL } }) || await manager.count(Quotation, { where: { serviceOrderId: order.id, status: QuotationStatus.SENT } })) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Pending financial approval');
+    const booking = await manager.findOneByOrFail(Booking, { id: order.bookingId });
+    if (booking.pricingModeSnapshot !== ServicePricingMode.FIXED_PRICE && !await manager.findOneBy(Quotation, { serviceOrderId: order.id, status: QuotationStatus.APPROVED })) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Approved quotation required');
+  }
+
+  private async finalizeIfSatisfied(manager: EntityManager, order: ServiceOrder, actor: { id: string; role: string }): Promise<boolean> {
+    if (order.status !== ServiceOrderStatus.UNDER_REPAIR || !order.completionRequestedAt) return false;
+    await this.assertCompletionReady(manager, order);
+    if (!await manager.findOneBy(CustomerServiceConfirmation, { serviceOrderId: order.id })) return false;
+    const invoice = await manager.findOneBy(Invoice, { serviceOrderId: order.id, paymentStatus: PaymentStatus.PAID });
+    if (!invoice || order.paymentStatus !== PaymentStatus.PAID) return false;
+    await this.commitTransition(manager, order, ServiceOrderStatus.COMPLETED, actor, 'Work, customer confirmation and payment satisfied');
+    const items = await manager.find(InvoiceItem, { where: { invoiceId: invoice.id } });
+    for (const item of items) {
+      if (item.warrantyDaysSnapshot <= 0 || (item.partSource === PartSource.TECHNICIAN && item.partWarrantyOption !== PartWarrantyOption.PAID_WARRANTY)) continue;
+      await manager.insert(WarrantyCoverage, { serviceOrderId: order.id, invoiceItemId: item.id, warrantyDaysSnapshot: item.warrantyDaysSnapshot, startsAt: new Date(), expiresAt: new Date(Date.now() + item.warrantyDaysSnapshot * 86400000), status: WarrantyStatus.ACTIVE });
+    }
+    return true;
+  }
+
+
   private async generateInvoice(
     orderId: string,
     manager: EntityManager,
   ): Promise<Invoice> {
-    const order = await manager.findOne(ServiceOrder, {
-      where: { id: orderId },
-    });
+    const existing = await manager.findOneBy(Invoice, { serviceOrderId: orderId });
+    if (existing) return existing;
+    const order = await manager.findOne(ServiceOrder, { where: { id: orderId } });
 
     const booking = order
       ? await manager.findOne(Booking, {
@@ -1153,7 +776,9 @@ export class ServiceOrdersService {
 
     // Calculate totals
     let laborTotal = 0;
-    let partsTotal = 0;
+    let fixHomePartsTotal = 0;
+    let technicianPartsTotal = 0;
+    let technicianPartWarrantyFeeTotal = 0;
 
     const invoiceItems: Partial<InvoiceItem>[] = [];
 
@@ -1163,12 +788,7 @@ export class ServiceOrdersService {
       (!quotation && booking?.fixedUnitPriceSnapshot != null);
 
     if (isFixedPrice && booking) {
-      const unitPrice = Number(
-        booking.fixedUnitPriceSnapshot ||
-          booking.service?.fixedPrice ||
-          booking.service?.basePrice ||
-          0,
-      );
+      const unitPrice = Number(booking.fixedUnitPriceSnapshot);
       const quantity = Math.max(1, Number(booking.quantity || 1));
       const lineTotal = unitPrice * quantity;
       laborTotal += lineTotal;
@@ -1184,14 +804,26 @@ export class ServiceOrdersService {
         quantity,
         unitPrice,
         lineTotal,
-        warrantyDaysSnapshot: 30,
+        warrantyDaysSnapshot: 0,
       });
-    } else if (quotation?.items) {
+    }
+
+    if (!isFixedPrice && quotation?.items) {
       // 2. Inspection-based quotation items
       for (const qi of quotation.items) {
         const lineTotal = Number(qi.lineTotal);
-        if (qi.type === CostItemType.LABOR) laborTotal += lineTotal;
-        else partsTotal += lineTotal;
+        if (qi.type === CostItemType.LABOR) {
+          laborTotal += lineTotal;
+        } else {
+          if (qi.partSource === PartSource.FIXHOME) {
+            fixHomePartsTotal += lineTotal;
+          } else {
+            technicianPartsTotal += lineTotal;
+          }
+          if (qi.warrantyFee) {
+            technicianPartWarrantyFeeTotal += Number(qi.warrantyFee);
+          }
+        }
 
         invoiceItems.push({
           sourceType: 'QUOTATION',
@@ -1201,7 +833,10 @@ export class ServiceOrdersService {
           quantity: qi.quantity,
           unitPrice: Number(qi.unitPrice),
           lineTotal,
-          warrantyDaysSnapshot: qi.warrantyDaysSnapshot,
+          warrantyDaysSnapshot: qi.partSource === PartSource.TECHNICIAN ? (qi.partWarrantyOption === PartWarrantyOption.PAID_WARRANTY ? qi.warrantyTermDays ?? 0 : 0) : qi.warrantyDaysSnapshot,
+          partSource: qi.partSource || null,
+          partWarrantyOption: qi.partWarrantyOption || null,
+          warrantyFee: qi.warrantyFee || null,
         });
       }
     }
@@ -1209,8 +844,18 @@ export class ServiceOrdersService {
     // 3. Approved Additional cost items
     for (const aci of additionalItems) {
       const lineTotal = Number(aci.lineTotal);
-      if (aci.type === CostItemType.LABOR) laborTotal += lineTotal;
-      else partsTotal += lineTotal;
+      if (aci.type === CostItemType.LABOR) {
+        laborTotal += lineTotal;
+      } else {
+        if (aci.partSource === PartSource.FIXHOME) {
+          fixHomePartsTotal += lineTotal;
+        } else {
+          technicianPartsTotal += lineTotal;
+        }
+        if (aci.warrantyFee) {
+          technicianPartWarrantyFeeTotal += Number(aci.warrantyFee);
+        }
+      }
 
       invoiceItems.push({
         sourceType: 'ADDITIONAL',
@@ -1220,23 +865,32 @@ export class ServiceOrdersService {
         quantity: aci.quantity,
         unitPrice: Number(aci.unitPrice),
         lineTotal,
-        warrantyDaysSnapshot: aci.warrantyDays,
+        warrantyDaysSnapshot: aci.partSource === PartSource.TECHNICIAN ? (aci.partWarrantyOption === PartWarrantyOption.PAID_WARRANTY ? aci.warrantyTermDays ?? 0 : 0) : aci.warrantyDays,
+        partSource: aci.partSource || null,
+        partWarrantyOption: aci.partWarrantyOption || null,
+        warrantyFee: aci.warrantyFee || null,
       });
     }
 
-    const grandTotal = laborTotal + partsTotal;
+    const partsTotal = fixHomePartsTotal + technicianPartsTotal;
+    const grandTotal = laborTotal + partsTotal + technicianPartWarrantyFeeTotal;
 
-    // Spec v1.2: Platform commission is 10% on Final Labor Total. 0% on parts.
+    // Spec v1.4 BRX-026: Platform commission is 10% on Final Labor Total. 0% on parts. Rate snapshotted.
     const commissionBase = 'LABOR';
-    const commissionAmount = Math.round(laborTotal * 0.1);
+    const commissionRateSnapshot = 0.1;
+    const commissionAmount = Math.round(laborTotal * commissionRateSnapshot);
 
     // Create invoice
     const invoice = manager.create(Invoice, {
       serviceOrderId: orderId,
       laborTotal,
       partsTotal,
+      fixHomePartsTotal,
+      technicianPartsTotal,
+      technicianPartWarrantyFeeTotal,
       grandTotal,
       commissionBase,
+      commissionRateSnapshot,
       commissionAmount,
       paymentStatus: PaymentStatus.UNPAID,
       issuedAt: new Date(),
@@ -1248,22 +902,6 @@ export class ServiceOrdersService {
       item.invoiceId = savedInvoice.id;
       await manager.insert(InvoiceItem, item);
 
-      // Create warranty coverages for items with warranty
-      if (item.warrantyDaysSnapshot && item.warrantyDaysSnapshot > 0) {
-        const startsAt = new Date();
-        const expiresAt = new Date(
-          startsAt.getTime() +
-            item.warrantyDaysSnapshot * 24 * 60 * 60 * 1000,
-        );
-        await manager.insert(WarrantyCoverage, {
-          serviceOrderId: orderId,
-          invoiceItemId: undefined,
-          warrantyDaysSnapshot: item.warrantyDaysSnapshot,
-          startsAt,
-          expiresAt,
-          status: WarrantyStatus.ACTIVE,
-        });
-      }
     }
 
     // Update order totals
@@ -1326,32 +964,9 @@ export class ServiceOrdersService {
   /**
    * Check if an actor has access to a specific order.
    */
-  private async checkOrderAccess(
-    order: ServiceOrder,
-    actor: { id: string; role: string },
-  ): Promise<void> {
-    if (
-      actor.role === Role.ADMIN ||
-      actor.role === Role.SERVICE_MANAGER
-    ) {
-      return;
-    }
-
-    // Check customer ownership via booking
-    const booking = await this.dataSource
-      .getRepository('bookings')
-      .findOneBy({ id: order.bookingId });
-
-    if (booking && (booking as { customer_id: string }).customer_id === actor.id) {
-      return;
-    }
-
-    // Check technician assignment
-    const assignment = await this.assignmentRepo.findOne({
-      where: { serviceOrderId: order.id, technicianId: actor.id, isActive: true },
-    });
-    if (assignment) return;
-
-    throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Order not found');
+  private async checkOrderAccess(order: ServiceOrder, actor: { id: string; role: string }): Promise<void> {
+    await authorizeOrder(this.dataSource.manager, order.id, actor);
   }
+
+
 }

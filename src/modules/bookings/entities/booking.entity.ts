@@ -40,14 +40,34 @@ export class Booking extends BaseEntity {
   @JoinColumn({ name: 'address_id' })
   address?: Address | null;
 
+  // Spec v1.4: Address snapshot so history doesn't change if customer edits address book
+  @Column({ name: 'address_text_snapshot', type: 'text', nullable: true })
+  addressTextSnapshot?: string | null;
+
+  @Column({ name: 'province_snapshot', type: 'varchar', length: 100, nullable: true })
+  provinceSnapshot?: string | null;
+
+  @Column({ name: 'district_snapshot', type: 'varchar', length: 100, nullable: true })
+  districtSnapshot?: string | null;
+
+  @Column({ name: 'service_name_snapshot', type: 'varchar', length: 255, nullable: true })
+  serviceNameSnapshot?: string | null;
+
+  @Column({ name: 'latitude_snapshot', type: 'decimal', precision: 10, scale: 7, nullable: true })
+  latitudeSnapshot?: number | null;
+
+  @Column({ name: 'longitude_snapshot', type: 'decimal', precision: 10, scale: 7, nullable: true })
+  longitudeSnapshot?: number | null;
+
   @Column({ type: 'text' })
   description: string;
 
-  @Column({ name: 'preferred_at', type: 'timestamptz', nullable: true })
-  preferredAt?: Date | null;
+  // Spec v1.4: Customer chooses preferred time window (start + end), not exact arrival minute
+  @Column({ name: 'preferred_start_at', type: 'timestamptz', nullable: true })
+  preferredStartAt?: Date | null;
 
-  @Column({ name: 'preferred_time_window', type: 'varchar', length: 100, nullable: true })
-  preferredTimeWindow?: string | null;
+  @Column({ name: 'preferred_end_at', type: 'timestamptz', nullable: true })
+  preferredEndAt?: Date | null;
 
   @Column({
     name: 'pricing_mode_snapshot',
@@ -82,7 +102,7 @@ export class Booking extends BaseEntity {
   @Column({
     type: 'enum',
     enum: BookingStatus,
-    default: BookingStatus.PENDING,
+    default: BookingStatus.SUBMITTED,
   })
   status: BookingStatus;
 
@@ -92,3 +112,4 @@ export class Booking extends BaseEntity {
   @OneToMany(() => BookingInvitation, (inv) => inv.booking)
   invitations: BookingInvitation[];
 }
+

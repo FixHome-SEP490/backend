@@ -46,7 +46,7 @@ export class DashboardService {
   async getCustomerDashboard(userId: string) {
     const activeBookings = await this.bookingRepo.count({
       where: [
-        { customerId: userId, status: BookingStatus.PENDING },
+        { customerId: userId, status: BookingStatus.SUBMITTED },
         { customerId: userId, status: BookingStatus.MATCHING },
       ],
     });
@@ -157,7 +157,7 @@ export class DashboardService {
 
     const matchingBookings = await this.bookingRepo.count({
       where: [
-        { status: BookingStatus.PENDING },
+        { status: BookingStatus.SUBMITTED },
         { status: BookingStatus.MATCHING },
       ],
     });

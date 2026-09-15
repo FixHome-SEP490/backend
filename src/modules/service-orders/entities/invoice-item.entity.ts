@@ -1,7 +1,8 @@
 // src/modules/service-orders/entities/invoice-item.entity.ts
+// Spec v1.4: Invoice items must track partSource for settlement separation
 import { Entity, Column, ManyToOne, JoinColumn } from 'typeorm';
 import { BaseEntity } from '../../../database/base.entity';
-import { CostItemType } from '../../../shared/enums';
+import { CostItemType, PartSource, PartWarrantyOption } from '../../../shared/enums';
 import { Invoice } from './invoice.entity';
 
 @Entity('invoice_items')
@@ -36,4 +37,26 @@ export class InvoiceItem extends BaseEntity {
 
   @Column({ name: 'warranty_days_snapshot', type: 'int', default: 0 })
   warrantyDaysSnapshot: number;
+
+  // ── Spec v1.4: Part source for settlement separation ──
+
+  @Column({
+    name: 'part_source',
+    type: 'enum',
+    enum: PartSource,
+    nullable: true,
+  })
+  partSource?: PartSource | null;
+
+  @Column({
+    name: 'part_warranty_option',
+    type: 'enum',
+    enum: PartWarrantyOption,
+    nullable: true,
+  })
+  partWarrantyOption?: PartWarrantyOption | null;
+
+  @Column({ name: 'warranty_fee', type: 'bigint', nullable: true })
+  warrantyFee?: number | null;
 }
+

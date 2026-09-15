@@ -1,6 +1,7 @@
 // src/modules/bookings/bookings.controller.ts
 import {
   Controller,
+  ParseUUIDPipe,
   Get,
   Post,
   Patch,
@@ -16,8 +17,10 @@ import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionGuard } from '../../common/guards/permission.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
-import { BookingsService, CreateBookingDto } from './bookings.service';
+import { BookingsService } from './bookings.service';
 import { InvitationsService } from './invitations.service';
+import { CreateBookingDto, ScheduleBookingDto, RebookDto, ShortlistDto } from './booking.dto';
+import { ReasonDto } from '../service-orders/order-command.dto';
 import { BookingStatus } from '../../shared/enums';
 
 @ApiTags('Bookings')
@@ -61,7 +64,9 @@ export class BookingsController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get booking by ID' })
-  async findById(@Param('id') id: string, @Req() req: { user: { id: string; role: string } }) {
+  async findById(@Param('id', ParseUUIDPipe) id: string, @Req() req: { user: { id: string; role: string } }) {
+    await this.bookingsService.findById(id, req.user);
+    await this.invitationsService.refreshMatching(id);
     const booking = await this.bookingsService.findById(id, req.user);
     return { data: booking };
   }
@@ -72,7 +77,7 @@ export class BookingsController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get technician candidates for a booking' })
   async getCandidates(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Req() req: { user: { id: string } },
   ) {
     const candidates = await this.bookingsService.getCandidates(id, req.user);
@@ -86,8 +91,8 @@ export class BookingsController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create shortlist of technician invitations (≤5)' })
   async createShortlist(
-    @Param('id') id: string,
-    @Body() body: { technicianIds: string[] },
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: ShortlistDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
     const invitations = await this.invitationsService.createShortlist(
@@ -104,11 +109,36 @@ export class BookingsController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Reschedule booking preferred date/time window' })
   async reschedule(
-    @Param('id') id: string,
-    @Body() body: { preferredAt: string; preferredTimeWindow?: string },
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: ScheduleBookingDto,
     @Req() req: { user: { id: string } },
   ) {
     const booking = await this.bookingsService.reschedule(id, body, req.user);
     return { data: booking };
+  }
+
+  @Post(':id/cancel')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('booking:create')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  async cancelBooking(@Param('id', ParseUUIDPipe) id: string, @Body() body: ReasonDto, @Req() req: { user: { id: string } }) {
+    return { data: await this.bookingsService.cancelBooking(id, body.reason, req.user) };
+  }
+
+  @Post(':id/rebook')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('booking:create')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Spec v1.4 D1-20: Rebook from a historical booking (creates a new Booking)' })
+  async rebook(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body()
+    body: RebookDto,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    const newBooking = await this.bookingsService.rebook(id, req.user, body);
+    return { data: newBooking };
   }
 }

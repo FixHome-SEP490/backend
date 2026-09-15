@@ -12,10 +12,9 @@ import { ErrorCodes } from '../../shared/constants';
 import { ServiceOrderStatus, Role } from '../../shared/enums';
 import { AuditLogService } from '../audit-log/audit-log.service';
 
-export interface CreateReviewDto {
-  rating: number;
-  comment?: string;
-}
+import { CreateReviewDto } from './review.dto';
+export { CreateReviewDto } from './review.dto';
+import { authorizeOrder } from '../service-orders/order-access';
 
 @Injectable()
 export class ReviewsService {
@@ -45,7 +44,7 @@ export class ReviewsService {
     dto: CreateReviewDto,
     customerUser: { id: string; role: string },
   ): Promise<Review> {
-    if (dto.rating < 1 || dto.rating > 5) {
+    if (!Number.isInteger(dto.rating) || dto.rating < 1 || dto.rating > 5) {
       throw new BusinessException(
         ErrorCodes.VALIDATION_FAILED,
         'Rating must be between 1 and 5',
@@ -68,8 +67,7 @@ export class ReviewsService {
     const booking = await this.bookingRepo.findOneBy({ id: order.bookingId });
     if (
       !booking ||
-      (booking.customerId !== customerUser.id &&
-        customerUser.role !== Role.ADMIN)
+      (booking.customerId !== customerUser.id || customerUser.role !== Role.CUSTOMER)
     ) {
       throw new BusinessException(
         ErrorCodes.OWNERSHIP_DENIED,
@@ -101,6 +99,9 @@ export class ReviewsService {
     const technicianId = assignment.technicianId;
 
     return this.dataSource.transaction(async (manager) => {
+      await authorizeOrder(manager, orderId, customerUser, 'customer', true);
+      await manager.findOne(TechnicianProfile, { where: { userId: technicianId }, lock: { mode: 'pessimistic_write' } });
+      if (await manager.findOneBy(Review, { serviceOrderId: orderId })) throw new BusinessException(ErrorCodes.CONFLICT, 'Review already exists');
       const review = manager.create(Review, {
         serviceOrderId: orderId,
         customerId: customerUser.id,
@@ -130,7 +131,7 @@ export class ReviewsService {
         await manager.save(profile);
       }
 
-      await this.auditLogService.log({
+      await this.auditLogService.logWithManager(manager, {
         actorUserId: customerUser.id,
         actorRole: customerUser.role,
         action: 'REVIEW_SUBMITTED',
@@ -143,7 +144,8 @@ export class ReviewsService {
     });
   }
 
-  async findByOrderId(orderId: string): Promise<Review | null> {
+  async findByOrderId(orderId: string, actor: { id: string; role: string }): Promise<Review | null> {
+    await authorizeOrder(this.dataSource.manager, orderId, actor);
     return this.reviewRepo.findOneBy({ serviceOrderId: orderId });
   }
 

@@ -1,5 +1,6 @@
 // src/modules/service-orders/service-orders.module.ts
 import { Module } from '@nestjs/common';
+import { MediaModule } from '../media/media.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ServiceOrdersController } from './service-orders.controller';
 import { ServiceOrdersService } from './service-orders.service';
@@ -22,9 +23,11 @@ import { Quotation } from '../quotations/entities/quotation.entity';
 import { QuotationItem } from '../quotations/entities/quotation-item.entity';
 import { User } from '../users/entities/user.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
+import { CustomerServiceConfirmation } from './entities/customer-service-confirmation.entity';
 
 @Module({
   imports: [
+    MediaModule,
     TypeOrmModule.forFeature([
       ServiceOrder,
       TechnicianAssignment,
@@ -45,6 +48,7 @@ import { TechnicianProfile } from '../technicians/entities/technician-profile.en
       QuotationItem,
       User,
       TechnicianProfile,
+      CustomerServiceConfirmation,
     ]),
   ],
   controllers: [ServiceOrdersController],

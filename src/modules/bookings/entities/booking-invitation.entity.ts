@@ -6,7 +6,7 @@ import { User } from '../../users/entities/user.entity';
 import { InvitationStatus } from '../../../shared/enums';
 
 @Entity('booking_invitations')
-@Unique('uq_invitation', ['bookingId', 'technicianId'])
+@Unique('uq_invitation', ['bookingId', 'priorityOrder'])
 @Index('ix_invitation_tech_status', ['technicianId', 'status'])
 export class BookingInvitation extends BaseEntity {
   @Column({ name: 'booking_id', type: 'uuid' })

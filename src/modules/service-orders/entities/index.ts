@@ -13,3 +13,4 @@ export { WarrantyCoverage } from './warranty-coverage.entity';
 export { CashSettlement } from './cash-settlement.entity';
 export { CommissionDue } from './commission-due.entity';
 export { WarrantyClaim } from './warranty-claim.entity';
+export { CustomerServiceConfirmation } from './customer-service-confirmation.entity';
