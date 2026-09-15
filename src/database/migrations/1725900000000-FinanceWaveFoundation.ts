@@ -22,9 +22,6 @@ export class FinanceWaveFoundation1725900000000 implements MigrationInterface {
     `);
 
     await queryRunner.query(`
-      ALTER TABLE "commission_dues"
-        ADD COLUMN IF NOT EXISTS "payment_reference" TEXT;
-
       ALTER TABLE "cash_settlements"
         ADD COLUMN IF NOT EXISTS "dispute_reason" TEXT,
         ADD COLUMN IF NOT EXISTS "disputed_by_customer_id" UUID,
@@ -122,10 +119,6 @@ export class FinanceWaveFoundation1725900000000 implements MigrationInterface {
         DROP COLUMN IF EXISTS "disputed_at",
         DROP COLUMN IF EXISTS "disputed_by_customer_id",
         DROP COLUMN IF EXISTS "dispute_reason";
-    `);
-    await queryRunner.query(`
-      ALTER TABLE "commission_dues"
-        DROP COLUMN IF EXISTS "payment_reference";
     `);
     await queryRunner.query('DROP TYPE IF EXISTS platform_due_status_enum;');
     await queryRunner.query('DROP TYPE IF EXISTS payment_attempt_status_enum;');
