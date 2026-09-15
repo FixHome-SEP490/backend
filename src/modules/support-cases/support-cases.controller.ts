@@ -14,6 +14,7 @@ import {
   ApiBadRequestResponse,
   ApiBearerAuth,
   ApiConflictResponse,
+  ApiCreatedResponse,
   ApiForbiddenResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
@@ -27,6 +28,7 @@ import { CurrentUser, RequirePermission, Roles } from '../../common/decorators';
 import { PaginationMeta } from '../../shared/dto';
 import { Role } from '../../shared/enums';
 import {
+  CreateSupportCaseDto,
   QuerySupportCasesDto,
   ResolveSupportCaseDto,
   SupportCaseDetailDto,
@@ -42,6 +44,33 @@ import { SupportCasesService, SupportCaseActor } from './support-cases.service';
 @ApiBearerAuth()
 export class SupportCasesController {
   constructor(private readonly supportCasesService: SupportCasesService) {}
+
+  @Post()
+  @HttpCode(HttpStatus.CREATED)
+  @Roles(Role.CUSTOMER, Role.TECHNICIAN)
+  @RequirePermission('order:read_related')
+  @ApiOperation({
+    summary: 'Customer/Technician: open a support escalation case',
+  })
+  @ApiCreatedResponse({
+    description: 'Support case opened with OPEN status and current context',
+    type: SupportCaseDetailDto,
+  })
+  @ApiBadRequestResponse({
+    description: 'Invalid escalation body or mismatched booking/order context',
+  })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({
+    description: 'Customer/Technician role with owned context required',
+  })
+  @ApiNotFoundResponse({ description: 'Referenced booking or order not found' })
+  async create(
+    @Body() dto: CreateSupportCaseDto,
+    @CurrentUser() actor: SupportCaseActor,
+  ): Promise<{ data: SupportCaseDetailDto }> {
+    const created = await this.supportCasesService.openCaseForActor(dto, actor);
+    return { data: await this.supportCasesService.findById(created.id) };
+  }
 
   @Get()
   @ApiOperation({

@@ -1,3 +1,4 @@
+export { CreateSupportCaseDto } from './create-support-case.dto';
 export { QuerySupportCasesDto } from './query-support-cases.dto';
 export { ResolveSupportCaseDto } from './resolve-support-case.dto';
 export {

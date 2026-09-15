@@ -11,8 +11,10 @@ import { Booking } from '../bookings/entities/booking.entity';
 import { CashSettlement } from '../service-orders/entities/cash-settlement.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
+import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import {
+  CreateSupportCaseDto,
   SupportCaseBookingContextDto,
   SupportCaseCashSettlementContextDto,
   SupportCaseDetailDto,
@@ -86,6 +88,8 @@ export class SupportCasesService {
     private readonly invoiceRepository: Repository<Invoice>,
     @InjectRepository(CashSettlement)
     private readonly cashSettlementRepository: Repository<CashSettlement>,
+    @InjectRepository(TechnicianAssignment)
+    private readonly assignmentRepository: Repository<TechnicianAssignment>,
     private readonly auditLogService: AuditLogService,
   ) {}
 
@@ -130,6 +134,128 @@ export class SupportCasesService {
     });
 
     return repository.save(supportCase);
+  }
+
+  /**
+   * Bounded public escalation path for authenticated Customer/Technician
+   * actors (POST /support/cases). Validates ownership against the referenced
+   * Booking/ServiceOrder, derives customerId/technicianId/createdByUserId
+   * server-side, and always starts the case OPEN. Reads only; never mutates
+   * Booking, ServiceOrder, payment, or cash settlement state and never
+   * triggers a normal-flow transition. Manager/Admin resolution behavior is
+   * unchanged.
+   */
+  async openCaseForActor(
+    dto: CreateSupportCaseDto,
+    actor: SupportCaseActor,
+  ): Promise<SupportCase> {
+    if (
+      actor.role !== Role.CUSTOMER &&
+      actor.role !== Role.TECHNICIAN
+    ) {
+      throw new ForbiddenException(
+        'Only customers and technicians can open support cases',
+      );
+    }
+
+    const bookingId = dto.bookingId ?? null;
+    const serviceOrderId = dto.serviceOrderId ?? null;
+    if (!bookingId && !serviceOrderId) {
+      throw new BadRequestException(
+        'At least one of bookingId or serviceOrderId is required',
+      );
+    }
+
+    const booking = bookingId
+      ? await this.bookingRepository.findOne({ where: { id: bookingId } })
+      : null;
+    if (bookingId && !booking) {
+      throw new NotFoundException(`Booking ${bookingId} not found`);
+    }
+
+    const serviceOrder = serviceOrderId
+      ? await this.serviceOrderRepository.findOne({
+          where: { id: serviceOrderId },
+        })
+      : null;
+    if (serviceOrderId && !serviceOrder) {
+      throw new NotFoundException(`Service order ${serviceOrderId} not found`);
+    }
+
+    if (booking && serviceOrder && serviceOrder.bookingId !== booking.id) {
+      throw new BadRequestException(
+        'Booking and service order do not belong to the same flow',
+      );
+    }
+
+    const effectiveBooking =
+      booking ??
+      (serviceOrder
+        ? await this.bookingRepository.findOne({
+            where: { id: serviceOrder.bookingId },
+          })
+        : null);
+
+    let customerId: string | null = null;
+    let technicianId: string | null = null;
+
+    if (actor.role === Role.CUSTOMER) {
+      if (!effectiveBooking || effectiveBooking.customerId !== actor.id) {
+        throw new ForbiddenException(
+          'Customers can only open cases for their own bookings or service orders',
+        );
+      }
+      customerId = actor.id;
+      if (serviceOrder) {
+        const assignment = await this.assignmentRepository.findOne({
+          where: {
+            serviceOrderId: serviceOrder.id,
+            isActive: true,
+          },
+        });
+        technicianId = assignment?.technicianId ?? null;
+      }
+    } else {
+      const assignedOrder = serviceOrder
+        ? serviceOrder
+        : booking
+          ? await this.serviceOrderRepository.findOne({
+              where: { bookingId: booking.id },
+            })
+          : null;
+      if (!assignedOrder) {
+        throw new ForbiddenException(
+          'Technicians can only open cases for an assigned service order context',
+        );
+      }
+      const assignment = await this.assignmentRepository.findOne({
+        where: {
+          serviceOrderId: assignedOrder.id,
+          technicianId: actor.id,
+          isActive: true,
+        },
+      });
+      if (!assignment) {
+        throw new ForbiddenException(
+          'Technicians can only open cases for service orders they are assigned to',
+        );
+      }
+      technicianId = actor.id;
+      customerId = effectiveBooking?.customerId ?? null;
+    }
+
+    return this.openCase({
+      caseType: dto.caseType,
+      reason: dto.reason,
+      description: dto.description ?? null,
+      evidenceRefs: dto.evidenceRefs ?? null,
+      bookingId,
+      serviceOrderId,
+      customerId,
+      technicianId,
+      createdByUserId: actor.id,
+      assignedManagerId: null,
+    });
   }
 
   async findAll(

@@ -88,6 +88,11 @@ const makeService = (
     save: vi.fn(),
     update: vi.fn(),
   };
+  const assignmentRepository = {
+    findOne: vi.fn(),
+    save: vi.fn(),
+    update: vi.fn(),
+  };
   const auditLogService = {
     logWithManagerStrict: vi.fn().mockResolvedValue(undefined),
   };
@@ -99,6 +104,7 @@ const makeService = (
       serviceOrderRepository as any,
       invoiceRepository as any,
       cashSettlementRepository as any,
+      assignmentRepository as any,
       auditLogService as any,
     ),
     supportRepository,
@@ -108,6 +114,7 @@ const makeService = (
     serviceOrderRepository,
     invoiceRepository,
     cashSettlementRepository,
+    assignmentRepository,
   };
 };
 
