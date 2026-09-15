@@ -9,17 +9,22 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  ApiBadRequestResponse,
   ApiBearerAuth,
+  ApiForbiddenResponse,
+  ApiNotFoundResponse,
+  ApiOkResponse,
   ApiOperation,
   ApiParam,
-  ApiResponse,
   ApiTags,
+  ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { JwtAuthGuard, RolesGuard, PermissionGuard } from '../../common/guards';
 import { RequirePermission, Roles } from '../../common/decorators';
 import { Role } from '../../shared/enums';
 import { AuditLogService } from './audit-log.service';
 import { QueryAuditLogDto } from './dto/query-audit-log.dto';
+import { AuditLogResponseDto } from './dto/audit-log-response.dto';
 
 @ApiTags('Admin / Audit Logs')
 @Controller('admin/audit-logs')
@@ -37,7 +42,14 @@ export class AdminAuditLogController {
       'Append-only audit trail. Supports filtering by resourceType, actorUserId, and action. ' +
       'No update or delete endpoint is exposed.',
   })
-  @ApiResponse({ status: 200, description: 'Audit log list returned' })
+  @ApiOkResponse({
+    description: 'Audit log list returned',
+    type: AuditLogResponseDto,
+    isArray: true,
+  })
+  @ApiBadRequestResponse({ description: 'Invalid audit log filters or pagination' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Audit read permission required' })
   async findAll(@Query() query: QueryAuditLogDto) {
     const { data, total } = await this.auditLogService.findAll({
       page: query.page,
@@ -59,9 +71,15 @@ export class AdminAuditLogController {
 
   @Get(':id')
   @ApiOperation({ summary: 'Admin: Get a single audit log entry by ID' })
-  @ApiParam({ name: 'id', description: 'Audit log UUID' })
-  @ApiResponse({ status: 200, description: 'Audit log entry returned' })
-  @ApiResponse({ status: 404, description: 'Audit log entry not found' })
+  @ApiParam({ name: 'id', format: 'uuid', description: 'Audit log UUID' })
+  @ApiOkResponse({
+    description: 'Audit log entry returned',
+    type: AuditLogResponseDto,
+  })
+  @ApiBadRequestResponse({ description: 'Invalid audit log UUID' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Audit read permission required' })
+  @ApiNotFoundResponse({ description: 'Audit log entry not found' })
   async findOne(@Param('id', ParseUUIDPipe) id: string) {
     const entry = await this.auditLogService.findById(id);
     if (!entry) {
