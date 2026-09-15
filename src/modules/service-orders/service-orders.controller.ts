@@ -11,7 +11,16 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import {
+  ApiBadRequestResponse,
+  ApiBearerAuth,
+  ApiConflictResponse,
+  ApiNotFoundResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiServiceUnavailableResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionGuard } from '../../common/guards/permission.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
@@ -20,6 +29,15 @@ import {
   ServiceOrderStatus,
   EvidenceType,
 } from '../../shared/enums';
+import {
+  CashSettlementConfirmationDto,
+  CashSettlementDeclarationDto,
+  CashSettlementResponseDto,
+  CommissionDueResponseDto,
+  InitiatePaymentDto,
+  InvoiceResponseDto,
+  PaymentResponseDto,
+} from '../finance/dto';
 
 @ApiTags('Service Orders')
 @Controller()
@@ -219,8 +237,13 @@ export class ServiceOrdersController {
   @RequirePermission('invoice:read_related')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get invoice for service order' })
-  async getInvoice(@Param('id') id: string) {
-    const invoice = await this.serviceOrdersService.getInvoice(id);
+  @ApiOkResponse({ type: InvoiceResponseDto, description: 'Invoice or null' })
+  @ApiNotFoundResponse({ description: 'Order or invoice not found' })
+  async getInvoice(
+    @Param('id') id: string,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    const invoice = await this.serviceOrdersService.getInvoice(id, req.user);
     return { data: invoice };
   }
 
@@ -229,13 +252,18 @@ export class ServiceOrdersController {
   @RequirePermission('invoice:pay_own')
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Pay invoice (DEMO mode)' })
+  @ApiOperation({ summary: 'Initiate invoice payment with server-derived amount' })
+  @ApiOkResponse({ type: PaymentResponseDto })
+  @ApiBadRequestResponse({ description: 'Invalid idempotency key' })
+  @ApiConflictResponse({ description: 'Idempotency or invoice payment conflict' })
+  @ApiServiceUnavailableResponse({ description: 'Provider verification is unavailable' })
   async payInvoice(
     @Param('id') id: string,
+    @Body() dto: InitiatePaymentDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
-    const invoice = await this.serviceOrdersService.payInvoice(id, req.user);
-    return { data: invoice };
+    const payment = await this.serviceOrdersService.payInvoice(id, req.user, dto);
+    return { data: payment };
   }
 
   @Get('service-orders/:id/warranties')
@@ -256,9 +284,12 @@ export class ServiceOrdersController {
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Technician declares cash received for service order' })
+  @ApiOkResponse({ type: CashSettlementResponseDto })
+  @ApiBadRequestResponse({ description: 'Invalid whole-VND declaration' })
+  @ApiConflictResponse({ description: 'Exact invoice match failed or settlement is disputed' })
   async declareCashSettlement(
     @Param('id') id: string,
-    @Body() body: { declaredAmount: number; technicianNotes?: string; receiptEvidenceUrl?: string },
+    @Body() body: CashSettlementDeclarationDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
     const settlement = await this.serviceOrdersService.declareCashSettlement(id, body, req.user);
@@ -271,9 +302,12 @@ export class ServiceOrdersController {
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Customer confirms or disputes cash payment' })
+  @ApiOkResponse({ type: CashSettlementResponseDto })
+  @ApiBadRequestResponse({ description: 'Invalid confirmation or missing dispute reason' })
+  @ApiConflictResponse({ description: 'Cash mismatch requires Support Case review' })
   async confirmCashSettlement(
     @Param('id') id: string,
-    @Body() body: { agreed: boolean; disputeReason?: string; confirmedAmount?: number },
+    @Body() body: CashSettlementConfirmationDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
     const settlement = await this.serviceOrdersService.confirmCashSettlement(id, body, req.user);
@@ -285,8 +319,12 @@ export class ServiceOrdersController {
   @RequirePermission('order:read_related')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get cash settlement status for order' })
-  async getCashSettlement(@Param('id') id: string) {
-    const settlement = await this.serviceOrdersService.getCashSettlement(id);
+  @ApiOkResponse({ type: CashSettlementResponseDto, description: 'Settlement or null' })
+  async getCashSettlement(
+    @Param('id') id: string,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    const settlement = await this.serviceOrdersService.getCashSettlement(id, req.user);
     return { data: settlement };
   }
 
@@ -297,8 +335,9 @@ export class ServiceOrdersController {
   @RequirePermission('order:read_related')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get my commission dues (Technician)' })
-  async getMyCommissionDues(@Req() req: { user: { id: string } }) {
-    const result = await this.serviceOrdersService.getCommissionDues(req.user.id);
+  @ApiOkResponse({ type: CommissionDueResponseDto, isArray: true })
+  async getMyCommissionDues(@Req() req: { user: { id: string; role: string } }) {
+    const result = await this.serviceOrdersService.getCommissionDues(req.user);
     return { data: result.data, meta: { totalDue: result.totalDue } };
   }
 
@@ -307,13 +346,18 @@ export class ServiceOrdersController {
   @RequirePermission('order:read_related')
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Pay commission due debt' })
+  @ApiOperation({ summary: 'Initiate commission due payment with server-derived amount' })
+  @ApiOkResponse({ type: PaymentResponseDto })
+  @ApiBadRequestResponse({ description: 'Invalid idempotency key' })
+  @ApiConflictResponse({ description: 'Idempotency or commission due payment conflict' })
+  @ApiServiceUnavailableResponse({ description: 'Provider verification is unavailable' })
   async payCommissionDue(
     @Param('id') id: string,
-    @Req() req: { user: { id: string } },
+    @Body() dto: InitiatePaymentDto,
+    @Req() req: { user: { id: string; role: string } },
   ) {
-    const due = await this.serviceOrdersService.payCommissionDue(id, req.user.id);
-    return { data: due };
+    const payment = await this.serviceOrdersService.payCommissionDue(id, req.user, dto);
+    return { data: payment };
   }
 
   // ── Spec v1.2: Warranty Claims ──

@@ -29,6 +29,7 @@ import { HealthModule } from './modules/health/health.module';
 import { TechnicianVerificationsModule } from './modules/technician-verifications/technician-verifications.module';
 import { PartsCatalogModule } from './modules/parts-catalog/parts-catalog.module';
 import { SupportCasesModule } from './modules/support-cases/support-cases.module';
+import { FinanceModule } from './modules/finance/finance.module';
 
 @Module({
   imports: [
@@ -67,6 +68,7 @@ import { SupportCasesModule } from './modules/support-cases/support-cases.module
     TechnicianVerificationsModule,
     PartsCatalogModule,
     SupportCasesModule,
+    FinanceModule,
   ],
 })
 export class AppModule {}

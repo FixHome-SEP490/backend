@@ -15,8 +15,6 @@ import { WarrantyCoverage } from './entities/warranty-coverage.entity';
 import { AdditionalCostRequest } from './entities/additional-cost-request.entity';
 import { Quotation } from '../quotations/entities/quotation.entity';
 import { AdditionalCostItem } from './entities/additional-cost-item.entity';
-import { CashSettlement } from './entities/cash-settlement.entity';
-import { CommissionDue } from './entities/commission-due.entity';
 import { WarrantyClaim } from './entities/warranty-claim.entity';
 import { Booking } from '../bookings/entities/booking.entity';
 import { User } from '../users/entities/user.entity';
@@ -38,12 +36,20 @@ import {
   CostItemType,
   WarrantyStatus,
   ServicePricingMode,
-  CashSettlementStatus,
-  CommissionDueStatus,
   WarrantyClaimStatus,
 } from '../../shared/enums';
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import { FinanceService, FinanceActor } from '../finance/finance.service';
+import {
+  CashSettlementConfirmationDto,
+  CashSettlementDeclarationDto,
+  CommissionDueResponseDto,
+  InitiatePaymentDto,
+  InvoiceResponseDto,
+  PaymentResponseDto,
+  CashSettlementResponseDto,
+} from '../finance/dto';
 import type { EntityManager } from 'typeorm';
 
 @Injectable()
@@ -73,10 +79,6 @@ export class ServiceOrdersService {
     private readonly warrantyRepo: Repository<WarrantyCoverage>,
     @InjectRepository(AdditionalCostRequest)
     private readonly additionalCostRepo: Repository<AdditionalCostRequest>,
-    @InjectRepository(CashSettlement)
-    private readonly cashSettlementRepo: Repository<CashSettlement>,
-    @InjectRepository(CommissionDue)
-    private readonly commissionDueRepo: Repository<CommissionDue>,
     @InjectRepository(WarrantyClaim)
     private readonly warrantyClaimRepo: Repository<WarrantyClaim>,
     @InjectRepository(User)
@@ -86,6 +88,7 @@ export class ServiceOrdersService {
     private readonly dataSource: DataSource,
     private readonly configService: BusinessConfigService,
     private readonly auditLogService: AuditLogService,
+    private readonly financeService: FinanceService,
   ) {}
 
   // ── Queries ──
@@ -567,41 +570,22 @@ export class ServiceOrdersService {
   }
 
   /**
-   * Get invoice for an order.
+   * Finance delegates keep the existing Service Orders public surface while
+   * keeping money-state authority in the Finance module.
    */
-  async getInvoice(orderId: string): Promise<Invoice | null> {
-    return this.invoiceRepo.findOne({
-      where: { serviceOrderId: orderId },
-      relations: ['items'],
-    });
+  async getInvoice(
+    orderId: string,
+    actor: FinanceActor,
+  ): Promise<InvoiceResponseDto | null> {
+    return this.financeService.getInvoice(orderId, actor);
   }
 
-  /**
-   * Pay invoice (DEMO mode — just mark as PAID).
-   */
   async payInvoice(
     invoiceId: string,
-    _actor: { id: string; role: string },
-  ): Promise<Invoice> {
-    const invoice = await this.invoiceRepo.findOneBy({ id: invoiceId });
-    if (!invoice) {
-      throw new BusinessException(ErrorCodes.NOT_FOUND, 'Invoice not found');
-    }
-    if (invoice.paymentStatus === PaymentStatus.PAID) {
-      return invoice; // Idempotent
-    }
-
-    invoice.paymentStatus = PaymentStatus.PAID;
-    invoice.paidAt = new Date();
-    const saved = await this.invoiceRepo.save(invoice);
-
-    // Also update order payment status
-    await this.orderRepo.update(
-      { id: invoice.serviceOrderId },
-      { paymentStatus: PaymentStatus.PAID },
-    );
-
-    return saved;
+    actor: FinanceActor,
+    dto: InitiatePaymentDto,
+  ): Promise<PaymentResponseDto> {
+    return this.financeService.initiateInvoicePayment(invoiceId, actor, dto);
   }
 
   /**
@@ -618,196 +602,39 @@ export class ServiceOrdersService {
 
   async declareCashSettlement(
     orderId: string,
-    dto: { declaredAmount: number; technicianNotes?: string; receiptEvidenceUrl?: string },
-    actor: { id: string; role: string },
-  ): Promise<CashSettlement> {
-    const order = await this.orderRepo.findOneBy({ id: orderId });
-    if (!order) {
-      throw new BusinessException(ErrorCodes.NOT_FOUND, 'Service order not found');
-    }
-
-    // Verify actor is assigned technician
-    const assignment = await this.assignmentRepo.findOne({
-      where: { serviceOrderId: orderId, technicianId: actor.id, isActive: true },
-    });
-    if (!assignment && actor.role !== Role.ADMIN) {
-      throw new BusinessException(
-        ErrorCodes.OWNERSHIP_DENIED,
-        'Only assigned technician can declare cash received',
-      );
-    }
-    if (order.status !== ServiceOrderStatus.COMPLETED) {
-      throw new BusinessException(
-        ErrorCodes.ORDER_INVALID_TRANSITION,
-        'Order must be completed before settling cash payment',
-      );
-    }
-
-    let settlement = await this.cashSettlementRepo.findOne({
-      where: { serviceOrderId: orderId },
-    });
-    if (settlement && settlement.status === CashSettlementStatus.CONFIRMED) {
-      throw new BusinessException(
-        ErrorCodes.CONFLICT,
-        'Cash settlement is already confirmed',
-      );
-    }
-
-    if (!settlement) {
-      settlement = this.cashSettlementRepo.create({
-        serviceOrderId: orderId,
-        declaredByTechnicianId: actor.id,
-      });
-    }
-
-    settlement.declaredAmount = dto.declaredAmount;
-    settlement.declaredAt = new Date();
-    settlement.technicianNotes = dto.technicianNotes || null;
-    settlement.receiptEvidenceUrl = dto.receiptEvidenceUrl || null;
-    settlement.status = CashSettlementStatus.PENDING_CONFIRMATION;
-
-    return this.cashSettlementRepo.save(settlement);
+    dto: CashSettlementDeclarationDto,
+    actor: FinanceActor,
+  ): Promise<CashSettlementResponseDto> {
+    return this.financeService.declareCashSettlement(orderId, dto, actor);
   }
 
   async confirmCashSettlement(
     orderId: string,
-    dto: { agreed: boolean; disputeReason?: string; confirmedAmount?: number },
-    actor: { id: string; role: string },
-  ): Promise<CashSettlement> {
-    const order = await this.orderRepo.findOneBy({ id: orderId });
-    if (!order) {
-      throw new BusinessException(ErrorCodes.NOT_FOUND, 'Service order not found');
-    }
-
-    const booking = await this.dataSource
-      .getRepository(Booking)
-      .findOneBy({ id: order.bookingId });
-    if (
-      booking?.customerId !== actor.id &&
-      actor.role !== Role.ADMIN &&
-      actor.role !== Role.SERVICE_MANAGER
-    ) {
-      throw new BusinessException(
-        ErrorCodes.OWNERSHIP_DENIED,
-        'Only customer can confirm cash payment',
-      );
-    }
-
-    const settlement = await this.cashSettlementRepo.findOne({
-      where: { serviceOrderId: orderId },
-    });
-    if (!settlement) {
-      throw new BusinessException(
-        ErrorCodes.NOT_FOUND,
-        'No cash settlement declaration found for this order',
-      );
-    }
-
-    if (dto.agreed) {
-      settlement.status = CashSettlementStatus.CONFIRMED;
-      settlement.confirmedByCustomerId = actor.id;
-      settlement.confirmedAmount =
-        dto.confirmedAmount ?? settlement.declaredAmount;
-      settlement.confirmedAt = new Date();
-      const savedSettlement = await this.cashSettlementRepo.save(settlement);
-
-      // Mark invoice and order as PAID
-      const invoice = await this.invoiceRepo.findOne({
-        where: { serviceOrderId: orderId },
-      });
-      if (invoice) {
-        invoice.paymentStatus = PaymentStatus.PAID;
-        invoice.paidAt = new Date();
-        await this.invoiceRepo.save(invoice);
-      }
-      await this.orderRepo.update(
-        { id: orderId },
-        { paymentStatus: PaymentStatus.PAID },
-      );
-
-      // Create CommissionDue (10% on Labor Total)
-      const assignment = await this.assignmentRepo.findOne({
-        where: { serviceOrderId: orderId, isActive: true },
-      });
-      const technicianId = assignment?.technicianId || settlement.declaredByTechnicianId;
-      const laborTotal = invoice
-        ? Number(invoice.laborTotal)
-        : Number(order.laborTotal || 0);
-      const dueAmount = invoice?.commissionAmount
-        ? Number(invoice.commissionAmount)
-        : Math.round(laborTotal * 0.1);
-
-      if (technicianId && dueAmount > 0) {
-        const existingDue = await this.commissionDueRepo.findOne({
-          where: { serviceOrderId: orderId },
-        });
-        if (!existingDue) {
-          const dueDate = new Date();
-          dueDate.setDate(dueDate.getDate() + 7); // 7-day payment window
-
-          const commissionDue = this.commissionDueRepo.create({
-            technicianId,
-            serviceOrderId: orderId,
-            cashSettlementId: savedSettlement.id,
-            laborTotalSnapshot: laborTotal,
-            commissionRateSnapshot: 0.1,
-            dueAmount,
-            status: CommissionDueStatus.PENDING,
-            dueDate,
-          });
-          await this.commissionDueRepo.save(commissionDue);
-        }
-      }
-
-      return savedSettlement;
-    } else {
-      settlement.status = CashSettlementStatus.DISPUTED;
-      settlement.managerResolutionReason =
-        dto.disputeReason || 'Customer disputed declared cash amount';
-      return this.cashSettlementRepo.save(settlement);
-    }
+    dto: CashSettlementConfirmationDto,
+    actor: FinanceActor,
+  ): Promise<CashSettlementResponseDto> {
+    return this.financeService.confirmCashSettlement(orderId, dto, actor);
   }
 
-  async getCashSettlement(orderId: string): Promise<CashSettlement | null> {
-    return this.cashSettlementRepo.findOne({
-      where: { serviceOrderId: orderId },
-      relations: ['declaredByTechnician', 'confirmedByCustomer'],
-    });
+  async getCashSettlement(
+    orderId: string,
+    actor: FinanceActor,
+  ): Promise<CashSettlementResponseDto | null> {
+    return this.financeService.getCashSettlement(orderId, actor);
   }
 
   async getCommissionDues(
-    technicianId: string,
-  ): Promise<{ data: CommissionDue[]; totalDue: number }> {
-    const dues = await this.commissionDueRepo.find({
-      where: { technicianId },
-      relations: ['serviceOrder'],
-      order: { createdAt: 'DESC' },
-    });
-    const totalDue = dues
-      .filter((d) => d.status === CommissionDueStatus.PENDING)
-      .reduce((sum, d) => sum + Number(d.dueAmount), 0);
-    return { data: dues, totalDue };
+    actor: FinanceActor,
+  ): Promise<{ data: CommissionDueResponseDto[]; totalDue: number }> {
+    return this.financeService.getCommissionDues(actor);
   }
 
   async payCommissionDue(
     dueId: string,
-    technicianId: string,
-  ): Promise<CommissionDue> {
-    const due = await this.commissionDueRepo.findOne({
-      where: { id: dueId, technicianId },
-    });
-    if (!due) {
-      throw new BusinessException(
-        ErrorCodes.NOT_FOUND,
-        'Commission due record not found',
-      );
-    }
-    if (due.status === CommissionDueStatus.PAID) {
-      return due;
-    }
-    due.status = CommissionDueStatus.PAID;
-    due.paidAt = new Date();
-    return this.commissionDueRepo.save(due);
+    actor: FinanceActor,
+    dto: InitiatePaymentDto,
+  ): Promise<PaymentResponseDto> {
+    return this.financeService.initiateCommissionDuePayment(dueId, actor, dto);
   }
 
   async createWarrantyClaim(
