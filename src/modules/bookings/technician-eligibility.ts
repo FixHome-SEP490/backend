@@ -8,6 +8,7 @@ import { TechnicianTimeOff } from '../technicians/entities/technician-time-off.e
 import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
 import { CommissionDue } from '../service-orders/entities/commission-due.entity';
 import { AccountStatus, CommissionDueStatus, Role, VerificationStatus } from '../../shared/enums';
+import { resolveServiceArea } from '../../shared/utils/administrative-areas';
 
 /** Same authority at discovery, shortlist, activation and Accept. IDs here are User IDs. */
 export async function technicianEligibility(
@@ -46,8 +47,19 @@ export async function technicianEligibility(
     .andWhere('(b.preferred_start_at IS NULL OR b.preferred_end_at IS NULL OR (b.preferred_start_at < :end AND b.preferred_end_at > :start))', { start, end });
   if (excludeOrderId) conflict.andWhere('o.id != :excludeOrderId', { excludeOrderId });
   if (await conflict.getCount()) return fail('Assignment schedule conflict');
-  if (!booking.provinceSnapshot || !booking.districtSnapshot) return fail('Service area snapshot is missing');
+  if (!booking.provinceSnapshot && !booking.districtSnapshot && !booking.addressId) return fail('Service area snapshot is missing');
+  const targetArea = resolveServiceArea({
+    province: booking.provinceSnapshot,
+    district: booking.districtSnapshot,
+  });
   const areas = await manager.find(TechnicianServiceArea, { where: { technicianId: profile.id } });
-  if (!areas.some(area => area.provinceCode === booking.provinceSnapshot && area.districtCode === booking.districtSnapshot)) return fail('Outside service area');
+  const inArea = areas.some(area => {
+    const provMatch = area.provinceCode === targetArea.provinceCode || area.provinceCode === booking.provinceSnapshot;
+    const distMatch = area.districtCode === targetArea.districtCode ||
+                      targetArea.districtAliasCodes.includes(area.districtCode) ||
+                      area.districtCode === booking.districtSnapshot;
+    return provMatch && distMatch;
+  });
+  if (!inArea) return fail('Outside service area');
   return { eligible: true };
 }

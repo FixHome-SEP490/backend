@@ -41,6 +41,16 @@ export class CreateAddressDto {
   @MaxLength(100)
   province: string;
 
+  @ApiPropertyOptional({ example: '79' })
+  @IsOptional()
+  @IsString()
+  provinceCode?: string;
+
+  @ApiPropertyOptional({ example: '760' })
+  @IsOptional()
+  @IsString()
+  districtCode?: string;
+
   @ApiPropertyOptional({ example: 10.7769 })
   @IsOptional()
   @IsNumber()
@@ -98,6 +108,16 @@ export class UpdateAddressDto {
   @IsNumber()
   lng?: number;
 
+  @ApiPropertyOptional({ example: '79' })
+  @IsOptional()
+  @IsString()
+  provinceCode?: string;
+
+  @ApiPropertyOptional({ example: '760' })
+  @IsOptional()
+  @IsString()
+  districtCode?: string;
+
   @ApiPropertyOptional({ example: false })
   @IsOptional()
   @IsBoolean()
@@ -127,6 +147,12 @@ export class AddressResponseDto {
   province: string;
 
   @ApiPropertyOptional()
+  provinceCode?: string | null;
+
+  @ApiPropertyOptional()
+  districtCode?: string | null;
+
+  @ApiPropertyOptional()
   lat?: number | null;
 
   @ApiPropertyOptional()
@@ -150,6 +176,8 @@ export class AddressResponseDto {
       ward: address.ward,
       district: address.district,
       province: address.province,
+      provinceCode: address.provinceCode,
+      districtCode: address.districtCode,
       lat: address.lat != null ? Number(address.lat) : null,
       lng: address.lng != null ? Number(address.lng) : null,
       isDefault: address.isDefault,

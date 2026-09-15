@@ -98,13 +98,18 @@ export async function seedUsers(dataSource: DataSource): Promise<void> {
       );
     }
 
-    // Service Areas (HCM districts)
-    await queryRunner.query(
-      `INSERT INTO "technician_service_areas" ("technician_id", "province_code", "district_code")
-       VALUES ($1, '79', $2)
-       ON CONFLICT DO NOTHING`,
-      [profileId, `79${(i % 10 + 1).toString().padStart(2, '0')}`],
-    );
+    // Service Areas (HCM districts from official service_areas: 760=Q1, 770=Q3, 778=Q7, 765=Bình Thạnh, etc.)
+    const hcmDistricts = ['760', '770', '778', '765', '768', '766', '764', '769', '771', '774', '773', '761'];
+    // Give each tech their primary district and central district 760 (Quận 1) so customer testing always has matching candidates
+    const assignedDistricts = new Set(['760', hcmDistricts[i % hcmDistricts.length], hcmDistricts[(i + 1) % hcmDistricts.length]]);
+    for (const distCode of assignedDistricts) {
+      await queryRunner.query(
+        `INSERT INTO "technician_service_areas" ("technician_id", "province_code", "district_code")
+         VALUES ($1, '79', $2)
+         ON CONFLICT DO NOTHING`,
+        [profileId, distCode],
+      );
+    }
   }
 
   // 4. Customers (8 accounts, 1 suspended)

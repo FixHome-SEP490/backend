@@ -27,11 +27,14 @@ import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { BookingInvitation } from './entities/booking-invitation.entity';
 import { InvitationStatus, ServiceOrderStatus } from '../../shared/enums';
+import { resolveServiceArea } from '../../shared/utils/administrative-areas';
+import { AiDiagnosis } from '../ai-diagnosis/entities/ai-diagnosis.entity';
 
 export interface TechnicianCandidate {
   technicianId: string;
   userId: string;
   fullName: string;
+  avatarUrl?: string | null;
   averageRating: number;
   ratingCount: number;
   reliabilityScore: number;
@@ -74,6 +77,7 @@ export class BookingsService {
     if (customer.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
     if (!validBookingWindow(dto.preferredStartAt, dto.preferredEndAt)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Choose a valid future start and end time');
     if (!dto.addressId || !Number.isInteger(dto.quantity ?? 1) || (dto.quantity ?? 1) < 1) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Address and positive integer quantity required');
+
     // Check suspension
     const user = await this.userRepo.findOneBy({ id: customer.id });
     if (!user) throw new NotFoundException('User not found');
@@ -120,6 +124,8 @@ export class BookingsService {
     // Spec v1.4: Snapshot address for historical integrity
     let provinceSnapshot: string | null = null;
     let districtSnapshot: string | null = null;
+    let provinceNameSnapshot: string | null = null;
+    let districtNameSnapshot: string | null = null;
     let addressTextSnapshot: string | null = null;
     let latitudeSnapshot: number | null = null;
     let longitudeSnapshot: number | null = null;
@@ -129,8 +135,16 @@ export class BookingsService {
         userId: customer.id,
       });
       if (address) {
-        provinceSnapshot = address.province;
-        districtSnapshot = address.district;
+        const resolved = resolveServiceArea({
+          province: address.province,
+          district: address.district,
+          provinceCode: address.provinceCode,
+          districtCode: address.districtCode,
+        });
+        provinceSnapshot = resolved.provinceCode;
+        districtSnapshot = resolved.districtCode;
+        provinceNameSnapshot = resolved.provinceName;
+        districtNameSnapshot = resolved.districtName;
         addressTextSnapshot = [address.line1, address.ward, address.district, address.province]
           .filter(Boolean).join(', ');
         latitudeSnapshot = address.lat != null ? Number(address.lat) : null;
@@ -140,6 +154,7 @@ export class BookingsService {
 
     if (latitudeSnapshot == null || longitudeSnapshot == null) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Repair address coordinates are required');
     if (isFixed && (service.fixedPrice == null || Number(service.fixedPrice) < 0)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Service fixed price is not configured');
+
     const booking = this.bookingRepo.create({
       customerId: customer.id,
       serviceId: dto.serviceId,
@@ -147,6 +162,8 @@ export class BookingsService {
       addressTextSnapshot,
       provinceSnapshot,
       districtSnapshot,
+      provinceNameSnapshot,
+      districtNameSnapshot,
       serviceNameSnapshot: service.name,
       latitudeSnapshot,
       longitudeSnapshot,
@@ -162,6 +179,29 @@ export class BookingsService {
     });
 
     const saved = await this.bookingRepo.save(booking);
+
+    if (dto.mediaUrls && dto.mediaUrls.length > 0) {
+      for (const url of dto.mediaUrls) {
+        if (!url || typeof url !== 'string') continue;
+        const media = this.mediaRepo.create({
+          bookingId: saved.id,
+          url,
+          mimeType: url.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg',
+        });
+        await this.mediaRepo.save(media);
+      }
+    }
+
+    if (dto.aiDiagnosisId) {
+      try {
+        await this.dataSource.query(
+          `UPDATE "ai_diagnoses" SET "booking_id" = $1 WHERE "id" = $2`,
+          [saved.id, dto.aiDiagnosisId],
+        );
+      } catch (err) {
+        this.logger.warn(`Failed to link AI diagnosis ${dto.aiDiagnosisId}: ${err.message}`);
+      }
+    }
 
     await this.auditLogService.log({
       actorUserId: customer.id,
@@ -188,7 +228,8 @@ export class BookingsService {
     const qb = this.bookingRepo
       .createQueryBuilder('b')
       .where('b.customerId = :customerId', { customerId })
-      .leftJoinAndSelect('b.service', 'service');
+      .leftJoinAndSelect('b.service', 'service')
+      .leftJoinAndSelect('b.media', 'media');
 
     if (options.status) {
       qb.andWhere('b.status = :status', { status: options.status });
@@ -211,7 +252,7 @@ export class BookingsService {
   ): Promise<Booking> {
     const booking = await this.bookingRepo.findOne({
       where: { id },
-      relations: ['service', 'media', 'invitations'],
+      relations: ['service', 'address', 'media', 'invitations'],
     });
     if (!booking) {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
@@ -232,9 +273,40 @@ export class BookingsService {
       }
     }
 
-    if (actor.role === Role.TECHNICIAN) booking.invitations = booking.invitations?.filter(invitation => invitation.technicianId === actor.id);
+    if (actor.role === Role.TECHNICIAN) {
+      booking.invitations = booking.invitations?.filter(invitation => invitation.technicianId === actor.id);
+    }
     const order = await this.dataSource.manager.findOneBy(ServiceOrder, { bookingId: id });
-    return Object.assign(booking, { serviceOrderId: order?.id });
+    const diagnosis = await this.dataSource.manager.findOne(AiDiagnosis, {
+      where: { bookingId: id },
+      order: { createdAt: 'DESC' },
+    });
+    return Object.assign(booking, { serviceOrderId: order?.id, diagnosis });
+  }
+
+  async attachMedia(
+    bookingId: string,
+    body: { url: string; mimeType?: string; sizeBytes?: number },
+    actor: { id: string; role: string },
+  ): Promise<BookingMedia> {
+    const booking = await this.bookingRepo.findOneBy({ id: bookingId });
+    if (!booking) {
+      throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
+    }
+    if (
+      actor.role !== Role.ADMIN &&
+      actor.role !== Role.SERVICE_MANAGER &&
+      booking.customerId !== actor.id
+    ) {
+      throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
+    }
+    const media = this.mediaRepo.create({
+      bookingId,
+      url: body.url,
+      mimeType: body.mimeType || (body.url.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg'),
+      sizeBytes: body.sizeBytes,
+    });
+    return this.mediaRepo.save(media);
   }
 
   /**
@@ -273,12 +345,14 @@ export class BookingsService {
       'DESC',
     )
       .addOrderBy('tp.averageRating', 'DESC')
-      .addOrderBy('tp.reliabilityScore', 'DESC'); // Apply the result limit only after all hard filters.
+      .addOrderBy('tp.reliabilityScore', 'DESC');
 
     const ranked = await qb.getMany();
     const profiles: TechnicianProfile[] = [];
     for (const profile of ranked) {
-      if ((await technicianEligibility(this.dataSource.manager, profile.userId, booking)).eligible) profiles.push(profile);
+      if ((await technicianEligibility(this.dataSource.manager, profile.userId, booking)).eligible) {
+        profiles.push(profile);
+      }
       if (profiles.length === 20) break;
     }
 
@@ -288,6 +362,7 @@ export class BookingsService {
         technicianId: tp.id,
         userId: tp.userId,
         fullName: tp.user?.fullName || '',
+        avatarUrl: tp.user?.avatarUrl || null,
         averageRating: Number(tp.averageRating),
         ratingCount: tp.ratingCount,
         reliabilityScore: tp.reliabilityScore,
@@ -305,14 +380,27 @@ export class BookingsService {
   /**
    * Reschedule a pending/matching booking.
    */
-  async reschedule(bookingId: string, dto: { preferredStartAt: string; preferredEndAt: string }, customer: { id: string }): Promise<Booking> {
-    if (!validBookingWindow(dto.preferredStartAt, dto.preferredEndAt)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Choose a valid future time window');
-    return this.dataSource.transaction(async manager => {
-      const booking = await manager.findOne(Booking, { where: { id: bookingId, customerId: customer.id }, lock: { mode: 'pessimistic_write' } });
+  async reschedule(
+    bookingId: string,
+    dto: { preferredStartAt: string; preferredEndAt: string },
+    customer: { id: string },
+  ): Promise<Booking> {
+    if (!validBookingWindow(dto.preferredStartAt, dto.preferredEndAt)) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Choose a valid future time window');
+    }
+    return this.dataSource.transaction(async (manager) => {
+      const booking = await manager.findOne(Booking, {
+        where: { id: bookingId, customerId: customer.id },
+        lock: { mode: 'pessimistic_write' },
+      });
       if (!booking) throw new ForbiddenException('Booking not found');
-      if (![BookingStatus.SUBMITTED, BookingStatus.MATCHING, BookingStatus.MATCHED].includes(booking.status)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Booking cannot be rescheduled');
+      if (![BookingStatus.SUBMITTED, BookingStatus.MATCHING, BookingStatus.MATCHED].includes(booking.status)) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Booking cannot be rescheduled');
+      }
       const order = await manager.findOne(ServiceOrder, { where: { bookingId }, lock: { mode: 'pessimistic_write' } });
-      if (order && ![ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(order.status)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Repair already started or order closed');
+      if (order && ![ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(order.status)) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Repair already started or order closed');
+      }
       booking.preferredStartAt = new Date(dto.preferredStartAt);
       booking.preferredEndAt = new Date(dto.preferredEndAt);
       if (order) {
@@ -323,29 +411,79 @@ export class BookingsService {
         if (!eligibility.eligible) throw new BusinessException(ErrorCodes.CONFLICT, eligibility.reason!);
         await manager.update(ServiceOrder, order.id, { scheduledAt: booking.preferredStartAt });
       } else {
-        await manager.createQueryBuilder().update(BookingInvitation).set({ status: InvitationStatus.CANCELLED, respondedAt: new Date() }).where('booking_id = :bookingId AND status IN (:...statuses)', { bookingId, statuses: [InvitationStatus.PENDING, InvitationStatus.STANDBY] }).execute();
+        await manager
+          .createQueryBuilder()
+          .update(BookingInvitation)
+          .set({ status: InvitationStatus.CANCELLED, respondedAt: new Date() })
+          .where('booking_id = :bookingId AND status IN (:...statuses)', {
+            bookingId,
+            statuses: [InvitationStatus.PENDING, InvitationStatus.STANDBY],
+          })
+          .execute();
         booking.status = BookingStatus.SUBMITTED;
       }
-      await this.auditLogService.logWithManager(manager, { actorUserId: customer.id, actorRole: Role.CUSTOMER, action: 'BOOKING_RESCHEDULE', resourceType: 'booking', resourceId: bookingId, after: dto });
+      await this.auditLogService.logWithManager(manager, {
+        actorUserId: customer.id,
+        actorRole: Role.CUSTOMER,
+        action: 'BOOKING_RESCHEDULE',
+        resourceType: 'booking',
+        resourceId: bookingId,
+        after: dto,
+      });
       return manager.save(booking);
     });
   }
 
   async cancelBooking(bookingId: string, reason: string, customer: { id: string }): Promise<Booking> {
-    return this.dataSource.transaction(async manager => {
-      const booking = await manager.findOne(Booking, { where: { id: bookingId, customerId: customer.id }, lock: { mode: 'pessimistic_write' } });
+    return this.dataSource.transaction(async (manager) => {
+      const booking = await manager.findOne(Booking, {
+        where: { id: bookingId, customerId: customer.id },
+        lock: { mode: 'pessimistic_write' },
+      });
       if (!booking) throw new ForbiddenException('Booking not found');
       if (booking.status === BookingStatus.CANCELLED) return booking;
-      if (![BookingStatus.SUBMITTED, BookingStatus.MATCHING, BookingStatus.CLOSED].includes(booking.status) || await manager.findOneBy(ServiceOrder, { bookingId })) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Cancel the assigned ServiceOrder instead');
-      await manager.createQueryBuilder().update(BookingInvitation).set({ status: InvitationStatus.CANCELLED, respondedAt: new Date() }).where('booking_id = :bookingId AND status IN (:...statuses)', { bookingId, statuses: [InvitationStatus.PENDING, InvitationStatus.STANDBY] }).execute();
+      if (
+        ![BookingStatus.SUBMITTED, BookingStatus.MATCHING, BookingStatus.CLOSED].includes(booking.status) ||
+        (await manager.findOneBy(ServiceOrder, { bookingId }))
+      ) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Cancel the assigned ServiceOrder instead');
+      }
+      await manager
+        .createQueryBuilder()
+        .update(BookingInvitation)
+        .set({ status: InvitationStatus.CANCELLED, respondedAt: new Date() })
+        .where('booking_id = :bookingId AND status IN (:...statuses)', {
+          bookingId,
+          statuses: [InvitationStatus.PENDING, InvitationStatus.STANDBY],
+        })
+        .execute();
       booking.status = BookingStatus.CANCELLED;
-      await this.auditLogService.logWithManager(manager, { actorUserId: customer.id, actorRole: Role.CUSTOMER, action: 'BOOKING_CANCEL', resourceType: 'booking', resourceId: bookingId, after: { reason } });
+      await this.auditLogService.logWithManager(manager, {
+        actorUserId: customer.id,
+        actorRole: Role.CUSTOMER,
+        action: 'BOOKING_CANCEL',
+        resourceType: 'booking',
+        resourceId: bookingId,
+        after: { reason },
+      });
       return manager.save(booking);
     });
   }
+
   async rebook(oldBookingId: string, customer: { id: string; role: string }, dto: RebookDto): Promise<Booking> {
     const old = await this.bookingRepo.findOneBy({ id: oldBookingId, customerId: customer.id });
     if (!old) throw new ForbiddenException('Booking not found');
-    return this.create({ serviceId: old.serviceId, addressId: old.addressId!, description: dto.problemDescription?.trim() || old.description, preferredStartAt: dto.preferredStartAt, preferredEndAt: dto.preferredEndAt, quantity: dto.quantity ?? old.quantity, urgency: old.urgency }, customer);
+    return this.create(
+      {
+        serviceId: old.serviceId,
+        addressId: old.addressId!,
+        description: dto.problemDescription?.trim() || old.description,
+        preferredStartAt: dto.preferredStartAt,
+        preferredEndAt: dto.preferredEndAt,
+        quantity: dto.quantity ?? old.quantity,
+        urgency: old.urgency,
+      },
+      customer,
+    );
   }
 }

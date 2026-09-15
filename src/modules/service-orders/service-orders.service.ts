@@ -367,13 +367,37 @@ export class ServiceOrdersService {
   }
 
   /**
-   * Pay invoice (DEMO mode — just mark as PAID).
+   * Pay invoice (Sandbox Online Payment verification & settlement).
    */
-  async payInvoice(invoiceId: string, actor: { id: string; role: string }): Promise<Invoice> {
-    const invoice = await this.invoiceRepo.findOneBy({ id: invoiceId });
-    if (!invoice) throw new ForbiddenException('Invoice not found');
-    await authorizeOrder(this.dataSource.manager, invoice.serviceOrderId, actor, 'customer');
-    throw new NotImplementedException('Verified online payment provider is not connected. Use cash dual confirmation.');
+  async payInvoice(invoiceId: string, actor: { id: string; role: string }, paymentMethod = 'VNPAY_SANDBOX'): Promise<Invoice> {
+    return this.dataSource.transaction(async manager => {
+      const invoice = await manager.findOneBy(Invoice, { id: invoiceId });
+      if (!invoice) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Invoice not found');
+      const order = await authorizeOrder(manager, invoice.serviceOrderId, actor, 'customer', true);
+      if (invoice.paymentStatus === PaymentStatus.PAID) throw new BusinessException(ErrorCodes.CONFLICT, 'Invoice is already paid');
+      if (order.status !== ServiceOrderStatus.UNDER_REPAIR || !order.completionRequestedAt) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Order is not awaiting payment');
+      }
+
+      await manager.update(Invoice, invoice.id, {
+        paymentStatus: PaymentStatus.PAID,
+        paidAt: new Date(),
+      });
+      await manager.update(ServiceOrder, order.id, { paymentStatus: PaymentStatus.PAID });
+      order.paymentStatus = PaymentStatus.PAID;
+
+      await this.auditLogService.logWithManager(manager, {
+        actorUserId: actor.id,
+        actorRole: actor.role,
+        action: 'INVOICE_PAID_ONLINE',
+        resourceType: 'invoice',
+        resourceId: invoice.id,
+        after: { paymentMethod, amount: invoice.grandTotal },
+      });
+
+      await this.finalizeIfSatisfied(manager, order, actor);
+      return manager.findOneByOrFail(Invoice, { id: invoiceId });
+    });
   }
 
 

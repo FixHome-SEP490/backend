@@ -7,7 +7,6 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
 import { User } from '../../users/entities/user.entity';
 import { AccountStatus, Role } from '../../../shared/enums';
-import { isUUID } from 'class-validator';
 
 export interface JwtPayload {
   sub: string;

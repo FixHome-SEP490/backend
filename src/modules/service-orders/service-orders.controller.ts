@@ -286,12 +286,13 @@ export class ServiceOrdersController {
   @RequirePermission('invoice:pay_own')
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Pay invoice (DEMO mode)' })
+  @ApiOperation({ summary: 'Pay invoice (Online sandbox / gateway)' })
   async payInvoice(
     @Param('id', ParseUUIDPipe) id: string,
     @Req() req: { user: { id: string; role: string } },
+    @Body() body?: { paymentMethod?: string },
   ) {
-    const invoice = await this.serviceOrdersService.payInvoice(id, req.user);
+    const invoice = await this.serviceOrdersService.payInvoice(id, req.user, body?.paymentMethod || 'VNPAY_SANDBOX');
     return { data: invoice };
   }
 

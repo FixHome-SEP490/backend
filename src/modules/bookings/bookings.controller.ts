@@ -71,6 +71,21 @@ export class BookingsController {
     return { data: booking };
   }
 
+  @Post(':id/media')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('booking:create')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Attach media to booking' })
+  async attachMedia(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: { url: string; mimeType?: string; sizeBytes?: number },
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    const media = await this.bookingsService.attachMedia(id, body, req.user);
+    return { data: media };
+  }
+
   @Get(':id/technician-candidates')
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('invitation:shortlist')

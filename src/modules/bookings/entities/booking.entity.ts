@@ -50,6 +50,12 @@ export class Booking extends BaseEntity {
   @Column({ name: 'district_snapshot', type: 'varchar', length: 100, nullable: true })
   districtSnapshot?: string | null;
 
+  @Column({ name: 'province_name_snapshot', type: 'varchar', length: 100, nullable: true })
+  provinceNameSnapshot?: string | null;
+
+  @Column({ name: 'district_name_snapshot', type: 'varchar', length: 100, nullable: true })
+  districtNameSnapshot?: string | null;
+
   @Column({ name: 'service_name_snapshot', type: 'varchar', length: 255, nullable: true })
   serviceNameSnapshot?: string | null;
 

@@ -30,32 +30,59 @@ export class EstimatedCostDto {
 }
 
 export class DiagnosisResponseDto {
+  @ApiPropertyOptional()
+  id?: string;
+
+  @ApiPropertyOptional({ type: [String], description: 'Detected potential problems per Section 7' })
+  possibleProblems?: string[];
+
   @ApiProperty({ type: [String], description: 'Detected potential issues' })
-  possibleIssues: string[];
+  possibleIssues: any[];
 
   @ApiProperty({ type: [String], description: 'Possible root causes' })
-  possibleCauses: string[];
+  possibleCauses: any[];
 
-  @ApiProperty({ enum: UrgencyLevel, description: 'Urgency level' })
+  @ApiProperty({ enum: UrgencyLevel, description: 'Urgency level (LOW | MEDIUM | HIGH)' })
   urgency: UrgencyLevel;
+
+  @ApiPropertyOptional({ example: 150000 })
+  estimatedCostMin?: number;
+
+  @ApiPropertyOptional({ example: 450000 })
+  estimatedCostMax?: number;
 
   @ApiProperty({ type: EstimatedCostDto, description: 'Estimated cost range' })
   estimatedCost: EstimatedCostDto;
 
-  @ApiProperty({ type: [String], description: 'Suggested immediate actions' })
-  suggestedActions: string[];
+  @ApiPropertyOptional({ description: 'Suggested service ID from catalog' })
+  suggestedServiceId?: string | null;
+
+  @ApiPropertyOptional({ description: 'Suggested service name' })
+  suggestedServiceName?: string | null;
+
+  @ApiPropertyOptional({ description: 'Suggested skill name' })
+  suggestedSkill?: string | null;
+
+  @ApiPropertyOptional({ type: [String], description: 'Initial troubleshooting advice' })
+  troubleshooting?: string[];
+
+  @ApiPropertyOptional({ type: [String], description: 'Suggested immediate actions' })
+  suggestedActions?: string[];
 
   @ApiPropertyOptional({ description: 'Recommended service ID' })
   recommendedServiceId?: string | null;
 
-  @ApiProperty({ example: 0.85, description: 'AI confidence score (0.0 to 1.0)' })
+  @ApiProperty({ example: 0.88, description: 'AI confidence score (0.0 to 1.0)' })
   confidence: number;
+
+  @ApiPropertyOptional({ example: false })
+  isFallback?: boolean;
 
   @ApiProperty({ example: false, description: 'Flag indicating if confidence is below threshold' })
   isLowConfidence: boolean;
 
   @ApiProperty({
-    example: 'Kết quả AI chỉ mang tính tham khảo sơ bộ, không phải kết luận kỹ thuật tuyệt đối.',
+    example: 'Kết quả AI chỉ mang tính tham khảo. Kỹ thuật viên sẽ kiểm tra thực tế trước khi báo giá.',
     description: 'Advisory disclaimer',
   })
   disclaimer: string;
