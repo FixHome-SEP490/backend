@@ -93,12 +93,11 @@ export class AuditLogService {
   }
 
   /**
-   * Strict transactional variant for KYC review only.
+   * Strict transactional variant for governance/security-sensitive actions.
    * Uses the caller's EntityManager so the audit row joins the ambient
    * transaction; logs the failure, then rethrows so the transaction aborts
-   * instead of silently succeeding without an audit trail.
-   * All other callers (Booking/ServiceOrders/users) keep fail-open
-   * `logWithManager` behavior unchanged.
+   * instead of silently succeeding without an audit trail. Callers opt in
+   * explicitly; legacy normal-flow callers keep fail-open `logWithManager`.
    */
   async logWithManagerStrict(
     manager: import('typeorm').EntityManager,

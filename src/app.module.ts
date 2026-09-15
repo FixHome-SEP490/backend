@@ -27,6 +27,7 @@ import { MediaModule } from './modules/media/media.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { HealthModule } from './modules/health/health.module';
 import { TechnicianVerificationsModule } from './modules/technician-verifications/technician-verifications.module';
+import { PartsCatalogModule } from './modules/parts-catalog/parts-catalog.module';
 
 @Module({
   imports: [
@@ -63,6 +64,7 @@ import { TechnicianVerificationsModule } from './modules/technician-verification
     DashboardModule,
     HealthModule,
     TechnicianVerificationsModule,
+    PartsCatalogModule,
   ],
 })
 export class AppModule {}
