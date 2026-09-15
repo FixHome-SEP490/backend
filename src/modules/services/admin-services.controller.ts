@@ -12,13 +12,25 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  ApiBadRequestResponse,
   ApiBearerAuth,
+  ApiConflictResponse,
+  ApiCreatedResponse,
+  ApiForbiddenResponse,
+  ApiNotFoundResponse,
+  ApiOkResponse,
   ApiOperation,
-  ApiResponse,
+  ApiParam,
   ApiTags,
+  ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { ServicesService } from './services.service';
-import { CreateServiceDto, UpdateServiceDto, QueryServicesDto } from './dto';
+import {
+  CreateServiceDto,
+  QueryServicesDto,
+  ServiceResponseDto,
+  UpdateServiceDto,
+} from './dto';
 import { JwtAuthGuard, RolesGuard, PermissionGuard } from '../../common/guards';
 import { CurrentUser, RequirePermission, Roles } from '../../common/decorators';
 import { Role } from '../../shared/enums';
@@ -36,6 +48,12 @@ export class AdminServicesController {
 
   @Delete(':id')
   @ApiOperation({ summary: 'Deactivate a service without deleting referenced data' })
+  @ApiParam({ name: 'id', format: 'uuid', description: 'Service UUID' })
+  @ApiOkResponse({ description: 'Service deactivated successfully', type: ServiceResponseDto })
+  @ApiBadRequestResponse({ description: 'Invalid service UUID' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Admin service management permission required' })
+  @ApiNotFoundResponse({ description: 'Service not found' })
   deactivate(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: User,
@@ -45,21 +63,38 @@ export class AdminServicesController {
 
   @Get()
   @ApiOperation({ summary: 'Admin: Browse active and inactive services' })
+  @ApiOkResponse({
+    description: 'Services returned with pagination metadata',
+    type: ServiceResponseDto,
+    isArray: true,
+  })
+  @ApiBadRequestResponse({ description: 'Invalid pagination or service filters' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Admin service management permission required' })
   findAll(@Query() query: QueryServicesDto) {
     return this.servicesService.findServices(query);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Admin: Read service including inactive data' })
+  @ApiParam({ name: 'id', format: 'uuid', description: 'Service UUID' })
+  @ApiOkResponse({ description: 'Service detail returned', type: ServiceResponseDto })
+  @ApiBadRequestResponse({ description: 'Invalid service UUID' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Admin service management permission required' })
+  @ApiNotFoundResponse({ description: 'Service not found' })
   findById(@Param('id', ParseUUIDPipe) id: string) {
     return this.servicesService.findById(id);
   }
 
   @Post()
   @ApiOperation({ summary: 'Admin: Create a new service' })
-  @ApiResponse({ status: 201, description: 'Service created successfully' })
-  @ApiResponse({ status: 404, description: 'Category not found' })
-  @ApiResponse({ status: 409, description: 'Service code already exists' })
+  @ApiCreatedResponse({ description: 'Service created successfully', type: ServiceResponseDto })
+  @ApiBadRequestResponse({ description: 'Request validation or price validation failed' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Admin service management permission required' })
+  @ApiNotFoundResponse({ description: 'Category not found' })
+  @ApiConflictResponse({ description: 'Service code or slug already exists' })
   async create(
     @Body() dto: CreateServiceDto,
     @CurrentUser() user: User,
@@ -69,8 +104,13 @@ export class AdminServicesController {
 
   @Patch(':id')
   @ApiOperation({ summary: 'Admin: Update service details and price ranges' })
-  @ApiResponse({ status: 200, description: 'Service updated successfully' })
-  @ApiResponse({ status: 404, description: 'Service not found' })
+  @ApiParam({ name: 'id', format: 'uuid', description: 'Service UUID' })
+  @ApiOkResponse({ description: 'Service updated successfully', type: ServiceResponseDto })
+  @ApiBadRequestResponse({ description: 'Invalid UUID, request, or price range' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Admin service management permission required' })
+  @ApiNotFoundResponse({ description: 'Service or category not found' })
+  @ApiConflictResponse({ description: 'Service slug already exists' })
   async update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateServiceDto,
@@ -81,10 +121,15 @@ export class AdminServicesController {
 
   @Patch(':id/status')
   @ApiOperation({ summary: 'Admin: Toggle service active/inactive status' })
-  @ApiResponse({
-    status: 200,
+  @ApiParam({ name: 'id', format: 'uuid', description: 'Service UUID' })
+  @ApiOkResponse({
     description: 'Service status updated successfully',
+    type: ServiceResponseDto,
   })
+  @ApiBadRequestResponse({ description: 'Invalid UUID or status payload' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Admin service management permission required' })
+  @ApiNotFoundResponse({ description: 'Service not found' })
   async toggleStatus(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateActiveStatusDto,
