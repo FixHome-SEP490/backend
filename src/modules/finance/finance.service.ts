@@ -6,6 +6,8 @@ import { ErrorCodes, FINANCE_COMMISSION_RATE } from '../../shared/constants';
 import {
   CashSettlementStatus,
   CommissionDueStatus,
+  PartSource,
+  PartWarrantyOption,
   PaymentAttemptStatus,
   PaymentMode,
   PaymentPurpose,
@@ -14,6 +16,7 @@ import {
   Role,
   ServiceOrderStatus,
   SupportCaseType,
+  WarrantyStatus,
 } from '../../shared/enums';
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
@@ -23,6 +26,10 @@ import { CashSettlement } from '../service-orders/entities/cash-settlement.entit
 import { CommissionDue } from '../service-orders/entities/commission-due.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
+import { CustomerServiceConfirmation } from '../service-orders/entities/customer-service-confirmation.entity';
+import { OrderStatusHistory } from '../service-orders/entities/order-status-history.entity';
+import { WarrantyCoverage } from '../service-orders/entities/warranty-coverage.entity';
+import { InvoiceItem } from '../service-orders/entities/invoice-item.entity';
 import { Payment } from './entities/payment.entity';
 import { PlatformDue } from './entities/platform-due.entity';
 import {
@@ -228,10 +235,12 @@ export class FinanceService {
       if (!assignment) {
         throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Order not found');
       }
-      if (order.status !== ServiceOrderStatus.COMPLETED) {
+      if (
+        ![ServiceOrderStatus.UNDER_REPAIR, ServiceOrderStatus.COMPLETED].includes(order.status)
+      ) {
         throw new BusinessException(
           ErrorCodes.ORDER_INVALID_TRANSITION,
-          'Order must be completed before settling cash payment',
+          'Order must be under repair or completed to declare cash payment',
         );
       }
 
@@ -466,6 +475,43 @@ export class FinanceService {
         { id: orderId },
         { paymentStatus: PaymentStatus.PAID },
       );
+      order.paymentStatus = PaymentStatus.PAID;
+
+      const confirmation = await manager.findOne(CustomerServiceConfirmation, {
+        where: { serviceOrderId: orderId },
+      });
+      if (confirmation && order.status === ServiceOrderStatus.UNDER_REPAIR) {
+        order.status = ServiceOrderStatus.COMPLETED;
+        order.completedAt = now;
+        await orderRepository.save(order);
+        await manager.insert(OrderStatusHistory, {
+          serviceOrderId: order.id,
+          fromStatus: ServiceOrderStatus.UNDER_REPAIR,
+          toStatus: ServiceOrderStatus.COMPLETED,
+          actorUserId: actor.id,
+          actorRole: actor.role,
+          reason: 'Work, customer confirmation and payment satisfied',
+        });
+        const items = await manager.find(InvoiceItem, { where: { invoiceId: invoice.id } });
+        for (const item of items) {
+          if (
+            item.warrantyDaysSnapshot <= 0 ||
+            (item.partSource === PartSource.TECHNICIAN &&
+              item.partWarrantyOption !== PartWarrantyOption.PAID_WARRANTY)
+          ) {
+            continue;
+          }
+          await manager.insert(WarrantyCoverage, {
+            serviceOrderId: order.id,
+            invoiceItemId: item.id,
+            warrantyDaysSnapshot: item.warrantyDaysSnapshot,
+            startsAt: now,
+            expiresAt: new Date(now.getTime() + item.warrantyDaysSnapshot * 86400000),
+            status: WarrantyStatus.ACTIVE,
+          });
+        }
+      }
+
       await this.ensureCashPayment(manager, invoice, savedSettlement, actor.id, now);
       await this.ensureFinancialDues(manager, invoice, order, savedSettlement, now);
       await this.auditLogService.logWithManager(manager, {

@@ -144,11 +144,23 @@ export class InvoiceResponseDto {
   @ApiProperty()
   partsTotal: number;
 
+  @ApiPropertyOptional()
+  fixHomePartsTotal?: number;
+
+  @ApiPropertyOptional()
+  technicianPartsTotal?: number;
+
+  @ApiPropertyOptional()
+  technicianPartWarrantyFeeTotal?: number;
+
   @ApiProperty()
   grandTotal: number;
 
   @ApiProperty()
   commissionBase: string;
+
+  @ApiPropertyOptional()
+  commissionRateSnapshot?: number;
 
   @ApiProperty()
   commissionAmount: number;
@@ -332,8 +344,12 @@ export const toInvoiceResponse = (invoice: Invoice): InvoiceResponseDto => ({
   serviceOrderId: invoice.serviceOrderId,
   laborTotal: Number(invoice.laborTotal),
   partsTotal: Number(invoice.partsTotal),
+  fixHomePartsTotal: Number(invoice.fixHomePartsTotal ?? 0),
+  technicianPartsTotal: Number(invoice.technicianPartsTotal ?? 0),
+  technicianPartWarrantyFeeTotal: Number(invoice.technicianPartWarrantyFeeTotal ?? 0),
   grandTotal: Number(invoice.grandTotal),
   commissionBase: invoice.commissionBase,
+  commissionRateSnapshot: Number(invoice.commissionRateSnapshot ?? 0.1),
   commissionAmount: Number(invoice.commissionAmount),
   paymentStatus: invoice.paymentStatus,
   issuedAt: invoice.issuedAt,
