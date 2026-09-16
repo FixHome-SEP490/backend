@@ -123,6 +123,8 @@ export function registerDev1Cases(context: () => Context) {
 
     it('enforces ownership, valid GPS, file evidence, completion and cash gates end-to-end', async () => {
       const f = await fixture(), { order } = await accept(f), path = `/service-orders/${order.id}`;
+      await get('/technicians/me/profile', f.owner).expect(403);
+      await get('/technicians/me/profile', f.tech).expect(200);
       for (const route of ['', '/evidence', '/invoice', '/warranties', '/cash-settlement', '/quotations', '/additional-costs']) denied(await get(path + route, f.outsider));
       denied(await post(path + '/en-route', f.spare));
       denied(await post(path + '/start-repair', f.tech));

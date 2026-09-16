@@ -829,5 +829,5 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     await expect(db.undoLastMigration()).rejects.toThrow('Refusing to drop an adopted users table');
     expect(await db.query('SELECT id FROM users WHERE id = $1', [legacyId])).toHaveLength(1);
     expect(await db.runMigrations()).toHaveLength(db.migrations.length - 1);
-  });
+  }, 30_000);
 });

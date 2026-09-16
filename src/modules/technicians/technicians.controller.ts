@@ -27,6 +27,13 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionGuard, RolesGuard } from '../../common/guards';
 import { RequirePermission, Roles } from '../../common/decorators';
 import { Role } from '../../shared/enums';
+import { IsBoolean, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+
+export class UpdateTechnicianProfileDto {
+  @IsOptional() @IsString() @MaxLength(2000) bio?: string;
+  @IsOptional() @IsBoolean() isAvailable?: boolean;
+  @IsOptional() @IsInt() @Min(0) @Max(80) yearsExperience?: number;
+}
 import {
   TechniciansService,
   ScheduleItemDto,
@@ -39,6 +46,8 @@ import {
 
 @ApiTags('Technicians')
 @Controller('technicians')
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(Role.TECHNICIAN)
 export class TechniciansController {
   constructor(private readonly techniciansService: TechniciansService) {}
 
@@ -57,7 +66,7 @@ export class TechniciansController {
   @ApiOperation({ summary: 'Update current technician profile' })
   async updateMyProfile(
     @Req() req: { user: { id: string } },
-    @Body() dto: { bio?: string; isAvailable?: boolean; yearsExperience?: number },
+    @Body() dto: UpdateTechnicianProfileDto,
   ) {
     const profile = await this.techniciansService.updateMyProfile(req.user.id, dto);
     return { data: profile };
