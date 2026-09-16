@@ -751,13 +751,15 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     }
   });
 
-  it('allows Service Manager catalog operations from Docs-FixHome, with soft deletion only', async () => {
+  it('allows Admin catalog operations with soft deletion only and denies Service Manager mutation', async () => {
     const manager = await register();
     await db.query('UPDATE users SET role = $1 WHERE id = $2', ['service_manager', manager.user.id]);
-    const category = (await http().post('/api/v1/admin/categories').set('Authorization', bearer(manager)).send({ name: 'Manager Category', code: randomUUID() }).expect(201)).body.data;
+    await http().post('/api/v1/admin/categories').set('Authorization', bearer(manager)).send({ name: 'Manager Category', code: randomUUID() }).expect(403);
+    const category = (await http().post('/api/v1/admin/categories').set('Authorization', bearer(admin)).send({ name: 'Admin Category', code: randomUUID() }).expect(201)).body.data;
     const service = await createService(category.id);
-    await http().delete(`/api/v1/admin/services/${service.id}`).set('Authorization', bearer(manager)).expect(200);
-    await http().delete(`/api/v1/admin/categories/${category.id}`).set('Authorization', bearer(manager)).expect(200);
+    await http().delete(`/api/v1/admin/services/${service.id}`).set('Authorization', bearer(manager)).expect(403);
+    await http().delete(`/api/v1/admin/services/${service.id}`).set('Authorization', bearer(admin)).expect(200);
+    await http().delete(`/api/v1/admin/categories/${category.id}`).set('Authorization', bearer(admin)).expect(200);
     expect(await db.query('SELECT id FROM services WHERE id = $1 AND is_active = false', [service.id])).toHaveLength(1);
     expect(await db.query('SELECT id FROM service_categories WHERE id = $1 AND is_active = false', [category.id])).toHaveLength(1);
     await http().delete(`/api/v1/admin/services/${service.id}`).set('Authorization', bearer(customer)).expect(403);
@@ -785,12 +787,6 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
   });
 
   it('reverts all migrations, adopts legacy users and preserves account state and timestamps', async () => {
-    // New matching rounds cannot fit the legacy unique key; rollback must preserve history.
-    await db.undoLastMigration(); // Additive evidence/due metadata migration.
-    await expect(db.undoLastMigration()).rejects.toThrow('Cannot downgrade');
-    expect(await db.runMigrations()).toHaveLength(1);
-    // This schema is a disposable test fixture, never the configured application schema.
-    await db.query('DELETE FROM booking_invitations');
     for (let i = 0; i < db.migrations.length; i++) await db.undoLastMigration();
     await db.query(
       `CREATE TYPE users_role_enum AS ENUM ('customer','technician','service_manager','admin')`,

@@ -36,7 +36,7 @@ export function registerDev1Cases(context: () => Context) {
       const address = await save('Address', { userId: owner.user.id, line1: '1 Test Street', district: 'D1', province: 'P1', lat: 10.77, lng: 106.69 });
       for (const actor of [tech, spare]) {
         const profile = await db.getRepository('TechnicianProfile').findOneByOrFail({ userId: actor.user.id });
-        await db.getRepository('TechnicianProfile').update(profile.id, { verificationStatus: 'approved', isAvailable: true });
+        await db.getRepository('TechnicianProfile').update(profile.id, { verificationStatus: 'verified', isAvailable: true });
         await save('TechnicianSkill', { technicianId: profile.id, serviceId: service.id, listedLaborPrice: 100000 });
         await save('TechnicianServiceArea', { technicianId: profile.id, provinceCode: 'P1', districtCode: 'D1' });
         for (let dayOfWeek = 0; dayOfWeek < 7; dayOfWeek++) await save('TechnicianSchedule', { technicianId: profile.id, dayOfWeek, startTime: '08:00', endTime: '18:00' });

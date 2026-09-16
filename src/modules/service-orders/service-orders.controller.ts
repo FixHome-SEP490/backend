@@ -32,7 +32,7 @@ import { RequirePermission } from '../../common/decorators/require-permission.de
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../shared/enums';
-import { CheckInDto, EvidenceDto, CompletionRequestDto, CompletionConfirmationDto, ReasonDto, CashDeclarationDto, CashConfirmationDto } from './order-command.dto';
+import { CheckInDto, EvidenceDto, CompletionRequestDto, CompletionConfirmationDto, ReasonDto } from './order-command.dto';
 import { ServiceOrdersService } from './service-orders.service';
 import {
   ServiceOrderStatus,
