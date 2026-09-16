@@ -12,6 +12,10 @@ import {
 } from './entities';
 import { ServicesModule } from '../services/services.module';
 
+import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
+import { ServiceOrder } from '../service-orders/entities/service-order.entity';
+import { CommissionDue } from '../service-orders/entities/commission-due.entity';
+
 @Module({
   imports: [
     ServicesModule,
@@ -21,6 +25,9 @@ import { ServicesModule } from '../services/services.module';
       TechnicianServiceArea,
       TechnicianSchedule,
       TechnicianTimeOff,
+      TechnicianAssignment,
+      ServiceOrder,
+      CommissionDue,
     ]),
   ],
   controllers: [TechniciansController],

@@ -6,10 +6,11 @@ import { ConfigModule } from '@nestjs/config';
 import { AiDiagnosisController } from './ai-diagnosis.controller';
 import { AiDiagnosisService } from './ai-diagnosis.service';
 import { AiDiagnosis } from './entities/ai-diagnosis.entity';
+import { Service } from '../services/entities/service.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([AiDiagnosis]),
+    TypeOrmModule.forFeature([AiDiagnosis, Service]),
     HttpModule.register({
       timeout: 30000,
     }),

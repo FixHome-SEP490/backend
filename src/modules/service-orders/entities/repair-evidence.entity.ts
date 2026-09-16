@@ -18,6 +18,12 @@ export class RepairEvidence extends BaseEntity {
   @Column({ name: 'media_url', type: 'varchar' })
   mediaUrl: string;
 
+  @Column({ name: 'mime_type', type: 'varchar', length: 100, nullable: true })
+  mimeType?: string | null;
+
+  @Column({ name: 'file_size', type: 'int', nullable: true })
+  fileSize?: number | null;
+
   @Column({ type: 'text', nullable: true })
   note?: string | null;
 

@@ -28,6 +28,12 @@ export class Address extends BaseEntity {
   @Column({ type: 'varchar', length: 100 })
   province: string;
 
+  @Column({ name: 'province_code', type: 'varchar', length: 50, nullable: true })
+  provinceCode?: string | null;
+
+  @Column({ name: 'district_code', type: 'varchar', length: 50, nullable: true })
+  districtCode?: string | null;
+
   @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
   lat?: number | null;
 

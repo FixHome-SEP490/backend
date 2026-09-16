@@ -7,6 +7,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Address } from './entities/address.entity';
 import { CreateAddressDto, UpdateAddressDto } from './dto/address.dto';
+import { resolveServiceArea } from '../../shared/utils/administrative-areas';
 
 @Injectable()
 export class AddressesService {
@@ -41,8 +42,19 @@ export class AddressesService {
     const count = await this.addressRepo.count({ where: { userId } });
     const isDefault = count === 0 ? true : !!dto.isDefault;
 
+    const resolved = resolveServiceArea({
+      province: dto.province,
+      district: dto.district,
+      provinceCode: dto.provinceCode,
+      districtCode: dto.districtCode,
+    });
+
     const address = this.addressRepo.create({
       ...dto,
+      province: resolved.provinceName,
+      district: resolved.districtName,
+      provinceCode: resolved.provinceCode,
+      districtCode: resolved.districtCode,
       userId,
       isDefault,
     });
@@ -61,7 +73,20 @@ export class AddressesService {
       await this.clearDefault(userId);
     }
 
-    Object.assign(address, dto);
+    const resolved = resolveServiceArea({
+      province: dto.province || address.province,
+      district: dto.district || address.district,
+      provinceCode: dto.provinceCode || address.provinceCode,
+      districtCode: dto.districtCode || address.districtCode,
+    });
+
+    Object.assign(address, {
+      ...dto,
+      province: resolved.provinceName,
+      district: resolved.districtName,
+      provinceCode: resolved.provinceCode,
+      districtCode: resolved.districtCode,
+    });
     return this.addressRepo.save(address);
   }
 

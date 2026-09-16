@@ -1,6 +1,7 @@
 // src/modules/technician-assignment/technician-assignment.controller.ts
 import {
   Controller,
+  ParseUUIDPipe,
   Post,
   Param,
   Body,
@@ -14,6 +15,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionGuard } from '../../common/guards/permission.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { TechnicianAssignmentService } from './technician-assignment.service';
+import { AssignByOrderDto, AssignByTechnicianDto } from './assignment.dto';
 
 @ApiTags('Technician Assignment')
 @Controller()
@@ -31,8 +33,8 @@ export class TechnicianAssignmentController {
     summary: 'Manually override / assign technician to a service order (SM, Admin)',
   })
   async assignTechnician(
-    @Param('id') technicianId: string,
-    @Body() body: { orderId: string; reason?: string },
+    @Param('id', ParseUUIDPipe) technicianId: string,
+    @Body() body: AssignByTechnicianDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
     const assignment = await this.technicianAssignmentService.overrideAssign(
@@ -53,8 +55,8 @@ export class TechnicianAssignmentController {
     summary: 'Assign technician to service order by order ID (SM, Admin)',
   })
   async assignByOrder(
-    @Param('id') orderId: string,
-    @Body() body: { technicianId: string; reason?: string },
+    @Param('id', ParseUUIDPipe) orderId: string,
+    @Body() body: AssignByOrderDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
     const assignment = await this.technicianAssignmentService.overrideAssign(

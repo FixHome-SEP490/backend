@@ -7,7 +7,6 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
 import { User } from '../../users/entities/user.entity';
 import { AccountStatus, Role } from '../../../shared/enums';
-import { isUUID } from 'class-validator';
 
 export interface JwtPayload {
   sub: string;
@@ -39,7 +38,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: JwtPayload): Promise<AuthenticatedUser> {
-    if (typeof payload.sub !== 'string' || !isUUID(payload.sub)) {
+    const uuidRegex =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (typeof payload.sub !== 'string' || !uuidRegex.test(payload.sub)) {
       throw new UnauthorizedException('Invalid token payload');
     }
 

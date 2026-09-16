@@ -11,6 +11,7 @@ import { getStorageToken, ThrottlerStorageService } from '@nestjs/throttler';
 import * as bcrypt from 'bcrypt';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { registerDev1Cases } from './dev1-cases';
 
 // Always use a new schema; never synchronize/drop the configured database.
 const schema = `member1_e2e_${randomUUID().replace(/-/g, '')}`;
@@ -70,6 +71,13 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
       .send({ identifier: session.user.email, password })
       .expect(200);
     return response.body.data;
+  };
+  // Trusted test fixture: production public registration is customer-only.
+  const provisionTechnician = async (): Promise<Session> => {
+    const session = await register();
+    await db.query('UPDATE users SET role = $1 WHERE id = $2', ['technician', session.user.id]);
+    await db.query('INSERT INTO technician_profiles (user_id) VALUES ($1)', [session.user.id]);
+    return freshLogin(session);
   };
   const createCategory = async () =>
     (
@@ -157,7 +165,10 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     expect(await db.runMigrations()).toHaveLength(db.migrations.length);
     // Prove revert/reapply before exercising the migrated schema.
     await db.undoLastMigration();
-    expect(await db.runMigrations()).toHaveLength(1);
+    await db.undoLastMigration();
+    expect(await db.runMigrations()).toHaveLength(2);
+    const { seedRbac } = runtimeRequire('./dist/database/seeds/seed-rbac.js');
+    await seedRbac(db);
     const { AppModule } = runtimeRequire('./dist/app.module.js');
     const { configureApplication } = runtimeRequire('./dist/setup-app.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -170,7 +181,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     await app.init();
     jwt = app.get(JwtService);
     customer = await register();
-    technician = await register('technician');
+    technician = await provisionTechnician();
     admin = await register();
     await db.query('UPDATE users SET role = $1 WHERE id = $2', [
       'admin',
@@ -184,6 +195,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     storage.onApplicationShutdown();
     storage.storage.clear();
   });
+  registerDev1Cases(() => ({ app, db, register, provisionTechnician }));
 
   afterAll(async () => {
     if (app) await app.close();
@@ -231,7 +243,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
         .headers['access-control-allow-origin'],
     ).toBe('http://localhost:5173');
   });
-  it.each(['customer', 'technician'])(
+  it.each(['customer'])(
     'registers %s with hash and safe profile',
     async (role) => {
       const session = await register(role);
@@ -253,7 +265,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
       );
     },
   );
-  it.each(['admin', 'service_manager'])(
+  it.each(['admin', 'service_manager', 'technician'])(
     'blocks public registration of %s',
     async (role) => {
       await http()
@@ -591,7 +603,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
       .expect(403);
   });
   it('verification is owned, atomic under concurrent submission, and hides relation hashes', async () => {
-    const tech = await register('technician');
+    const tech = await provisionTechnician();
     const submissions = await Promise.all([submit(tech), submit(tech)]);
     expect(submissions.map((r) => r.status).sort()).toEqual([201, 409]);
     const id = submissions.find((r) => r.status === 201).body.data.id;
@@ -612,7 +624,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     await submit(customer).expect(403);
   });
   it('allows one review only, stores reviewer/time, and exposes approval to Member 3', async () => {
-    const tech = await register('technician');
+    const tech = await provisionTechnician();
     const id = (await submit(tech).expect(201)).body.data.id;
     const results = await Promise.all([
       review(id, 'approve'),
@@ -639,7 +651,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     ).toBe(stored.status === 'verified');
   });
   it('requires reject reason and permits corrected resubmission after rejection', async () => {
-    const tech = await register('technician');
+    const tech = await provisionTechnician();
     const id = (await submit(tech).expect(201)).body.data.id;
     for (const body of [{}, { rejectionReason: '     ' }])
       await http()
@@ -653,7 +665,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     await submit(tech).expect(409);
   });
   it('rejects suspended technician submission and review', async () => {
-    const tech = await register('technician');
+    const tech = await provisionTechnician();
     const id = (await submit(tech).expect(201)).body.data.id;
     await http()
       .patch(`/api/v1/admin/users/${tech.user.id}/status`)
@@ -720,7 +732,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
   });
 
   it('rolls back the verification header if saving a document fails', async () => {
-    const tech = await register('technician');
+    const tech = await provisionTechnician();
     await db.query(
       'ALTER TABLE verification_documents ADD CONSTRAINT audit_reject_document CHECK (file_size <> 1024) NOT VALID',
     );
@@ -739,13 +751,15 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     }
   });
 
-  it('allows Service Manager catalog operations from Docs-FixHome, with soft deletion only', async () => {
+  it('allows Admin catalog operations with soft deletion only and denies Service Manager mutation', async () => {
     const manager = await register();
     await db.query('UPDATE users SET role = $1 WHERE id = $2', ['service_manager', manager.user.id]);
-    const category = (await http().post('/api/v1/admin/categories').set('Authorization', bearer(manager)).send({ name: 'Manager Category', code: randomUUID() }).expect(201)).body.data;
+    await http().post('/api/v1/admin/categories').set('Authorization', bearer(manager)).send({ name: 'Manager Category', code: randomUUID() }).expect(403);
+    const category = (await http().post('/api/v1/admin/categories').set('Authorization', bearer(admin)).send({ name: 'Admin Category', code: randomUUID() }).expect(201)).body.data;
     const service = await createService(category.id);
-    await http().delete(`/api/v1/admin/services/${service.id}`).set('Authorization', bearer(manager)).expect(200);
-    await http().delete(`/api/v1/admin/categories/${category.id}`).set('Authorization', bearer(manager)).expect(200);
+    await http().delete(`/api/v1/admin/services/${service.id}`).set('Authorization', bearer(manager)).expect(403);
+    await http().delete(`/api/v1/admin/services/${service.id}`).set('Authorization', bearer(admin)).expect(200);
+    await http().delete(`/api/v1/admin/categories/${category.id}`).set('Authorization', bearer(admin)).expect(200);
     expect(await db.query('SELECT id FROM services WHERE id = $1 AND is_active = false', [service.id])).toHaveLength(1);
     expect(await db.query('SELECT id FROM service_categories WHERE id = $1 AND is_active = false', [category.id])).toHaveLength(1);
     await http().delete(`/api/v1/admin/services/${service.id}`).set('Authorization', bearer(customer)).expect(403);
@@ -773,6 +787,15 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
   });
 
   it('reverts all migrations, adopts legacy users and preserves account state and timestamps', async () => {
+    await db.query(`
+      TRUNCATE TABLE
+        verification_documents,
+        technician_verifications,
+        technician_profiles,
+        booking_invitations,
+        bookings
+      CASCADE;
+    `);
     for (let i = 0; i < db.migrations.length; i++) await db.undoLastMigration();
     await db.query(
       `CREATE TYPE users_role_enum AS ENUM ('customer','technician','service_manager','admin')`,

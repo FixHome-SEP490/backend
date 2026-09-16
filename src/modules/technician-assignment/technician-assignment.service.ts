@@ -1,5 +1,5 @@
 // src/modules/technician-assignment/technician-assignment.service.ts
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
@@ -9,7 +9,9 @@ import { User } from '../users/entities/user.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
-import { ServiceOrderStatus, Role, AccountStatus } from '../../shared/enums';
+import { ServiceOrderStatus, Role } from '../../shared/enums';
+import { Booking } from '../bookings/entities/booking.entity';
+import { technicianEligibility } from '../bookings/technician-eligibility';
 import { AuditLogService } from '../audit-log/audit-log.service';
 
 @Injectable()
@@ -39,36 +41,17 @@ export class TechnicianAssignmentService {
     actorUser: { id: string; role: string },
     reason?: string,
   ): Promise<TechnicianAssignment> {
-    // Validate technician
-    const technician = await this.userRepo.findOneBy({ id: technicianId });
-    if (!technician || technician.role !== Role.TECHNICIAN) {
-      throw new NotFoundException(`Technician with id ${technicianId} not found`);
-    }
-
-    if (technician.status === AccountStatus.SUSPENDED) {
-      throw new BusinessException(
-        ErrorCodes.WORK_SUSPENDED,
-        'Technician is currently suspended from taking orders',
-      );
-    }
-
-    // Validate service order
-    const order = await this.orderRepo.findOneBy({ id: orderId });
-    if (!order) {
-      throw new NotFoundException(`Service order with id ${orderId} not found`);
-    }
-
-    if (
-      order.status === ServiceOrderStatus.COMPLETED ||
-      order.status === ServiceOrderStatus.CANCELLED
-    ) {
-      throw new BusinessException(
-        ErrorCodes.ORDER_INVALID_TRANSITION,
-        `Cannot assign technician to an order in ${order.status} state`,
-      );
-    }
-
+    if (![Role.ADMIN, Role.SERVICE_MANAGER].includes(actorUser.role as Role)) throw new ForbiddenException('Staff assignment permission required');
+    if (!reason?.trim()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Assignment reason is required');
     return this.dataSource.transaction(async (manager) => {
+      const order = await manager.findOne(ServiceOrder, { where: { id: orderId }, lock: { mode: 'pessimistic_write' } });
+      if (!order) throw new NotFoundException('Service order not found');
+      // Mid-job replacement needs the DEV2 financial/manual resolution workflow.
+      if (order.status !== ServiceOrderStatus.ACCEPTED) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Only pre-departure reassignment is supported; later replacement requires manual resolution');
+      await manager.findOne(User, { where: { id: technicianId }, lock: { mode: 'pessimistic_write' } });
+      const booking = await manager.findOneByOrFail(Booking, { id: order.bookingId });
+      const eligibility = await technicianEligibility(manager, technicianId, booking, orderId);
+      if (!eligibility.eligible) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, eligibility.reason!);
       // 1. Deactivate existing active assignment if any
       const existingAssignment = await manager.findOne(TechnicianAssignment, {
         where: { serviceOrderId: orderId, isActive: true },
@@ -103,7 +86,7 @@ export class TechnicianAssignmentService {
       await manager.save(history);
 
       // 4. Audit Log
-      await this.auditLogService.log({
+      await this.auditLogService.logWithManager(manager, {
         actorUserId: actorUser.id,
         actorRole: actorUser.role,
         action: 'TECHNICIAN_OVERRIDE_ASSIGNED',

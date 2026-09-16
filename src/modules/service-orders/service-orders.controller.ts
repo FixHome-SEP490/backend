@@ -1,6 +1,7 @@
 // src/modules/service-orders/service-orders.controller.ts
 import {
   Controller,
+  ParseUUIDPipe,
   Get,
   Post,
   Body,
@@ -10,7 +11,11 @@ import {
   Req,
   HttpCode,
   HttpStatus,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import type { EvidenceFile } from '../media/order-evidence-storage.service';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -24,10 +29,13 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionGuard } from '../../common/guards/permission.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { Role } from '../../shared/enums';
+import { CheckInDto, EvidenceDto, CompletionRequestDto, CompletionConfirmationDto, ReasonDto } from './order-command.dto';
 import { ServiceOrdersService } from './service-orders.service';
 import {
   ServiceOrderStatus,
-  EvidenceType,
 } from '../../shared/enums';
 import {
   CashSettlementConfirmationDto,
@@ -47,7 +55,8 @@ export class ServiceOrdersController {
   // ── 1. Order Queries ──
 
   @Get('service-orders')
-  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @Roles(Role.ADMIN, Role.SERVICE_MANAGER)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionGuard)
   @RequirePermission('order:read_related')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List all service orders (SM / Admin board)' })
@@ -95,7 +104,7 @@ export class ServiceOrdersController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get service order by ID' })
   async findById(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Req() req: { user: { id: string; role: string } },
   ) {
     const order = await this.serviceOrdersService.findById(id, req.user);
@@ -111,7 +120,7 @@ export class ServiceOrdersController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Technician transitions order to EN_ROUTE' })
   async enRoute(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Req() req: { user: { id: string; role: string } },
   ) {
     const order = await this.serviceOrdersService.enRoute(id, req.user);
@@ -125,14 +134,9 @@ export class ServiceOrdersController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Technician arrival check-in with GPS verification' })
   async checkIn(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body()
-    body: {
-      lat: number;
-      lng: number;
-      accuracyMeters: number;
-      deviceInfo?: Record<string, unknown>;
-    },
+    body: CheckInDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
     const checkIn = await this.serviceOrdersService.checkIn(id, body, req.user);
@@ -140,27 +144,38 @@ export class ServiceOrdersController {
   }
 
   @Post('service-orders/:id/evidence')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 3 } }))
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('evidence:upload')
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Upload repair evidence (BEFORE / AFTER / ADDITIONAL)' })
   async uploadEvidence(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body()
-    body: {
-      type: EvidenceType;
-      mediaUrl: string;
-      note?: string;
-      capturedAt?: string;
-    },
+    body: EvidenceDto,
     @Req() req: { user: { id: string; role: string } },
+    @UploadedFile() file?: EvidenceFile,
   ) {
     const evidence = await this.serviceOrdersService.uploadEvidence(
       id,
       body,
       req.user,
+      file,
     );
+    return { data: evidence };
+  }
+
+  @Get('service-orders/:id/evidence')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('order:read_related')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get all repair evidence photos for service order' })
+  async getEvidence(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    const evidence = await this.serviceOrdersService.getEvidence(id, req.user);
     return { data: evidence };
   }
 
@@ -173,11 +188,53 @@ export class ServiceOrdersController {
     summary: 'Start repair (requires valid check-in and BEFORE evidence)',
   })
   async startRepair(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Req() req: { user: { id: string; role: string } },
   ) {
     const order = await this.serviceOrdersService.startRepair(id, req.user);
     return { data: order };
+  }
+
+  @Post('service-orders/:id/request-completion')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('order:update_status')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Technician requests completion (work done, requires AFTER evidence)',
+  })
+  async requestCompletion(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: CompletionRequestDto,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    const order = await this.serviceOrdersService.requestCompletion(
+      id,
+      body,
+      req.user,
+    );
+    return { data: order };
+  }
+
+  @Post('service-orders/:id/confirm-completion')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('order:read_related')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Customer confirms completion (checks payment gate before COMPLETED)',
+  })
+  async confirmCompletion(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: CompletionConfirmationDto,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    const result = await this.serviceOrdersService.confirmCompletion(
+      id,
+      body,
+      req.user,
+    );
+    return { data: result };
   }
 
   @Post('service-orders/:id/complete')
@@ -189,8 +246,8 @@ export class ServiceOrdersController {
     summary: 'Complete repair (requires AFTER evidence, generates invoice)',
   })
   async complete(
-    @Param('id') id: string,
-    @Body() body: { completionNote?: string },
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: CompletionRequestDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
     const order = await this.serviceOrdersService.complete(
@@ -208,8 +265,8 @@ export class ServiceOrdersController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Cancel service order with strike/compensation logic' })
   async cancel(
-    @Param('id') id: string,
-    @Body() body: { reason: string },
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: ReasonDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
     const order = await this.serviceOrdersService.cancel(
@@ -227,8 +284,8 @@ export class ServiceOrdersController {
   @RequirePermission('order:read_status_history')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get order status history (D-22 timeline)' })
-  async getStatusHistory(@Param('id') id: string) {
-    const history = await this.serviceOrdersService.getStatusHistory(id);
+  async getStatusHistory(@Param('id', ParseUUIDPipe) id: string, @Req() req: { user: { id: string; role: string } }) {
+    const history = await this.serviceOrdersService.getStatusHistory(id, req.user);
     return { data: history };
   }
 
@@ -240,7 +297,7 @@ export class ServiceOrdersController {
   @ApiOkResponse({ type: InvoiceResponseDto, description: 'Invoice or null' })
   @ApiNotFoundResponse({ description: 'Order or invoice not found' })
   async getInvoice(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Req() req: { user: { id: string; role: string } },
   ) {
     const invoice = await this.serviceOrdersService.getInvoice(id, req.user);
@@ -258,7 +315,7 @@ export class ServiceOrdersController {
   @ApiConflictResponse({ description: 'Idempotency or invoice payment conflict' })
   @ApiServiceUnavailableResponse({ description: 'Provider verification is unavailable' })
   async payInvoice(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: InitiatePaymentDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
@@ -271,8 +328,8 @@ export class ServiceOrdersController {
   @RequirePermission('warranty:read_related')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get warranty coverages for service order' })
-  async getWarranties(@Param('id') id: string) {
-    const warranties = await this.serviceOrdersService.getWarranties(id);
+  async getWarranties(@Param('id', ParseUUIDPipe) id: string, @Req() req: { user: { id: string; role: string } }) {
+    const warranties = await this.serviceOrdersService.getWarranties(id, req.user);
     return { data: warranties };
   }
 
@@ -288,7 +345,7 @@ export class ServiceOrdersController {
   @ApiBadRequestResponse({ description: 'Invalid whole-VND declaration' })
   @ApiConflictResponse({ description: 'Exact invoice match failed or settlement is disputed' })
   async declareCashSettlement(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() body: CashSettlementDeclarationDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
@@ -306,7 +363,7 @@ export class ServiceOrdersController {
   @ApiBadRequestResponse({ description: 'Invalid confirmation or missing dispute reason' })
   @ApiConflictResponse({ description: 'Cash mismatch requires Support Case review' })
   async confirmCashSettlement(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() body: CashSettlementConfirmationDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
@@ -321,27 +378,27 @@ export class ServiceOrdersController {
   @ApiOperation({ summary: 'Get cash settlement status for order' })
   @ApiOkResponse({ type: CashSettlementResponseDto, description: 'Settlement or null' })
   async getCashSettlement(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Req() req: { user: { id: string; role: string } },
   ) {
     const settlement = await this.serviceOrdersService.getCashSettlement(id, req.user);
     return { data: settlement };
   }
 
-  // ── Spec v1.2: Commission Dues (Technician 10% Labor Debt) ──
+  // ── Spec v1.2 & v1.4: PlatformDues / Commission Dues (Technician 10% Labor Debt) ──
 
-  @Get('commission-dues/my')
+  @Get(['commission-dues/my', 'platform-dues/my'])
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('order:read_related')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get my commission dues (Technician)' })
+  @ApiOperation({ summary: 'Get my platform / commission dues (Technician)' })
   @ApiOkResponse({ type: CommissionDueResponseDto, isArray: true })
   async getMyCommissionDues(@Req() req: { user: { id: string; role: string } }) {
     const result = await this.serviceOrdersService.getCommissionDues(req.user);
     return { data: result.data, meta: { totalDue: result.totalDue } };
   }
 
-  @Post('commission-dues/:id/pay')
+  @Post(['commission-dues/:id/pay', 'platform-dues/:id/pay'])
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('order:read_related')
   @HttpCode(HttpStatus.OK)
@@ -352,7 +409,7 @@ export class ServiceOrdersController {
   @ApiConflictResponse({ description: 'Idempotency or commission due payment conflict' })
   @ApiServiceUnavailableResponse({ description: 'Provider verification is unavailable' })
   async payCommissionDue(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: InitiatePaymentDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
@@ -369,7 +426,7 @@ export class ServiceOrdersController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Submit warranty claim for order' })
   async createWarrantyClaim(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() body: { description: string },
     @Req() req: { user: { id: string } },
   ) {
@@ -382,8 +439,8 @@ export class ServiceOrdersController {
   @RequirePermission('order:read_related')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get warranty claims for order' })
-  async getWarrantyClaims(@Param('id') id: string) {
-    const claims = await this.serviceOrdersService.getWarrantyClaims(id);
+  async getWarrantyClaims(@Param('id', ParseUUIDPipe) id: string, @Req() req: { user: { id: string; role: string } }) {
+    const claims = await this.serviceOrdersService.getWarrantyClaims(id, req.user);
     return { data: claims };
   }
 
@@ -413,7 +470,8 @@ export class ServiceOrdersController {
   // ── 5. Operations: Cancellations & Strikes ──
 
   @Get('cancellations')
-  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @Roles(Role.ADMIN, Role.SERVICE_MANAGER)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionGuard)
   @RequirePermission('order:read_related')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List cancellations for SM/Admin review' })
@@ -435,7 +493,7 @@ export class ServiceOrdersController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Review cancellation: waive strike, decide compensation' })
   async reviewCancellation(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body()
     body: {
       waiveStrike?: boolean;
@@ -478,8 +536,8 @@ export class ServiceOrdersController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Waive cancellation strike (SM / Admin)' })
   async waiveStrike(
-    @Param('id') id: string,
-    @Body() body: { reason: string },
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: ReasonDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
     const strike = await this.serviceOrdersService.waiveStrike(
