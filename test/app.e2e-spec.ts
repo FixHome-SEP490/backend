@@ -787,6 +787,15 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
   });
 
   it('reverts all migrations, adopts legacy users and preserves account state and timestamps', async () => {
+    await db.query(`
+      TRUNCATE TABLE
+        verification_documents,
+        technician_verifications,
+        technician_profiles,
+        booking_invitations,
+        bookings
+      CASCADE;
+    `);
     for (let i = 0; i < db.migrations.length; i++) await db.undoLastMigration();
     await db.query(
       `CREATE TYPE users_role_enum AS ENUM ('customer','technician','service_manager','admin')`,

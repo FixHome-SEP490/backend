@@ -40,6 +40,19 @@ describe('Service Area Resolution & Shortlist Integrity', () => {
     expect(res.districtName).toBe('Quận 1');
   });
 
+  it('preserves unmapped/custom province and district codes', () => {
+    const res = resolveServiceArea({
+      province: 'P1',
+      district: 'D1',
+    });
+
+    expect(res.provinceCode).toBe('P1');
+    expect(res.districtCode).toBe('D1');
+    expect(res.provinceName).toBe('P1');
+    expect(res.districtName).toBe('D1');
+    expect(res.districtAliasCodes).toEqual(['D1']);
+  });
+
   it('validates both standard RFC UUIDs and PostgreSQL 128-bit hex UUIDs in ShortlistDto', () => {
     const standardV4 = 'a1785327-83bc-4104-9616-649fabe86adc';
     const demoSeedUuid = 'c1000000-0000-0000-0000-000000000001';

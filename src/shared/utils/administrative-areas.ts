@@ -93,21 +93,18 @@ export function resolveServiceArea(input: {
     p.code === input.provinceCode ||
     p.code === input.province ||
     normalizeStr(p.name) === pInput ||
-    p.aliases.some(a => pInput.includes(a)),
+    Boolean(pInput && p.aliases.some(a => pInput.includes(a))),
   );
-
-  // Default to HCM if cannot match but district looks like HCM or input empty
-  if (!matchedProv) {
-    matchedProv = VIETNAM_ADMINISTRATIVE_AREAS[0]; // TP. HCM
-  }
 
   // 2. Find district
-  let matchedDist = matchedProv.districts.find(d =>
-    d.code === input.districtCode ||
-    d.code === input.district ||
-    normalizeStr(d.name) === dInput ||
-    d.aliases.some(a => a === dInput || dInput.includes(a)),
-  );
+  let matchedDist = matchedProv
+    ? matchedProv.districts.find(d =>
+        d.code === input.districtCode ||
+        d.code === input.district ||
+        normalizeStr(d.name) === dInput ||
+        Boolean(dInput && d.aliases.some(a => a === dInput || dInput.includes(a))),
+      )
+    : undefined;
 
   if (!matchedDist) {
     // If not found in primary, try all provinces
@@ -116,7 +113,7 @@ export function resolveServiceArea(input: {
         item.code === input.districtCode ||
         item.code === input.district ||
         normalizeStr(item.name) === dInput ||
-        item.aliases.some(a => a === dInput || dInput.includes(a)),
+        Boolean(dInput && item.aliases.some(a => a === dInput || dInput.includes(a))),
       );
       if (d) {
         matchedProv = p;
@@ -126,8 +123,8 @@ export function resolveServiceArea(input: {
     }
   }
 
-  const provCode = matchedProv.code;
-  const provName = matchedProv.name;
+  const provCode = matchedProv ? matchedProv.code : (input.provinceCode || input.province || '79');
+  const provName = matchedProv ? matchedProv.name : (input.province || 'TP. Hồ Chí Minh');
   const distCode = matchedDist ? matchedDist.code : (input.districtCode || input.district || '760');
   const distName = matchedDist ? matchedDist.name : (input.district || 'Quận 1');
   const aliases = matchedDist ? [matchedDist.code, ...matchedDist.aliases] : [distCode];
