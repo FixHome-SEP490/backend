@@ -200,7 +200,9 @@ export function registerDev1Cases(context: () => Context) {
       expect(Number(invoice.commissionAmount)).toBe(10000);
       expect(Number(invoice.technicianPartWarrantyFeeTotal)).toBe(selected ? 50000 : 0);
       await post(path + '/cash-settlement/declare', f.tech, { declaredAmount: Number(invoice.grandTotal) }).expect(200);
-      const cash = unwrap((await post(path + '/cash-settlement/confirm', f.owner, { agreed: true, confirmedAmount: selected ? Number(invoice.grandTotal) : 1 }).expect(200)).body);
+      const cashResponse = await post(path + '/cash-settlement/confirm', f.owner, { agreed: true, confirmedAmount: selected ? Number(invoice.grandTotal) : 1 });
+      expect(cashResponse.status, JSON.stringify(cashResponse.body)).toBe(selected ? 200 : 409);
+      const cash = unwrap((await get(path + '/cash-settlement', f.owner).expect(200)).body);
       expect(cash.status).toBe(selected ? 'confirmed' : 'disputed');
       expect(unwrap((await get(path, f.owner).expect(200)).body).status).toBe('under_repair');
       if (selected) {

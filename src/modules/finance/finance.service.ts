@@ -26,6 +26,7 @@ import { CashSettlement } from '../service-orders/entities/cash-settlement.entit
 import { CommissionDue } from '../service-orders/entities/commission-due.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
+import { ServiceOrderStateMachine } from '../service-orders/service-order-state-machine';
 import { CustomerServiceConfirmation } from '../service-orders/entities/customer-service-confirmation.entity';
 import { OrderStatusHistory } from '../service-orders/entities/order-status-history.entity';
 import { WarrantyCoverage } from '../service-orders/entities/warranty-coverage.entity';
@@ -481,6 +482,9 @@ export class FinanceService {
         where: { serviceOrderId: orderId },
       });
       if (confirmation && order.status === ServiceOrderStatus.UNDER_REPAIR) {
+        if (!ServiceOrderStateMachine.canTransition(order.status, ServiceOrderStatus.COMPLETED)) {
+          throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Illegal order transition');
+        }
         order.status = ServiceOrderStatus.COMPLETED;
         order.completedAt = now;
         await orderRepository.save(order);
@@ -966,12 +970,15 @@ export class FinanceService {
     const platformDueRepository = manager.getRepository(PlatformDue);
     const laborTotal = this.requireWholeVnd(invoice.laborTotal, 'Labor total');
     const partsTotal = this.requireWholeVnd(invoice.partsTotal, 'Parts total');
+    const fixHomePartsTotal = this.requireWholeVnd(invoice.fixHomePartsTotal, 'FixHome parts total');
+    const technicianPartsTotal = this.requireWholeVnd(invoice.technicianPartsTotal, 'Technician parts total');
+    const warrantyFeeTotal = this.requireWholeVnd(invoice.technicianPartWarrantyFeeTotal, 'Warranty fee total');
     const grandTotal = this.requireWholeVnd(invoice.grandTotal, 'Invoice amount');
     const commissionAmount = this.requireWholeVnd(
       invoice.commissionAmount,
       'Commission amount',
     );
-    if (grandTotal !== laborTotal + partsTotal) {
+    if (partsTotal !== fixHomePartsTotal + technicianPartsTotal || grandTotal !== laborTotal + partsTotal + warrantyFeeTotal) {
       throw new BusinessException(
         ErrorCodes.CONFLICT,
         'Invoice total snapshot is inconsistent',
@@ -1025,11 +1032,11 @@ export class FinanceService {
     const existingPlatformDue = await platformDueRepository.findOne({
       where: { serviceOrderId: order.id },
     });
-    const platformAmount = commissionAmount + partsTotal;
+    const platformAmount = commissionAmount + fixHomePartsTotal;
     if (existingPlatformDue) {
       if (
         Number(existingPlatformDue.dueAmount) !== platformAmount ||
-        Number(existingPlatformDue.fixHomePartsTotalSnapshot) !== partsTotal
+        Number(existingPlatformDue.fixHomePartsTotalSnapshot) !== fixHomePartsTotal
       ) {
         throw new BusinessException(
           ErrorCodes.CONFLICT,
@@ -1043,7 +1050,7 @@ export class FinanceService {
         invoiceId: invoice.id,
         serviceOrderId: order.id,
         laborTotalSnapshot: laborTotal,
-        fixHomePartsTotalSnapshot: partsTotal,
+        fixHomePartsTotalSnapshot: fixHomePartsTotal,
         commissionRateSnapshot: commissionRate,
         commissionAmountSnapshot: commissionAmount,
         dueAmount: platformAmount,

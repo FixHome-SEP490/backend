@@ -7,6 +7,8 @@ import {
   IsOptional,
   IsString,
   MaxLength,
+  Min,
+  Max,
 } from 'class-validator';
 import { Address } from '../entities/address.entity';
 
@@ -54,11 +56,13 @@ export class CreateAddressDto {
   @ApiPropertyOptional({ example: 10.7769 })
   @IsOptional()
   @IsNumber()
+  @Min(-90) @Max(90)
   lat?: number;
 
   @ApiPropertyOptional({ example: 106.7009 })
   @IsOptional()
   @IsNumber()
+  @Min(-180) @Max(180)
   lng?: number;
 
   @ApiPropertyOptional({ example: false })
@@ -101,11 +105,13 @@ export class UpdateAddressDto {
   @ApiPropertyOptional({ example: 10.7769 })
   @IsOptional()
   @IsNumber()
+  @Min(-90) @Max(90)
   lat?: number;
 
   @ApiPropertyOptional({ example: 106.7009 })
   @IsOptional()
   @IsNumber()
+  @Min(-180) @Max(180)
   lng?: number;
 
   @ApiPropertyOptional({ example: '79' })
