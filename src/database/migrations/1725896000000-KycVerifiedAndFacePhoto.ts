@@ -115,12 +115,15 @@ export class KycVerifiedAndFacePhoto1725896000000
       CREATE TYPE "verification_documents_document_type_enum_legacy" AS ENUM
         ('citizen_id_front', 'citizen_id_back', 'certificate', 'portfolio', 'other');
       ALTER TABLE "verification_documents"
+        ALTER COLUMN "document_type" DROP DEFAULT,
         ALTER COLUMN "document_type" TYPE
           "verification_documents_document_type_enum_legacy"
         USING "document_type"::text::"verification_documents_document_type_enum_legacy";
       DROP TYPE "verification_documents_document_type_enum";
       ALTER TYPE "verification_documents_document_type_enum_legacy"
         RENAME TO "verification_documents_document_type_enum";
+      ALTER TABLE "verification_documents"
+        ALTER COLUMN "document_type" SET DEFAULT 'other';
     `);
 
     await queryRunner.query(`
