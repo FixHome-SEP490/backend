@@ -27,6 +27,8 @@ import {
 import { TechnicianVerificationsService } from './technician-verifications.service';
 import {
   KycSignedAccessResponseDto,
+  KycSignedUploadResponseDto,
+  RequestKycUploadUrlDto,
   SubmitVerificationDto,
   TechnicianVerificationResponseDto,
 } from './dto';
@@ -145,7 +147,7 @@ const technicianVerificationNullableSchema = {
 };
 
 @ApiTags('Technician Verification')
-@Controller(['technicians/me/verification', 'technician/verification'])
+@Controller('technicians/me/verification')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.TECHNICIAN)
 @ApiBearerAuth()
@@ -154,6 +156,32 @@ export class TechnicianVerificationsController {
   constructor(
     private readonly verificationsService: TechnicianVerificationsService,
   ) {}
+
+  @Post('documents/upload-url')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary:
+      'Technician: Request a short-lived signed URL to upload one KYC document',
+  })
+  @ApiCreatedResponse({
+    description: 'Signed upload URL issued successfully',
+    type: KycSignedUploadResponseDto,
+  })
+  @ApiBadRequestResponse({ description: 'Invalid mimeType' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Active technician account required' })
+  @ApiServiceUnavailableResponse({
+    description: 'Private KYC storage could not issue an upload URL',
+  })
+  async createUploadUrl(
+    @CurrentUser('id') technicianId: string,
+    @Body() dto: RequestKycUploadUrlDto,
+  ) {
+    return this.verificationsService.createDocumentUploadUrl(
+      technicianId,
+      dto,
+    );
+  }
 
   @Post()
   @HttpCode(HttpStatus.CREATED)

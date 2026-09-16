@@ -20,11 +20,16 @@ import { User } from '../users/entities/user.entity';
 import { PaginationMeta } from '../../shared/dto';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { AuditLogService } from '../audit-log/audit-log.service';
-import { KycStorageService, KycSignedAccess } from './kyc-storage.service';
+import {
+  KycStorageService,
+  KycSignedAccess,
+  KycSignedUpload,
+} from './kyc-storage.service';
 import {
   SubmitVerificationDto,
   RejectVerificationDto,
   QueryVerificationsDto,
+  RequestKycUploadUrlDto,
   TechnicianVerificationResponseDto,
 } from './dto';
 import {
@@ -127,6 +132,27 @@ export class TechnicianVerificationsService {
     });
 
     return toTechnicianVerificationResponse(verification);
+  }
+
+  async createDocumentUploadUrl(
+    technicianId: string,
+    dto: RequestKycUploadUrlDto,
+  ): Promise<KycSignedUpload> {
+    const technician = await this.verificationRepository.manager
+      .getRepository(User)
+      .findOne({ where: { id: technicianId } });
+    if (
+      !technician ||
+      technician.role !== Role.TECHNICIAN ||
+      technician.status !== AccountStatus.ACTIVE ||
+      !technician.isActive
+    )
+      throw new ForbiddenException('Active technician account required');
+
+    return this.storageService.createSignedUploadUrl(
+      technicianId,
+      dto.mimeType,
+    );
   }
 
   async getMyVerification(

@@ -4,6 +4,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { randomUUID } from 'crypto';
 import axios from 'axios';
 
 export interface KycSignedAccess {
@@ -12,14 +13,31 @@ export interface KycSignedAccess {
   expiresAt: string;
 }
 
+export interface KycSignedUpload {
+  storageObjectPath: string;
+  uploadUrl: string;
+  token: string;
+  expiresIn: number;
+  expiresAt: string;
+}
+
 const DEFAULT_KYC_BUCKET = 'kyc-private';
 const DEFAULT_SIGNED_URL_TTL_SECONDS = 300;
 const MIN_SIGNED_URL_TTL_SECONDS = 60;
 const MAX_SIGNED_URL_TTL_SECONDS = 3600;
+// Supabase issues signed upload URLs with a fixed ~2h lifetime; not configurable via the API.
+const UPLOAD_SIGNED_URL_TTL_SECONDS = 7200;
 const KYC_OBJECT_PREFIX = 'kyc';
 const OBJECT_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SUPABASE_STORAGE_API_PREFIX = '/storage/v1';
 const SUPABASE_OBJECT_SIGN_PREFIX = '/object/sign/';
+const SUPABASE_OBJECT_UPLOAD_SIGN_PREFIX = '/object/upload/sign/';
+
+const KYC_UPLOAD_MIME_EXTENSIONS: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+};
 
 @Injectable()
 export class KycStorageService {
@@ -132,6 +150,97 @@ export class KycStorageService {
       signedUrl,
       expiresIn,
       expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
+    };
+  }
+
+  async createSignedUploadUrl(
+    technicianId: string,
+    mimeType: string,
+  ): Promise<KycSignedUpload> {
+    const extension = KYC_UPLOAD_MIME_EXTENSIONS[mimeType];
+    if (!extension) {
+      throw new BadRequestException(
+        'mimeType must be one of image/jpeg, image/png, image/webp',
+      );
+    }
+
+    const baseUrl = this.config.get<string>('SUPABASE_URL')?.trim();
+    const serviceRoleKey = this.config
+      .get<string>('SUPABASE_SERVICE_ROLE_KEY')
+      ?.trim();
+    if (!baseUrl || !serviceRoleKey) {
+      throw new ServiceUnavailableException(
+        'Private KYC storage is not configured',
+      );
+    }
+
+    let providerUrl: URL;
+    try {
+      providerUrl = new URL(baseUrl);
+    } catch {
+      throw new ServiceUnavailableException(
+        'Private KYC storage is not configured',
+      );
+    }
+    if (!['http:', 'https:'].includes(providerUrl.protocol)) {
+      throw new ServiceUnavailableException(
+        'Private KYC storage is not configured',
+      );
+    }
+
+    const bucket = this.getBucket();
+    const storageObjectPath = `${KYC_OBJECT_PREFIX}/${technicianId}/${randomUUID()}.${extension}`;
+    // Belt-and-suspenders: the path we just built must satisfy the same
+    // contract enforced on submission, so a future refactor here can't
+    // silently mint paths the submit endpoint would reject.
+    this.validateObjectPath(storageObjectPath, technicianId);
+
+    const encodedBucket = encodeURIComponent(bucket);
+    const encodedPath = storageObjectPath
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+    const signPath = `${SUPABASE_STORAGE_API_PREFIX}${SUPABASE_OBJECT_UPLOAD_SIGN_PREFIX}${encodedBucket}/${encodedPath}`;
+    const endpoint = `${providerUrl.origin}${signPath}`;
+
+    let token: string | undefined;
+    try {
+      const response = await axios.post<{ url?: string }>(
+        endpoint,
+        {},
+        {
+          timeout: 5000,
+          headers: {
+            apikey: serviceRoleKey,
+            Authorization: `Bearer ${serviceRoleKey}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+      const returnedUrl = response.data?.url;
+      const query =
+        typeof returnedUrl === 'string' ? returnedUrl.split('?')[1] : undefined;
+      token = query ? new URLSearchParams(query).get('token') ?? undefined : undefined;
+    } catch {
+      throw new ServiceUnavailableException(
+        'Private KYC storage could not issue an upload URL',
+      );
+    }
+
+    if (!token) {
+      throw new ServiceUnavailableException(
+        'Private KYC storage returned an invalid upload URL response',
+      );
+    }
+
+    return {
+      storageObjectPath,
+      uploadUrl: `${endpoint}?token=${encodeURIComponent(token)}`,
+      token,
+      expiresIn: UPLOAD_SIGNED_URL_TTL_SECONDS,
+      expiresAt: new Date(
+        Date.now() + UPLOAD_SIGNED_URL_TTL_SECONDS * 1000,
+      ).toISOString(),
     };
   }
 

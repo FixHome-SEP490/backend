@@ -261,4 +261,76 @@ describe('KycStorageService', () => {
       unconfigured.createSignedAccess('kyc/tech-uuid-1/id.jpg', 'tech-uuid-1'),
     ).rejects.toThrow(ServiceUnavailableException);
   });
+
+  describe('createSignedUploadUrl', () => {
+    it('mints a technician-scoped object path and returns the upload token', async () => {
+      vi.spyOn(axios, 'post').mockResolvedValue({
+        data: {
+          url: '/object/upload/sign/kyc-private/kyc/tech-uuid-1/generated-id.jpg?token=opaque',
+        },
+      } as never);
+
+      const result = await storage.createSignedUploadUrl(
+        'tech-uuid-1',
+        'image/jpeg',
+      );
+
+      expect(result.storageObjectPath).toMatch(
+        /^kyc\/tech-uuid-1\/[0-9a-f-]+\.jpg$/,
+      );
+      expect(result.token).toBe('opaque');
+      expect(result.uploadUrl).toBe(
+        `https://project.supabase.co/storage/v1/object/upload/sign/kyc-private/${result.storageObjectPath}?token=opaque`,
+      );
+      expect(result.expiresIn).toBe(7200);
+      expect(axios.post).toHaveBeenCalledWith(
+        `https://project.supabase.co/storage/v1/object/upload/sign/kyc-private/${result.storageObjectPath}`,
+        {},
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            apikey: serviceRoleKey,
+            Authorization: `Bearer ${serviceRoleKey}`,
+          }),
+        }),
+      );
+      expect(JSON.stringify(result)).not.toContain(serviceRoleKey);
+    });
+
+    it.each(['application/pdf', 'text/plain', ''])(
+      'rejects unsupported mimeType %s',
+      async (mimeType) => {
+        await expect(
+          storage.createSignedUploadUrl('tech-uuid-1', mimeType),
+        ).rejects.toThrow(BadRequestException);
+      },
+    );
+
+    it('fails closed when the provider does not return a token', async () => {
+      vi.spyOn(axios, 'post').mockResolvedValue({
+        data: { url: '/object/upload/sign/kyc-private/kyc/tech-uuid-1/id.jpg' },
+      } as never);
+
+      await expect(
+        storage.createSignedUploadUrl('tech-uuid-1', 'image/jpeg'),
+      ).rejects.toThrow(ServiceUnavailableException);
+    });
+
+    it('fails closed when the provider request errors', async () => {
+      vi.spyOn(axios, 'post').mockRejectedValue(new Error('network down'));
+
+      await expect(
+        storage.createSignedUploadUrl('tech-uuid-1', 'image/jpeg'),
+      ).rejects.toThrow(ServiceUnavailableException);
+    });
+
+    it('fails closed when provider credentials are unavailable', async () => {
+      const unconfigured = new KycStorageService({
+        get: () => undefined,
+      } as any);
+
+      await expect(
+        unconfigured.createSignedUploadUrl('tech-uuid-1', 'image/jpeg'),
+      ).rejects.toThrow(ServiceUnavailableException);
+    });
+  });
 });

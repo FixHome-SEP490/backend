@@ -75,6 +75,14 @@ describe('TechnicianVerificationsService', () => {
         expiresIn: 300,
         expiresAt: new Date(Date.now() + 300_000).toISOString(),
       }),
+      createSignedUploadUrl: vi.fn().mockResolvedValue({
+        storageObjectPath: 'kyc/tech-uuid-1/generated-id.jpg',
+        uploadUrl:
+          'https://project.supabase.co/storage/v1/object/upload/sign/kyc-private/kyc/tech-uuid-1/generated-id.jpg?token=opaque',
+        token: 'opaque',
+        expiresIn: 7200,
+        expiresAt: new Date(Date.now() + 7_200_000).toISOString(),
+      }),
     };
 
     verificationRepository.update = vi.fn(async (_criteria, changes) => {
@@ -107,6 +115,7 @@ describe('TechnicianVerificationsService', () => {
     };
     verificationRepository.manager = {
       transaction: (fn: (m: typeof manager) => unknown) => fn(manager),
+      getRepository: (entity: unknown) => manager.getRepository(entity),
     };
 
     verificationsService = new TechnicianVerificationsService(
@@ -245,6 +254,34 @@ describe('TechnicianVerificationsService', () => {
           ],
         }),
       ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('createDocumentUploadUrl', () => {
+    it('issues an upload URL for an active technician', async () => {
+      const result = await verificationsService.createDocumentUploadUrl(
+        'tech-uuid-1',
+        { mimeType: 'image/jpeg' },
+      );
+
+      expect(storageService.createSignedUploadUrl).toHaveBeenCalledWith(
+        'tech-uuid-1',
+        'image/jpeg',
+      );
+      expect(result.storageObjectPath).toBe('kyc/tech-uuid-1/generated-id.jpg');
+    });
+
+    it('rejects when the technician account is not active', async () => {
+      const users = { findOne: vi.fn().mockResolvedValue(null) };
+      verificationRepository.manager.getRepository = (entity: unknown) =>
+        entity === User ? users : manager.getRepository(entity);
+
+      await expect(
+        verificationsService.createDocumentUploadUrl('tech-uuid-1', {
+          mimeType: 'image/jpeg',
+        }),
+      ).rejects.toThrow(ForbiddenException);
+      expect(storageService.createSignedUploadUrl).not.toHaveBeenCalled();
     });
   });
 

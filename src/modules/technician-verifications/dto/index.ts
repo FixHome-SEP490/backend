@@ -3,3 +3,4 @@ export * from './submit-verification.dto';
 export * from './review-verification.dto';
 export * from './query-verifications.dto';
 export * from './technician-verification-response.dto';
+export * from './request-upload-url.dto';
