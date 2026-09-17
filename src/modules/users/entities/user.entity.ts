@@ -39,6 +39,9 @@ export class User extends BaseEntity {
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;
 
+  @Column({ name: 'is_email_verified', type: 'boolean', default: false })
+  isEmailVerified: boolean;
+
   @Column({ name: 'avatar_url', type: 'varchar', nullable: true })
   avatarUrl?: string | null;
 

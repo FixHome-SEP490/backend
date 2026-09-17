@@ -53,17 +53,26 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     role = 'customer',
     extra: Record<string, unknown> = {},
   ): Promise<Session> => {
-    const response = await http()
+    const email = `${randomUUID()}@example.test`;
+    await http()
       .post('/api/v1/auth/register')
       .send({
-        email: `${randomUUID()}@example.test`,
+        email,
         password,
         fullName: 'Audit Test User',
         role,
         ...extra,
       })
       .expect(201);
-    return response.body.data;
+    await db.query(
+      'UPDATE users SET status = $1, is_email_verified = true WHERE email = $2',
+      ['active', email],
+    );
+    const [userRow] = await db.query(
+      'SELECT id, email, full_name, role, status FROM users WHERE email = $1',
+      [email],
+    );
+    return freshLogin({ user: userRow, accessToken: '', refreshToken: '' });
   };
   const freshLogin = async (session: Session): Promise<Session> => {
     const response = await http()

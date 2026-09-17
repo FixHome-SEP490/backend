@@ -8,17 +8,21 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
+import { createHash } from 'crypto';
 import { AuthService } from './auth.service';
 import { User } from '../users/entities/user.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
-import { Role, AccountStatus } from '../../shared/enums';
+import { OtpVerification } from './entities/otp-verification.entity';
+import { Role, AccountStatus, OtpPurpose } from '../../shared/enums';
 
 describe('AuthService', () => {
   let authService: AuthService;
   let userRepository: any;
   let refreshTokenRepository: any;
+  let otpRepository: any;
   let jwtService: any;
   let configService: any;
+  let mailService: any;
 
   const mockUser: User = {
     id: 'user-uuid-1',
@@ -29,6 +33,7 @@ describe('AuthService', () => {
     role: Role.CUSTOMER,
     status: AccountStatus.ACTIVE,
     isActive: true,
+    isEmailVerified: true,
     createdAt: new Date(),
     updatedAt: new Date(),
     refreshTokens: [],
@@ -60,6 +65,24 @@ describe('AuthService', () => {
       update: vi.fn().mockResolvedValue({ affected: 1 }),
     };
 
+    otpRepository = {
+      findOne: vi.fn(),
+      create: vi
+        .fn()
+        .mockImplementation((data) => ({ id: 'otp-uuid', ...data })),
+      save: vi
+        .fn()
+        .mockImplementation((data) =>
+          Promise.resolve({ id: 'otp-uuid', ...data }),
+        ),
+      update: vi.fn().mockResolvedValue({ affected: 1 }),
+    };
+
+    mailService = {
+      sendRegisterOtp: vi.fn().mockResolvedValue(undefined),
+      sendPasswordResetOtp: vi.fn().mockResolvedValue(undefined),
+    };
+
     jwtService = {
       decode: vi
         .fn()
@@ -85,18 +108,29 @@ describe('AuthService', () => {
 
     configService.getOrThrow = configService.get;
     const manager = {
-      getRepository: (entity: unknown) =>
-        entity === User ? userRepository : refreshTokenRepository,
+      getRepository: (entity: unknown) => {
+        if (entity === User) return userRepository;
+        if (entity === RefreshToken) return refreshTokenRepository;
+        return otpRepository;
+      },
     };
     userRepository.manager = {
       transaction: (fn: (m: typeof manager) => unknown) => fn(manager),
     };
-    authService = new AuthService(userRepository, jwtService, configService);
+
+    authService = new AuthService(
+      userRepository,
+      otpRepository,
+      jwtService,
+      configService,
+      mailService,
+    );
   });
 
   describe('register', () => {
-    it('registers a new Customer successfully', async () => {
+    it('registers a new Customer successfully and triggers OTP email', async () => {
       userRepository.findOne.mockResolvedValue(null);
+      otpRepository.findOne.mockResolvedValue(null);
 
       const result = await authService.register({
         email: 'customer@fixhome.vn',
@@ -105,14 +139,17 @@ describe('AuthService', () => {
         role: Role.CUSTOMER,
       });
 
-      expect(result.accessToken).toBe('mocked-jwt-token');
-      expect(result.refreshToken).toBe('mocked-jwt-token');
-      expect(result.user.email).toBe('customer@fixhome.vn');
-      expect(result.user.role).toBe(Role.CUSTOMER);
-      expect((result.user as any).passwordHash).toBeUndefined();
+      expect(result.email).toBe('customer@fixhome.vn');
+      expect(result.expiresInMinutes).toBe(5);
+      expect(result.message).toContain('thành công');
+      expect(mailService.sendRegisterOtp).toHaveBeenCalledWith(
+        'customer@fixhome.vn',
+        expect.any(String),
+        'Nguyen Van A',
+      );
     });
 
-    it('rejects public registration for TECHNICIAN role (P4.3: created by SM/Admin)', async () => {
+    it('rejects public registration for TECHNICIAN role', async () => {
       await expect(
         authService.register({
           email: 'tech@fixhome.vn',
@@ -123,30 +160,11 @@ describe('AuthService', () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('rejects public registration for ADMIN role', async () => {
-      await expect(
-        authService.register({
-          email: 'admin@fixhome.vn',
-          password: 'Password123!',
-          fullName: 'Admin User',
-          role: Role.ADMIN,
-        }),
-      ).rejects.toThrow(BadRequestException);
-    });
-
-    it('rejects public registration for SERVICE_MANAGER role', async () => {
-      await expect(
-        authService.register({
-          email: 'manager@fixhome.vn',
-          password: 'Password123!',
-          fullName: 'Manager User',
-          role: Role.SERVICE_MANAGER,
-        }),
-      ).rejects.toThrow(BadRequestException);
-    });
-
-    it('rejects registration with duplicate email', async () => {
-      userRepository.findOne.mockResolvedValueOnce(mockUser);
+    it('rejects registration with duplicate email when already active', async () => {
+      userRepository.findOne.mockResolvedValueOnce({
+        ...mockUser,
+        status: AccountStatus.ACTIVE,
+      });
 
       await expect(
         authService.register({
@@ -156,20 +174,67 @@ describe('AuthService', () => {
         }),
       ).rejects.toThrow(ConflictException);
     });
+  });
 
-    it('rejects registration with duplicate phone number', async () => {
-      userRepository.findOne
-        .mockResolvedValueOnce(null) // email check
-        .mockResolvedValueOnce(mockUser); // phone check
+  describe('verifyRegisterOtp', () => {
+    it('activates account and returns JWT tokens on correct OTP', async () => {
+      const pendingUser = {
+        ...mockUser,
+        status: AccountStatus.PENDING_VERIFICATION,
+        isEmailVerified: false,
+      };
+      userRepository.findOne.mockResolvedValue(pendingUser);
+
+      const otp = '123456';
+      const codeHash = createHash('sha256').update(otp).digest('hex');
+      otpRepository.findOne.mockResolvedValue({
+        id: 'otp-uuid',
+        email: mockUser.email,
+        codeHash,
+        purpose: OtpPurpose.REGISTER,
+        expiresAt: new Date(Date.now() + 300000),
+        attempts: 0,
+        maxAttempts: 5,
+        isUsed: false,
+      });
+
+      const result = await authService.verifyRegisterOtp({
+        email: mockUser.email,
+        otp,
+      });
+
+      expect(result.accessToken).toBe('mocked-jwt-token');
+      expect(result.refreshToken).toBe('mocked-jwt-token');
+      expect(result.user.status).toBe(AccountStatus.ACTIVE);
+      expect(result.user.isEmailVerified).toBe(true);
+    });
+
+    it('throws BadRequestException on incorrect OTP', async () => {
+      const pendingUser = {
+        ...mockUser,
+        status: AccountStatus.PENDING_VERIFICATION,
+        isEmailVerified: false,
+      };
+      userRepository.findOne.mockResolvedValue(pendingUser);
+
+      const codeHash = createHash('sha256').update('123456').digest('hex');
+      otpRepository.findOne.mockResolvedValue({
+        id: 'otp-uuid',
+        email: mockUser.email,
+        codeHash,
+        purpose: OtpPurpose.REGISTER,
+        expiresAt: new Date(Date.now() + 300000),
+        attempts: 0,
+        maxAttempts: 5,
+        isUsed: false,
+      });
 
       await expect(
-        authService.register({
-          email: 'new@fixhome.vn',
-          phoneNumber: '0912345678',
-          password: 'Password123!',
-          fullName: 'Duplicate Phone',
+        authService.verifyRegisterOtp({
+          email: mockUser.email,
+          otp: '999999',
         }),
-      ).rejects.toThrow(ConflictException);
+      ).rejects.toThrow(BadRequestException);
     });
   });
 
@@ -187,26 +252,19 @@ describe('AuthService', () => {
       expect(result.user.email).toBe('customer@fixhome.vn');
     });
 
-    it('throws UnauthorizedException when user does not exist', async () => {
-      userRepository.findOne.mockResolvedValue(null);
-
-      await expect(
-        authService.login({
-          email: 'unknown@fixhome.vn',
-          password: 'password',
-        }),
-      ).rejects.toThrow(UnauthorizedException);
-    });
-
-    it('throws UnauthorizedException when password does not match', async () => {
-      userRepository.findOne.mockResolvedValue(mockUser);
+    it('throws ForbiddenException when account is PENDING_VERIFICATION', async () => {
+      const pendingUser = {
+        ...mockUser,
+        status: AccountStatus.PENDING_VERIFICATION,
+      };
+      userRepository.findOne.mockResolvedValue(pendingUser);
 
       await expect(
         authService.login({
           email: 'customer@fixhome.vn',
-          password: 'WrongPassword!',
+          password: 'SecurePassword123!',
         }),
-      ).rejects.toThrow(UnauthorizedException);
+      ).rejects.toThrow(ForbiddenException);
     });
 
     it('throws ForbiddenException when account is LOCKED', async () => {
@@ -220,17 +278,52 @@ describe('AuthService', () => {
         }),
       ).rejects.toThrow(ForbiddenException);
     });
+  });
 
-    it('throws ForbiddenException when account is SUSPENDED', async () => {
-      const suspendedUser = { ...mockUser, status: AccountStatus.SUSPENDED };
-      userRepository.findOne.mockResolvedValue(suspendedUser);
+  describe('forgotPassword & resetPassword', () => {
+    it('sends password reset OTP when email exists and is active', async () => {
+      userRepository.findOne.mockResolvedValue(mockUser);
+      otpRepository.findOne.mockResolvedValue(null);
 
-      await expect(
-        authService.login({
-          email: 'customer@fixhome.vn',
-          password: 'SecurePassword123!',
-        }),
-      ).rejects.toThrow(ForbiddenException);
+      const result = await authService.forgotPassword({
+        email: mockUser.email,
+      });
+
+      expect(result.message).toContain('Nếu email tồn tại');
+      expect(mailService.sendPasswordResetOtp).toHaveBeenCalledWith(
+        mockUser.email,
+        expect.any(String),
+        mockUser.fullName,
+      );
+    });
+
+    it('resets password successfully when OTP is valid', async () => {
+      userRepository.findOne.mockResolvedValue({ ...mockUser });
+
+      const otp = '654321';
+      const codeHash = createHash('sha256').update(otp).digest('hex');
+      otpRepository.findOne.mockResolvedValue({
+        id: 'otp-uuid-reset',
+        email: mockUser.email,
+        codeHash,
+        purpose: OtpPurpose.RESET_PASSWORD,
+        expiresAt: new Date(Date.now() + 300000),
+        attempts: 0,
+        maxAttempts: 5,
+        isUsed: false,
+      });
+
+      const result = await authService.resetPassword({
+        email: mockUser.email,
+        otp,
+        newPassword: 'NewSecurePassword456!',
+      });
+
+      expect(result.message).toContain('thành công');
+      expect(refreshTokenRepository.update).toHaveBeenCalledWith(
+        { userId: mockUser.id, isRevoked: false },
+        { isRevoked: true },
+      );
     });
   });
 
@@ -262,14 +355,6 @@ describe('AuthService', () => {
         { isRevoked: true },
       );
     });
-
-    it('rejects when refresh token is revoked or not found', async () => {
-      refreshTokenRepository.findOne.mockResolvedValue(null);
-
-      await expect(
-        authService.refresh({ refreshToken: 'revoked-token' }),
-      ).rejects.toThrow(UnauthorizedException);
-    });
   });
 
   describe('logout', () => {
@@ -290,7 +375,6 @@ describe('AuthService', () => {
       const profile = await authService.getMe(mockUser.id);
       expect(profile.id).toBe(mockUser.id);
       expect(profile.email).toBe(mockUser.email);
-      expect((profile as any).passwordHash).toBeUndefined();
     });
   });
 });

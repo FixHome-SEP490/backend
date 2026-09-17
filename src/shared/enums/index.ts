@@ -27,3 +27,4 @@ export * from './payment-attempt-status.enum';
 export * from './payment-mode.enum';
 export * from './payment-purpose.enum';
 export * from './platform-due-status.enum';
+export * from './otp-purpose.enum';
