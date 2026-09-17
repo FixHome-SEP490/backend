@@ -14,6 +14,7 @@ import { Address } from '../users/entities/address.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { TechnicianSkill } from '../technicians/entities/technician-skill.entity';
 import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
+import { MessagingModule } from '../messaging/messaging.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { TechnicianServiceArea } from '../technicians/entities/technician-servic
       TechnicianSkill,
       TechnicianServiceArea,
     ]),
+    MessagingModule,
   ],
   controllers: [BookingsController, InvitationsController],
   providers: [BookingsService, InvitationsService],

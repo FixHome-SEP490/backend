@@ -14,6 +14,7 @@ import { ErrorCodes } from '../../shared/constants';
 import { InvitationStatus, BookingStatus, ServiceOrderStatus, Role } from '../../shared/enums';
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import { MessagingService } from '../messaging/messaging.service';
 import { activateNextInvitation } from './activate-next-invitation';
 import { technicianEligibility } from './technician-eligibility';
 
@@ -25,6 +26,7 @@ export class InvitationsService {
     private readonly dataSource: DataSource,
     private readonly configService: BusinessConfigService,
     private readonly auditLogService: AuditLogService,
+    private readonly messagingService: MessagingService,
   ) {}
 
   async createShortlist(bookingId: string, technicianIds: string[], customer: { id: string; role: string }): Promise<BookingInvitation[]> {
@@ -119,6 +121,10 @@ export class InvitationsService {
       await manager.save(invitation);
       await manager.createQueryBuilder().update(BookingInvitation).set({ status: InvitationStatus.CANCELLED, respondedAt: now }).where('booking_id = :bookingId AND id != :id AND status IN (:...statuses)', { bookingId: booking.id, id: invitation.id, statuses: [InvitationStatus.PENDING, InvitationStatus.STANDBY] }).execute();
       await manager.update(Booking, booking.id, { status: BookingStatus.MATCHED });
+      // Spec 8.6: the accepted thread follows the ServiceOrder; the threads with
+      // the technicians who were passed over become read-only, never deleted.
+      await this.messagingService.ensureConversation(manager, booking, technician.id);
+      await this.messagingService.attachToServiceOrder(manager, booking.id, technician.id, serviceOrder.id);
       await manager.update(TechnicianProfile, { userId: technician.id }, { priorityBoostUntil: null });
       await this.auditLogService.logWithManager(manager, { actorUserId: technician.id, actorRole: technician.role, action: 'INVITATION_ACCEPT', resourceType: 'booking_invitation', resourceId: invitation.id, after: { serviceOrderId: serviceOrder.id, code } });
       return { invitation, serviceOrder };
@@ -137,6 +143,14 @@ export class InvitationsService {
   }
 
   private async activateNext(manager: EntityManager, booking: Booking): Promise<void> {
-    await activateNextInvitation(manager, booking, await this.configService.getInt('matching.invitation_ttl_minutes', 30));
+    await activateNextInvitation(
+      manager,
+      booking,
+      await this.configService.getInt('matching.invitation_ttl_minutes', 30),
+      // Spec 8.6 / CHAT-BR-01: chat opens with the invitation, not with Accept.
+      async (txManager, txBooking, technicianId) => {
+        await this.messagingService.ensureConversation(txManager, txBooking, technicianId);
+      },
+    );
   }
 }

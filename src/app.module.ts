@@ -21,6 +21,7 @@ import { AiDiagnosisModule } from './modules/ai-diagnosis/ai-diagnosis.module';
 import { ServiceOrdersModule } from './modules/service-orders/service-orders.module';
 import { QuotationsModule } from './modules/quotations/quotations.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
+import { MessagingModule } from './modules/messaging/messaging.module';
 import { ReviewsModule } from './modules/reviews/reviews.module';
 import { CategoriesModule } from './modules/categories/categories.module';
 import { MediaModule } from './modules/media/media.module';
@@ -61,6 +62,7 @@ import { MailModule } from './modules/mail/mail.module';
     ServiceOrdersModule,
     QuotationsModule,
     NotificationsModule,
+    MessagingModule,
     ReviewsModule,
     CategoriesModule,
     MediaModule,
