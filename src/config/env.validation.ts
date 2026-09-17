@@ -128,6 +128,29 @@ export class EnvironmentVariables {
   @IsString()
   @IsOptional()
   CORS_ORIGIN: string = 'http://localhost:5173,http://localhost:8081';
+
+  // Mail (SMTP)
+  @IsString()
+  @IsOptional()
+  MAIL_HOST?: string = 'smtp.gmail.com';
+
+  @IsInt()
+  @Min(1)
+  @Max(65535)
+  @IsOptional()
+  MAIL_PORT?: number = 587;
+
+  @IsString()
+  @IsOptional()
+  MAIL_USERNAME?: string;
+
+  @IsString()
+  @IsOptional()
+  MAIL_PASSWORD?: string;
+
+  @IsString()
+  @IsOptional()
+  MAIL_FROM?: string;
 }
 
 export function validate(

@@ -102,3 +102,30 @@ export class KycSignedAccessResponseDto {
   @ApiProperty({ type: String, format: 'date-time' })
   expiresAt: string;
 }
+
+export class KycSignedUploadResponseDto {
+  @ApiProperty({
+    example: 'kyc/6f1c2e2a-6b2a-4a1b-9c3d-2e6f1a2b3c4d/9d3f...jpg',
+    description:
+      'Object path to echo back as storageObjectPath when submitting the verification',
+  })
+  storageObjectPath: string;
+
+  @ApiProperty({
+    description:
+      'Short-lived signed upload URL. Upload the raw file bytes to it with an HTTP PUT request.',
+    format: 'uri',
+  })
+  uploadUrl: string;
+
+  @ApiProperty({
+    description: 'Upload token, for clients using a Supabase Storage SDK instead of a raw PUT',
+  })
+  token: string;
+
+  @ApiProperty({ example: 7200, description: 'Upload URL lifetime in seconds.' })
+  expiresIn: number;
+
+  @ApiProperty({ type: String, format: 'date-time' })
+  expiresAt: string;
+}

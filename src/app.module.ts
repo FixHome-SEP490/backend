@@ -30,6 +30,7 @@ import { TechnicianVerificationsModule } from './modules/technician-verification
 import { PartsCatalogModule } from './modules/parts-catalog/parts-catalog.module';
 import { SupportCasesModule } from './modules/support-cases/support-cases.module';
 import { FinanceModule } from './modules/finance/finance.module';
+import { MailModule } from './modules/mail/mail.module';
 
 @Module({
   imports: [
@@ -69,6 +70,7 @@ import { FinanceModule } from './modules/finance/finance.module';
     PartsCatalogModule,
     SupportCasesModule,
     FinanceModule,
+    MailModule,
   ],
 })
 export class AppModule {}

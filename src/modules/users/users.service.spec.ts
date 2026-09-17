@@ -21,6 +21,7 @@ describe('UsersService', () => {
     role: Role.CUSTOMER,
     status: AccountStatus.ACTIVE,
     isActive: true,
+    isEmailVerified: true,
     createdAt: new Date(),
     updatedAt: new Date(),
     refreshTokens: [],

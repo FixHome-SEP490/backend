@@ -1,8 +1,10 @@
+// src/modules/auth/auth.service.ts
 import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
+  NotFoundException,
   Optional,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -11,12 +13,14 @@ import { EntityManager, Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
-import { createHash, randomUUID } from 'crypto';
+import { createHash, randomInt, randomUUID } from 'crypto';
 import { User } from '../users/entities/user.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
-import { Role, AccountStatus } from '../../shared/enums';
+import { OtpVerification } from './entities/otp-verification.entity';
+import { Role, AccountStatus, OtpPurpose } from '../../shared/enums';
 import { normalizePhone } from '../../shared/validation/input.transforms';
 import { RbacService } from '../rbac/rbac.service';
+import { MailService } from '../mail/mail.service';
 import {
   RegisterDto,
   LoginDto,
@@ -24,14 +28,22 @@ import {
   AuthResponseDto,
   TokenRefreshResponseDto,
   UserProfileDto,
+  RegisterResponseDto,
+  VerifyOtpDto,
+  ResendOtpDto,
+  ForgotPasswordDto,
+  ResetPasswordDto,
 } from './dto';
 
 @Injectable()
 export class AuthService {
   constructor(
     @InjectRepository(User) private readonly userRepository: Repository<User>,
+    @InjectRepository(OtpVerification)
+    private readonly otpRepository: Repository<OtpVerification>,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly mailService: MailService,
     @Optional() private readonly rbacService?: RbacService,
   ) {}
 
@@ -40,7 +52,68 @@ export class AuthService {
     return this.rbacService.getPermissionsForRole(role);
   }
 
-  async register(dto: RegisterDto): Promise<AuthResponseDto> {
+  private async generateAndSendOtp(
+    email: string,
+    purpose: OtpPurpose,
+    fullName?: string,
+    manager?: EntityManager,
+  ): Promise<{ resendAvailableAt: Date }> {
+    const otpRepo = manager
+      ? manager.getRepository(OtpVerification)
+      : this.otpRepository;
+
+    const latestOtp = await otpRepo.findOne({
+      where: { email, purpose, isUsed: false },
+      order: { createdAt: 'DESC' },
+    });
+
+    const now = new Date();
+    if (
+      latestOtp &&
+      latestOtp.resendAvailableAt > now &&
+      latestOtp.expiresAt > now
+    ) {
+      const waitSeconds = Math.ceil(
+        (latestOtp.resendAvailableAt.getTime() - now.getTime()) / 1000,
+      );
+      throw new BadRequestException(
+        `Vui lòng đợi ${waitSeconds} giây trước khi yêu cầu mã OTP mới`,
+      );
+    }
+
+    // Invalidate previous active OTPs for this email and purpose
+    await otpRepo.update({ email, purpose, isUsed: false }, { isUsed: true });
+
+    // Generate 6-digit OTP code
+    const rawOtp = randomInt(100000, 1000000).toString();
+    const codeHash = createHash('sha256').update(rawOtp).digest('hex');
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+    const resendAvailableAt = new Date(Date.now() + 60 * 1000); // 60s cooldown
+
+    await otpRepo.save(
+      otpRepo.create({
+        email,
+        codeHash,
+        purpose,
+        expiresAt,
+        resendAvailableAt,
+        attempts: 0,
+        maxAttempts: 5,
+        isUsed: false,
+      }),
+    );
+
+    // Send email asynchronously
+    if (purpose === OtpPurpose.REGISTER) {
+      await this.mailService.sendRegisterOtp(email, rawOtp, fullName);
+    } else if (purpose === OtpPurpose.RESET_PASSWORD) {
+      await this.mailService.sendPasswordResetOtp(email, rawOtp, fullName);
+    }
+
+    return { resendAvailableAt };
+  }
+
+  async register(dto: RegisterDto): Promise<RegisterResponseDto> {
     const role = dto.role ?? Role.CUSTOMER;
     if (role !== Role.CUSTOMER)
       throw new BadRequestException(
@@ -50,15 +123,39 @@ export class AuthService {
     const phoneNumber = dto.phoneNumber
       ? normalizePhone(dto.phoneNumber)
       : null;
-    if (await this.userRepository.findOne({ where: { email } }))
-      throw new ConflictException('Email is already registered');
+
+    const existingUser = await this.userRepository.findOne({ where: { email } });
+    if (existingUser) {
+      if (existingUser.status === AccountStatus.ACTIVE) {
+        throw new ConflictException('Email is already registered');
+      }
+      // If user exists with pending_verification, update info and resend OTP
+      const passwordHash = await bcrypt.hash(dto.password, 12);
+      existingUser.fullName = dto.fullName.trim();
+      existingUser.phoneNumber = phoneNumber ?? existingUser.phoneNumber;
+      existingUser.passwordHash = passwordHash;
+      await this.userRepository.save(existingUser);
+      await this.generateAndSendOtp(
+        email,
+        OtpPurpose.REGISTER,
+        existingUser.fullName,
+      );
+      return {
+        message:
+          'Đăng ký tài khoản thành công. Vui lòng kiểm tra email để lấy mã OTP xác thực.',
+        email,
+        expiresInMinutes: 5,
+      };
+    }
+
     if (
       phoneNumber &&
       (await this.userRepository.findOne({ where: { phoneNumber } }))
     )
       throw new ConflictException('Phone number is already registered');
+
     const passwordHash = await bcrypt.hash(dto.password, 12);
-    return this.userRepository.manager.transaction(async (manager) => {
+    await this.userRepository.manager.transaction(async (manager) => {
       const users = manager.getRepository(User);
       const user = await users.save(
         users.create({
@@ -67,18 +164,122 @@ export class AuthService {
           passwordHash,
           fullName: dto.fullName.trim(),
           role,
-          status: AccountStatus.ACTIVE,
+          status: AccountStatus.PENDING_VERIFICATION,
           isActive: true,
+          isEmailVerified: false,
         }),
       );
+      await this.generateAndSendOtp(
+        email,
+        OtpPurpose.REGISTER,
+        user.fullName,
+        manager,
+      );
+    });
+
+    return {
+      message:
+        'Đăng ký tài khoản thành công. Vui lòng kiểm tra email để lấy mã OTP xác thực.',
+      email,
+      expiresInMinutes: 5,
+    };
+  }
+
+  async verifyRegisterOtp(dto: VerifyOtpDto): Promise<AuthResponseDto> {
+    const email = dto.email.toLowerCase().trim();
+    const user = await this.userRepository.findOne({ where: { email } });
+    if (!user) {
+      throw new NotFoundException('Không tìm thấy tài khoản với email này');
+    }
+    if (user.status === AccountStatus.ACTIVE && user.isEmailVerified) {
+      throw new BadRequestException(
+        'Tài khoản này đã được kích hoạt trước đó. Vui lòng đăng nhập.',
+      );
+    }
+
+    const otpRecord = await this.otpRepository.findOne({
+      where: { email, purpose: OtpPurpose.REGISTER, isUsed: false },
+      order: { createdAt: 'DESC' },
+    });
+
+    if (!otpRecord) {
+      throw new BadRequestException('Mã OTP không hợp lệ hoặc đã được sử dụng');
+    }
+
+    const now = new Date();
+    if (otpRecord.expiresAt < now) {
+      throw new BadRequestException(
+        'Mã OTP đã hết hạn. Vui lòng yêu cầu gửi lại mã mới.',
+      );
+    }
+
+    if (otpRecord.attempts >= otpRecord.maxAttempts) {
+      throw new BadRequestException(
+        'Mã OTP đã bị khóa do nhập sai quá nhiều lần. Vui lòng yêu cầu gửi lại mã mới.',
+      );
+    }
+
+    const inputHash = createHash('sha256')
+      .update(dto.otp.trim())
+      .digest('hex');
+    if (inputHash !== otpRecord.codeHash) {
+      otpRecord.attempts += 1;
+      await this.otpRepository.save(otpRecord);
+      const remaining = otpRecord.maxAttempts - otpRecord.attempts;
+      if (remaining <= 0) {
+        throw new BadRequestException(
+          'Mã OTP đã bị khóa do nhập sai quá 5 lần. Vui lòng bấm gửi lại mã mới.',
+        );
+      }
+      throw new BadRequestException(
+        `Mã OTP không chính xác. Bạn còn ${remaining} lần thử.`,
+      );
+    }
+
+    return this.userRepository.manager.transaction(async (manager) => {
+      await manager
+        .getRepository(OtpVerification)
+        .update(otpRecord.id, { isUsed: true });
+
+      user.status = AccountStatus.ACTIVE;
+      user.isEmailVerified = true;
+      user.isActive = true;
+      await manager.getRepository(User).save(user);
+
       const tokens = await this.issueTokens(
         user,
         manager,
-        'Registration Session',
+        'Registration Verify Session',
       );
       const permissions = await this.getPermissions(user.role);
       return { ...tokens, user: UserProfileDto.fromUser(user, permissions) };
     });
+  }
+
+  async resendRegisterOtp(
+    dto: ResendOtpDto,
+  ): Promise<{ message: string; resendAvailableAt: Date }> {
+    const email = dto.email.toLowerCase().trim();
+    const user = await this.userRepository.findOne({ where: { email } });
+    if (!user) {
+      throw new NotFoundException('Không tìm thấy tài khoản với email này');
+    }
+    if (user.status === AccountStatus.ACTIVE && user.isEmailVerified) {
+      throw new BadRequestException(
+        'Tài khoản này đã được kích hoạt. Vui lòng đăng nhập.',
+      );
+    }
+
+    const { resendAvailableAt } = await this.generateAndSendOtp(
+      email,
+      OtpPurpose.REGISTER,
+      user.fullName,
+    );
+
+    return {
+      message: 'Mã OTP mới đã được gửi đến email của bạn.',
+      resendAvailableAt,
+    };
   }
 
   async login(dto: LoginDto): Promise<AuthResponseDto> {
@@ -96,16 +297,113 @@ export class AuthService {
         { email: identifier.toLowerCase() },
         { phoneNumber: normalizePhone(identifier) },
       ],
-      select: ['id', 'passwordHash'],
+      select: ['id', 'passwordHash', 'status', 'isActive'],
     });
     if (!user || !(await bcrypt.compare(dto.password, user.passwordHash)))
       throw new UnauthorizedException('Invalid email or password');
+
+    if (user.status === AccountStatus.PENDING_VERIFICATION) {
+      throw new ForbiddenException(
+        'Tài khoản chưa được kích hoạt. Vui lòng xác thực mã OTP gửi về email để hoàn tất đăng ký.',
+      );
+    }
+
     return this.userRepository.manager.transaction(async (manager) => {
       const current = await this.lockActiveUser(manager, user.id);
       const tokens = await this.issueTokens(current, manager, dto.deviceInfo);
       const permissions = await this.getPermissions(current.role);
       return { ...tokens, user: UserProfileDto.fromUser(current, permissions) };
     });
+  }
+
+  async forgotPassword(dto: ForgotPasswordDto): Promise<{ message: string }> {
+    const email = dto.email.toLowerCase().trim();
+    const user = await this.userRepository.findOne({ where: { email } });
+
+    if (!user || user.status !== AccountStatus.ACTIVE) {
+      return {
+        message:
+          'Nếu email tồn tại trong hệ thống, mã OTP đặt lại mật khẩu đã được gửi đến hộp thư của bạn.',
+      };
+    }
+
+    await this.generateAndSendOtp(
+      email,
+      OtpPurpose.RESET_PASSWORD,
+      user.fullName,
+    );
+
+    return {
+      message:
+        'Nếu email tồn tại trong hệ thống, mã OTP đặt lại mật khẩu đã được gửi đến hộp thư của bạn.',
+    };
+  }
+
+  async resetPassword(dto: ResetPasswordDto): Promise<{ message: string }> {
+    const email = dto.email.toLowerCase().trim();
+    const user = await this.userRepository.findOne({ where: { email } });
+    if (!user) {
+      throw new BadRequestException('Yêu cầu không hợp lệ');
+    }
+
+    const otpRecord = await this.otpRepository.findOne({
+      where: { email, purpose: OtpPurpose.RESET_PASSWORD, isUsed: false },
+      order: { createdAt: 'DESC' },
+    });
+
+    if (!otpRecord) {
+      throw new BadRequestException('Mã OTP không hợp lệ hoặc đã được sử dụng');
+    }
+
+    const now = new Date();
+    if (otpRecord.expiresAt < now) {
+      throw new BadRequestException(
+        'Mã OTP đã hết hạn. Vui lòng yêu cầu gửi lại mã.',
+      );
+    }
+
+    if (otpRecord.attempts >= otpRecord.maxAttempts) {
+      throw new BadRequestException(
+        'Mã OTP đã bị khóa do nhập sai quá nhiều lần. Vui lòng yêu cầu gửi lại mã mới.',
+      );
+    }
+
+    const inputHash = createHash('sha256')
+      .update(dto.otp.trim())
+      .digest('hex');
+    if (inputHash !== otpRecord.codeHash) {
+      otpRecord.attempts += 1;
+      await this.otpRepository.save(otpRecord);
+      const remaining = otpRecord.maxAttempts - otpRecord.attempts;
+      if (remaining <= 0) {
+        throw new BadRequestException(
+          'Mã OTP đã bị khóa do nhập sai quá 5 lần. Vui lòng bấm gửi lại mã mới.',
+        );
+      }
+      throw new BadRequestException(
+        `Mã OTP không chính xác. Bạn còn ${remaining} lần thử.`,
+      );
+    }
+
+    const passwordHash = await bcrypt.hash(dto.newPassword, 12);
+
+    await this.userRepository.manager.transaction(async (manager) => {
+      await manager
+        .getRepository(OtpVerification)
+        .update(otpRecord.id, { isUsed: true });
+
+      user.passwordHash = passwordHash;
+      await manager.getRepository(User).save(user);
+
+      await manager
+        .getRepository(RefreshToken)
+        .update({ userId: user.id, isRevoked: false }, { isRevoked: true });
+    });
+
+    return {
+      message:
+        'Đặt lại mật khẩu thành công. Vui lòng đăng nhập với mật khẩu mới.',
+    };
   }
 
   async refresh(dto: RefreshTokenDto): Promise<TokenRefreshResponseDto> {
@@ -122,7 +420,6 @@ export class AuthService {
     }
     const tokenHash = this.hashToken(dto.refreshToken);
     return this.userRepository.manager.transaction(async (manager) => {
-      // Same lock order as login/status/logout prevents issuing a session after revocation.
       const user = await this.lockActiveUser(manager, payload.sub);
       const sessions = manager.getRepository(RefreshToken);
       const record = await sessions.findOne({

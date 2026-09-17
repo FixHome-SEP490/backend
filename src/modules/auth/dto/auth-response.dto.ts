@@ -31,6 +31,9 @@ export class UserProfileDto {
   @ApiProperty()
   isActive: boolean;
 
+  @ApiProperty({ example: false })
+  isEmailVerified: boolean;
+
   @ApiProperty({ nullable: true, example: null })
   avatarUrl?: string | null;
 
@@ -49,6 +52,7 @@ export class UserProfileDto {
       role: user.role,
       status: user.status,
       isActive: user.isActive,
+      isEmailVerified: user.isEmailVerified ?? false,
       avatarUrl: user.avatarUrl ?? null,
       bookingSuspendedUntil: user.bookingSuspendedUntil ?? null,
       permissions: permissions ?? [],
@@ -88,3 +92,17 @@ export class TokenRefreshResponseDto {
   })
   refreshToken: string;
 }
+
+export class RegisterResponseDto {
+  @ApiProperty({
+    example: 'Đăng ký tài khoản thành công. Vui lòng kiểm tra email để lấy mã OTP xác thực.',
+  })
+  message: string;
+
+  @ApiProperty({ example: 'customer@fixhome.vn' })
+  email: string;
+
+  @ApiProperty({ example: 5, description: 'Thời gian hết hạn của OTP (phút)' })
+  expiresInMinutes: number;
+}
+
