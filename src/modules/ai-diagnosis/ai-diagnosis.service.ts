@@ -8,17 +8,48 @@ import { firstValueFrom, timeout } from 'rxjs';
 import { AiDiagnosis } from './entities/ai-diagnosis.entity';
 import { Service } from '../services/entities/service.entity';
 import {
-  DiagnosisRequestDto,
-  DiagnosisResponseDto,
-  DiagnosisFallbackResponseDto,
-  UrgencyLevel,
-} from './dto';
+  AnalyzeDto,
+  AskDto,
+  AiRecommendedService,
+  AI_MAX_IMAGES,
+} from './dto/ai-contract.dto';
 
+/**
+ * Proxy in front of the AI Service.
+ *
+ * Three jobs, and deliberately nothing else. It forwards the request, resolves
+ * the AI's catalogue codes into service ids the app can book, and tells the
+ * truth when the AI is not there.
+ *
+ * It does not invent diagnoses. An earlier version of this file did: when the
+ * AI was unreachable it produced named faults and price ranges of its own
+ * ("thieu gas R32", 180k-450k) and returned them through the same field as a
+ * real answer, flagged only by an `isFallback` boolean that the mobile client
+ * never read. Since the GPU box is rented per demo, unreachable was the normal
+ * case, so most of what anyone saw was written by that function. It is gone.
+ * The business rule it was trying to honour - AI failure must never block a
+ * booking - is honoured instead by answering that the assistant is unavailable
+ * while leaving every booking route open.
+ */
 @Injectable()
 export class AiDiagnosisService {
   private readonly logger = new Logger(AiDiagnosisService.name);
   private readonly aiServiceUrl: string;
-  private readonly requestTimeoutMs = 15000;
+
+  /**
+   * The model's own ceiling is eight seconds; the rest is network to a rented
+   * box that may be on another continent. Measured round trips are 0.3 to 2.4
+   * seconds, so thirty is slack, not an expectation.
+   */
+  private readonly requestTimeoutMs = 30000;
+
+  /** code -> service id. The catalogue changes about never; a restart clears it. */
+  private serviceIdByCode = new Map<string, string>();
+  private serviceCacheLoadedAt = 0;
+  private static readonly CACHE_TTL_MS = 5 * 60 * 1000;
+
+  private acknowledgements: Record<string, unknown> | null = null;
+  private acknowledgementsLoadedAt = 0;
 
   constructor(
     @InjectRepository(AiDiagnosis)
@@ -28,245 +59,152 @@ export class AiDiagnosisService {
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
   ) {
-    this.aiServiceUrl = this.configService.get<string>(
-      'AI_SERVICE_URL',
-      'http://localhost:8000',
-    );
+    const configured =
+      this.configService.get<string>('AI_SERVICE_URL') || 'http://localhost:8000';
+    this.aiServiceUrl = configured.replace(/\/+$/, '');
   }
 
-  /**
-   * Health check call to AI Service
-   */
-  async checkAiServiceHealth(): Promise<{ status: string; provider?: string }> {
+  // ---------------------------------------------------------------- health
+
+  async checkAiServiceHealth(): Promise<{
+    status: string;
+    available: boolean;
+    detail?: Record<string, unknown>;
+  }> {
     try {
       const response = await firstValueFrom(
-        this.httpService.get(`${this.aiServiceUrl}/health`).pipe(
-          timeout(3000),
-        ),
+        this.httpService.get(`${this.aiServiceUrl}/health`).pipe(timeout(5000)),
       );
+      const body = response.data || {};
+      const vlm = body.vlm?.attached === true;
+      const detector = body.detector?.attached === true;
       return {
-        status: response.data?.status === 'ok' ? 'connected' : 'degraded',
-        provider: response.data?.provider || 'trained_model',
+        status: vlm && detector ? 'connected' : 'loading',
+        available: vlm && detector,
+        detail: {
+          vlmAttached: vlm,
+          detectorAttached: detector,
+          knowledgeChunks: body.knowledge?.chunks ?? null,
+        },
       };
-    } catch {
-      return {
-        status: 'demo_ai_fallback',
-        provider: 'fixhome-intelligent-advisor',
-      };
+    } catch (error) {
+      this.logger.warn(`AI Service health check failed: ${this.reason(error)}`);
+      return { status: 'unavailable', available: false };
     }
   }
 
+  // --------------------------------------------------------------- analyze
+
   /**
-   * Generate rich domain-specific mock response based on description keywords and link with real service catalog
+   * Photo and/or description in, structured advice out.
+   *
+   * Business rule: AI failure never blocks the booking flow, so this resolves
+   * rather than throwing and the caller can always carry on.
    */
-  private async generateIntelligentDemoDiagnosis(description: string, categoryHint?: string): Promise<any> {
-    const text = (description || '').toLowerCase();
-    const services = await this.serviceRepo.find({ where: { isActive: true } });
+  async analyze(dto: AnalyzeDto): Promise<Record<string, unknown>> {
+    const startedAt = Date.now();
+    const images = (dto.images || []).slice(0, AI_MAX_IMAGES);
 
-    // 1. Air conditioner (Điều hòa / máy lạnh)
-    if (text.includes('điều hòa') || text.includes('máy lạnh') || text.includes('không mát') || text.includes('chảy nước')) {
-      const matched = services.find(s => s.name.toLowerCase().includes('điều hòa') || s.name.toLowerCase().includes('máy lạnh'));
-      return {
-        possibleProblems: [
-          'Thiếu gas làm lạnh R32/R410A hoặc hở rắc co kết nối',
-          'Tắc nghẽn máng thoát nước dàn lạnh do rêu mốc lâu ngày',
-          'Tụ đề máy nén (Capacitor) bị suy giảm trị số điện dung',
-        ],
-        possibleCauses: [
-          'Máy không được bảo dưỡng định kỳ trong 6 tháng qua khiến bụi bẩn bám kín dàn tản nhiệt',
-          'Đường ống đồng bị rung lắc gây hở mối loe hoặc đường thoát nước bị nghẽn',
-        ],
-        urgency: text.includes('chảy nước') ? UrgencyLevel.HIGH : UrgencyLevel.MEDIUM,
-        estimatedCostMin: 180000,
-        estimatedCostMax: 450000,
-        suggestedServiceId: matched ? matched.id : null,
-        suggestedServiceName: matched ? matched.name : 'Vệ sinh & nạp gas điều hòa',
-        suggestedSkill: 'Điện lạnh dân dụng',
-        troubleshooting: [
-          'Tạm thời tắt máy và ngắt cầu dao nếu nước chảy tràn vào thiết bị điện tử bên dưới',
-          'Kiểm tra và vệ sinh sơ bộ lưới lọc bụi ở mặt nạ dàn lạnh',
-          'Đảm bảo remote đang ở chế độ Cool (hình bông tuyết) thay vì Fan Only hoặc Dry',
-        ],
-        confidence: 0.88,
-        isFallback: true,
-        disclaimer: 'Kết quả AI chỉ mang tính tham khảo. Kỹ thuật viên sẽ kiểm tra thực tế trước khi báo giá.',
-      };
+    let payload: Record<string, unknown>;
+    try {
+      const response = await firstValueFrom(
+        this.httpService
+          .post<Record<string, unknown>>(
+            `${this.aiServiceUrl}/api/v1/diagnosis/analyze`,
+            {
+              description: dto.description ?? '',
+              images,
+              sessionId: dto.sessionId,
+              categoryHint: dto.categoryHint,
+            },
+          )
+          .pipe(timeout(this.requestTimeoutMs)),
+      );
+      payload = response.data || {};
+    } catch (error) {
+      this.logger.warn(`AI analyze unavailable: ${this.reason(error)}`);
+      return this.unavailable(dto.sessionId);
     }
 
-    // 2. Electrical (Điện, chập, aptomat, mất điện)
-    if (text.includes('điện') || text.includes('chập') || text.includes('aptomat') || text.includes('nhảy áp') || text.includes('ổ cắm')) {
-      const matched = services.find(s => s.name.toLowerCase().includes('điện') || s.name.toLowerCase().includes('aptomat'));
-      return {
-        possibleProblems: [
-          'Chập cháy tiếp điểm dây nguồn âm tường do quá tải dòng điện',
-          'Aptomat quá dòng / chống giật bị lão hóa thanh lưỡng kim hoặc hỏng cơ cấu nhả',
-          'Hở cách điện hoặc ẩm ướt rò rỉ điện ra vỏ kim loại thiết bị',
-        ],
-        possibleCauses: [
-          'Sử dụng đồng thời nhiều thiết bị công suất cao vượt định mức chịu tải của dây dẫn',
-          'Độ ẩm môi trường cao hoặc côn trùng làm hỏng lớp vỏ bọc cách điện',
-        ],
-        urgency: UrgencyLevel.HIGH,
-        estimatedCostMin: 200000,
-        estimatedCostMax: 550000,
-        suggestedServiceId: matched ? matched.id : null,
-        suggestedServiceName: matched ? matched.name : 'Sửa chập điện âm tường / nhảy Aptomat',
-        suggestedSkill: 'Điện dân dụng & Điện âm tường',
-        troubleshooting: [
-          'Ngay lập tức ngắt cầu dao tổng của tầng hoặc toàn bộ nhà để phòng chống cháy nổ',
-          'Rút phích cắm tất cả các thiết bị công suất lớn (bình nóng lạnh, lò vi sóng, bếp từ)',
-          'Tuyệt đối không dùng tay trần chạm vào dây điện hoặc vùng tường bị ẩm ướt',
-        ],
-        confidence: 0.91,
-        isFallback: true,
-        disclaimer: 'Kết quả AI chỉ mang tính tham khảo. Kỹ thuật viên sẽ kiểm tra thực tế trước khi báo giá.',
-      };
-    }
-
-    // 3. Plumbing (Nước, rò rỉ, vỡ ống, nghẹt)
-    if (text.includes('nước') || text.includes('rò rỉ') || text.includes('vòi') || text.includes('tắc') || text.includes('bồn cầu')) {
-      const matched = services.find(s => s.name.toLowerCase().includes('nước') || s.name.toLowerCase().includes('vòi'));
-      return {
-        possibleProblems: [
-          'Nứt gãy hoặc hở mối hàn nhiệt ống PPR chịu áp lực',
-          'Lão hóa gioăng cao su van một chiều hoặc hỏng lõi gốm vòi gạt',
-          'Tắc nghẽn cặn lắng canxi trong đường ống dẫn hoặc bẫy mùi siphon',
-        ],
-        possibleCauses: [
-          'Áp lực nước từ máy bơm tăng áp quá lớn gây nứt vỡ phụ kiện ren',
-          'Hiện tượng búa nước (rung giật đường ống) lâu ngày làm hở mối dán keo/hàn',
-        ],
-        urgency: text.includes('vỡ') || text.includes('ngập') ? UrgencyLevel.HIGH : UrgencyLevel.MEDIUM,
-        estimatedCostMin: 150000,
-        estimatedCostMax: 400000,
-        suggestedServiceId: matched ? matched.id : null,
-        suggestedServiceName: matched ? matched.name : 'Sửa rò rỉ đường ống nước / bục vỡ',
-        suggestedSkill: 'Cấp thoát nước & Thiết bị vệ sinh',
-        troubleshooting: [
-          'Khóa ngay van nước tổng trước đồng hồ hoặc van khóa nhánh khu vực vệ sinh',
-          'Dùng khăn hoặc xô hứng nước tạm thời để tránh thấm dột sàn nhà',
-          'Không tự ý đục tường nếu chưa xác định chính xác vị trí bục vỡ',
-        ],
-        confidence: 0.89,
-        isFallback: true,
-        disclaimer: 'Kết quả AI chỉ mang tính tham khảo. Kỹ thuật viên sẽ kiểm tra thực tế trước khi báo giá.',
-      };
-    }
-
-    // 4. Default / Other general repair
-    const defaultService = services[0] || null;
-    return {
-      possibleProblems: [
-        'Sự cố hao mòn cơ điện thiết bị gia đình cần kiểm tra trực tiếp',
-        'Tiếp điểm lỏng hoặc biến dạng linh kiện cơ khí sau thời gian dài sử dụng',
-      ],
-      possibleCauses: [
-        'Tuổi thọ thiết bị lâu năm hoặc môi trường hoạt động nhiều bụi bẩn và độ ẩm',
-      ],
-      urgency: UrgencyLevel.MEDIUM,
-      estimatedCostMin: 150000,
-      estimatedCostMax: 500000,
-      suggestedServiceId: defaultService ? defaultService.id : null,
-      suggestedServiceName: defaultService ? defaultService.name : (categoryHint || 'Kiểm tra/chẩn đoán thiết bị tại nhà'),
-      suggestedSkill: 'Bảo trì gia đình',
-      troubleshooting: [
-        'Rút nguồn điện thiết bị khi không sử dụng',
-        'Ghi lại các âm thanh lạ hoặc biểu hiện bất thường để cung cấp cho thợ',
-      ],
-      confidence: 0.85,
-      isFallback: true,
-      disclaimer: 'Kết quả AI chỉ mang tính tham khảo. Kỹ thuật viên sẽ kiểm tra thực tế trước khi báo giá.',
-    };
+    const latencyMs = Date.now() - startedAt;
+    const enriched = await this.attachServiceIds(payload);
+    await this.persistIfBooked(dto, enriched, latencyMs);
+    return { ...enriched, aiAvailable: true, latencyMs };
   }
 
+  // ------------------------------------------------------------------- ask
+
+  /** A question with no photo. Answers are prose; `answerVi` is always filled. */
+  async ask(dto: AskDto): Promise<Record<string, unknown>> {
+    try {
+      const response = await firstValueFrom(
+        this.httpService
+          .post<Record<string, unknown>>(`${this.aiServiceUrl}/api/v1/chat/ask`, {
+            question: dto.question,
+            sessionId: dto.sessionId,
+            deviceType: dto.deviceType,
+          })
+          .pipe(timeout(this.requestTimeoutMs)),
+      );
+      const enriched = await this.attachServiceIds(response.data || {});
+      return { ...enriched, aiAvailable: true };
+    } catch (error) {
+      this.logger.warn(`AI ask unavailable: ${this.reason(error)}`);
+      return this.unavailable(dto.sessionId);
+    }
+  }
+
+  // ------------------------------------------------------- acknowledgements
+
   /**
-   * Analyze home repair issue with trained AI provider or intelligent demo fallback with DB persistence.
-   * Business rule: AI failure never blocks the customer from completing a booking.
+   * The "I am reading it" lines the client shows while the model thinks.
+   *
+   * The AI ships them grouped by situation - first photo, first text, follow up,
+   * price question, before asking back, long wait - so the wait can sound like
+   * it belongs to the message that caused it. Passed through untouched; the
+   * client chooses the group. Cached, and backed by a local copy, because a
+   * spinner with no words is a worse failure than a slightly stale sentence.
    */
-  async analyzeIssue(
-    dto: DiagnosisRequestDto & { bookingId?: string; images?: string[] },
-    _userId?: string,
-  ): Promise<DiagnosisResponseDto | DiagnosisFallbackResponseDto | any> {
-    const startTime = Date.now();
-    let resultData: any;
-    let providerName = 'trained_model';
+  async getAcknowledgements(): Promise<Record<string, unknown>> {
+    const fresh =
+      Date.now() - this.acknowledgementsLoadedAt < AiDiagnosisService.CACHE_TTL_MS;
+    if (this.acknowledgements && fresh) {
+      return this.acknowledgements;
+    }
 
     try {
       const response = await firstValueFrom(
         this.httpService
-          .post<DiagnosisResponseDto>(`${this.aiServiceUrl}/api/v1/diagnosis/analyze`, {
-            description: dto.description,
-            imageUrl: dto.imageUrl || (dto.images && dto.images[0]),
-            categoryHint: dto.categoryHint,
-          })
-          .pipe(timeout(this.requestTimeoutMs)),
+          .get<Record<string, unknown>>(
+            `${this.aiServiceUrl}/api/v1/chat/acknowledgements`,
+          )
+          .pipe(timeout(5000)),
       );
-
-      resultData = response.data;
+      const body = response.data || {};
+      if (body.situations && typeof body.situations === 'object') {
+        this.acknowledgements = body;
+        this.acknowledgementsLoadedAt = Date.now();
+        return body;
+      }
     } catch (error) {
-      providerName = 'demo_ai_fallback';
-      this.logger.log(`AI external endpoint not reachable (${error.message}). Using intelligent demo advisor.`);
-      resultData = await this.generateIntelligentDemoDiagnosis(dto.description, dto.categoryHint);
+      this.logger.warn(`AI acknowledgements unavailable: ${this.reason(error)}`);
     }
 
-    const latencyMs = Date.now() - startTime;
-
-    // Standardize to Section 7 format
-    const problems = resultData.possibleProblems || (resultData.possibleIssues?.map((i: any) => typeof i === 'string' ? i : i.name) || []);
-    const causes = resultData.possibleCauses ? resultData.possibleCauses.map((c: any) => typeof c === 'string' ? c : c.description) : [];
-    const troubleshooting = resultData.troubleshooting || resultData.suggestedActions || [];
-    const costMin = resultData.estimatedCostMin || resultData.estimatedCost?.min || 150000;
-    const costMax = resultData.estimatedCostMax || resultData.estimatedCost?.max || 500000;
-
-    // Persist diagnosis record for audit and historical review
-    try {
-      const record = this.diagnosisRepo.create({
-        bookingId: dto.bookingId || '00000000-0000-0000-0000-000000000000',
-        provider: providerName,
-        model: providerName === 'trained_model' ? 'fixhome-vision-text-v1' : 'fixhome-demo-advisor-v1',
-        possibleIssues: problems.map((name: string) => ({ name, probability: 0.85 })),
-        possibleCauses: causes.map((desc: string) => ({ description: desc, severity: 'MEDIUM' })),
-        urgency: String(resultData.urgency || 'MEDIUM'),
-        priceRangeMin: costMin,
-        priceRangeMax: costMax,
-        suggestedServiceId: resultData.suggestedServiceId || null,
-        confidence: resultData.confidence || 0.88,
-        latencyMs,
-        rawResponse: resultData,
-      });
-
-      const saved = await this.diagnosisRepo.save(record);
-      return {
-        id: saved.id,
-        possibleProblems: problems,
-        possibleCauses: causes,
-        urgency: resultData.urgency || UrgencyLevel.MEDIUM,
-        estimatedCostMin: costMin,
-        estimatedCostMax: costMax,
-        suggestedServiceId: resultData.suggestedServiceId || null,
-        suggestedServiceName: resultData.suggestedServiceName || null,
-        suggestedSkill: resultData.suggestedSkill || null,
-        troubleshooting,
-        confidence: resultData.confidence || 0.88,
-        isFallback: providerName === 'demo_ai_fallback',
-        disclaimer: 'Kết quả AI chỉ mang tính tham khảo. Kỹ thuật viên sẽ kiểm tra thực tế trước khi báo giá.',
-        // Backward compatibility
-        possibleIssues: problems.map((name: string, i: number) => ({ name, probability: 0.9 - i * 0.1 })),
-        estimatedCost: { min: costMin, max: costMax, currency: 'VND' },
-        suggestedActions: troubleshooting,
-      };
-    } catch (dbErr) {
-      this.logger.warn(`Failed to persist diagnosis record: ${dbErr.message}`);
-      return {
-        ...resultData,
-        possibleProblems: problems,
-        possibleCauses: causes,
-        troubleshooting,
-        isFallback: providerName === 'demo_ai_fallback',
-        disclaimer: 'Kết quả AI chỉ mang tính tham khảo. Kỹ thuật viên sẽ kiểm tra thực tế trước khi báo giá.',
-      };
-    }
+    return (
+      this.acknowledgements ?? {
+        version: 'local-fallback',
+        situations: {
+          first_text: ['Dạ em nhận được thông tin rồi ạ, anh chị chờ em xem qua một chút nhé.'],
+          first_photo: ['Dạ em nhận được ảnh rồi ạ, anh chị chờ em xem qua một chút nhé.'],
+          follow_up: ['Dạ vâng, em ghi nhận thêm ạ. Để em xem lại nha.'],
+          price_question: ['Dạ vâng, để em tra bảng giá cho anh chị ngay ạ.'],
+          general_question: ['Dạ vâng, câu này để em xem lại rồi trả lời anh chị cho kỹ ạ.'],
+        },
+      }
+    );
   }
+
+  // -------------------------------------------------------------- retrieval
 
   async findById(id: string): Promise<AiDiagnosis> {
     const diagnosis = await this.diagnosisRepo.findOneBy({ id });
@@ -274,5 +212,167 @@ export class AiDiagnosisService {
       throw new NotFoundException(`Diagnosis with id ${id} not found`);
     }
     return diagnosis;
+  }
+
+  // ---------------------------------------------------------------- private
+
+  /**
+   * The AI names services by catalogue code; a booking needs the row id. Both
+   * catalogues were seeded from the same list, so all twenty-one codes the AI
+   * can return do resolve - but an unknown code yields null rather than
+   * throwing, because a missing id should cost the customer one button, not the
+   * whole answer.
+   */
+  private async attachServiceIds(
+    payload: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const services = payload.recommendedServices as
+      | AiRecommendedService[]
+      | undefined;
+    if (!Array.isArray(services) || services.length === 0) {
+      return payload;
+    }
+
+    const byCode = await this.loadServiceCodes();
+    return {
+      ...payload,
+      recommendedServices: services.map((service) => ({
+        ...service,
+        serviceId: byCode.get(service.serviceCode) ?? null,
+      })),
+    };
+  }
+
+  private async loadServiceCodes(): Promise<Map<string, string>> {
+    const fresh =
+      Date.now() - this.serviceCacheLoadedAt < AiDiagnosisService.CACHE_TTL_MS;
+    if (this.serviceIdByCode.size > 0 && fresh) {
+      return this.serviceIdByCode;
+    }
+
+    try {
+      const rows = await this.serviceRepo.find({
+        where: { isActive: true },
+        select: ['id', 'code'],
+      });
+      const map = new Map<string, string>();
+      for (const row of rows) {
+        if (row.code) {
+          map.set(row.code, row.id);
+        }
+      }
+      if (map.size > 0) {
+        this.serviceIdByCode = map;
+        this.serviceCacheLoadedAt = Date.now();
+      }
+    } catch (error) {
+      this.logger.warn(`Could not load the service catalogue: ${this.reason(error)}`);
+    }
+
+    return this.serviceIdByCode;
+  }
+
+  /**
+   * Kept only when a booking exists to hang it on.
+   *
+   * The column is `booking_id uuid NOT NULL`, and the previous version filled it
+   * with an all-zero uuid on every single call, so the table accumulated rows
+   * belonging to no booking and referring to nothing. A diagnosis is worth
+   * keeping because it briefs the technician; with no booking there is no
+   * technician, and the chat itself is explicitly not persisted.
+   */
+  private async persistIfBooked(
+    dto: AnalyzeDto,
+    payload: Record<string, unknown>,
+    latencyMs: number,
+  ): Promise<void> {
+    if (!dto.bookingId) {
+      return;
+    }
+
+    try {
+      const faults = (payload.suspectedFaults || []) as {
+        faultCode?: string;
+        nameVi?: string;
+        confidence?: number;
+      }[];
+      const services = (payload.recommendedServices || []) as AiRecommendedService[];
+      const price = (payload.priceEstimate || {}) as {
+        min?: number;
+        max?: number | null;
+      };
+      const device = payload.device as { deviceType?: string } | null;
+      const modelInfo = (payload.modelInfo || {}) as Record<string, unknown>;
+
+      await this.diagnosisRepo.save(
+        this.diagnosisRepo.create({
+          bookingId: dto.bookingId,
+          provider: 'ai_service',
+          model: String(modelInfo.vlm ?? 'unknown'),
+          possibleIssues: faults.map((fault) => ({
+            code: fault.faultCode,
+            name: fault.nameVi,
+            probability: fault.confidence,
+          })),
+          possibleCauses: ((payload.suggestedActionsVi || []) as string[]).map(
+            (action) => ({ description: action }),
+          ),
+          urgency: String(payload.urgency ?? 'MEDIUM'),
+          priceRangeMin: Number(price.min ?? 0),
+          priceRangeMax: Number(price.max ?? 0),
+          suggestedServiceId: services[0]?.serviceId ?? null,
+          confidence: Number(payload.confidence ?? 0),
+          latencyMs,
+          rawResponse: {
+            deviceType: device?.deviceType ?? null,
+            sessionId: payload.sessionId ?? null,
+            faultCodes: faults.map((fault) => fault.faultCode),
+            serviceCodes: services.map((service) => service.serviceCode),
+          },
+        }),
+      );
+    } catch (error) {
+      // Losing the audit row must not lose the customer's answer.
+      this.logger.warn(`Could not persist the diagnosis: ${this.reason(error)}`);
+    }
+  }
+
+  /**
+   * What we say when the AI is not answering. No faults, no prices, no
+   * confidence score - nothing that could be mistaken for a diagnosis. The
+   * client shows `messageVi` and keeps every booking path open.
+   */
+  private unavailable(sessionId?: string): Record<string, unknown> {
+    return {
+      sessionId: sessionId ?? null,
+      status: 'unavailable',
+      aiAvailable: false,
+      device: null,
+      suspectedFaults: [],
+      recommendedServices: [],
+      suggestedActionsVi: [],
+      priceEstimate: null,
+      urgency: 'LOW',
+      confidence: 0,
+      isLowConfidence: true,
+      clarification: null,
+      messageVi:
+        'Trợ lý AI đang tạm thời không kết nối được, nên em chưa chẩn đoán giúp ' +
+        'anh/chị lúc này ạ. Anh/chị vẫn đặt thợ bình thường được, thợ FixHome sẽ ' +
+        'kiểm tra trực tiếp và báo giá trước khi sửa.',
+      answerVi:
+        'Trợ lý AI đang tạm thời không kết nối được ạ. Anh/chị vẫn đặt thợ bình ' +
+        'thường được, thợ FixHome sẽ kiểm tra trực tiếp và báo giá trước khi sửa.',
+      citations: [],
+      disclaimerVi:
+        'Đây là gợi ý sơ bộ, kết luận cuối cùng thuộc về kỹ thuật viên kiểm tra trực tiếp.',
+    };
+  }
+
+  private reason(error: unknown): string {
+    if (error && typeof error === 'object' && 'message' in error) {
+      return String((error as { message: unknown }).message);
+    }
+    return String(error);
   }
 }
