@@ -8,6 +8,11 @@ export class CheckInDto {
   @IsNumber() @Min(0) @Max(100000) accuracyMeters: number;
   @IsOptional() @IsObject() deviceInfo?: Record<string, unknown>;
 }
+export class UpdateLocationDto {
+  @IsNumber() @Min(-90) @Max(90) lat: number;
+  @IsNumber() @Min(-180) @Max(180) lng: number;
+  @IsOptional() @IsNumber() @Min(0) @Max(100000) accuracyMeters?: number;
+}
 export class EvidenceDto {
   @IsEnum(EvidenceType) type: EvidenceType;
   @IsOptional() @IsString() @MaxLength(2000) note?: string;

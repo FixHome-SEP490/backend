@@ -4,6 +4,7 @@ import {
   ParseUUIDPipe,
   Get,
   Post,
+  Patch,
   Body,
   Param,
   Query,
@@ -32,7 +33,7 @@ import { RequirePermission } from '../../common/decorators/require-permission.de
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../shared/enums';
-import { CheckInDto, EvidenceDto, CompletionRequestDto, CompletionConfirmationDto, ReasonDto } from './order-command.dto';
+import { CheckInDto, UpdateLocationDto, EvidenceDto, CompletionRequestDto, CompletionConfirmationDto, ReasonDto } from './order-command.dto';
 import { ServiceOrdersService } from './service-orders.service';
 import {
   ServiceOrderStatus,
@@ -141,6 +142,21 @@ export class ServiceOrdersController {
   ) {
     const checkIn = await this.serviceOrdersService.checkIn(id, body, req.user);
     return { data: checkIn };
+  }
+
+  @Patch('service-orders/:id/location')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('order:update_status')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Technician live GPS ping while EN_ROUTE (map tracking)' })
+  async updateLocation(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: UpdateLocationDto,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    const location = await this.serviceOrdersService.updateLocation(id, body, req.user);
+    return { data: location };
   }
 
   @Post('service-orders/:id/evidence')

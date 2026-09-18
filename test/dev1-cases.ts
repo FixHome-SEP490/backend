@@ -25,6 +25,7 @@ export function registerDev1Cases(context: () => Context) {
     afterAll(() => vi.restoreAllMocks());
     const post = (path: string, session: Session, body: object = {}) => request(context().app.getHttpServer()).post(`/api/v1${path}`).set('Authorization', `Bearer ${session.accessToken}`).send(body);
     const get = (path: string, session: Session) => request(context().app.getHttpServer()).get(`/api/v1${path}`).set('Authorization', `Bearer ${session.accessToken}`);
+    const patch = (path: string, session: Session, body: object = {}) => request(context().app.getHttpServer()).patch(`/api/v1${path}`).set('Authorization', `Bearer ${session.accessToken}`).send(body);
     const save = (entity: string, data: object) => context().db.getRepository(entity).save(data);
     const denied = (response: request.Response) => expect(response.status, JSON.stringify(response.body)).toBeGreaterThanOrEqual(400);
     async function fixture(pricingMode = 'fixed_price') {
@@ -130,6 +131,14 @@ export function registerDev1Cases(context: () => Context) {
       denied(await post(path + '/start-repair', f.tech));
       denied(await post(path + '/complete', f.tech));
       await post(path + '/en-route', f.tech).expect(200);
+      denied(await patch(path + '/location', f.outsider, { lat: 10.77, lng: 106.69 }));
+      denied(await patch(path + '/location', f.owner, { lat: 10.77, lng: 106.69 }));
+      const ping = unwrap((await patch(path + '/location', f.tech, { lat: 10.75, lng: 106.68 }).expect(200)).body);
+      expect(ping.lat).toBe(10.75);
+      expect(ping.lng).toBe(106.68);
+      const withLocation = unwrap((await get(path, f.tech).expect(200)).body);
+      expect(withLocation.technicianLocation).toMatchObject({ lat: 10.75, lng: 106.68 });
+      expect(withLocation.destination).toMatchObject({ lat: 10.77, lng: 106.69 });
       const far = unwrap((await post(path + '/check-in', f.tech, { lat: 20, lng: 105, accuracyMeters: 5 }).expect(200)).body);
       expect(far.result).not.toBe('valid');
       denied(await evidence(order.id, f.tech, 'before'));
@@ -137,6 +146,7 @@ export function registerDev1Cases(context: () => Context) {
       denied(await post(path + '/evidence', f.tech, { type: 'before', mediaUrl: 'https://example.test/fake.jpg' }));
       await evidence(order.id, f.tech, 'before').expect(201);
       await post(path + '/start-repair', f.tech).expect(200);
+      denied(await patch(path + '/location', f.tech, { lat: 10.77, lng: 106.69 }));
       denied(await post(path + '/request-completion', f.tech));
       await evidence(order.id, f.tech, 'after').expect(201);
       await post(path + '/request-completion', f.tech).expect(200);

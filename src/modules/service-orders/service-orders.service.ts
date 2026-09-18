@@ -198,6 +198,12 @@ export class ServiceOrdersService {
       bookingDescription: booking.description || '',
       customerName: customer?.fullName || '', customerPhone: customer?.phoneNumber || '',
       technician: technician ? { id: technician.id, fullName: technician.fullName, phoneNumber: technician.phoneNumber } : undefined,
+      destination: booking.latitudeSnapshot != null && booking.longitudeSnapshot != null
+        ? { lat: Number(booking.latitudeSnapshot), lng: Number(booking.longitudeSnapshot) }
+        : null,
+      technicianLocation: order.technicianLastLat != null && order.technicianLastLng != null
+        ? { lat: Number(order.technicianLastLat), lng: Number(order.technicianLastLng), updatedAt: order.technicianLocationUpdatedAt?.toISOString() ?? null }
+        : null,
       quotation, customerConfirmed: !!await manager.findOneBy(CustomerServiceConfirmation, { serviceOrderId: order.id }),
       arrivalVerified: !!await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: order.id, technicianId: assignment?.technicianId, result: CheckInResult.VALID }),
       beforeEvidenceCount: await manager.count(RepairEvidence, { where: { serviceOrderId: order.id, type: EvidenceType.BEFORE } }),
@@ -236,6 +242,20 @@ export class ServiceOrdersService {
       const accuracy = await this.configService.getInt('geofence.min_gps_accuracy_meters', 100);
       const result = body.accuracyMeters > accuracy ? CheckInResult.LOW_ACCURACY : distanceMeters > radius ? CheckInResult.OUT_OF_GEOFENCE : CheckInResult.VALID;
       return manager.save(ArrivalCheckIn, manager.create(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, lat: body.lat, lng: body.lng, accuracyMeters: body.accuracyMeters, distanceMeters, result, checkedInAt: new Date(), deviceInfo: body.deviceInfo || null }));
+    });
+  }
+
+  /**
+   * Live GPS ping while EN_ROUTE, for the customer tracking map. Not a geofence check.
+   */
+  async updateLocation(orderId: string, body: { lat: number; lng: number; accuracyMeters?: number }, actor: { id: string; role: string }): Promise<{ lat: number; lng: number; updatedAt: string }> {
+    return this.dataSource.transaction(async manager => {
+      const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
+      if (order.status !== ServiceOrderStatus.EN_ROUTE) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Order must be EN_ROUTE');
+      if (![body.lat, body.lng].every(Number.isFinite) || Math.abs(body.lat) > 90 || Math.abs(body.lng) > 180) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid GPS coordinates');
+      const updatedAt = new Date();
+      await manager.update(ServiceOrder, orderId, { technicianLastLat: body.lat, technicianLastLng: body.lng, technicianLocationUpdatedAt: updatedAt });
+      return { lat: body.lat, lng: body.lng, updatedAt: updatedAt.toISOString() };
     });
   }
 
