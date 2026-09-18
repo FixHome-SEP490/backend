@@ -12,8 +12,14 @@ import { ApiErrorResponseDto } from './shared/dto';
 
 export function configureApplication(app: INestApplication): void {
   const configService = app.get(ConfigService);
-  // Security
-  app.use(helmet());
+  // Security. Media (avatars, device photos, evidence, KYC previews) is served from
+  // this API origin and embedded cross-origin by the web/mobile clients, so relax
+  // Helmet's default same-origin Cross-Origin-Resource-Policy or every <img> pointed
+  // at this backend silently fails to render (fetch() still "works" since CORP does
+  // not gate fetch/XHR, only no-cors subresource loads like <img>/<script>).
+  app.use(helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  }));
 
   // CORS
   const corsOrigin = configService.get<string>('CORS_ORIGIN');

@@ -8,13 +8,6 @@ export class AutocompleteQueryDto {
   input: string;
 }
 
-export class GeocodeQueryDto {
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(300)
-  placeId: string;
-}
-
 export class ReverseGeocodeQueryDto {
   @IsLatitude()
   lat: number;
@@ -26,10 +19,18 @@ export class ReverseGeocodeQueryDto {
 export class PlaceSuggestionDto {
   @ApiProperty() placeId: string;
   @ApiProperty() description: string;
+  @ApiProperty() lat: number;
+  @ApiProperty() lng: number;
+  @ApiProperty({ required: false }) ward?: string;
+  @ApiProperty({ required: false }) district?: string;
+  @ApiProperty({ required: false }) province?: string;
 }
 
 export class PlaceLocationDto {
   @ApiProperty() lat: number;
   @ApiProperty() lng: number;
   @ApiProperty() formattedAddress: string;
+  @ApiProperty({ required: false }) ward?: string;
+  @ApiProperty({ required: false }) district?: string;
+  @ApiProperty({ required: false }) province?: string;
 }

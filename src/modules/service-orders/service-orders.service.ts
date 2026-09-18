@@ -24,6 +24,7 @@ import { TechnicianProfile } from '../technicians/entities/technician-profile.en
 import { ServiceOrderStateMachine } from './service-order-state-machine';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
+import { haversineKm } from '../../shared/utils/geo';
 import {
   ServiceOrderStatus,
   BookingStatus,
@@ -234,10 +235,8 @@ export class ServiceOrdersService {
       const booking = await manager.findOneByOrFail(Booking, { id: order.bookingId });
       if (![body.lat, body.lng, body.accuracyMeters].every(Number.isFinite) || Math.abs(body.lat) > 90 || Math.abs(body.lng) > 180 || body.accuracyMeters < 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid GPS coordinates');
       if (booking.latitudeSnapshot == null || booking.longitudeSnapshot == null) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Repair address has no verified coordinates');
-      const rad = (v: number) => v * Math.PI / 180;
       const lat = Number(booking.latitudeSnapshot), lng = Number(booking.longitudeSnapshot);
-      const a = Math.sin(rad(body.lat-lat)/2)**2 + Math.cos(rad(lat))*Math.cos(rad(body.lat))*Math.sin(rad(body.lng-lng)/2)**2;
-      const distanceMeters = Math.round(6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1-a))));
+      const distanceMeters = Math.round(haversineKm(lat, lng, body.lat, body.lng) * 1000);
       const radius = await this.configService.getInt('geofence.radius_meters', 300);
       const accuracy = await this.configService.getInt('geofence.min_gps_accuracy_meters', 100);
       const result = body.accuracyMeters > accuracy ? CheckInResult.LOW_ACCURACY : distanceMeters > radius ? CheckInResult.OUT_OF_GEOFENCE : CheckInResult.VALID;

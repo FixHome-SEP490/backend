@@ -31,13 +31,13 @@ import { Role } from '../../shared/enums';
 @ApiTags('Addresses')
 @Controller('me/addresses')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.CUSTOMER)
+@Roles(Role.CUSTOMER, Role.TECHNICIAN)
 @ApiBearerAuth()
 export class AddressesController {
   constructor(private readonly addressesService: AddressesService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Customer: List all saved addresses' })
+  @ApiOperation({ summary: 'Customer/Technician: List all saved addresses' })
   @ApiResponse({
     status: 200,
     description: 'Addresses fetched successfully',
@@ -51,7 +51,7 @@ export class AddressesController {
   }
 
   @Post()
-  @ApiOperation({ summary: 'Customer: Create a new address' })
+  @ApiOperation({ summary: 'Customer/Technician: Create a new address' })
   @ApiResponse({
     status: 201,
     description: 'Address created successfully',
@@ -66,7 +66,7 @@ export class AddressesController {
   }
 
   @Patch(':id')
-  @ApiOperation({ summary: 'Customer: Update an existing address' })
+  @ApiOperation({ summary: 'Customer/Technician: Update an existing address' })
   @ApiResponse({
     status: 200,
     description: 'Address updated successfully',
@@ -83,7 +83,7 @@ export class AddressesController {
 
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Customer: Delete an address' })
+  @ApiOperation({ summary: 'Customer/Technician: Delete an address' })
   @ApiResponse({ status: 204, description: 'Address deleted successfully' })
   async deleteAddress(
     @CurrentUser('id') userId: string,
