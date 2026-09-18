@@ -1,4 +1,5 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import helmet from 'helmet';
@@ -10,8 +11,26 @@ import {
 import { API_PREFIX, APP_NAME } from './shared/constants';
 import { ApiErrorResponseDto } from './shared/dto';
 
-export function configureApplication(app: INestApplication): void {
+/**
+ * Room for the photographs the assistant looks at.
+ *
+ * Express defaults the JSON body to 100 KB, and the AI diagnosis route carries
+ * up to three images inline as base64 - the encoding the AI Service accepts -
+ * at up to 8 MiB each before encoding. Base64 adds about a third. So a full
+ * request is around 33 MB and the default rejected every real photograph:
+ * a 1.5 MB picture came back as a 500 and the app showed "chưa kết nối được
+ * tới trợ lý", which points at the network and is nothing to do with it.
+ */
+const MAX_BODY_SIZE = '40mb';
+
+export function configureApplication(
+  app: INestApplication & Partial<NestExpressApplication>,
+): void {
   const configService = app.get(ConfigService);
+
+  app.useBodyParser?.('json', { limit: MAX_BODY_SIZE });
+  app.useBodyParser?.('urlencoded', { limit: MAX_BODY_SIZE, extended: true });
+
   // Security
   app.use(helmet());
 
