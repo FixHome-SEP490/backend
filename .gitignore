@@ -36,3 +36,4 @@ docker/postgres/data/
 
 # OS
 *.log
+backend.log
