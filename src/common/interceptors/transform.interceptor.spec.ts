@@ -59,6 +59,44 @@ describe('TransformInterceptor', () => {
     });
   });
 
+  it('unwraps a bare { data } envelope instead of double-nesting it', async () => {
+    const context = createMockContext(200);
+    const handler: CallHandler = {
+      handle: () => of({ data: { id: '789', result: 'valid' } }),
+    };
+
+    const observable = interceptor.intercept(context, handler);
+    const result = await new Promise((resolve) =>
+      observable.subscribe(resolve),
+    );
+
+    expect(result).toEqual({
+      success: true,
+      statusCode: 200,
+      message: 'Success',
+      data: { id: '789', result: 'valid' },
+    });
+  });
+
+  it('unwraps a bare { data: [] } envelope (array payload) without double-nesting', async () => {
+    const context = createMockContext(200);
+    const handler: CallHandler = {
+      handle: () => of({ data: [{ id: '1' }, { id: '2' }] }),
+    };
+
+    const observable = interceptor.intercept(context, handler);
+    const result = await new Promise((resolve) =>
+      observable.subscribe(resolve),
+    );
+
+    expect(result).toEqual({
+      success: true,
+      statusCode: 200,
+      message: 'Success',
+      data: [{ id: '1' }, { id: '2' }],
+    });
+  });
+
   it('handles paginated response containing meta correctly', async () => {
     const context = createMockContext(200);
     const handler: CallHandler = {

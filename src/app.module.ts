@@ -32,6 +32,7 @@ import { PartsCatalogModule } from './modules/parts-catalog/parts-catalog.module
 import { SupportCasesModule } from './modules/support-cases/support-cases.module';
 import { FinanceModule } from './modules/finance/finance.module';
 import { MailModule } from './modules/mail/mail.module';
+import { GeoModule } from './modules/geo/geo.module';
 
 @Module({
   imports: [
@@ -73,6 +74,7 @@ import { MailModule } from './modules/mail/mail.module';
     SupportCasesModule,
     FinanceModule,
     MailModule,
+    GeoModule,
   ],
 })
 export class AppModule {}

@@ -119,10 +119,15 @@ export class EnvironmentVariables {
   @IsOptional()
   CLOUDINARY_API_SECRET?: string;
 
-  // Google Maps (Optional)
+  // Google Maps (Optional, unused — superseded by MapTiler below)
   @IsString()
   @IsOptional()
   GOOGLE_MAPS_API_KEY?: string;
+
+  // MapTiler (Optional — server-side REST key for Geocoding proxy)
+  @IsString()
+  @IsOptional()
+  MAPTILER_API_KEY?: string;
 
   // CORS
   @IsString()

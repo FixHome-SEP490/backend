@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, In } from 'typeorm';
 import { Booking } from './entities/booking.entity';
 import { BookingMedia } from './entities/booking-media.entity';
 import { User } from '../users/entities/user.entity';
@@ -28,6 +28,7 @@ import { TechnicianAssignment } from '../service-orders/entities/technician-assi
 import { BookingInvitation } from './entities/booking-invitation.entity';
 import { InvitationStatus, ServiceOrderStatus } from '../../shared/enums';
 import { resolveServiceArea } from '../../shared/utils/administrative-areas';
+import { haversineKm } from '../../shared/utils/geo';
 import { AiDiagnosis } from '../ai-diagnosis/entities/ai-diagnosis.entity';
 
 export interface TechnicianCandidate {
@@ -43,6 +44,7 @@ export interface TechnicianCandidate {
   listedLaborPrice?: number | null;
   typicalWarrantyDays?: number;
   hasPriorityBoost?: boolean;
+  distanceKm?: number | null;
 }
 
 @Injectable()
@@ -325,13 +327,26 @@ export class BookingsService {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
     }
 
-    // Find technicians with the matching skill
+    // Service-area prefilter (province/district match, incl. legacy district aliases).
+    // Optimization only: technicianEligibility() below remains the final authority.
+    const targetArea = resolveServiceArea({
+      province: booking.provinceSnapshot,
+      district: booking.districtSnapshot,
+    });
+
+    // Find technicians with the matching skill in the booking's service area
     const qb = this.techProfileRepo
       .createQueryBuilder('tp')
       .innerJoinAndSelect('tp.user', 'user')
       .innerJoinAndSelect('tp.skills', 'skill', 'skill.serviceId = :serviceId AND skill.isActive = true', {
         serviceId: booking.serviceId,
       })
+      .innerJoin(
+        'tp.serviceAreas',
+        'serviceArea',
+        'serviceArea.provinceCode = :provinceCode AND serviceArea.districtCode IN (:...districtCodes)',
+        { provinceCode: targetArea.provinceCode, districtCodes: targetArea.districtAliasCodes },
+      )
       .where('tp.isAvailable = :available', { available: true })
       .andWhere('tp.verificationStatus = :verified', { verified: 'verified' })
       .andWhere('(tp.workSuspendedUntil IS NULL OR tp.workSuspendedUntil < :now)', {
@@ -339,15 +354,45 @@ export class BookingsService {
       })
       .andWhere('user.status = :active', { active: 'active' });
 
-    // Spec v1.2: Priority Boost as soft ranking signal, followed by rating and reliability
-    qb.orderBy(
-      'CASE WHEN tp.priorityBoostUntil IS NOT NULL AND tp.priorityBoostUntil > :now THEN 1 ELSE 0 END',
-      'DESC',
-    )
-      .addOrderBy('tp.averageRating', 'DESC')
-      .addOrderBy('tp.reliabilityScore', 'DESC');
-
     const ranked = await qb.getMany();
+
+    // Nearest-first: pull each technician's default work address to compute distance
+    // from the booking's coordinate snapshot (both may be missing -> distance omitted).
+    const userIds = ranked.map((tp) => tp.userId);
+    const workAddresses = userIds.length
+      ? await this.addressRepo.find({ where: { userId: In(userIds), isDefault: true } })
+      : [];
+    const addressByUserId = new Map(workAddresses.map((a) => [a.userId, a]));
+
+    const bookingLat = booking.latitudeSnapshot != null ? Number(booking.latitudeSnapshot) : null;
+    const bookingLng = booking.longitudeSnapshot != null ? Number(booking.longitudeSnapshot) : null;
+    const distanceByProfileId = new Map<string, number | null>();
+    for (const tp of ranked) {
+      const addr = addressByUserId.get(tp.userId);
+      const distance =
+        bookingLat != null && bookingLng != null && addr?.lat != null && addr?.lng != null
+          ? Math.round(haversineKm(bookingLat, bookingLng, Number(addr.lat), Number(addr.lng)) * 10) / 10
+          : null;
+      distanceByProfileId.set(tp.id, distance);
+    }
+
+    // Spec v1.2: Priority Boost first, then nearest distance, then rating and reliability
+    const now = new Date();
+    ranked.sort((a, b) => {
+      const boostA = a.priorityBoostUntil && new Date(a.priorityBoostUntil) > now ? 1 : 0;
+      const boostB = b.priorityBoostUntil && new Date(b.priorityBoostUntil) > now ? 1 : 0;
+      if (boostA !== boostB) return boostB - boostA;
+      const distA = distanceByProfileId.get(a.id);
+      const distB = distanceByProfileId.get(b.id);
+      if (distA != null || distB != null) {
+        if (distA == null) return 1;
+        if (distB == null) return -1;
+        if (distA !== distB) return distA - distB;
+      }
+      if (Number(b.averageRating) !== Number(a.averageRating)) return Number(b.averageRating) - Number(a.averageRating);
+      return b.reliabilityScore - a.reliabilityScore;
+    });
+
     const profiles: TechnicianProfile[] = [];
     for (const profile of ranked) {
       if ((await technicianEligibility(this.dataSource.manager, profile.userId, booking)).eligible) {
@@ -373,6 +418,7 @@ export class BookingsService {
         ),
         listedLaborPrice: matchedSkill?.listedLaborPrice != null ? Number(matchedSkill.listedLaborPrice) : null,
         typicalWarrantyDays: matchedSkill?.typicalWarrantyDays ?? 30,
+        distanceKm: distanceByProfileId.get(tp.id) ?? null,
       };
     });
   }
