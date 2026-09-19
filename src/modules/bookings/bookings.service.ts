@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, In } from 'typeorm';
+import { Repository, DataSource, EntityManager, In } from 'typeorm';
 import { Booking } from './entities/booking.entity';
 import { BookingMedia } from './entities/booking-media.entity';
 import { User } from '../users/entities/user.entity';
@@ -25,11 +25,14 @@ import { CreateBookingDto, RebookDto, validBookingWindow } from './booking.dto';
 import { technicianEligibility } from './technician-eligibility';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
+import { OrderStatusHistory } from '../service-orders/entities/order-status-history.entity';
 import { BookingInvitation } from './entities/booking-invitation.entity';
 import { InvitationStatus, ServiceOrderStatus } from '../../shared/enums';
 import { resolveServiceArea } from '../../shared/utils/administrative-areas';
 import { haversineKm } from '../../shared/utils/geo';
 import { AiDiagnosis } from '../ai-diagnosis/entities/ai-diagnosis.entity';
+import { activateNextInvitation } from './activate-next-invitation';
+import { BusinessConfigService } from '../system-config/business-config.service';
 
 export interface TechnicianCandidate {
   technicianId: string;
@@ -70,6 +73,7 @@ export class BookingsService {
     private readonly techAreaRepo: Repository<TechnicianServiceArea>,
     private readonly auditLogService: AuditLogService,
     private readonly dataSource: DataSource,
+    private readonly configService: BusinessConfigService,
   ) {}
 
   /**
@@ -428,7 +432,7 @@ export class BookingsService {
    */
   async reschedule(
     bookingId: string,
-    dto: { preferredStartAt: string; preferredEndAt: string },
+    dto: { preferredStartAt: string; preferredEndAt: string; description?: string },
     customer: { id: string },
   ): Promise<Booking> {
     if (!validBookingWindow(dto.preferredStartAt, dto.preferredEndAt)) {
@@ -449,35 +453,76 @@ export class BookingsService {
       }
       booking.preferredStartAt = new Date(dto.preferredStartAt);
       booking.preferredEndAt = new Date(dto.preferredEndAt);
+      if (dto.description) booking.description = dto.description;
+      let action = 'BOOKING_RESCHEDULE';
+      let rematched = false;
       if (order) {
         const assignment = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, isActive: true });
         if (!assignment) throw new BusinessException(ErrorCodes.CONFLICT, 'No active assignment');
         await manager.findOne(User, { where: { id: assignment.technicianId }, lock: { mode: 'pessimistic_write' } });
         const eligibility = await technicianEligibility(manager, assignment.technicianId, booking, order.id);
-        if (!eligibility.eligible) throw new BusinessException(ErrorCodes.CONFLICT, eligibility.reason!);
-        await manager.update(ServiceOrder, order.id, { scheduledAt: booking.preferredStartAt });
+        if (eligibility.eligible) {
+          await manager.update(ServiceOrder, order.id, { scheduledAt: booking.preferredStartAt });
+        } else {
+          // Assigned technician can no longer serve the new window. The ServiceOrder row is kept (its bookingId is
+          // unique — cancelling it would permanently block a future match for this booking) and only unassigned,
+          // mirroring the technician-withdrawal-before-arrival path in service-orders.service.ts#cancel: requeue the
+          // remaining candidates from the booking's original shortlist and let sequential dispatch try them again
+          // against the new time window.
+          const now = new Date();
+          await manager.update(TechnicianAssignment, { serviceOrderId: order.id, isActive: true }, {
+            isActive: false, unassignedAt: now, unassignReason: 'Customer rescheduled; technician unavailable for new time',
+          });
+          await manager.insert(OrderStatusHistory, {
+            serviceOrderId: order.id, fromStatus: order.status, toStatus: order.status,
+            actorUserId: customer.id, actorRole: Role.CUSTOMER,
+            reason: 'Customer rescheduled outside assigned technician availability; awaiting replacement',
+          });
+          const previous = await manager.find(BookingInvitation, { where: { bookingId }, order: { priorityOrder: 'ASC' } });
+          const last = Math.max(0, ...previous.filter(inv => inv.status === InvitationStatus.ACCEPTED).map(inv => inv.priorityOrder));
+          const remaining = previous.filter(inv => inv.priorityOrder > last && inv.status === InvitationStatus.CANCELLED);
+          const offset = Math.max(0, ...previous.map(inv => inv.priorityOrder));
+          for (const [index, candidate] of remaining.entries()) {
+            await manager.save(BookingInvitation, manager.create(BookingInvitation, {
+              bookingId, technicianId: candidate.technicianId, priorityOrder: offset + index + 1,
+              status: InvitationStatus.STANDBY, invitedAt: new Date(), expiresAt: null,
+            }));
+          }
+          booking.status = BookingStatus.MATCHING;
+          await manager.save(booking);
+          // activateNextInvitation may flip the DB row straight to CLOSED (raw update, bypassing this in-memory
+          // `booking`) if no candidate remains — re-fetch below rather than blindly re-saving the stale in-memory copy.
+          await activateNextInvitation(manager, booking, await this.configService.getInt('matching.invitation_ttl_minutes', 30));
+          action = 'BOOKING_RESCHEDULE_REMATCH';
+          rematched = true;
+        }
       } else {
-        await manager
-          .createQueryBuilder()
-          .update(BookingInvitation)
-          .set({ status: InvitationStatus.CANCELLED, respondedAt: new Date() })
-          .where('booking_id = :bookingId AND status IN (:...statuses)', {
-            bookingId,
-            statuses: [InvitationStatus.PENDING, InvitationStatus.STANDBY],
-          })
-          .execute();
+        await this.cancelOpenInvitations(manager, bookingId);
         booking.status = BookingStatus.SUBMITTED;
       }
       await this.auditLogService.logWithManager(manager, {
         actorUserId: customer.id,
         actorRole: Role.CUSTOMER,
-        action: 'BOOKING_RESCHEDULE',
+        action,
         resourceType: 'booking',
         resourceId: bookingId,
         after: dto,
       });
+      if (rematched) return manager.findOneByOrFail(Booking, { id: bookingId });
       return manager.save(booking);
     });
+  }
+
+  private async cancelOpenInvitations(manager: EntityManager, bookingId: string): Promise<void> {
+    await manager
+      .createQueryBuilder()
+      .update(BookingInvitation)
+      .set({ status: InvitationStatus.CANCELLED, respondedAt: new Date() })
+      .where('booking_id = :bookingId AND status IN (:...statuses)', {
+        bookingId,
+        statuses: [InvitationStatus.PENDING, InvitationStatus.STANDBY],
+      })
+      .execute();
   }
 
   async cancelBooking(bookingId: string, reason: string, customer: { id: string }): Promise<Booking> {
