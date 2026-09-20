@@ -40,6 +40,9 @@ export class AdditionalCostRequest extends BaseEntity {
   @Column({ name: 'supersedes_id', type: 'uuid', nullable: true })
   supersedesId?: string | null;
 
+  @Column({ name: 'evidence_urls', type: 'jsonb', nullable: true })
+  evidenceUrls?: string[] | null;
+
   @OneToMany(() => AdditionalCostItem, (item) => item.request)
   items: AdditionalCostItem[];
 }

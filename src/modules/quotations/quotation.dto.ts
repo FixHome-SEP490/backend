@@ -23,6 +23,7 @@ export class CreateQuotationDto {
 export class CreateAdditionalCostDto extends CreateQuotationDto {
   @Transform(({ value }) => typeof value === 'string' ? value.trim() : value)
   @IsString() @IsNotEmpty() @MaxLength(2000) reason: string;
+  @IsOptional() @IsArray() @ArrayMaxSize(10) @IsString({ each: true }) evidenceUrls?: string[];
 }
 export class FinancialDecisionDto {
   @IsIn(['APPROVE', 'REJECT']) action: 'APPROVE' | 'REJECT';
