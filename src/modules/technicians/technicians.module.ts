@@ -6,6 +6,7 @@ import { TechniciansService } from './technicians.service';
 import {
   TechnicianProfile,
   TechnicianSkill,
+  TechnicianSkillVerification,
   TechnicianServiceArea,
   TechnicianSchedule,
   TechnicianTimeOff,
@@ -22,6 +23,7 @@ import { CommissionDue } from '../service-orders/entities/commission-due.entity'
     TypeOrmModule.forFeature([
       TechnicianProfile,
       TechnicianSkill,
+      TechnicianSkillVerification,
       TechnicianServiceArea,
       TechnicianSchedule,
       TechnicianTimeOff,

@@ -21,7 +21,7 @@ export async function technicianEligibility(
   const profile = await manager.findOneBy(TechnicianProfile, { userId: technicianId });
   if (!profile || profile.verificationStatus !== VerificationStatus.VERIFIED) return fail('Technician is not verified');
   if (!profile.isAvailable || (profile.workSuspendedUntil && profile.workSuspendedUntil > new Date())) return fail('Technician is unavailable or suspended');
-  if (!await manager.findOneBy(TechnicianSkill, { technicianId: profile.id, serviceId: booking.serviceId, isActive: true })) return fail('Service is not offered');
+  if (!await manager.findOneBy(TechnicianSkill, { technicianId: profile.id, serviceId: booking.serviceId, isActive: true, verificationStatus: VerificationStatus.VERIFIED })) return fail('Service is not offered or not yet verified');
   if (await manager.count(CommissionDue, { where: { technicianId, status: CommissionDueStatus.PENDING } })) return fail('Active unpaid PlatformDue');
   if (!booking.preferredStartAt || !booking.preferredEndAt) return fail('Booking time window is missing');
   const start = new Date(booking.preferredStartAt);

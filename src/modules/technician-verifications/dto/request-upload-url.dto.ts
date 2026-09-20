@@ -6,17 +6,18 @@ export const KYC_UPLOAD_ALLOWED_MIME_TYPES = [
   'image/jpeg',
   'image/png',
   'image/webp',
+  'application/pdf',
 ] as const;
 
 export class RequestKycUploadUrlDto {
   @ApiProperty({
     example: 'image/jpeg',
     enum: KYC_UPLOAD_ALLOWED_MIME_TYPES,
-    description: 'Allowed MIME types: image/jpeg, image/png, image/webp',
+    description: 'Allowed MIME types: image/jpeg, image/png, image/webp, application/pdf',
   })
   @IsString()
   @IsIn(KYC_UPLOAD_ALLOWED_MIME_TYPES, {
-    message: 'mimeType must be one of image/jpeg, image/png, image/webp',
+    message: 'mimeType must be one of image/jpeg, image/png, image/webp, application/pdf',
   })
   mimeType: string;
 }

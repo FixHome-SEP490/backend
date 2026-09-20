@@ -3,6 +3,7 @@ import { Entity, Column, ManyToOne, JoinColumn, Index } from 'typeorm';
 import { BaseEntity } from '../../../database/base.entity';
 import { TechnicianProfile } from './technician-profile.entity';
 import { Service } from '../../services/entities/service.entity';
+import { VerificationStatus } from '../../../shared/enums';
 
 @Entity('technician_skills')
 @Index('idx_technician_skills_unique', ['technicianId', 'serviceId'], {
@@ -40,4 +41,15 @@ export class TechnicianSkill extends BaseEntity {
 
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;
+
+  // Bookable only when 'verified'. Not derived from isActive: a technician
+  // can toggle isActive freely, but only FixHome approving a
+  // TechnicianSkillVerification moves this to 'verified'.
+  @Column({
+    name: 'verification_status',
+    type: 'enum',
+    enum: VerificationStatus,
+    default: VerificationStatus.PENDING,
+  })
+  verificationStatus: VerificationStatus;
 }
