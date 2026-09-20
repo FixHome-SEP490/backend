@@ -148,6 +148,7 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     'booking:read_all',
     'ai_diagnosis:read_related',
     'assignment:override',
+    'invitation:shortlist',
     'chatbot:use',
     'order:read_related', 'order:update_status', 'order:cancel', 'order:read_status_history',
     'arrival_checkin:read_related',
@@ -172,6 +173,7 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     'booking:read_all',
     'ai_diagnosis:read_related',
     'assignment:override',
+    'invitation:shortlist',
     'message:read_thread', // Admin read-only on threads
     'chatbot:use', 'chatbot:monitor',
     'order:read_related', 'order:update_status', 'order:cancel', 'order:read_status_history',
