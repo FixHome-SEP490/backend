@@ -384,9 +384,15 @@ export class BookingsService {
     const qb = this.techProfileRepo
       .createQueryBuilder('tp')
       .innerJoinAndSelect('tp.user', 'user')
-      .innerJoinAndSelect('tp.skills', 'skill', 'skill.serviceId = :serviceId AND skill.isActive = true', {
-        serviceId: booking.serviceId,
-      })
+      .innerJoinAndSelect(
+        'tp.skills',
+        'skill',
+        'skill.serviceId = :serviceId AND skill.isActive = true AND skill.verificationStatus = :skillVerified',
+        {
+          serviceId: booking.serviceId,
+          skillVerified: 'verified',
+        },
+      )
       .innerJoin(
         'tp.serviceAreas',
         'serviceArea',
