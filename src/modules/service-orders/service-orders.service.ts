@@ -1,6 +1,6 @@
 import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository, In } from 'typeorm';
+import { DataSource, Repository, In, LessThanOrEqual } from 'typeorm';
 import { ServiceOrder } from './entities/service-order.entity';
 import { TechnicianAssignment } from './entities/technician-assignment.entity';
 import { OrderStatusHistory } from './entities/order-status-history.entity';
@@ -106,12 +106,28 @@ export class ServiceOrdersService {
 
   // ── Queries ──
 
+  /** Lazy expiry (same pattern as expireAdditionalCosts): technician never started past the scheduled time + grace. */
+  private async cancelOverdueOrders(): Promise<void> {
+    const graceMinutes = await this.configService.getInt('order.overdue_grace_minutes', 60);
+    const overdue = await this.orderRepo.find({ where: { status: ServiceOrderStatus.ACCEPTED, scheduledAt: LessThanOrEqual(new Date(Date.now() - graceMinutes * 60000)) } });
+    for (const order of overdue) {
+      await this.dataSource.transaction(async manager => {
+        const fresh = await manager.findOne(ServiceOrder, { where: { id: order.id }, lock: { mode: 'pessimistic_write' } });
+        if (!fresh || fresh.status !== ServiceOrderStatus.ACCEPTED) return;
+        await manager.update(ServiceOrder, fresh.id, { status: ServiceOrderStatus.CANCELLED, cancelledAt: new Date() });
+        await manager.update(TechnicianAssignment, { serviceOrderId: fresh.id, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: 'Overdue: technician did not start on schedule' });
+        await manager.insert(OrderStatusHistory, { serviceOrderId: fresh.id, fromStatus: ServiceOrderStatus.ACCEPTED, toStatus: ServiceOrderStatus.CANCELLED, reason: 'Auto-cancelled: overdue past scheduled time' });
+      });
+    }
+  }
+
   async findAll(options: {
     page?: number;
     limit?: number;
     status?: ServiceOrderStatus;
     search?: string;
   }): Promise<{ data: ServiceOrder[]; total: number }> {
+    await this.cancelOverdueOrders();
     const page = options.page || 1;
     const limit = Math.min(options.limit || 20, 100);
 
@@ -137,6 +153,7 @@ export class ServiceOrdersService {
     role: string,
     options: { page?: number; limit?: number; status?: ServiceOrderStatus },
   ): Promise<{ data: ServiceOrder[]; total: number }> {
+    await this.cancelOverdueOrders();
     const page = options.page || 1;
     const limit = Math.min(options.limit || 20, 100);
 
@@ -169,6 +186,7 @@ export class ServiceOrdersService {
     id: string,
     actor: { id: string; role: string },
   ): Promise<ServiceOrder> {
+    await this.cancelOverdueOrders();
     const order = await this.orderRepo.findOneBy({ id });
     if (!order) {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Order not found');
