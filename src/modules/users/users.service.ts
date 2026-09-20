@@ -6,12 +6,14 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import * as bcrypt from 'bcrypt';
+import { randomBytes } from 'crypto';
 import { User } from './entities/user.entity';
 import { RefreshToken } from '../auth/entities/refresh-token.entity';
-import { AccountStatus } from '../../shared/enums';
+import { AccountStatus, Role } from '../../shared/enums';
 import { normalizePhone } from '../../shared/validation/input.transforms';
 import { PaginationMeta } from '../../shared/dto';
-import { UpdateProfileDto, QueryUsersDto, UpdateUserStatusDto } from './dto';
+import { UpdateProfileDto, QueryUsersDto, UpdateUserStatusDto, CreateTechnicianDto } from './dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
 
 @Injectable()
@@ -112,6 +114,55 @@ export class UsersService {
     }
 
     return user;
+  }
+
+  /**
+   * SM/Admin onboards a Technician account. Public self-register only allows
+   * CUSTOMER (see AuthService.register); Technician accounts must be created
+   * by staff. Returns a one-time temp password — it is never stored in
+   * plaintext or retrievable again, so it must be relayed to the technician
+   * out-of-band right after this call.
+   */
+  async createTechnician(
+    dto: CreateTechnicianDto,
+    actor: { id: string; role: string },
+  ): Promise<{ user: User; tempPassword: string }> {
+    const email = dto.email.toLowerCase().trim();
+    const phoneNumber = dto.phoneNumber ? normalizePhone(dto.phoneNumber) : null;
+
+    if (await this.userRepository.findOne({ where: { email } })) {
+      throw new ConflictException('Email is already registered');
+    }
+    if (phoneNumber && (await this.userRepository.findOne({ where: { phoneNumber } }))) {
+      throw new ConflictException('Phone number is already registered');
+    }
+
+    const tempPassword = randomBytes(9).toString('base64url');
+    const passwordHash = await bcrypt.hash(tempPassword, 12);
+
+    const user = await this.userRepository.save(
+      this.userRepository.create({
+        email,
+        phoneNumber,
+        passwordHash,
+        fullName: dto.fullName.trim(),
+        role: Role.TECHNICIAN,
+        status: AccountStatus.ACTIVE,
+        isActive: true,
+        isEmailVerified: true,
+      }),
+    );
+
+    await this.auditLogService.log({
+      actorUserId: actor.id,
+      actorRole: actor.role,
+      action: 'TECHNICIAN_ACCOUNT_CREATED',
+      resourceType: 'user',
+      resourceId: user.id,
+      after: { email, fullName: user.fullName },
+    });
+
+    return { user, tempPassword };
   }
 
   async updateUserStatus(
