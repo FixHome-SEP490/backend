@@ -1,6 +1,6 @@
 // src/modules/technicians/dto/technician-service-response.dto.ts
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { ServicePricingMode } from '../../../shared/enums';
+import { ServicePricingMode, VerificationStatus } from '../../../shared/enums';
 
 export class TechnicianServiceSummaryDto {
   @ApiProperty({ format: 'uuid' })
@@ -44,6 +44,13 @@ export class TechnicianServiceOfferingResponseDto {
 
   @ApiProperty({ example: true })
   isActive: boolean;
+
+  @ApiProperty({
+    enum: VerificationStatus,
+    example: VerificationStatus.PENDING,
+    description: 'Bookable (appears in matching) only once verified',
+  })
+  verificationStatus: VerificationStatus;
 
   @ApiPropertyOptional({
     type: TechnicianServiceSummaryDto,

@@ -153,7 +153,7 @@ export class QuotationsService {
     const labor = items.filter(i=>i.type===CostItemType.LABOR).reduce((v,i)=>v+i.quantity*i.unitPrice,0);
     const parts = items.filter(i=>i.type===CostItemType.PARTS_EQUIPMENT).reduce((v,i)=>v+i.quantity*i.unitPrice,0);
     const ttl = await this.configService.getInt('additional_cost.ttl_minutes',120);
-    const cost = await manager.save(AdditionalCostRequest, manager.create(AdditionalCostRequest, { serviceOrderId: order.id, technicianId: actor.id, status: AdditionalCostStatus.PENDING_APPROVAL, reason: dto.reason, totalLaborDelta: labor, totalPartsDelta: parts, expiresAt: new Date(Date.now()+ttl*60000), supersedesId }));
+    const cost = await manager.save(AdditionalCostRequest, manager.create(AdditionalCostRequest, { serviceOrderId: order.id, technicianId: actor.id, status: AdditionalCostStatus.PENDING_APPROVAL, reason: dto.reason, totalLaborDelta: labor, totalPartsDelta: parts, expiresAt: new Date(Date.now()+ttl*60000), supersedesId, evidenceUrls: dto.evidenceUrls ?? null }));
     cost.items = await manager.save(AdditionalCostItem, items.map(item=>manager.create(AdditionalCostItem, { ...item, requestId: cost.id, lineTotal: item.quantity*item.unitPrice, warrantyDays: item.warrantyDays ?? 0 })));
     await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'ADDITIONAL_COST_CREATED', resourceType: 'additional_cost_request', resourceId: cost.id, after: { supersedesId, labor, parts } });
     return cost;

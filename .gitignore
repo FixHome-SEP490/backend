@@ -37,3 +37,7 @@ docker/postgres/data/
 # OS
 *.log
 backend.log
+
+# Graphify
+graphify-out/
+.graphify/

@@ -37,6 +37,7 @@ const KYC_UPLOAD_MIME_EXTENSIONS: Record<string, string> = {
   'image/jpeg': 'jpg',
   'image/png': 'png',
   'image/webp': 'webp',
+  'application/pdf': 'pdf',
 };
 
 @Injectable()

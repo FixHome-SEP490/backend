@@ -70,7 +70,7 @@ export class InvitationsService {
   async getMyInvitations(technicianId: string): Promise<BookingInvitation[]> {
     const awaiting = await this.invitationRepo.find({ where: [{ technicianId, status: InvitationStatus.PENDING }, { technicianId, status: InvitationStatus.STANDBY }] });
     for (const bookingId of new Set(awaiting.map(i => i.bookingId))) await this.refreshMatching(bookingId);
-    return this.invitationRepo.find({ where: { technicianId, status: InvitationStatus.PENDING }, relations: ['booking', 'booking.service'], order: { invitedAt: 'DESC' } });
+    return this.invitationRepo.find({ where: { technicianId, status: InvitationStatus.PENDING }, relations: ['booking', 'booking.service', 'booking.media'], order: { invitedAt: 'DESC' } });
   }
 
   async respond(invitationId: string, action: 'ACCEPT' | 'DECLINE', technician: { id: string; role: string }): Promise<{ invitation: BookingInvitation; serviceOrder?: ServiceOrder }> {

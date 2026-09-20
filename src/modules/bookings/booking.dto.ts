@@ -7,6 +7,11 @@ export const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-f
 export class ScheduleBookingDto {
   @IsDateString() preferredStartAt: string;
   @IsDateString() preferredEndAt: string;
+
+  @IsOptional()
+  @Transform(({ value }) => typeof value === 'string' ? value.trim() : value)
+  @IsString() @MaxLength(5000)
+  description?: string;
 }
 
 export class CreateBookingDto extends ScheduleBookingDto {

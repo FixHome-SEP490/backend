@@ -60,6 +60,24 @@ export class BookingsController {
     return { data: result.data, meta: { total: result.total } };
   }
 
+  @Get()
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('booking:read_all')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List all bookings (SM / Admin board)' })
+  async findAll(
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('status') status?: BookingStatus,
+  ) {
+    const result = await this.bookingsService.findAllForStaff({
+      page: page ? parseInt(page, 10) : 1,
+      limit: pageSize ? parseInt(pageSize, 10) : 20,
+      status,
+    });
+    return { data: result.data, meta: { total: result.total } };
+  }
+
   @Get(':id')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
@@ -93,7 +111,7 @@ export class BookingsController {
   @ApiOperation({ summary: 'Get technician candidates for a booking' })
   async getCandidates(
     @Param('id', ParseUUIDPipe) id: string,
-    @Req() req: { user: { id: string } },
+    @Req() req: { user: { id: string; role: string } },
   ) {
     const candidates = await this.bookingsService.getCandidates(id, req.user);
     return { data: candidates };

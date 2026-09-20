@@ -9,13 +9,19 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { TechnicianProfile } from './entities/technician-profile.entity';
 import { TechnicianSkill } from './entities/technician-skill.entity';
+import { TechnicianSkillVerification } from './entities/technician-skill-verification.entity';
 import { TechnicianSchedule } from './entities/technician-schedule.entity';
 import { TechnicianTimeOff } from './entities/technician-time-off.entity';
 import { TechnicianServiceArea } from './entities/technician-service-area.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { CommissionDue } from '../service-orders/entities/commission-due.entity';
-import { ServiceOrderStatus, CommissionDueStatus, ServicePricingMode } from '../../shared/enums';
+import {
+  ServiceOrderStatus,
+  CommissionDueStatus,
+  ServicePricingMode,
+  VerificationStatus,
+} from '../../shared/enums';
 import { ServicesService } from '../services/services.service';
 import { Service } from '../services/entities/service.entity';
 import {
@@ -45,6 +51,7 @@ export class TechniciansService {
   private readonly orderRepo!: Repository<ServiceOrder>;
   private readonly commissionDueRepo!: Repository<CommissionDue>;
   private readonly servicesService!: ServicesService;
+  private readonly skillVerificationRepo!: Repository<TechnicianSkillVerification>;
 
   constructor(
     @InjectRepository(TechnicianProfile)
@@ -71,9 +78,13 @@ export class TechniciansService {
     commissionDueRepo?: Repository<CommissionDue>,
     @Optional()
     servicesService?: ServicesService,
+    @InjectRepository(TechnicianSkillVerification)
+    @Optional()
+    skillVerificationRepo?: Repository<TechnicianSkillVerification>,
   ) {
     this.profileRepo = profileRepo;
     this.skillRepo = skillRepo;
+    if (skillVerificationRepo) this.skillVerificationRepo = skillVerificationRepo;
 
     if (
       scheduleRepoOrServicesService &&
@@ -191,7 +202,38 @@ export class TechniciansService {
     }
 
     const saved = await this.skillRepo.save(skill);
+    await this.ensurePendingSkillVerification(saved);
     return this.toOfferingDto(saved, service);
+  }
+
+  // A technician toggling a skill active never makes it bookable by itself —
+  // it only (re)opens a verification request. The DB partial unique index
+  // (idx_one_open_skill_verification) is the real guard against duplicates;
+  // this check just avoids throwing on the common "already pending" path.
+  private async ensurePendingSkillVerification(skill: TechnicianSkill): Promise<void> {
+    if (!this.skillVerificationRepo || !skill.isActive) return;
+    if (skill.verificationStatus === VerificationStatus.VERIFIED) return;
+
+    const hasOpenVerification = await this.skillVerificationRepo.exists({
+      where: [
+        { technicianSkillId: skill.id, status: VerificationStatus.PENDING },
+        { technicianSkillId: skill.id, status: VerificationStatus.VERIFIED },
+      ],
+    });
+    if (hasOpenVerification) return;
+
+    await this.skillVerificationRepo.save(
+      this.skillVerificationRepo.create({
+        technicianSkillId: skill.id,
+        status: VerificationStatus.PENDING,
+      }),
+    );
+    if (skill.verificationStatus !== VerificationStatus.PENDING) {
+      skill.verificationStatus = VerificationStatus.PENDING;
+      await this.skillRepo.update(skill.id, {
+        verificationStatus: VerificationStatus.PENDING,
+      });
+    }
   }
 
   private toOfferingDto(
@@ -227,6 +269,7 @@ export class TechniciansService {
           ? null
           : typicalWarrantyDays,
       level: skill.level,
+      verificationStatus: skill.verificationStatus ?? VerificationStatus.PENDING,
       isActive: skill.isActive,
       service: source
         ? {

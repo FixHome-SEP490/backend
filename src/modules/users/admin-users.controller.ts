@@ -3,9 +3,12 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
+  Post,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -16,7 +19,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { UsersService } from './users.service';
-import { QueryUsersDto, UpdateUserStatusDto } from './dto';
+import { QueryUsersDto, UpdateUserStatusDto, CreateTechnicianDto } from './dto';
 import { JwtAuthGuard, RolesGuard } from '../../common/guards';
 import { CurrentUser, Roles } from '../../common/decorators';
 import { Role } from '../../shared/enums';
@@ -55,6 +58,24 @@ export class AdminUsersController {
   async getUserById(@Param('id', ParseUUIDPipe) id: string) {
     const user = await this.usersService.getUserById(id);
     return UserProfileDto.fromUser(user);
+  }
+
+  @Post('technicians')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Admin: Onboard a Technician account (self-register only allows Customer)',
+  })
+  @ApiResponse({ status: 201, description: 'Technician account created; response includes a one-time temp password' })
+  @ApiResponse({ status: 409, description: 'Email or phone number already registered' })
+  async createTechnician(
+    @Body() dto: CreateTechnicianDto,
+    @CurrentUser() adminUser: any,
+  ) {
+    const { user, tempPassword } = await this.usersService.createTechnician(dto, {
+      id: adminUser.id,
+      role: adminUser.role,
+    });
+    return { data: { user: UserProfileDto.fromUser(user), tempPassword } };
   }
 
   @Patch(':id/status')

@@ -38,7 +38,7 @@ export function registerDev1Cases(context: () => Context) {
       for (const actor of [tech, spare]) {
         const profile = await db.getRepository('TechnicianProfile').findOneByOrFail({ userId: actor.user.id });
         await db.getRepository('TechnicianProfile').update(profile.id, { verificationStatus: 'verified', isAvailable: true });
-        await save('TechnicianSkill', { technicianId: profile.id, serviceId: service.id, listedLaborPrice: 100000 });
+        await save('TechnicianSkill', { technicianId: profile.id, serviceId: service.id, listedLaborPrice: 100000, verificationStatus: 'verified' });
         await save('TechnicianServiceArea', { technicianId: profile.id, provinceCode: 'P1', districtCode: 'D1' });
         for (let dayOfWeek = 0; dayOfWeek < 7; dayOfWeek++) await save('TechnicianSchedule', { technicianId: profile.id, dayOfWeek, startTime: '08:00', endTime: '18:00' });
       }

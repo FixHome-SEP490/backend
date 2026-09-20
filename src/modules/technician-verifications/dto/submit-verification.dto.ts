@@ -42,11 +42,15 @@ export class DocumentMetadataDto {
   @MaxLength(512)
   storageObjectPath: string;
 
+  // Display label only — the real storage key is the server-generated
+  // storageObjectPath, so this just needs a sane extension, not a strict
+  // charset (real filenames commonly carry parentheses, commas, etc., e.g.
+  // "images (2).jpg").
   @ApiProperty({ example: 'citizen_id_front.jpg' })
   @IsString()
   @IsNotEmpty({ message: 'fileName is required' })
   @MaxLength(255)
-  @Matches(/^[\p{L}\p{N} _.-]+\.(jpe?g|png|webp|pdf)$/iu)
+  @Matches(/^[^\\/]+\.(jpe?g|png|webp|pdf)$/iu)
   fileName: string;
 
   @ApiProperty({
