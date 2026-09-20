@@ -221,6 +221,17 @@ export class BookingsService {
     return saved;
   }
 
+  /** Lazy expiry (same pattern as invitation matching): customer's requested window has passed with no technician engaged. */
+  private async closeOverdueBookings(): Promise<void> {
+    await this.bookingRepo
+      .createQueryBuilder()
+      .update(Booking)
+      .set({ status: BookingStatus.CLOSED })
+      .where('status IN (:...statuses)', { statuses: [BookingStatus.SUBMITTED, BookingStatus.MATCHING] })
+      .andWhere('preferred_end_at IS NOT NULL AND preferred_end_at <= :now', { now: new Date() })
+      .execute();
+  }
+
   /**
    * Get bookings for a customer with pagination.
    */
@@ -228,6 +239,7 @@ export class BookingsService {
     customerId: string,
     options: { page?: number; limit?: number; status?: BookingStatus },
   ): Promise<{ data: Booking[]; total: number }> {
+    await this.closeOverdueBookings();
     const page = options.page || 1;
     const limit = Math.min(options.limit || 20, 100);
 
@@ -250,12 +262,41 @@ export class BookingsService {
   }
 
   /**
+   * SM/Admin board: list all bookings (no customer restriction).
+   * Used to find bookings stuck in MATCHING for manual assignment.
+   */
+  async findAllForStaff(
+    options: { page?: number; limit?: number; status?: BookingStatus },
+  ): Promise<{ data: Booking[]; total: number }> {
+    await this.closeOverdueBookings();
+    const page = options.page || 1;
+    const limit = Math.min(options.limit || 20, 100);
+
+    const qb = this.bookingRepo
+      .createQueryBuilder('b')
+      .leftJoinAndSelect('b.service', 'service')
+      .leftJoinAndSelect('b.media', 'media');
+
+    if (options.status) {
+      qb.andWhere('b.status = :status', { status: options.status });
+    }
+
+    qb.orderBy('b.createdAt', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit);
+
+    const [data, total] = await qb.getManyAndCount();
+    return { data, total };
+  }
+
+  /**
    * Get a booking by ID with ownership check.
    */
   async findById(
     id: string,
     actor: { id: string; role: string },
   ): Promise<Booking> {
+    await this.closeOverdueBookings();
     const booking = await this.bookingRepo.findOne({
       where: { id },
       relations: ['service', 'address', 'media', 'invitations'],
@@ -321,10 +362,11 @@ export class BookingsService {
    */
   async getCandidates(
     bookingId: string,
-    customer: { id: string },
+    actor: { id: string; role?: string },
   ): Promise<TechnicianCandidate[]> {
+    const isStaff = actor.role === Role.ADMIN || actor.role === Role.SERVICE_MANAGER;
     const booking = await this.bookingRepo.findOne({
-      where: { id: bookingId, customerId: customer.id },
+      where: isStaff ? { id: bookingId } : { id: bookingId, customerId: actor.id },
       relations: ['service', 'address'],
     });
     if (!booking) {
