@@ -61,6 +61,7 @@ import type { EntityManager } from 'typeorm';
 import { OrderEvidenceStorage, EvidenceFile } from '../media/order-evidence-storage.service';
 import { expireAdditionalCosts } from './expire-additional-costs';
 import { authorizeOrder } from './order-access';
+import { historicalOrderSummary, type HistoricalOrderSummary } from './historical-order-summary';
 
 @Injectable()
 export class ServiceOrdersService {
@@ -152,7 +153,7 @@ export class ServiceOrdersService {
     userId: string,
     role: string,
     options: { page?: number; limit?: number; status?: ServiceOrderStatus },
-  ): Promise<{ data: ServiceOrder[]; total: number }> {
+  ): Promise<{ data: (ServiceOrder | HistoricalOrderSummary)[]; total: number }> {
     await this.cancelOverdueOrders();
     const page = options.page || 1;
     const limit = Math.min(options.limit || 20, 100);
@@ -168,6 +169,8 @@ export class ServiceOrdersService {
         'ta',
         'ta.service_order_id = o.id',
       ).where('ta.technician_id = :userId', { userId });
+    } else {
+      throw new ForbiddenException('Order list access denied');
     }
 
     if (options.status) {
@@ -179,17 +182,37 @@ export class ServiceOrdersService {
       .take(limit);
 
     const [data, total] = await qb.getManyAndCount();
-    return { data: await Promise.all(data.map(order => this.presentOrder(order))), total };
+    return {
+      data: await Promise.all(data.map(async order => {
+        if (role !== Role.TECHNICIAN) return this.presentOrder(order);
+        const assignment = await this.dataSource.manager.findOneBy(TechnicianAssignment, {
+          serviceOrderId: order.id, technicianId: userId, isActive: true,
+        });
+        return assignment ? this.presentOrder(order) : historicalOrderSummary(order);
+      })),
+      total,
+    };
   }
 
   async findById(
     id: string,
     actor: { id: string; role: string },
-  ): Promise<ServiceOrder> {
+  ): Promise<ServiceOrder | HistoricalOrderSummary> {
     await this.cancelOverdueOrders();
     const order = await this.orderRepo.findOneBy({ id });
     if (!order) {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Order not found');
+    }
+    if (actor.role === Role.TECHNICIAN) {
+      const active = await this.dataSource.manager.findOneBy(TechnicianAssignment, {
+        serviceOrderId: id, technicianId: actor.id, isActive: true,
+      });
+      if (active) return this.presentOrder(order);
+      const historical = await this.dataSource.manager.findOneBy(TechnicianAssignment, {
+        serviceOrderId: id, technicianId: actor.id,
+      });
+      if (historical) return historicalOrderSummary(order);
+      throw new ForbiddenException('Order not found or access denied');
     }
     await this.checkOrderAccess(order, actor);
     return this.presentOrder(order);
