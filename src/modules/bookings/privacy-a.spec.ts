@@ -230,6 +230,7 @@ describe('BE-PRIVACY-A synthetic booking reads', () => {
     const controller = new BookingsController(
       service,
       { refreshMatching: vi.fn(async () => undefined) } as never,
+      {} as never,
     );
 
     await expect(controller.findById(bookingId, {
@@ -244,7 +245,7 @@ describe('BE-PRIVACY-A synthetic booking reads', () => {
     const booking = makeBooking();
     const { service, manager } = makeBookingsHarness(booking);
     const invitationsService = { refreshMatching: vi.fn(async () => undefined) } as never;
-    const controller = new BookingsController(service, invitationsService);
+    const controller = new BookingsController(service, invitationsService, {} as never);
 
     const response = await controller.findById(bookingId, {
       user: { id: technicianId, role: Role.TECHNICIAN },

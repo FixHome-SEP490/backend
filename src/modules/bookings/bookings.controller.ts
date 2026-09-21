@@ -12,8 +12,10 @@ import {
   Req,
   HttpCode,
   HttpStatus,
+  Res,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth, ApiOkResponse } from '@nestjs/swagger';
+import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionGuard } from '../../common/guards/permission.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
@@ -23,6 +25,7 @@ import { AttachBookingMediaDto, CreateBookingDto, ScheduleBookingDto, RebookDto,
 import { ReasonDto } from '../service-orders/order-command.dto';
 import { BookingStatus } from '../../shared/enums';
 import { toBookingMediaResponse, toBookingResponse } from './booking-privacy.dto';
+import { BookingPrivateMediaContentService } from './booking-private-media-content.service';
 
 @ApiTags('Bookings')
 @Controller('bookings')
@@ -30,6 +33,7 @@ export class BookingsController {
   constructor(
     private readonly bookingsService: BookingsService,
     private readonly invitationsService: InvitationsService,
+    private readonly privateMediaContentService: BookingPrivateMediaContentService,
   ) {}
 
   @Post()
@@ -88,6 +92,34 @@ export class BookingsController {
     await this.invitationsService.refreshMatching(id);
     const booking = await this.bookingsService.findById(id, req.user);
     return { data: toBookingResponse(booking) };
+  }
+
+  @Get(':bookingId/media/:mediaId/content')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: 'Validated private Booking photo bytes',
+    content: {
+      'image/jpeg': { schema: { type: 'string', format: 'binary' } },
+      'image/png': { schema: { type: 'string', format: 'binary' } },
+      'image/webp': { schema: { type: 'string', format: 'binary' } },
+    },
+  })
+  @ApiOperation({ summary: 'Read private Booking photo content' })
+  async getPrivateMediaContent(
+    @Param('bookingId', ParseUUIDPipe) bookingId: string,
+    @Param('mediaId', ParseUUIDPipe) mediaId: string,
+    @Req() req: { user: { id: string; role: string } },
+    @Res() response: Response,
+  ): Promise<void> {
+    response.setHeader('Cache-Control', 'private, no-store, max-age=0');
+    response.setHeader('Pragma', 'no-cache');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    const content = await this.privateMediaContentService.download(bookingId, mediaId, req.user);
+    response.status(HttpStatus.OK);
+    response.setHeader('Content-Type', content.mimeType);
+    response.setHeader('Content-Length', String(content.buffer.length));
+    response.end(content.buffer);
   }
 
   @Post(':id/media')

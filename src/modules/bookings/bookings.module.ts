@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { BookingsController } from './bookings.controller';
 import { InvitationsController } from './invitations.controller';
 import { BookingsService } from './bookings.service';
+import { BookingPrivateMediaContentService } from './booking-private-media-content.service';
 import { InvitationsService } from './invitations.service';
 import { Booking } from './entities/booking.entity';
 import { BookingMedia } from './entities/booking-media.entity';
@@ -34,7 +35,7 @@ import { MediaModule } from '../media/media.module';
     MediaModule,
   ],
   controllers: [BookingsController, InvitationsController],
-  providers: [BookingsService, InvitationsService],
+  providers: [BookingsService, InvitationsService, BookingPrivateMediaContentService],
   exports: [BookingsService, InvitationsService],
 })
 export class BookingsModule {}

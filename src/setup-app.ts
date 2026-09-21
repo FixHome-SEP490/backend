@@ -1,7 +1,7 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { ConfigService } from '@nestjs/config';
-import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { SwaggerModule, DocumentBuilder, type OpenAPIObject } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { HttpExceptionFilter } from './common/filters';
 import {
@@ -22,6 +22,53 @@ import { ApiErrorResponseDto } from './shared/dto';
  * tới trợ lý", which points at the network and is nothing to do with it.
  */
 const MAX_BODY_SIZE = '40mb';
+
+export function normalizeOpenApiResponses(document: OpenAPIObject): void {
+  for (const path of Object.values(document.paths ?? {})) {
+    if (!path) continue;
+    for (const method of ['get', 'post', 'patch', 'put', 'delete'] as const) {
+      const operation = path[method];
+      if (!operation) continue;
+      for (const [status, response] of Object.entries(operation.responses ?? {})) {
+        if ('$ref' in response || status === '204') continue;
+        const hasBinarySuccessContent = Number(status) < 400 &&
+          Object.values(response.content ?? {}).some(mediaType => {
+            const schema = mediaType.schema as { type?: string; format?: string } | undefined;
+            return schema?.type === 'string' && schema.format === 'binary';
+          });
+        if (hasBinarySuccessContent) continue;
+
+        const original = response.content?.['application/json']?.schema ?? {};
+        response.content = {
+          'application/json': {
+            schema:
+              Number(status) >= 400
+                ? { $ref: '#/components/schemas/ApiErrorResponseDto' }
+                : {
+                    type: 'object',
+                    required: ['success', 'statusCode', 'message', 'data'],
+                    properties: {
+                      success: { type: 'boolean', example: true },
+                      statusCode: { type: 'integer', example: Number(status) },
+                      message: { type: 'string', example: 'Success' },
+                      data: original,
+                      meta: {
+                        type: 'object',
+                        properties: {
+                          page: { type: 'integer' },
+                          limit: { type: 'integer' },
+                          total: { type: 'integer' },
+                          totalPages: { type: 'integer' },
+                        },
+                      },
+                    },
+                  },
+          },
+        };
+      }
+    }
+  }
+}
 
 export function configureApplication(
   app: INestApplication & Partial<NestExpressApplication>,
@@ -86,41 +133,6 @@ export function configureApplication(
     extraModels: [ApiErrorResponseDto],
   });
   // OpenAPI describes the same global envelope applied at runtime.
-  for (const path of Object.values(document.paths)) {
-    for (const method of ['get', 'post', 'patch', 'put', 'delete'] as const) {
-      const operation = path[method];
-      if (!operation) continue;
-      for (const [status, response] of Object.entries(operation.responses)) {
-        if ('$ref' in response || status === '204') continue;
-        const original = response.content?.['application/json']?.schema ?? {};
-        response.content = {
-          'application/json': {
-            schema:
-              Number(status) >= 400
-                ? { $ref: '#/components/schemas/ApiErrorResponseDto' }
-                : {
-                    type: 'object',
-                    required: ['success', 'statusCode', 'message', 'data'],
-                    properties: {
-                      success: { type: 'boolean', example: true },
-                      statusCode: { type: 'integer', example: Number(status) },
-                      message: { type: 'string', example: 'Success' },
-                      data: original,
-                      meta: {
-                        type: 'object',
-                        properties: {
-                          page: { type: 'integer' },
-                          limit: { type: 'integer' },
-                          total: { type: 'integer' },
-                          totalPages: { type: 'integer' },
-                        },
-                      },
-                    },
-                  },
-          },
-        };
-      }
-    }
-  }
+  normalizeOpenApiResponses(document);
   SwaggerModule.setup('api/docs', app, document);
 }

@@ -360,6 +360,7 @@ describe('B2b2 Booking private photo wiring', () => {
     const controller = new BookingsController(
       service as never,
       { refreshMatching: vi.fn(async () => undefined) } as never,
+      {} as never,
     );
     const attachBody = Object.assign(new AttachBookingMediaDto(), { url: LEGACY_PUBLIC_URL });
     const responses = [
