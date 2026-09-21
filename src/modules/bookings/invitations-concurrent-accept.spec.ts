@@ -158,4 +158,15 @@ describe('BE-MATCH first valid Accept is the only winner', () => {
     expect(s.booking.status).toBe(BookingStatus.MATCHING);
     expect(s.invitations[1].status).toBe(InvitationStatus.PENDING);
   });
+
+  it('passes the pause exemption only after valid PENDING Accept validation', async () => {
+    const s = scenario(2);
+    await s.service.respond('invitation-1', 'DECLINE', s.actor(1));
+    expect(technicianEligibility).not.toHaveBeenCalled();
+    await s.service.respond('invitation-2', 'ACCEPT', s.actor(2));
+    expect(technicianEligibility).toHaveBeenCalledWith(
+      expect.anything(), 'tech-2', expect.anything(), undefined,
+      { allowPausedExistingInvitation: true },
+    );
+  });
 });

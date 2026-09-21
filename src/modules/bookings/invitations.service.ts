@@ -114,7 +114,8 @@ export class InvitationsService {
         await this.activateNext(manager, booking);
         return { expired: true as const };
       }
-      const eligibility = await technicianEligibility(manager, technician.id, booking);
+      // Existing, still-valid PENDING invitation may be accepted after pause; all other guards still apply.
+      const eligibility = await technicianEligibility(manager, technician.id, booking, undefined, { allowPausedExistingInvitation: true });
       if (!eligibility.eligible) throw new BusinessException(ErrorCodes.WORK_SUSPENDED, eligibility.reason!);
       let serviceOrder = await manager.findOneBy(ServiceOrder, { bookingId: booking.id });
       const now = new Date();
