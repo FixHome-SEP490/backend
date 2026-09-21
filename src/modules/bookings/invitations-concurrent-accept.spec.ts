@@ -29,8 +29,9 @@ function scenario(count: number) {
       if (!invitation) throw new Error('Invitation not found');
       return invitation;
     }),
-    findOneBy: vi.fn(async (entity: { name?: string }, query: { bookingId?: string; status?: InvitationStatus }) => {
+    findOneBy: vi.fn(async (entity: { name?: string }, query: { bookingId?: string; status?: InvitationStatus; serviceOrderId?: string; technicianId?: string; isActive?: boolean }) => {
       if (entity.name === 'ServiceOrder') return serviceOrder;
+      if (entity.name === 'TechnicianAssignment') return assignments.find(a => a.serviceOrderId === query.serviceOrderId && a.technicianId === query.technicianId && a.isActive === query.isActive) ?? null;
       return invitations.find(i => i.bookingId === query.bookingId && i.status === query.status) ?? null;
     }),
     count: vi.fn(async () => assignments.filter(a => a.isActive).length),
@@ -142,6 +143,17 @@ describe('BE-MATCH first valid Accept is the only winner', () => {
     expect(s.orderCreated).toBe(1);
   });
 
+  it('rejects replayed Accept after winner is unassigned and another technician owns the order', async () => {
+    const s = scenario(2);
+    const accepted = await s.service.respond('invitation-1', 'ACCEPT', s.actor(1));
+    expect(accepted.serviceOrder?.id).toBe('service-order-1');
+    expect(s.assignments).toHaveLength(1);
+    s.assignments[0].isActive = false;
+    s.assignments.push({ serviceOrderId: 'service-order-1', technicianId: 'tech-2', isActive: true });
+    await expect(s.service.respond('invitation-1', 'ACCEPT', s.actor(1))).rejects.toThrow();
+    expect(s.orderCreated).toBe(1);
+    expect(s.assignments.filter(a => a.isActive).map(a => a.technicianId)).toEqual(['tech-2']);
+  });
   it('rejects a non-technician and an invitation belonging to another technician', async () => {
     const s = scenario(3);
     await expect(s.service.respond('invitation-1', 'ACCEPT', { id: 'tech-1', role: Role.CUSTOMER })).rejects.toThrow();

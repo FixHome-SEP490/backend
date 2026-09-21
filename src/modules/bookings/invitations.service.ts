@@ -107,7 +107,17 @@ export class InvitationsService {
       if (!booking) throw new ForbiddenException('Booking not found');
       const invitation = await manager.findOneByOrFail(BookingInvitation, { id: invitationId, technicianId: technician.id });
       if (invitation.status === InvitationStatus.ACCEPTED && action === 'ACCEPT') {
-        return { invitation, serviceOrder: await manager.findOneByOrFail(ServiceOrder, { bookingId: booking.id }) };
+        // An ACCEPTED invitation is historical; only the still-assigned winner
+        // may replay Accept and receive the order (which carries location data).
+        const existingOrder = await manager.findOneBy(ServiceOrder, { bookingId: booking.id });
+        if (!existingOrder || booking.status !== BookingStatus.MATCHED ||
+            existingOrder.status === ServiceOrderStatus.CANCELLED ||
+            !await manager.findOneBy(TechnicianAssignment, {
+              serviceOrderId: existingOrder.id, technicianId: technician.id, isActive: true,
+            })) {
+          throw new BusinessException(ErrorCodes.INVITATION_ALREADY_TAKEN, 'Invitation is no longer assigned to this technician');
+        }
+        return { invitation, serviceOrder: existingOrder };
       }
       if (invitation.status === InvitationStatus.DECLINED && action === 'DECLINE') return { invitation };
       if (booking.status !== BookingStatus.MATCHING || invitation.status !== InvitationStatus.PENDING) throw new BusinessException(ErrorCodes.INVITATION_ALREADY_TAKEN, 'Invitation is no longer active');
