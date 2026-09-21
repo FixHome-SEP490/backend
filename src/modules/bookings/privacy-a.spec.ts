@@ -12,6 +12,7 @@ import { Booking } from './entities/booking.entity';
 import { BookingInvitation } from './entities/booking-invitation.entity';
 import { InvitationsController } from './invitations.controller';
 import { InvitationsService } from './invitations.service';
+import { PrivateBookingPhotoClaimService } from '../media/private-booking-photo-claim.service';
 
 const bookingId = 'synthetic-booking-1';
 const technicianId = 'synthetic-tech-1';
@@ -122,6 +123,7 @@ function makeBookingsHarness(
     {} as never,
     {} as never,
     dataSource as never,
+    new PrivateBookingPhotoClaimService(),
     {} as never,
   );
   return { service, bookingRepo, manager, diagnosis, dataSource };

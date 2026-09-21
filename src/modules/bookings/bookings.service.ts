@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, EntityManager, In } from 'typeorm';
+import { isUUID } from 'class-validator';
 import { Booking } from './entities/booking.entity';
 import { BookingMedia } from './entities/booking-media.entity';
 import { User } from '../users/entities/user.entity';
@@ -21,7 +22,7 @@ import { TechnicianSkill } from '../technicians/entities/technician-skill.entity
 import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
 
 export { CreateBookingDto } from './booking.dto';
-import { CreateBookingDto, RebookDto, validBookingWindow } from './booking.dto';
+import { AttachBookingMediaDto, CreateBookingDto, RebookDto, validBookingWindow } from './booking.dto';
 import { technicianEligibility } from './technician-eligibility';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
@@ -33,7 +34,12 @@ import { haversineKm } from '../../shared/utils/geo';
 import { AiDiagnosis } from '../ai-diagnosis/entities/ai-diagnosis.entity';
 import { activateNextInvitation } from './activate-next-invitation';
 import { BusinessConfigService } from '../system-config/business-config.service';
-import { TechnicianBookingPreviewDto, toTechnicianBookingPreview } from './booking-privacy.dto';
+import {
+  isLegacyPublicBookingMediaUrl,
+  TechnicianBookingPreviewDto,
+  toTechnicianBookingPreview,
+} from './booking-privacy.dto';
+import { PrivateBookingPhotoClaimService } from '../media/private-booking-photo-claim.service';
 
 export interface TechnicianCandidate {
   technicianId: string;
@@ -74,6 +80,7 @@ export class BookingsService {
     private readonly techAreaRepo: Repository<TechnicianServiceArea>,
     private readonly auditLogService: AuditLogService,
     private readonly dataSource: DataSource,
+    private readonly privateBookingPhotoClaimService: PrivateBookingPhotoClaimService,
     private readonly configService: BusinessConfigService,
   ) {}
 
@@ -82,6 +89,7 @@ export class BookingsService {
    */
   async create(dto: CreateBookingDto, customer: { id: string; role: string }): Promise<Booking> {
     if (customer.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
+    this.validateCreateMediaInput(dto);
     if (!validBookingWindow(dto.preferredStartAt, dto.preferredEndAt)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Choose a valid future start and end time');
     if (!dto.addressId || !Number.isInteger(dto.quantity ?? 1) || (dto.quantity ?? 1) < 1) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Address and positive integer quantity required');
 
@@ -162,42 +170,60 @@ export class BookingsService {
     if (latitudeSnapshot == null || longitudeSnapshot == null) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Repair address coordinates are required');
     if (isFixed && (service.fixedPrice == null || Number(service.fixedPrice) < 0)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Service fixed price is not configured');
 
-    const booking = this.bookingRepo.create({
-      customerId: customer.id,
-      serviceId: dto.serviceId,
-      addressId: dto.addressId || null,
-      addressTextSnapshot,
-      provinceSnapshot,
-      districtSnapshot,
-      provinceNameSnapshot,
-      districtNameSnapshot,
-      serviceNameSnapshot: service.name,
-      latitudeSnapshot,
-      longitudeSnapshot,
-      description: dto.description,
-      preferredStartAt: dto.preferredStartAt ? new Date(dto.preferredStartAt) : null,
-      preferredEndAt: dto.preferredEndAt ? new Date(dto.preferredEndAt) : null,
-      pricingModeSnapshot: service.pricingMode,
-      fixedUnitPriceSnapshot: isFixed ? service.fixedPrice : null,
-      quantity,
-      scopeSnapshot: isFixed ? (service.scopeDescription || service.description || null) : null,
-      urgency: dto.urgency || UrgencyLevel.MEDIUM,
-      status: BookingStatus.SUBMITTED,
-    });
+    const saved = await this.dataSource.transaction(async (manager) => {
+      const bookingRepository = manager.getRepository(Booking);
+      const mediaRepository = manager.getRepository(BookingMedia);
+      const booking = bookingRepository.create({
+        customerId: customer.id,
+        serviceId: dto.serviceId,
+        addressId: dto.addressId || null,
+        addressTextSnapshot,
+        provinceSnapshot,
+        districtSnapshot,
+        provinceNameSnapshot,
+        districtNameSnapshot,
+        serviceNameSnapshot: service.name,
+        latitudeSnapshot,
+        longitudeSnapshot,
+        description: dto.description,
+        preferredStartAt: dto.preferredStartAt ? new Date(dto.preferredStartAt) : null,
+        preferredEndAt: dto.preferredEndAt ? new Date(dto.preferredEndAt) : null,
+        pricingModeSnapshot: service.pricingMode,
+        fixedUnitPriceSnapshot: isFixed ? service.fixedPrice : null,
+        quantity,
+        scopeSnapshot: isFixed ? (service.scopeDescription || service.description || null) : null,
+        urgency: dto.urgency || UrgencyLevel.MEDIUM,
+        status: BookingStatus.SUBMITTED,
+      });
+      const created = await bookingRepository.save(booking);
+      let media: BookingMedia[] = [];
 
-    const saved = await this.bookingRepo.save(booking);
-
-    if (dto.mediaUrls && dto.mediaUrls.length > 0) {
-      for (const url of dto.mediaUrls) {
-        if (!url || typeof url !== 'string') continue;
-        const media = this.mediaRepo.create({
-          bookingId: saved.id,
+      if (dto.photoUploadIds?.length) {
+        const claimed = await this.privateBookingPhotoClaimService.claim(
+          manager,
+          customer.id,
+          created.id,
+          dto.photoUploadIds,
+        );
+        media = await mediaRepository.save(claimed.map((upload) => mediaRepository.create({
+          bookingId: created.id,
+          privateUploadId: upload.uploadId,
+          url: '',
+          mimeType: upload.mimeType,
+          sizeBytes: upload.sizeBytes,
+        })));
+      } else if (dto.mediaUrls?.length) {
+        media = await mediaRepository.save(dto.mediaUrls.map((url) => mediaRepository.create({
+          bookingId: created.id,
+          privateUploadId: null,
           url,
           mimeType: url.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg',
-        });
-        await this.mediaRepo.save(media);
+        })));
       }
-    }
+
+      if (media.length > 0) Object.assign(created, { media });
+      return created;
+    });
 
     if (dto.aiDiagnosisId) {
       try {
@@ -220,6 +246,40 @@ export class BookingsService {
     });
 
     return saved;
+  }
+
+  private validateCreateMediaInput(dto: CreateBookingDto): void {
+    if (dto.photoUploadIds !== undefined && dto.mediaUrls !== undefined) {
+      throw new BusinessException(
+        ErrorCodes.VALIDATION_FAILED,
+        'Use one Booking photo source at a time',
+      );
+    }
+
+    if (dto.photoUploadIds !== undefined) {
+      const ids = dto.photoUploadIds;
+      if (
+        !Array.isArray(ids) ||
+        ids.length > 5 ||
+        ids.some((id) => typeof id !== 'string' || !isUUID(id)) ||
+        new Set(ids.map((id) => id.toLowerCase())).size !== ids.length
+      ) {
+        throw new BusinessException(
+          ErrorCodes.VALIDATION_FAILED,
+          'Provide at most five distinct valid Booking photo upload IDs',
+        );
+      }
+    }
+
+    if (
+      dto.mediaUrls !== undefined &&
+      (!Array.isArray(dto.mediaUrls) || dto.mediaUrls.some((url) => !isLegacyPublicBookingMediaUrl(url)))
+    ) {
+      throw new BusinessException(
+        ErrorCodes.VALIDATION_FAILED,
+        'Only absolute HTTP(S) legacy public media URLs are accepted',
+      );
+    }
   }
 
   /** Lazy expiry (same pattern as invitation matching): customer's requested window has passed with no technician engaged. */
@@ -387,9 +447,15 @@ export class BookingsService {
 
   async attachMedia(
     bookingId: string,
-    body: { url: string; mimeType?: string; sizeBytes?: number },
+    body: AttachBookingMediaDto,
     actor: { id: string; role: string },
   ): Promise<BookingMedia> {
+    if (!isLegacyPublicBookingMediaUrl(body?.url)) {
+      throw new BusinessException(
+        ErrorCodes.VALIDATION_FAILED,
+        'Only absolute HTTP(S) legacy public media URLs are accepted',
+      );
+    }
     const booking = await this.bookingRepo.findOneBy({ id: bookingId });
     if (!booking) {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
@@ -404,6 +470,7 @@ export class BookingsService {
     const media = this.mediaRepo.create({
       bookingId,
       url: body.url,
+      privateUploadId: null,
       mimeType: body.mimeType || (body.url.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg'),
       sizeBytes: body.sizeBytes,
     });

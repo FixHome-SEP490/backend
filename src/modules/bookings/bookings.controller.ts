@@ -19,9 +19,10 @@ import { PermissionGuard } from '../../common/guards/permission.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { BookingsService } from './bookings.service';
 import { InvitationsService } from './invitations.service';
-import { CreateBookingDto, ScheduleBookingDto, RebookDto, ShortlistDto } from './booking.dto';
+import { AttachBookingMediaDto, CreateBookingDto, ScheduleBookingDto, RebookDto, ShortlistDto } from './booking.dto';
 import { ReasonDto } from '../service-orders/order-command.dto';
 import { BookingStatus } from '../../shared/enums';
+import { toBookingMediaResponse, toBookingResponse } from './booking-privacy.dto';
 
 @ApiTags('Bookings')
 @Controller('bookings')
@@ -38,7 +39,7 @@ export class BookingsController {
   @ApiOperation({ summary: 'Create a new booking' })
   async create(@Body() dto: CreateBookingDto, @Req() req: { user: { id: string; role: string } }) {
     const booking = await this.bookingsService.create(dto, req.user);
-    return { data: booking };
+    return { data: toBookingResponse(booking) };
   }
 
   @Get('my')
@@ -57,7 +58,7 @@ export class BookingsController {
       limit: pageSize ? parseInt(pageSize, 10) : 20,
       status,
     });
-    return { data: result.data, meta: { total: result.total } };
+    return { data: result.data.map(toBookingResponse), meta: { total: result.total } };
   }
 
   @Get()
@@ -75,7 +76,7 @@ export class BookingsController {
       limit: pageSize ? parseInt(pageSize, 10) : 20,
       status,
     });
-    return { data: result.data, meta: { total: result.total } };
+    return { data: result.data.map(toBookingResponse), meta: { total: result.total } };
   }
 
   @Get(':id')
@@ -86,7 +87,7 @@ export class BookingsController {
     await this.bookingsService.findById(id, req.user);
     await this.invitationsService.refreshMatching(id);
     const booking = await this.bookingsService.findById(id, req.user);
-    return { data: booking };
+    return { data: toBookingResponse(booking) };
   }
 
   @Post(':id/media')
@@ -97,11 +98,11 @@ export class BookingsController {
   @ApiOperation({ summary: 'Attach media to booking' })
   async attachMedia(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body() body: { url: string; mimeType?: string; sizeBytes?: number },
+    @Body() body: AttachBookingMediaDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
     const media = await this.bookingsService.attachMedia(id, body, req.user);
-    return { data: media };
+    return { data: toBookingMediaResponse(media) };
   }
 
   @Get(':id/technician-candidates')
@@ -147,7 +148,7 @@ export class BookingsController {
     @Req() req: { user: { id: string } },
   ) {
     const booking = await this.bookingsService.reschedule(id, body, req.user);
-    return { data: booking };
+    return { data: toBookingResponse(booking) };
   }
 
   @Post(':id/cancel')
@@ -156,7 +157,7 @@ export class BookingsController {
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
   async cancelBooking(@Param('id', ParseUUIDPipe) id: string, @Body() body: ReasonDto, @Req() req: { user: { id: string } }) {
-    return { data: await this.bookingsService.cancelBooking(id, body.reason, req.user) };
+    return { data: toBookingResponse(await this.bookingsService.cancelBooking(id, body.reason, req.user)) };
   }
 
   @Post(':id/rebook')
@@ -172,6 +173,6 @@ export class BookingsController {
     @Req() req: { user: { id: string; role: string } },
   ) {
     const newBooking = await this.bookingsService.rebook(id, req.user, body);
-    return { data: newBooking };
+    return { data: toBookingResponse(newBooking) };
   }
 }

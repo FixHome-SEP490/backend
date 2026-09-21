@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { Role, ServicePricingMode } from '../../shared/enums';
 import { BookingsService } from './bookings.service';
 import type { CreateBookingDto } from './booking.dto';
+import { PrivateBookingPhotoClaimService } from '../media/private-booking-photo-claim.service';
 
 // Actual BookingsService.create with synthetic dependencies: no database or personal data.
 function fixture() {
@@ -31,10 +32,18 @@ function fixture() {
   const serviceRepo = { findOneBy: vi.fn(async () => ({ id: 'service-1', isActive: true, name: 'Repair',
     pricingMode: ServicePricingMode.INSPECTION_REQUIRED, description: 'Repair service' })) };
   const audit = { log: vi.fn(async () => undefined) };
+  const manager = {
+    queryRunner: { isTransactionActive: true },
+    getRepository: vi.fn(() => bookingRepo),
+  };
+  const dataSource = {
+    query,
+    transaction: vi.fn(async (callback: (transactionManager: typeof manager) => unknown) => callback(manager)),
+  };
   const service = new BookingsService(
     bookingRepo as never, {} as never, userRepo as never, serviceRepo as never, addressRepo as never,
     {} as never, {} as never, {} as never, audit as never,
-    { query } as never, {} as never,
+    dataSource as never, new PrivateBookingPhotoClaimService(), {} as never,
   );
   const dto: CreateBookingDto = { serviceId: 'service-1', addressId: 'address-1',
     description: 'Synthetic repair', preferredStartAt: '2030-10-15T03:00:00.000Z',

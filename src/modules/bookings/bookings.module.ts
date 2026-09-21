@@ -15,6 +15,7 @@ import { TechnicianProfile } from '../technicians/entities/technician-profile.en
 import { TechnicianSkill } from '../technicians/entities/technician-skill.entity';
 import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
 import { MessagingModule } from '../messaging/messaging.module';
+import { MediaModule } from '../media/media.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { MessagingModule } from '../messaging/messaging.module';
       TechnicianServiceArea,
     ]),
     MessagingModule,
+    MediaModule,
   ],
   controllers: [BookingsController, InvitationsController],
   providers: [BookingsService, InvitationsService],

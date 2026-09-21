@@ -31,11 +31,27 @@ export class CreateBookingDto extends ScheduleBookingDto {
   @IsOptional() @IsEnum(UrgencyLevel)
   urgency?: UrgencyLevel;
 
+  /** Legacy public URLs remain accepted during rollout and are not private media. */
   @IsOptional() @IsArray() @IsString({ each: true })
   mediaUrls?: string[];
 
+  @IsOptional() @IsArray() @ArrayMaxSize(5) @ArrayUnique()
+  @Matches(UUID_REGEX, { each: true, message: 'Each photo upload ID must be a valid UUID' })
+  photoUploadIds?: string[];
+
   @IsOptional() @Matches(UUID_REGEX, { message: 'aiDiagnosisId must be a valid UUID' })
   aiDiagnosisId?: string;
+}
+
+export class AttachBookingMediaDto {
+  @Matches(/^https?:\/\/\S+$/i, { message: 'url must be an HTTP(S) legacy public media URL' })
+  url: string;
+
+  @IsOptional() @IsString() @MaxLength(64)
+  mimeType?: string;
+
+  @IsOptional() @IsInt() @Min(0) @Max(10_000_000)
+  sizeBytes?: number;
 }
 
 export class RebookDto extends ScheduleBookingDto {
