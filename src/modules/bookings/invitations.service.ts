@@ -60,9 +60,17 @@ export class InvitationsService {
     await this.dataSource.transaction(async manager => {
       const booking = await manager.findOne(Booking, { where: { id: bookingId }, lock: { mode: 'pessimistic_write' } });
       if (!booking || booking.status !== BookingStatus.MATCHING) return;
-      const pending = await manager.findOneBy(BookingInvitation, { bookingId, status: InvitationStatus.PENDING });
-      if (pending && pending.expiresAt && pending.expiresAt > new Date()) return;
-      if (pending) await manager.update(BookingInvitation, pending.id, { status: InvitationStatus.EXPIRED, respondedAt: new Date() });
+      const pending = await manager.find(BookingInvitation, { where: { bookingId, status: InvitationStatus.PENDING } });
+      const now = new Date();
+      let hasActive = false;
+      for (const invitation of pending) {
+        if (invitation.expiresAt && invitation.expiresAt > now) {
+          hasActive = true;
+          continue;
+        }
+        await manager.update(BookingInvitation, invitation.id, { status: InvitationStatus.EXPIRED, respondedAt: now });
+      }
+      if (hasActive) return;
       await this.activateNext(manager, booking);
     });
   }
