@@ -14,6 +14,7 @@ import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagg
 import { AiDiagnosisService } from './ai-diagnosis.service';
 import { AnalyzeDto, AskDto } from './dto/ai-contract.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { AiDiagnosisBookingAuthGuard } from './ai-diagnosis-booking-auth.guard';
 
 /**
  * The app's single door to the AI.
@@ -35,6 +36,7 @@ export class AiDiagnosisController {
   constructor(private readonly aiDiagnosisService: AiDiagnosisService) {}
 
   @Post('ai/diagnoses')
+  @UseGuards(AiDiagnosisBookingAuthGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Diagnose from a description and up to three photos (advisory only)',
@@ -46,8 +48,8 @@ export class AiDiagnosisController {
     description:
       'The AI reply, with serviceId resolved. status is ok, needs_clarification, or unavailable when the AI could not be reached.',
   })
-  async analyze(@Body() dto: AnalyzeDto) {
-    return this.aiDiagnosisService.analyze(dto);
+  async analyze(@Body() dto: AnalyzeDto, @Req() req: { user?: { id: string; role: string } }) {
+    return this.aiDiagnosisService.analyze(dto, req?.user);
   }
 
   @Post('ai/chat/ask')
@@ -95,9 +97,10 @@ export class AiDiagnosisController {
    * Older path kept alive because it is already in use elsewhere. Same handler.
    */
   @Post('ai-diagnosis/analyze')
+  @UseGuards(AiDiagnosisBookingAuthGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Deprecated alias for POST ai/diagnoses' })
-  async analyzeLegacy(@Body() dto: AnalyzeDto) {
-    return this.aiDiagnosisService.analyze(dto);
+  async analyzeLegacy(@Body() dto: AnalyzeDto, @Req() req: { user?: { id: string; role: string } }) {
+    return this.aiDiagnosisService.analyze(dto, req?.user);
   }
 }

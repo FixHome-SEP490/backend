@@ -106,7 +106,18 @@ export class AiDiagnosisService {
    * Business rule: AI failure never blocks the booking flow, so this resolves
    * rather than throwing and the caller can always carry on.
    */
-  async analyze(dto: AnalyzeDto): Promise<Record<string, unknown>> {
+  async analyze(dto: AnalyzeDto, actor?: { id: string; role: string }): Promise<Record<string, unknown>> {
+    if (dto.bookingId !== undefined) {
+      if (typeof dto.bookingId !== 'string' || !dto.bookingId.trim()) {
+        throw new NotFoundException('Booking not found');
+      }
+      if (!actor?.id || actor.role !== Role.CUSTOMER ||
+          !await this.diagnosisRepo.manager.findOneBy(Booking, {
+            id: dto.bookingId, customerId: actor.id,
+          })) {
+        throw new NotFoundException('Booking not found');
+      }
+    }
     const startedAt = Date.now();
     const images = (dto.images || []).slice(0, AI_MAX_IMAGES);
 
