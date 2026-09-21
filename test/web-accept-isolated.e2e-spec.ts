@@ -181,4 +181,152 @@ describe('WEB-ACCEPT isolated real HTTP/JWT/PostgreSQL (three synthetic actors)'
     expect(list.body.data[0]).toMatchObject({ id: serviceOrder.id, historical: true });
     expect(JSON.stringify(list.body.data)).not.toMatch(/PRIVATE_SYNTHETIC_ADDRESS_123|customerPhone|addressSummary|destination|bookingId|media|diagnosis/i);
   }, 60000);
-});
+
+  it('expires and cancels invitations, then rematches after technician withdrawal without leaking private data', async () => {
+    const database = db!;
+    const http = () => request(app!.getHttpServer());
+    const post = (path: string, actor: Actor, body: object) => http().post(`/api/v1${path}`)
+      .set('Authorization', `Bearer ${actor.token}`).send(body);
+    const get = (path: string, actor: Actor) => http().get(`/api/v1${path}`)
+      .set('Authorization', `Bearer ${actor.token}`);
+    const save = (entity: string, data: object) => database.getRepository(entity).save(data);
+    const category = await save('ServiceCategory', { name: 'Synthetic Expiry Category', code: randomUUID() });
+    const service = await save('Service', { categoryId: category.id, name: 'Synthetic Expiry Repair',
+      code: randomUUID(), pricingMode: 'fixed_price', fixedPrice: 200000,
+      scopeDescription: 'Synthetic scope', unit: 'job' });
+    const address = await save('Address', { userId: customer.id, label: 'Synthetic Expiry',
+      line1: 'PRIVATE_SYNTHETIC_EXPIRY_456', district: 'D1', province: 'P1', lat: 10.77, lng: 106.69 });
+    for (const actor of [techA, techB]) {
+      const profile = await database.getRepository('TechnicianProfile').findOneByOrFail({ userId: actor.id });
+      await database.getRepository('TechnicianProfile').update(profile.id,
+        { verificationStatus: 'verified', isAvailable: true });
+      await save('TechnicianSkill', { technicianId: profile.id, serviceId: service.id,
+        listedLaborPrice: 100000, verificationStatus: 'verified' });
+      if (!await database.getRepository('TechnicianServiceArea').count({ where: { technicianId: profile.id } })) {
+        await save('TechnicianServiceArea', { technicianId: profile.id,
+          provinceCode: 'P1', districtCode: 'D1' });
+      }
+      if (!await database.getRepository('TechnicianSchedule').count({ where: { technicianId: profile.id } })) {
+        for (let dayOfWeek = 0; dayOfWeek < 7; dayOfWeek++) {
+          await save('TechnicianSchedule', { technicianId: profile.id,
+            dayOfWeek, startTime: '08:00', endTime: '18:00' });
+        }
+      }
+    }
+    const arrival = new Date(); arrival.setUTCDate(arrival.getUTCDate() + 4);
+    arrival.setUTCHours(1, 0, 0, 0);
+    const createBooking = async () => {
+      const response = await post('/bookings', customer, { serviceId: service.id,
+        addressId: address.id, description: 'Synthetic expiry request', quantity: 1,
+        preferredStartAt: arrival.toISOString(),
+        preferredEndAt: new Date(+arrival + 3600000).toISOString() });
+      expect(response.status).toBe(201);
+      return unwrap(response.body);
+    };
+    const first = await createBooking();
+    const shortlist = await post(`/bookings/${first.id}/shortlist`, customer,
+      { technicianIds: [techA.id, techB.id] });
+    expect(shortlist.status).toBe(201);
+    const firstInvitations = await database.getRepository('BookingInvitation').find({
+      where: { bookingId: first.id },
+    });
+    expect(firstInvitations).toHaveLength(2);
+    await database.getRepository('BookingInvitation').update(
+      { bookingId: first.id }, { expiresAt: new Date(Date.now() - 60_000) });
+    const inbox = await get('/invitations/my', techA);
+    expect(inbox.status).toBe(200);
+    expect(JSON.stringify(inbox.body)).not.toContain(first.id);
+    const expiredInvitations = await database.getRepository('BookingInvitation').find({
+      where: { bookingId: first.id },
+    });
+    expect(expiredInvitations.map((invite: { status: string }) => invite.status))
+      .toEqual(['expired', 'expired']);
+    const lateAccept = await post(`/invitations/${firstInvitations.find((invite: { technicianId: string }) => invite.technicianId === techA.id)!.id}/respond`, techA,
+      { action: 'ACCEPT' });
+    expect(lateAccept.status).toBe(409);
+    expect(lateAccept.body?.error?.code).toBe('INVITATION_ALREADY_TAKEN');
+    expect(JSON.stringify(lateAccept.body)).not.toMatch(/PRIVATE_SYNTHETIC_EXPIRY_456|customerPhone|addressTextSnapshot|media|diagnosis/i);
+    expect(await database.getRepository('ServiceOrder').count({ where: { bookingId: first.id } }))
+      .toBe(0);
+
+    const second = await createBooking();
+    const shortlistSecond = await post(`/bookings/${second.id}/shortlist`, customer,
+      { technicianIds: [techA.id, techB.id] });
+    expect(shortlistSecond.status).toBe(201);
+    const secondInvitations = await database.getRepository('BookingInvitation').find({
+      where: { bookingId: second.id },
+    });
+    const cancelled = await post(`/bookings/${second.id}/cancel`, customer,
+      { reason: 'Synthetic cancelled before acceptance' });
+    expect(cancelled.status).toBe(200);
+    expect(unwrap(cancelled.body).status).toBe('cancelled');
+    const cancelledInvitations = await database.getRepository('BookingInvitation').find({
+      where: { bookingId: second.id },
+    });
+    expect(cancelledInvitations).toHaveLength(2);
+    expect(cancelledInvitations.every((invite: { status: string }) => invite.status === 'cancelled'))
+      .toBe(true);
+    const rejected = await post(`/invitations/${secondInvitations.find((invite: { technicianId: string }) => invite.technicianId === techA.id)!.id}/respond`, techA,
+      { action: 'ACCEPT' });
+    expect(rejected.status).toBe(409);
+    expect(rejected.body?.error?.code).toBe('INVITATION_ALREADY_TAKEN');
+    expect(JSON.stringify(rejected.body)).not.toMatch(/PRIVATE_SYNTHETIC_EXPIRY_456|customerPhone|addressTextSnapshot|media|diagnosis/i);
+    expect(await database.getRepository('ServiceOrder').count({ where: { bookingId: second.id } }))
+      .toBe(0);
+
+    const third = await createBooking();
+    const shortlistThird = await post(`/bookings/${third.id}/shortlist`, customer,
+      { technicianIds: [techA.id, techB.id] });
+    expect(shortlistThird.status).toBe(201);
+    const thirdInvitations = await database.getRepository('BookingInvitation').find({
+      where: { bookingId: third.id },
+    });
+    const firstInvite = thirdInvitations.find((invite: { technicianId: string }) => invite.technicianId === techA.id);
+    expect(firstInvite).toBeTruthy();
+    const acceptedA = await post(`/invitations/${firstInvite!.id}/respond`, techA,
+      { action: 'ACCEPT' });
+    expect(acceptedA.status).toBe(200);
+    const thirdOrderId = unwrap(acceptedA.body).serviceOrder?.id;
+    expect(thirdOrderId).toBeTruthy();
+    const withdrawal = await post(`/service-orders/${thirdOrderId}/cancel`, techA,
+      { reason: 'Synthetic withdrawal before arrival' });
+    expect(withdrawal.status).toBe(200);
+    const afterWithdrawal = await database.getRepository('TechnicianAssignment').find({
+      where: { serviceOrderId: thirdOrderId },
+    });
+    expect(afterWithdrawal.filter((assignment: { isActive: boolean }) => assignment.isActive))
+      .toHaveLength(0);
+    const inboxB = await get('/invitations/my', techB);
+    expect(inboxB.status).toBe(200);
+    const replacementInvitations = await database.getRepository('BookingInvitation').find({
+      where: { bookingId: third.id, technicianId: techB.id },
+      order: { priorityOrder: 'DESC' },
+    });
+    expect(replacementInvitations[0]?.status).toBe('pending');
+    expect(JSON.stringify(inboxB.body)).toContain(replacementInvitations[0].id);
+    expect(JSON.stringify(inboxB.body)).not.toMatch(/PRIVATE_SYNTHETIC_EXPIRY_456|customerPhone|addressTextSnapshot|media|diagnosis/i);
+    const acceptedB = await post(`/invitations/${replacementInvitations[0].id}/respond`, techB,
+      { action: 'ACCEPT' });
+    expect(acceptedB.status).toBe(200);
+    expect(unwrap(acceptedB.body).serviceOrder?.id).toBe(thirdOrderId);
+    const assignedB = await database.getRepository('TechnicianAssignment').find({
+      where: { serviceOrderId: thirdOrderId },
+    });
+    expect(assignedB.filter((assignment: { isActive: boolean }) => assignment.isActive))
+      .toHaveLength(1);
+    expect(assignedB.find((assignment: { isActive: boolean }) => assignment.isActive)?.technicianId)
+      .toBe(techB.id);
+    const oldReplay = await post(`/invitations/${firstInvite!.id}/respond`, techA,
+      { action: 'ACCEPT' });
+    expect(oldReplay.status).toBe(409);
+    expect(oldReplay.body?.error?.code).toBe('INVITATION_ALREADY_TAKEN');
+    expect(JSON.stringify(oldReplay.body)).not.toMatch(/PRIVATE_SYNTHETIC_EXPIRY_456|customerPhone|addressTextSnapshot|media|diagnosis/i);
+    const oldBooking = await get(`/bookings/${third.id}`, techA);
+    expect(oldBooking.status).toBe(404);
+    const oldOrder = await get(`/service-orders/${thirdOrderId}`, techA);
+    expect(oldOrder.status).toBe(200);
+    expect(oldOrder.body.data).toMatchObject({ id: thirdOrderId, historical: true });
+    expect(JSON.stringify(oldOrder.body.data)).not.toMatch(/PRIVATE_SYNTHETIC_EXPIRY_456|customerPhone|addressTextSnapshot|destination|bookingId|media|diagnosis/i);
+    expect((await get(`/service-orders/${thirdOrderId}`, techB)).status).toBe(200);
+    expect((await get(`/bookings/${third.id}`, customer)).body.data.serviceOrderId).toBe(thirdOrderId);
+  }, 60000);});
