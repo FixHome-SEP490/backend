@@ -88,7 +88,7 @@ export class Phase0Bootstrap1725891000000 implements MigrationInterface {
     // ---- Add missing columns to users (P3.2) ----
     // avatarUrl
     const hasAvatar = await queryRunner.query(
-      `SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'avatar_url'`
+      `SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'users' AND column_name = 'avatar_url'`
     );
     if (hasAvatar.length === 0) {
       await queryRunner.query(`ALTER TABLE "users" ADD COLUMN "avatar_url" text`);
@@ -96,7 +96,7 @@ export class Phase0Bootstrap1725891000000 implements MigrationInterface {
 
     // bookingSuspendedUntil
     const hasBSU = await queryRunner.query(
-      `SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'booking_suspended_until'`
+      `SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'users' AND column_name = 'booking_suspended_until'`
     );
     if (hasBSU.length === 0) {
       await queryRunner.query(`ALTER TABLE "users" ADD COLUMN "booking_suspended_until" timestamptz`);
