@@ -14,13 +14,15 @@ import { resolveServiceArea } from '../../shared/utils/administrative-areas';
 export async function technicianEligibility(
   manager: EntityManager, technicianId: string, booking: Booking,
   excludeOrderId?: string,
+  options?: { allowPausedExistingInvitation?: boolean },
 ): Promise<{ eligible: boolean; reason?: string }> {
   const fail = (reason: string) => ({ eligible: false, reason });
   const user = await manager.findOneBy(User, { id: technicianId });
   if (!user || user.role !== Role.TECHNICIAN || user.status !== AccountStatus.ACTIVE) return fail('Technician account is not active');
   const profile = await manager.findOneBy(TechnicianProfile, { userId: technicianId });
   if (!profile || profile.verificationStatus !== VerificationStatus.VERIFIED) return fail('Technician is not verified');
-  if (!profile.isAvailable || (profile.workSuspendedUntil && profile.workSuspendedUntil > new Date())) return fail('Technician is unavailable or suspended');
+  if (profile.workSuspendedUntil && profile.workSuspendedUntil > new Date()) return fail('Technician is unavailable or suspended');
+  if (!profile.isAvailable && !options?.allowPausedExistingInvitation) return fail('Technician is unavailable or paused');
   if (!await manager.findOneBy(TechnicianSkill, { technicianId: profile.id, serviceId: booking.serviceId, isActive: true, verificationStatus: VerificationStatus.VERIFIED })) return fail('Service is not offered or not yet verified');
   if (await manager.count(CommissionDue, { where: { technicianId, status: CommissionDueStatus.PENDING } })) return fail('Active unpaid PlatformDue');
   if (!booking.preferredStartAt || !booking.preferredEndAt) return fail('Booking time window is missing');
