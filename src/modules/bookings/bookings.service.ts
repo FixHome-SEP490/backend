@@ -202,8 +202,8 @@ export class BookingsService {
     if (dto.aiDiagnosisId) {
       try {
         await this.dataSource.query(
-          `UPDATE "ai_diagnoses" SET "booking_id" = $1 WHERE "id" = $2`,
-          [saved.id, dto.aiDiagnosisId],
+          `UPDATE "ai_diagnoses" AS diagnosis SET "booking_id" = $1 FROM "bookings" AS source WHERE diagnosis."id" = $2 AND diagnosis."booking_id" = source."id" AND source."customer_id" = $3 RETURNING diagnosis."id"`,
+          [saved.id, dto.aiDiagnosisId, customer.id],
         );
       } catch (err) {
         this.logger.warn(`Failed to link AI diagnosis ${dto.aiDiagnosisId}: ${err.message}`);
