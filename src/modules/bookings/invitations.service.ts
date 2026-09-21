@@ -17,6 +17,7 @@ import { AuditLogService } from '../audit-log/audit-log.service';
 import { MessagingService } from '../messaging/messaging.service';
 import { activateNextInvitation } from './activate-next-invitation';
 import { technicianEligibility } from './technician-eligibility';
+import { TechnicianInvitationPreviewDto, toTechnicianInvitationPreview } from './booking-privacy.dto';
 
 @Injectable()
 export class InvitationsService {
@@ -75,10 +76,24 @@ export class InvitationsService {
     });
   }
 
-  async getMyInvitations(technicianId: string): Promise<BookingInvitation[]> {
+  async getMyInvitations(technicianId: string): Promise<TechnicianInvitationPreviewDto[]> {
     const awaiting = await this.invitationRepo.find({ where: [{ technicianId, status: InvitationStatus.PENDING }, { technicianId, status: InvitationStatus.STANDBY }] });
     for (const bookingId of new Set(awaiting.map(i => i.bookingId))) await this.refreshMatching(bookingId);
-    return this.invitationRepo.find({ where: { technicianId, status: InvitationStatus.PENDING }, relations: ['booking', 'booking.service', 'booking.media'], order: { invitedAt: 'DESC' } });
+    const invitations = await this.invitationRepo.find({
+      where: { technicianId, status: InvitationStatus.PENDING },
+      relations: ['booking'],
+      order: { invitedAt: 'DESC' },
+    });
+    const now = new Date();
+    return invitations
+      .filter(invitation =>
+        invitation.booking &&
+        invitation.booking.status === BookingStatus.MATCHING &&
+        invitation.status === InvitationStatus.PENDING &&
+        invitation.expiresAt != null &&
+        invitation.expiresAt > now,
+      )
+      .map(toTechnicianInvitationPreview);
   }
 
   async respond(invitationId: string, action: 'ACCEPT' | 'DECLINE', technician: { id: string; role: string }): Promise<{ invitation: BookingInvitation; serviceOrder?: ServiceOrder }> {

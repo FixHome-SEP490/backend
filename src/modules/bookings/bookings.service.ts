@@ -33,6 +33,7 @@ import { haversineKm } from '../../shared/utils/geo';
 import { AiDiagnosis } from '../ai-diagnosis/entities/ai-diagnosis.entity';
 import { activateNextInvitation } from './activate-next-invitation';
 import { BusinessConfigService } from '../system-config/business-config.service';
+import { TechnicianBookingPreviewDto, toTechnicianBookingPreview } from './booking-privacy.dto';
 
 export interface TechnicianCandidate {
   technicianId: string;
@@ -295,8 +296,72 @@ export class BookingsService {
   async findById(
     id: string,
     actor: { id: string; role: string },
-  ): Promise<Booking> {
+  ): Promise<Booking | TechnicianBookingPreviewDto> {
     await this.closeOverdueBookings();
+    const booking = await this.bookingRepo.findOne({
+      where: { id },
+      relations: ['invitations'],
+    });
+    if (!booking) {
+      throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
+    }
+
+    if (actor.role === Role.ADMIN || actor.role === Role.SERVICE_MANAGER) {
+      return this.findFullBooking(id);
+    }
+
+    if (actor.role === Role.CUSTOMER && booking.customerId === actor.id) {
+      return this.findFullBooking(id);
+    }
+
+    if (actor.role !== Role.TECHNICIAN) {
+      throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
+    }
+
+    // Keep the authorization check and private read under the same locks.
+    // Matching/withdrawal commands lock Booking first; lock the order too so
+    // expiry/cancellation cannot remove the assignment during this response.
+    return this.dataSource.transaction(async manager => {
+      const current = await manager.findOne(Booking, {
+        where: { id }, lock: { mode: 'pessimistic_write' },
+      });
+      if (!current) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
+      const invitations = await manager.find(BookingInvitation, { where: { bookingId: id } });
+      const hasLiveInvitation = invitations.some(
+        item => item.technicianId === actor.id &&
+          item.status === InvitationStatus.PENDING &&
+          item.expiresAt != null && item.expiresAt > new Date(),
+      );
+      if (current.status === BookingStatus.MATCHING && hasLiveInvitation) {
+        return toTechnicianBookingPreview(current);
+      }
+      if (current.status !== BookingStatus.MATCHED || !invitations.some(
+        item => item.technicianId === actor.id && item.status === InvitationStatus.ACCEPTED,
+      )) {
+        throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
+      }
+      const order = await manager.findOne(ServiceOrder, {
+        where: { bookingId: id }, lock: { mode: 'pessimistic_write' },
+      });
+      if (!order || order.status === ServiceOrderStatus.CANCELLED ||
+          !await manager.findOneBy(TechnicianAssignment, {
+            serviceOrderId: order.id, technicianId: actor.id, isActive: true,
+          })) {
+        throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
+      }
+      const fullBooking = await manager.findOne(Booking, {
+        where: { id }, relations: ['service', 'address', 'media', 'invitations'],
+      });
+      if (!fullBooking || fullBooking.status !== BookingStatus.MATCHED ||
+          !fullBooking.invitations?.some(item =>
+            item.technicianId === actor.id && item.status === InvitationStatus.ACCEPTED)) {
+        throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
+      }
+      fullBooking.invitations = fullBooking.invitations.filter(item => item.technicianId === actor.id);
+      return this.addBookingReadDetails(fullBooking, order, manager);
+    });
+  }
+  private async findFullBooking(id: string): Promise<Booking> {
     const booking = await this.bookingRepo.findOne({
       where: { id },
       relations: ['service', 'address', 'media', 'invitations'],
@@ -304,28 +369,17 @@ export class BookingsService {
     if (!booking) {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
     }
-
-    // Ownership check
-    if (
-      actor.role !== Role.ADMIN &&
-      actor.role !== Role.SERVICE_MANAGER &&
-      booking.customerId !== actor.id
-    ) {
-      // Check if actor is an invited technician
-      const isInvited = booking.invitations?.some(
-        (inv) => inv.technicianId === actor.id,
-      );
-      if (!isInvited) {
-        throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
-      }
-    }
-
-    if (actor.role === Role.TECHNICIAN) {
-      booking.invitations = booking.invitations?.filter(invitation => invitation.technicianId === actor.id);
-    }
     const order = await this.dataSource.manager.findOneBy(ServiceOrder, { bookingId: id });
-    const diagnosis = await this.dataSource.manager.findOne(AiDiagnosis, {
-      where: { bookingId: id },
+    return this.addBookingReadDetails(booking, order);
+  }
+
+  private async addBookingReadDetails(
+    booking: Booking,
+    order: ServiceOrder | null,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<Booking> {
+    const diagnosis = await manager.findOne(AiDiagnosis, {
+      where: { bookingId: booking.id },
       order: { createdAt: 'DESC' },
     });
     return Object.assign(booking, { serviceOrderId: order?.id, diagnosis });
