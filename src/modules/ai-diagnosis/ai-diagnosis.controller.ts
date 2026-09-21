@@ -8,6 +8,7 @@ import {
   Param,
   Post,
   UseGuards,
+  Req,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { AiDiagnosisService } from './ai-diagnosis.service';
@@ -86,8 +87,8 @@ export class AiDiagnosisController {
     description:
       'Only diagnoses submitted with a bookingId are stored; a chat that never became a booking has nothing to read back.',
   })
-  async getById(@Param('id') id: string) {
-    return this.aiDiagnosisService.findById(id);
+  async getById(@Param('id') id: string, @Req() req: { user: { id: string; role: string } }) {
+    return this.aiDiagnosisService.findById(id, req.user);
   }
 
   /**

@@ -7,6 +7,11 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom, timeout } from 'rxjs';
 import { AiDiagnosis } from './entities/ai-diagnosis.entity';
 import { Service } from '../services/entities/service.entity';
+import { Booking } from '../bookings/entities/booking.entity';
+import { BookingInvitation } from '../bookings/entities/booking-invitation.entity';
+import { ServiceOrder } from '../service-orders/entities/service-order.entity';
+import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
+import { BookingStatus, InvitationStatus, Role, ServiceOrderStatus } from '../../shared/enums';
 import {
   AnalyzeDto,
   AskDto,
@@ -206,12 +211,31 @@ export class AiDiagnosisService {
 
   // -------------------------------------------------------------- retrieval
 
-  async findById(id: string): Promise<AiDiagnosis> {
-    const diagnosis = await this.diagnosisRepo.findOneBy({ id });
-    if (!diagnosis) {
-      throw new NotFoundException(`Diagnosis with id ${id} not found`);
-    }
-    return diagnosis;
+  async findById(id: string, actor: { id: string; role: string }): Promise<AiDiagnosis> {
+    // A diagnosis may contain unredacted text/images. JWT alone is not authorization.
+    return this.diagnosisRepo.manager.transaction(async manager => {
+      const denied = () => new NotFoundException('Diagnosis not found');
+      const diagnosis = await manager.findOneBy(AiDiagnosis, { id });
+      if (!diagnosis) throw denied();
+      const booking = await manager.findOne(Booking, {
+        where: { id: diagnosis.bookingId }, lock: { mode: 'pessimistic_write' },
+      });
+      if (!booking) throw denied();
+      if (actor.role === Role.ADMIN || actor.role === Role.SERVICE_MANAGER) return diagnosis;
+      if (actor.role === Role.CUSTOMER && booking.customerId === actor.id) return diagnosis;
+      if (actor.role !== Role.TECHNICIAN || booking.status !== BookingStatus.MATCHED) throw denied();
+
+      const order = await manager.findOne(ServiceOrder, {
+        where: { bookingId: booking.id }, lock: { mode: 'pessimistic_write' },
+      });
+      if (!order || order.status === ServiceOrderStatus.CANCELLED ||
+          !await manager.findOneBy(TechnicianAssignment, {
+            serviceOrderId: order.id, technicianId: actor.id, isActive: true,
+          }) || !await manager.findOneBy(BookingInvitation, {
+            bookingId: booking.id, technicianId: actor.id, status: InvitationStatus.ACCEPTED,
+          })) throw denied();
+      return diagnosis;
+    });
   }
 
   // ---------------------------------------------------------------- private
