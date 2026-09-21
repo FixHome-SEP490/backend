@@ -37,3 +37,8 @@ docker/postgres/data/
 # OS
 *.log
 backend.log
+
+# Files people upload while the service is running. MediaService writes them
+# here, so they appear the moment anybody tests an upload - runtime data, not
+# source, and customer photographs at that.
+uploads/
