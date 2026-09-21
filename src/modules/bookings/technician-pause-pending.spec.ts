@@ -24,14 +24,20 @@ function scenario() {
     }),
     count: vi.fn(async () => 0),
     find: vi.fn(async (entity: { name?: string }) => {
-      if (entity.name === 'TechnicianSchedule') return [{ startTime: '08:00', endTime: '18:00' }];
+      if (entity.name === 'TechnicianSchedule') return [{ dayOfWeek: 2, startTime: '08:00', endTime: '18:00' }];
       if (entity.name === 'TechnicianServiceArea') return [{ provinceCode: '79', districtCode: '760' }];
       return [];
     }),
     createQueryBuilder: vi.fn((entity: { name?: string } | string) => {
       const qb = {
+        select: vi.fn(() => qb), addSelect: vi.fn(() => qb),
         innerJoin: vi.fn(() => qb), where: vi.fn(() => qb), andWhere: vi.fn(() => qb),
-        getCount: vi.fn(async () => typeof entity === 'string' ? Number(hasConflict) : Number(hasTimeOff)),
+        getMany: vi.fn(async () => hasTimeOff && typeof entity !== 'string'
+          ? [{ startAt: booking.preferredStartAt!, endAt: booking.preferredEndAt! }]
+          : []),
+        getRawMany: vi.fn(async () => hasConflict && typeof entity === 'string'
+          ? [{ busyStart: booking.preferredStartAt, busyEnd: booking.preferredEndAt }]
+          : []),
       };
       return qb;
     }),
