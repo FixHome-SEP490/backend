@@ -1,7 +1,6 @@
 // src/modules/media/media.service.ts
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
-import * as fs from 'fs';
-import * as path from 'path';
+import { Injectable, BadRequestException, Logger, ServiceUnavailableException } from '@nestjs/common';
+import axios, { AxiosError } from 'axios';
 import { randomUUID } from 'crypto';
 
 export type UploadedMediaFile = {
@@ -13,12 +12,32 @@ export type UploadedMediaFile = {
 
 @Injectable()
 export class MediaService {
-  private readonly uploadDir = path.resolve(process.cwd(), 'uploads', 'media');
+  private readonly logger = new Logger(MediaService.name);
 
-  constructor() {
-    if (!fs.existsSync(this.uploadDir)) {
-      fs.mkdirSync(this.uploadDir, { recursive: true });
+  private client() {
+    const url = process.env.SUPABASE_URL;
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const bucket = process.env.SUPABASE_MEDIA_BUCKET;
+    if (!url || !key || !bucket) {
+      this.logger.error(
+        `MediaService: missing env — SUPABASE_URL=${!!url} SUPABASE_SERVICE_ROLE_KEY=${!!key} SUPABASE_MEDIA_BUCKET=${!!bucket}`,
+      );
+      throw new ServiceUnavailableException('Media storage is not configured');
     }
+    const baseUrl = url.replace(/\/$/, '');
+    return {
+      bucket,
+      baseUrl,
+      http: axios.create({
+        baseURL: `${baseUrl}/storage/v1`,
+        timeout: 15000,
+        maxRedirects: 0,
+        headers: {
+          apikey: key,
+          Authorization: `Bearer ${key}`,
+        },
+      }),
+    };
   }
 
   validate(file?: UploadedMediaFile): asserts file is UploadedMediaFile {
@@ -35,37 +54,45 @@ export class MediaService {
     }
   }
 
-  async saveFile(file: UploadedMediaFile, subfolder = ''): Promise<{ url: string; mimeType: string; sizeBytes: number; filename: string }> {
+  async saveFile(
+    file: UploadedMediaFile,
+    subfolder = '',
+  ): Promise<{ url: string; mimeType: string; sizeBytes: number; filename: string }> {
     this.validate(file);
+
     const ext = file.mimetype === 'image/png' ? '.png' : file.mimetype === 'image/webp' ? '.webp' : '.jpg';
     const filename = `${randomUUID()}${ext}`;
-    const targetDir = subfolder ? path.join(this.uploadDir, subfolder) : this.uploadDir;
-    if (!fs.existsSync(targetDir)) {
-      fs.mkdirSync(targetDir, { recursive: true });
-    }
-    const filePath = path.join(targetDir, filename);
-    await fs.promises.writeFile(filePath, file.buffer);
+    const objectPath = subfolder ? `${subfolder}/${filename}` : filename;
 
-    const relativeUrl = subfolder ? `/api/v1/media/files/${subfolder}/${filename}` : `/api/v1/media/files/${filename}`;
+    const { http, bucket, baseUrl } = this.client();
+
+    try {
+      await http.post(`/object/${bucket}/${objectPath}`, file.buffer, {
+        headers: {
+          'Content-Type': file.mimetype,
+          'x-upsert': 'true', // upsert=true to avoid 409 if UUID collides (practically impossible)
+          'Cache-Control': 'public, max-age=31536000',
+        },
+        maxBodyLength: 11 * 1024 * 1024,
+        maxContentLength: 11 * 1024 * 1024,
+      });
+    } catch (err) {
+      const axiosErr = err as AxiosError;
+      this.logger.error(
+        `Supabase upload failed — bucket=${bucket} path=${objectPath} ` +
+        `status=${axiosErr.response?.status} body=${JSON.stringify(axiosErr.response?.data)}`,
+      );
+      throw new ServiceUnavailableException('Không thể tải ảnh lên. Vui lòng thử lại.');
+    }
+
+    // Public bucket: return the public URL directly (no signed URL needed)
+    const publicUrl = `${baseUrl}/storage/v1/object/public/${bucket}/${objectPath}`;
+
     return {
-      url: relativeUrl,
+      url: publicUrl,
       mimeType: file.mimetype,
       sizeBytes: file.size,
       filename,
     };
-  }
-
-  getFilePath(filename: string, subfolder = ''): { filePath: string; mimeType: string } {
-    if (!/^[a-f0-9-]+(\.(jpg|jpeg|png|webp))$/i.test(filename)) {
-      throw new BadRequestException('Tên tệp không hợp lệ');
-    }
-    const targetDir = subfolder ? path.join(this.uploadDir, subfolder) : this.uploadDir;
-    const filePath = path.join(targetDir, filename);
-    if (!fs.existsSync(filePath)) {
-      throw new NotFoundException('Không tìm thấy tệp');
-    }
-    const ext = path.extname(filename).toLowerCase();
-    const mimeType = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
-    return { filePath, mimeType };
   }
 }

@@ -155,6 +155,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     };
     adminClient = new Client(connection);
     await adminClient.connect();
+    await adminClient.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;`);
     await adminClient.query(`CREATE SCHEMA "${schema}"`);
     db = new DataSource({
       type: 'postgres',

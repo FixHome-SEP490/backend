@@ -15,7 +15,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionGuard } from '../../common/guards/permission.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { TechnicianAssignmentService } from './technician-assignment.service';
-import { AssignByOrderDto, AssignByTechnicianDto } from './assignment.dto';
+import { AssignByOrderDto, AssignByTechnicianDto, AssignByBookingDto } from './assignment.dto';
 
 @ApiTags('Technician Assignment')
 @Controller()
@@ -66,5 +66,27 @@ export class TechnicianAssignmentController {
       body.reason,
     );
     return { data: assignment };
+  }
+
+  @Post('bookings/:id/assign')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('assignment:override')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Manually assign the first technician to a Booking that has exhausted sequential invitations (SM, Admin)',
+  })
+  async assignToBooking(
+    @Param('id', ParseUUIDPipe) bookingId: string,
+    @Body() body: AssignByBookingDto,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    const result = await this.technicianAssignmentService.assignToBooking(
+      bookingId,
+      body.technicianId,
+      req.user,
+      body.reason,
+    );
+    return { data: result };
   }
 }

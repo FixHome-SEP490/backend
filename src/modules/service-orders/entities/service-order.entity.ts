@@ -59,4 +59,14 @@ export class ServiceOrder extends BaseEntity {
     default: PaymentStatus.UNPAID,
   })
   paymentStatus: PaymentStatus;
+
+  // Live GPS ping from the technician while EN_ROUTE (map tracking, not arrival check-in)
+  @Column({ name: 'technician_last_lat', type: 'decimal', precision: 10, scale: 7, nullable: true })
+  technicianLastLat?: number | null;
+
+  @Column({ name: 'technician_last_lng', type: 'decimal', precision: 10, scale: 7, nullable: true })
+  technicianLastLng?: number | null;
+
+  @Column({ name: 'technician_location_updated_at', type: 'timestamptz', nullable: true })
+  technicianLocationUpdatedAt?: Date | null;
 }

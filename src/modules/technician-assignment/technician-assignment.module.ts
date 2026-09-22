@@ -7,6 +7,9 @@ import { TechnicianAssignment } from '../service-orders/entities/technician-assi
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { User } from '../users/entities/user.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
+import { Booking } from '../bookings/entities/booking.entity';
+import { BookingInvitation } from '../bookings/entities/booking-invitation.entity';
+import { MessagingModule } from '../messaging/messaging.module';
 
 @Module({
   imports: [
@@ -15,7 +18,10 @@ import { TechnicianProfile } from '../technicians/entities/technician-profile.en
       ServiceOrder,
       User,
       TechnicianProfile,
+      Booking,
+      BookingInvitation,
     ]),
+    MessagingModule,
   ],
   controllers: [TechnicianAssignmentController],
   providers: [TechnicianAssignmentService],

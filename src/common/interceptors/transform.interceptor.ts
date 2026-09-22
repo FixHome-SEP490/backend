@@ -54,8 +54,16 @@ export class TransformInterceptor<T> implements NestInterceptor<
           };
         }
 
-        // If paginated structure with { data, meta, message? }
-        if (typeof data === 'object' && 'data' in data && 'meta' in data) {
+        // Controller already returned an envelope shape: { data, meta?, message? }.
+        // Unwrap it instead of nesting it again under a second `data` key.
+        // (Most controllers self-wrap their result as `{ data: x }`; only paginated
+        // endpoints add `meta` alongside it, so `meta` is optional here.)
+        if (
+          typeof data === 'object' &&
+          data !== null &&
+          !Array.isArray(data) &&
+          'data' in data
+        ) {
           const {
             data: innerData,
             meta,
@@ -66,7 +74,7 @@ export class TransformInterceptor<T> implements NestInterceptor<
             statusCode,
             message: (message as string) || 'Success',
             data: innerData as T,
-            meta,
+            ...(meta !== undefined ? { meta } : {}),
           };
         }
 

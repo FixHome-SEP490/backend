@@ -8,11 +8,13 @@ import {
   Param,
   Post,
   UseGuards,
+  Req,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { AiDiagnosisService } from './ai-diagnosis.service';
 import { AnalyzeDto, AskDto } from './dto/ai-contract.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { AiDiagnosisBookingAuthGuard } from './ai-diagnosis-booking-auth.guard';
 
 /**
  * The app's single door to the AI.
@@ -34,6 +36,7 @@ export class AiDiagnosisController {
   constructor(private readonly aiDiagnosisService: AiDiagnosisService) {}
 
   @Post('ai/diagnoses')
+  @UseGuards(AiDiagnosisBookingAuthGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Diagnose from a description and up to three photos (advisory only)',
@@ -45,8 +48,8 @@ export class AiDiagnosisController {
     description:
       'The AI reply, with serviceId resolved. status is ok, needs_clarification, or unavailable when the AI could not be reached.',
   })
-  async analyze(@Body() dto: AnalyzeDto) {
-    return this.aiDiagnosisService.analyze(dto);
+  async analyze(@Body() dto: AnalyzeDto, @Req() req: { user?: { id: string; role: string } }) {
+    return this.aiDiagnosisService.analyze(dto, req?.user);
   }
 
   @Post('ai/chat/ask')
@@ -86,17 +89,18 @@ export class AiDiagnosisController {
     description:
       'Only diagnoses submitted with a bookingId are stored; a chat that never became a booking has nothing to read back.',
   })
-  async getById(@Param('id') id: string) {
-    return this.aiDiagnosisService.findById(id);
+  async getById(@Param('id') id: string, @Req() req: { user: { id: string; role: string } }) {
+    return this.aiDiagnosisService.findById(id, req.user);
   }
 
   /**
    * Older path kept alive because it is already in use elsewhere. Same handler.
    */
   @Post('ai-diagnosis/analyze')
+  @UseGuards(AiDiagnosisBookingAuthGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Deprecated alias for POST ai/diagnoses' })
-  async analyzeLegacy(@Body() dto: AnalyzeDto) {
-    return this.aiDiagnosisService.analyze(dto);
+  async analyzeLegacy(@Body() dto: AnalyzeDto, @Req() req: { user?: { id: string; role: string } }) {
+    return this.aiDiagnosisService.analyze(dto, req?.user);
   }
 }

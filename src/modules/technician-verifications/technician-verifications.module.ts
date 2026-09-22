@@ -22,6 +22,6 @@ import { KycStorageService } from './kyc-storage.service';
     AdminTechnicianVerificationsController,
   ],
   providers: [TechnicianVerificationsService, KycStorageService],
-  exports: [TechnicianVerificationsService, TypeOrmModule],
+  exports: [TechnicianVerificationsService, KycStorageService, TypeOrmModule],
 })
 export class TechnicianVerificationsModule {}

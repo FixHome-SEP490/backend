@@ -296,7 +296,7 @@ describe('KycStorageService', () => {
       expect(JSON.stringify(result)).not.toContain(serviceRoleKey);
     });
 
-    it.each(['application/pdf', 'text/plain', ''])(
+    it.each(['application/msword', 'text/plain', ''])(
       'rejects unsupported mimeType %s',
       async (mimeType) => {
         await expect(
@@ -304,6 +304,23 @@ describe('KycStorageService', () => {
         ).rejects.toThrow(BadRequestException);
       },
     );
+
+    it('supports application/pdf and returns a .pdf storage path', async () => {
+      vi.spyOn(axios, 'post').mockResolvedValue({
+        data: {
+          url: '/object/upload/sign/kyc-private/kyc/tech-uuid-1/generated-id.pdf?token=opaque',
+        },
+      } as never);
+
+      const result = await storage.createSignedUploadUrl(
+        'tech-uuid-1',
+        'application/pdf',
+      );
+
+      expect(result.storageObjectPath).toMatch(
+        /^kyc\/tech-uuid-1\/[0-9a-f-]+\.pdf$/,
+      );
+    });
 
     it('fails closed when the provider does not return a token', async () => {
       vi.spyOn(axios, 'post').mockResolvedValue({

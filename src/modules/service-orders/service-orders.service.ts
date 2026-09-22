@@ -1,6 +1,7 @@
 import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository, In } from 'typeorm';
+import { DataSource, Repository, In, LessThanOrEqual } from 'typeorm';
 import { ServiceOrder } from './entities/service-order.entity';
 import { TechnicianAssignment } from './entities/technician-assignment.entity';
 import { OrderStatusHistory } from './entities/order-status-history.entity';
@@ -17,6 +18,7 @@ import { AdditionalCostItem } from './entities/additional-cost-item.entity';
 import { WarrantyClaim } from './entities/warranty-claim.entity';
 import { CustomerServiceConfirmation } from './entities/customer-service-confirmation.entity';
 import { BookingInvitation } from '../bookings/entities/booking-invitation.entity';
+import { BookingInvitationGroup } from '../bookings/entities/booking-invitation-group.entity';
 import { activateNextInvitation } from '../bookings/activate-next-invitation';
 import { Booking } from '../bookings/entities/booking.entity';
 import { User } from '../users/entities/user.entity';
@@ -24,6 +26,7 @@ import { TechnicianProfile } from '../technicians/entities/technician-profile.en
 import { ServiceOrderStateMachine } from './service-order-state-machine';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
+import { haversineKm } from '../../shared/utils/geo';
 import {
   ServiceOrderStatus,
   BookingStatus,
@@ -60,6 +63,7 @@ import type { EntityManager } from 'typeorm';
 import { OrderEvidenceStorage, EvidenceFile } from '../media/order-evidence-storage.service';
 import { expireAdditionalCosts } from './expire-additional-costs';
 import { authorizeOrder } from './order-access';
+import { historicalOrderSummary, type HistoricalOrderSummary } from './historical-order-summary';
 
 @Injectable()
 export class ServiceOrdersService {
@@ -105,12 +109,28 @@ export class ServiceOrdersService {
 
   // ── Queries ──
 
+  /** Lazy expiry (same pattern as expireAdditionalCosts): technician never started past the scheduled time + grace. */
+  private async cancelOverdueOrders(): Promise<void> {
+    const graceMinutes = await this.configService.getInt('order.overdue_grace_minutes', 60);
+    const overdue = await this.orderRepo.find({ where: { status: ServiceOrderStatus.ACCEPTED, scheduledAt: LessThanOrEqual(new Date(Date.now() - graceMinutes * 60000)) } });
+    for (const order of overdue) {
+      await this.dataSource.transaction(async manager => {
+        const fresh = await manager.findOne(ServiceOrder, { where: { id: order.id }, lock: { mode: 'pessimistic_write' } });
+        if (!fresh || fresh.status !== ServiceOrderStatus.ACCEPTED) return;
+        await manager.update(ServiceOrder, fresh.id, { status: ServiceOrderStatus.CANCELLED, cancelledAt: new Date() });
+        await manager.update(TechnicianAssignment, { serviceOrderId: fresh.id, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: 'Overdue: technician did not start on schedule' });
+        await manager.insert(OrderStatusHistory, { serviceOrderId: fresh.id, fromStatus: ServiceOrderStatus.ACCEPTED, toStatus: ServiceOrderStatus.CANCELLED, reason: 'Auto-cancelled: overdue past scheduled time' });
+      });
+    }
+  }
+
   async findAll(options: {
     page?: number;
     limit?: number;
     status?: ServiceOrderStatus;
     search?: string;
   }): Promise<{ data: ServiceOrder[]; total: number }> {
+    await this.cancelOverdueOrders();
     const page = options.page || 1;
     const limit = Math.min(options.limit || 20, 100);
 
@@ -135,7 +155,8 @@ export class ServiceOrdersService {
     userId: string,
     role: string,
     options: { page?: number; limit?: number; status?: ServiceOrderStatus },
-  ): Promise<{ data: ServiceOrder[]; total: number }> {
+  ): Promise<{ data: (ServiceOrder | HistoricalOrderSummary)[]; total: number }> {
+    await this.cancelOverdueOrders();
     const page = options.page || 1;
     const limit = Math.min(options.limit || 20, 100);
 
@@ -150,6 +171,8 @@ export class ServiceOrdersService {
         'ta',
         'ta.service_order_id = o.id',
       ).where('ta.technician_id = :userId', { userId });
+    } else {
+      throw new ForbiddenException('Order list access denied');
     }
 
     if (options.status) {
@@ -161,16 +184,37 @@ export class ServiceOrdersService {
       .take(limit);
 
     const [data, total] = await qb.getManyAndCount();
-    return { data: await Promise.all(data.map(order => this.presentOrder(order))), total };
+    return {
+      data: await Promise.all(data.map(async order => {
+        if (role !== Role.TECHNICIAN) return this.presentOrder(order);
+        const assignment = await this.dataSource.manager.findOneBy(TechnicianAssignment, {
+          serviceOrderId: order.id, technicianId: userId, isActive: true,
+        });
+        return assignment ? this.presentOrder(order) : historicalOrderSummary(order);
+      })),
+      total,
+    };
   }
 
   async findById(
     id: string,
     actor: { id: string; role: string },
-  ): Promise<ServiceOrder> {
+  ): Promise<ServiceOrder | HistoricalOrderSummary> {
+    await this.cancelOverdueOrders();
     const order = await this.orderRepo.findOneBy({ id });
     if (!order) {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Order not found');
+    }
+    if (actor.role === Role.TECHNICIAN) {
+      const active = await this.dataSource.manager.findOneBy(TechnicianAssignment, {
+        serviceOrderId: id, technicianId: actor.id, isActive: true,
+      });
+      if (active) return this.presentOrder(order);
+      const historical = await this.dataSource.manager.findOneBy(TechnicianAssignment, {
+        serviceOrderId: id, technicianId: actor.id,
+      });
+      if (historical) return historicalOrderSummary(order);
+      throw new ForbiddenException('Order not found or access denied');
     }
     await this.checkOrderAccess(order, actor);
     return this.presentOrder(order);
@@ -198,6 +242,12 @@ export class ServiceOrdersService {
       bookingDescription: booking.description || '',
       customerName: customer?.fullName || '', customerPhone: customer?.phoneNumber || '',
       technician: technician ? { id: technician.id, fullName: technician.fullName, phoneNumber: technician.phoneNumber } : undefined,
+      destination: booking.latitudeSnapshot != null && booking.longitudeSnapshot != null
+        ? { lat: Number(booking.latitudeSnapshot), lng: Number(booking.longitudeSnapshot) }
+        : null,
+      technicianLocation: order.technicianLastLat != null && order.technicianLastLng != null
+        ? { lat: Number(order.technicianLastLat), lng: Number(order.technicianLastLng), updatedAt: order.technicianLocationUpdatedAt?.toISOString() ?? null }
+        : null,
       quotation, customerConfirmed: !!await manager.findOneBy(CustomerServiceConfirmation, { serviceOrderId: order.id }),
       arrivalVerified: !!await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: order.id, technicianId: assignment?.technicianId, result: CheckInResult.VALID }),
       beforeEvidenceCount: await manager.count(RepairEvidence, { where: { serviceOrderId: order.id, type: EvidenceType.BEFORE } }),
@@ -228,14 +278,26 @@ export class ServiceOrdersService {
       const booking = await manager.findOneByOrFail(Booking, { id: order.bookingId });
       if (![body.lat, body.lng, body.accuracyMeters].every(Number.isFinite) || Math.abs(body.lat) > 90 || Math.abs(body.lng) > 180 || body.accuracyMeters < 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid GPS coordinates');
       if (booking.latitudeSnapshot == null || booking.longitudeSnapshot == null) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Repair address has no verified coordinates');
-      const rad = (v: number) => v * Math.PI / 180;
       const lat = Number(booking.latitudeSnapshot), lng = Number(booking.longitudeSnapshot);
-      const a = Math.sin(rad(body.lat-lat)/2)**2 + Math.cos(rad(lat))*Math.cos(rad(body.lat))*Math.sin(rad(body.lng-lng)/2)**2;
-      const distanceMeters = Math.round(6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1-a))));
+      const distanceMeters = Math.round(haversineKm(lat, lng, body.lat, body.lng) * 1000);
       const radius = await this.configService.getInt('geofence.radius_meters', 300);
       const accuracy = await this.configService.getInt('geofence.min_gps_accuracy_meters', 100);
       const result = body.accuracyMeters > accuracy ? CheckInResult.LOW_ACCURACY : distanceMeters > radius ? CheckInResult.OUT_OF_GEOFENCE : CheckInResult.VALID;
       return manager.save(ArrivalCheckIn, manager.create(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, lat: body.lat, lng: body.lng, accuracyMeters: body.accuracyMeters, distanceMeters, result, checkedInAt: new Date(), deviceInfo: body.deviceInfo || null }));
+    });
+  }
+
+  /**
+   * Live GPS ping while EN_ROUTE, for the customer tracking map. Not a geofence check.
+   */
+  async updateLocation(orderId: string, body: { lat: number; lng: number; accuracyMeters?: number }, actor: { id: string; role: string }): Promise<{ lat: number; lng: number; updatedAt: string }> {
+    return this.dataSource.transaction(async manager => {
+      const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
+      if (order.status !== ServiceOrderStatus.EN_ROUTE) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Order must be EN_ROUTE');
+      if (![body.lat, body.lng].every(Number.isFinite) || Math.abs(body.lat) > 90 || Math.abs(body.lng) > 180) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid GPS coordinates');
+      const updatedAt = new Date();
+      await manager.update(ServiceOrder, orderId, { technicianLastLat: body.lat, technicianLastLng: body.lng, technicianLocationUpdatedAt: updatedAt });
+      return { lat: body.lat, lng: body.lng, updatedAt: updatedAt.toISOString() };
     });
   }
 
@@ -306,7 +368,11 @@ export class ServiceOrdersService {
         // Append a fresh invitation round; the original dispatch history stays immutable.
         const remaining = previous.filter(inv => inv.priorityOrder > last && inv.status === InvitationStatus.CANCELLED);
         const offset = Math.max(0, ...previous.map(inv => inv.priorityOrder));
-        for (const [index, candidate] of remaining.entries()) await manager.save(BookingInvitation, manager.create(BookingInvitation, { bookingId: booking.id, technicianId: candidate.technicianId, priorityOrder: offset + index + 1, status: InvitationStatus.STANDBY, invitedAt: new Date(), expiresAt: null }));
+        const group = remaining.length > 0
+          ? manager.create(BookingInvitationGroup, { id: randomUUID(), bookingId: booking.id })
+          : null;
+        if (group) await manager.save(group);
+        for (const [index, candidate] of remaining.entries()) await manager.save(BookingInvitation, manager.create(BookingInvitation, { groupId: group!.id, bookingId: booking.id, technicianId: candidate.technicianId, priorityOrder: offset + index + 1, status: InvitationStatus.STANDBY, invitedAt: new Date(), expiresAt: null }));
         booking.status = BookingStatus.MATCHING;
         await manager.save(booking);
         await activateNextInvitation(manager, booking, await this.configService.getInt('matching.invitation_ttl_minutes', 30));

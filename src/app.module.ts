@@ -28,10 +28,12 @@ import { MediaModule } from './modules/media/media.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { HealthModule } from './modules/health/health.module';
 import { TechnicianVerificationsModule } from './modules/technician-verifications/technician-verifications.module';
+import { TechnicianSkillVerificationsModule } from './modules/technician-skill-verifications/technician-skill-verifications.module';
 import { PartsCatalogModule } from './modules/parts-catalog/parts-catalog.module';
 import { SupportCasesModule } from './modules/support-cases/support-cases.module';
 import { FinanceModule } from './modules/finance/finance.module';
 import { MailModule } from './modules/mail/mail.module';
+import { GeoModule } from './modules/geo/geo.module';
 
 @Module({
   imports: [
@@ -69,10 +71,12 @@ import { MailModule } from './modules/mail/mail.module';
     DashboardModule,
     HealthModule,
     TechnicianVerificationsModule,
+    TechnicianSkillVerificationsModule,
     PartsCatalogModule,
     SupportCasesModule,
     FinanceModule,
     MailModule,
+    GeoModule,
   ],
 })
 export class AppModule {}

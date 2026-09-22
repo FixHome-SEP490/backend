@@ -41,6 +41,7 @@ const REAL_REPLY = {
 };
 
 describe('AiDiagnosisService', () => {
+  const ownerActor = { id: 'synthetic-customer-owner', role: 'customer' };
   let service: AiDiagnosisService;
   let http: any;
   let diagnosisRepo: any;
@@ -55,6 +56,7 @@ describe('AiDiagnosisService', () => {
       create: vi.fn((row: unknown) => row),
       save: vi.fn().mockResolvedValue({ id: 'saved-uuid' }),
       findOneBy: vi.fn().mockResolvedValue(null),
+      manager: { findOneBy: vi.fn().mockResolvedValue({ id: '11111111-1111-1111-1111-111111111111', customerId: 'synthetic-customer-owner' }) },
     };
     serviceRepo = {
       find: vi
@@ -190,7 +192,7 @@ describe('AiDiagnosisService', () => {
     });
 
     it('writes nothing to the database', async () => {
-      await service.analyze({ description: 'x', bookingId: '11111111-1111-1111-1111-111111111111' });
+      await service.analyze({ description: 'x', bookingId: '11111111-1111-1111-1111-111111111111' }, ownerActor);
 
       expect(diagnosisRepo.save).not.toHaveBeenCalled();
     });
@@ -213,7 +215,7 @@ describe('AiDiagnosisService', () => {
       await service.analyze({
         description: 'không vắt',
         bookingId: '11111111-1111-1111-1111-111111111111',
-      });
+      }, ownerActor);
 
       const row = diagnosisRepo.create.mock.calls[0][0];
       expect(row.bookingId).toBe('11111111-1111-1111-1111-111111111111');
@@ -228,7 +230,7 @@ describe('AiDiagnosisService', () => {
       const result = await service.analyze({
         description: 'không vắt',
         bookingId: '11111111-1111-1111-1111-111111111111',
-      });
+      }, ownerActor);
 
       expect(result.suspectedFaults).toEqual(REAL_REPLY.suspectedFaults);
     });
