@@ -9,6 +9,7 @@ import { InvitationsService } from './invitations.service';
 import { Booking } from './entities/booking.entity';
 import { BookingMedia } from './entities/booking-media.entity';
 import { BookingInvitation } from './entities/booking-invitation.entity';
+import { BookingInvitationGroup } from './entities/booking-invitation-group.entity';
 import { User } from '../users/entities/user.entity';
 import { Service } from '../services/entities/service.entity';
 import { Address } from '../users/entities/address.entity';
@@ -24,6 +25,7 @@ import { MediaModule } from '../media/media.module';
       Booking,
       BookingMedia,
       BookingInvitation,
+      BookingInvitationGroup,
       User,
       Service,
       Address,

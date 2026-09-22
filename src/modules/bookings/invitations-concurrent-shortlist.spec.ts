@@ -7,7 +7,7 @@ vi.mock('./technician-eligibility', () => ({ technicianEligibility: vi.fn() }));
 
 function scenario(status: BookingStatus = BookingStatus.SUBMITTED) {
   const booking = { id: 'booking-1', customerId: 'customer-1', status };
-  const invites: Array<{ id: string; technicianId: string; status: InvitationStatus; priorityOrder: number; expiresAt: Date | null }> = [];
+  const invites: Array<{ id: string; groupId?: string; technicianId: string; status: InvitationStatus; priorityOrder: number; expiresAt: Date | null }> = [];
   let nextInvitationId = 0;
   const manager = {
     findOne: vi.fn(async (_entity: unknown, query: { where: { id: string; customerId: string } }) =>
@@ -50,6 +50,8 @@ describe('BE-MATCH customer shortlist sends all selected invitations in one roun
     expect(result.every(i => i.status === InvitationStatus.PENDING)).toBe(true);
     expect(s.invites.map(i => i.technicianId)).toEqual(selected);
     expect(s.invites.map(i => i.priorityOrder)).toEqual(selected.map((_id, i) => i + 1));
+    expect(new Set(s.invites.map(i => i.groupId)).size).toBe(1);
+    expect(s.invites[0].groupId).toBeDefined();
     expect(new Set(s.invites.map(i => i.expiresAt?.getTime())).size).toBe(1);
     expect(s.invites.every(i => i.expiresAt instanceof Date)).toBe(true);
     expect(s.booking.status).toBe(BookingStatus.MATCHING);

@@ -1,4 +1,5 @@
 import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository, In, LessThanOrEqual } from 'typeorm';
 import { ServiceOrder } from './entities/service-order.entity';
@@ -17,6 +18,7 @@ import { AdditionalCostItem } from './entities/additional-cost-item.entity';
 import { WarrantyClaim } from './entities/warranty-claim.entity';
 import { CustomerServiceConfirmation } from './entities/customer-service-confirmation.entity';
 import { BookingInvitation } from '../bookings/entities/booking-invitation.entity';
+import { BookingInvitationGroup } from '../bookings/entities/booking-invitation-group.entity';
 import { activateNextInvitation } from '../bookings/activate-next-invitation';
 import { Booking } from '../bookings/entities/booking.entity';
 import { User } from '../users/entities/user.entity';
@@ -366,7 +368,11 @@ export class ServiceOrdersService {
         // Append a fresh invitation round; the original dispatch history stays immutable.
         const remaining = previous.filter(inv => inv.priorityOrder > last && inv.status === InvitationStatus.CANCELLED);
         const offset = Math.max(0, ...previous.map(inv => inv.priorityOrder));
-        for (const [index, candidate] of remaining.entries()) await manager.save(BookingInvitation, manager.create(BookingInvitation, { bookingId: booking.id, technicianId: candidate.technicianId, priorityOrder: offset + index + 1, status: InvitationStatus.STANDBY, invitedAt: new Date(), expiresAt: null }));
+        const group = remaining.length > 0
+          ? manager.create(BookingInvitationGroup, { id: randomUUID(), bookingId: booking.id })
+          : null;
+        if (group) await manager.save(group);
+        for (const [index, candidate] of remaining.entries()) await manager.save(BookingInvitation, manager.create(BookingInvitation, { groupId: group!.id, bookingId: booking.id, technicianId: candidate.technicianId, priorityOrder: offset + index + 1, status: InvitationStatus.STANDBY, invitedAt: new Date(), expiresAt: null }));
         booking.status = BookingStatus.MATCHING;
         await manager.save(booking);
         await activateNextInvitation(manager, booking, await this.configService.getInt('matching.invitation_ttl_minutes', 30));

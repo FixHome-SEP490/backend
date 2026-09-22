@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, EntityManager, In } from 'typeorm';
+import { randomUUID } from 'crypto';
 import { isUUID } from 'class-validator';
 import { Booking } from './entities/booking.entity';
 import { BookingMedia } from './entities/booking-media.entity';
@@ -28,6 +29,7 @@ import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { OrderStatusHistory } from '../service-orders/entities/order-status-history.entity';
 import { BookingInvitation } from './entities/booking-invitation.entity';
+import { BookingInvitationGroup } from './entities/booking-invitation-group.entity';
 import { InvitationStatus, ServiceOrderStatus } from '../../shared/enums';
 import { resolveServiceArea } from '../../shared/utils/administrative-areas';
 import { haversineKm } from '../../shared/utils/geo';
@@ -651,9 +653,13 @@ export class BookingsService {
           const last = Math.max(0, ...previous.filter(inv => inv.status === InvitationStatus.ACCEPTED).map(inv => inv.priorityOrder));
           const remaining = previous.filter(inv => inv.priorityOrder > last && inv.status === InvitationStatus.CANCELLED);
           const offset = Math.max(0, ...previous.map(inv => inv.priorityOrder));
+          const group = remaining.length > 0
+            ? manager.create(BookingInvitationGroup, { id: randomUUID(), bookingId })
+            : null;
+          if (group) await manager.save(group);
           for (const [index, candidate] of remaining.entries()) {
             await manager.save(BookingInvitation, manager.create(BookingInvitation, {
-              bookingId, technicianId: candidate.technicianId, priorityOrder: offset + index + 1,
+              groupId: group!.id, bookingId, technicianId: candidate.technicianId, priorityOrder: offset + index + 1,
               status: InvitationStatus.STANDBY, invitedAt: new Date(), expiresAt: null,
             }));
           }

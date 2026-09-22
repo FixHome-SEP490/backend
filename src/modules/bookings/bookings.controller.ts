@@ -26,6 +26,22 @@ import { ReasonDto } from '../service-orders/order-command.dto';
 import { BookingStatus } from '../../shared/enums';
 import { toBookingMediaResponse, toBookingResponse } from './booking-privacy.dto';
 import { BookingPrivateMediaContentService } from './booking-private-media-content.service';
+import type { BookingInvitation } from './entities/booking-invitation.entity';
+
+function toBookingInvitationResponse(invitation: BookingInvitation) {
+  return {
+    id: invitation.id,
+    createdAt: invitation.createdAt,
+    updatedAt: invitation.updatedAt,
+    bookingId: invitation.bookingId,
+    technicianId: invitation.technicianId,
+    priorityOrder: invitation.priorityOrder,
+    status: invitation.status,
+    invitedAt: invitation.invitedAt,
+    respondedAt: invitation.respondedAt ?? null,
+    expiresAt: invitation.expiresAt ?? null,
+  };
+}
 
 @ApiTags('Bookings')
 @Controller('bookings')
@@ -166,7 +182,21 @@ export class BookingsController {
       body.technicianIds,
       req.user,
     );
-    return { data: invitations };
+    return { data: invitations.map(toBookingInvitationResponse) };
+  }
+
+  @Post(':id/matching/extend')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('booking:create')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Confirm one TTL extension for the live invitation group' })
+  async extendMatching(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    const extension = await this.invitationsService.extendPendingInvitationGroup(id, req.user);
+    return { data: extension };
   }
 
   @Patch(':id/schedule')

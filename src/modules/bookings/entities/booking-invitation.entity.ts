@@ -2,6 +2,7 @@
 import { Entity, Column, ManyToOne, JoinColumn, Index, Unique } from 'typeorm';
 import { BaseEntity } from '../../../database/base.entity';
 import { Booking } from './booking.entity';
+import { BookingInvitationGroup } from './booking-invitation-group.entity';
 import { User } from '../../users/entities/user.entity';
 import { InvitationStatus } from '../../../shared/enums';
 
@@ -9,6 +10,13 @@ import { InvitationStatus } from '../../../shared/enums';
 @Unique('uq_invitation', ['bookingId', 'priorityOrder'])
 @Index('ix_invitation_tech_status', ['technicianId', 'status'])
 export class BookingInvitation extends BaseEntity {
+  @Column({ name: 'group_id', type: 'uuid', nullable: true })
+  groupId?: string | null;
+
+  @ManyToOne(() => BookingInvitationGroup, (group) => group.invitations, { onDelete: 'RESTRICT', nullable: true })
+  @JoinColumn({ name: 'group_id' })
+  group?: BookingInvitationGroup | null;
+
   @Column({ name: 'booking_id', type: 'uuid' })
   bookingId: string;
 

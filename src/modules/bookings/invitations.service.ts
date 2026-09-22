@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { randomUUID } from 'crypto';
 import { BookingInvitation } from './entities/booking-invitation.entity';
+import { BookingInvitationGroup } from './entities/booking-invitation-group.entity';
 import { Booking } from './entities/booking.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
@@ -46,7 +47,9 @@ export class InvitationsService {
         if (!eligibility.eligible) throw new BusinessException(ErrorCodes.WORK_SUSPENDED, eligibility.reason!);
       }
       const offset = Math.max(0, ...previous.map(i => i.priorityOrder));
-      const invitations = technicianIds.map((technicianId, i) => manager.create(BookingInvitation, { bookingId, technicianId, priorityOrder: offset + i + 1, status: InvitationStatus.STANDBY, invitedAt: new Date(), expiresAt: null }));
+      const group = manager.create(BookingInvitationGroup, { id: randomUUID(), bookingId });
+      await manager.save(group);
+      const invitations = technicianIds.map((technicianId, i) => manager.create(BookingInvitation, { groupId: group.id, bookingId, technicianId, priorityOrder: offset + i + 1, status: InvitationStatus.STANDBY, invitedAt: new Date(), expiresAt: null }));
       await manager.save(invitations);
       booking.status = BookingStatus.MATCHING;
       await manager.save(booking);
@@ -174,6 +177,87 @@ export class InvitationsService {
   async inviteNextCandidate(bookingId: string): Promise<BookingInvitation | null> {
     await this.refreshMatching(bookingId);
     return this.invitationRepo.findOneBy({ bookingId, status: InvitationStatus.PENDING });
+  }
+
+  /**
+   * One customer-confirmed extension for the currently live invitation round.
+   * Booking is always locked first, matching Accept/cancel/refreshMatching.
+   */
+  async extendPendingInvitationGroup(
+    bookingId: string,
+    customer: { id: string; role: string },
+  ): Promise<{
+    bookingId: string;
+    invitationGroupId: string;
+    expiresAt: Date;
+    extendedInvitationCount: number;
+  }> {
+    if (customer.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
+    return this.dataSource.transaction(async manager => {
+      const booking = await manager.findOne(Booking, {
+        where: { id: bookingId, customerId: customer.id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!booking) throw new ForbiddenException('Booking not found');
+      if (booking.status !== BookingStatus.MATCHING) {
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Booking has no live matching round');
+      }
+      const now = new Date();
+      const preferredEndAt = booking.preferredEndAt;
+      if (!(preferredEndAt instanceof Date) || !Number.isFinite(preferredEndAt.getTime()) || preferredEndAt <= now) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'A valid future preferred arrival window is required');
+      }
+
+      const pending = await manager.find(BookingInvitation, {
+        where: { bookingId, status: InvitationStatus.PENDING },
+      });
+      const groupIds = [...new Set(pending.map(invitation => invitation.groupId).filter((id): id is string => !!id))];
+      if (pending.length === 0 || groupIds.length !== 1 || pending.some(invitation => !invitation.groupId)) {
+        throw new BusinessException(ErrorCodes.CONFLICT, 'No durable live invitation group');
+      }
+      const invitationGroupId = groupIds[0];
+      const group = await manager.findOne(BookingInvitationGroup, {
+        where: { id: invitationGroupId, bookingId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!group) throw new BusinessException(ErrorCodes.CONFLICT, 'Invitation group is unavailable');
+      if (group.extensionUsedAt) {
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Invitation group extension already used');
+      }
+
+      if (pending.some(invitation => !invitation.expiresAt || invitation.expiresAt <= now)) {
+        throw new BusinessException(ErrorCodes.INVITATION_EXPIRED, 'Invitation group is no longer live');
+      }
+      const latestCurrentExpiry = Math.max(...pending.map(invitation => invitation.expiresAt!.getTime()));
+      const ttlMinutes = await this.configService.getInt('matching.invitation_ttl_minutes', 30);
+      const configuredExpiry = new Date(now.getTime() + Math.max(0, ttlMinutes) * 60_000);
+      const expiresAt = preferredEndAt < configuredExpiry
+        ? preferredEndAt
+        : configuredExpiry;
+      if (expiresAt.getTime() <= latestCurrentExpiry) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Preferred arrival window cannot extend this matching round');
+      }
+
+      await manager.createQueryBuilder()
+        .update(BookingInvitation)
+        .set({ expiresAt })
+        .where('booking_id = :bookingId AND group_id = :groupId AND status = :status', {
+          bookingId,
+          groupId: invitationGroupId,
+          status: InvitationStatus.PENDING,
+        })
+        .execute();
+      await manager.update(BookingInvitationGroup, invitationGroupId, { extensionUsedAt: now });
+      await this.auditLogService.logWithManager(manager, {
+        actorUserId: customer.id,
+        actorRole: customer.role,
+        action: 'MATCHING_INVITATION_GROUP_EXTEND',
+        resourceType: 'booking_invitation_group',
+        resourceId: invitationGroupId,
+        after: { bookingId, expiresAt: expiresAt.toISOString(), extendedInvitationCount: pending.length },
+      });
+      return { bookingId, invitationGroupId, expiresAt, extendedInvitationCount: pending.length };
+    });
   }
 
   private async activateNext(manager: EntityManager, booking: Booking): Promise<void> {
