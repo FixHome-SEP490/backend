@@ -165,14 +165,24 @@ function stopWhateverIsOnPort(port) {
     // rather than nowhere: a backend that dies on boot has to be readable.
     const logPath = path.join(ROOT, 'backend.log');
     const log = fs.openSync(logPath, 'a');
-    // npm is a shell script on Windows, so it needs the shell; passing the
-    // whole command as one string keeps Node from warning about unescaped
-    // arguments, and there is nothing user-supplied in it to escape.
-    const child = spawn(
-      process.platform === 'win32' ? 'npm.cmd' : 'npm',
-      ['run', 'start:dev'],
-      { cwd: ROOT, detached: true, stdio: ['ignore', log, log] },
-    );
+    // Launched through the shell explicitly, rather than by spawning `npm`
+    // with shell:true. npm is a batch file on Windows, and since Node 20.12
+    // spawning a .cmd without a shell throws EINVAL - which is what the
+    // previous attempt at silencing a deprecation warning did. Naming the
+    // shell ourselves avoids both the throw and the warning, and there is
+    // nothing user-supplied in the command line to escape.
+    const child =
+      process.platform === 'win32'
+        ? spawn('cmd.exe', ['/c', 'npm run start:dev'], {
+            cwd: ROOT,
+            detached: true,
+            stdio: ['ignore', log, log],
+          })
+        : spawn('sh', ['-c', 'npm run start:dev'], {
+            cwd: ROOT,
+            detached: true,
+            stdio: ['ignore', log, log],
+          });
     child.unref();
     console.log(`  Backend restarting, output in ${path.basename(logPath)}`);
   }
