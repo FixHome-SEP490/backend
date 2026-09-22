@@ -17,6 +17,7 @@ import { PermissionGuard } from '../../common/guards/permission.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { InvitationResponseDto } from './booking.dto';
 import { InvitationsService } from './invitations.service';
+import { toBookingInvitationResponse } from './booking-privacy.dto';
 
 @ApiTags('Invitations')
 @Controller('invitations')
@@ -51,6 +52,6 @@ export class InvitationsController {
       body.action,
       req.user,
     );
-    return { data: result };
+    return { data: { ...result, invitation: toBookingInvitationResponse(result.invitation) } };
   }
 }

@@ -38,16 +38,38 @@ export function toBookingMediaResponse(media: BookingMedia): BookingMediaRespons
   };
 }
 
-export type BookingResponse<T extends object> = Omit<T, 'media'> & {
+// Preserve the existing shortlist contract; never serialize entity relations or group state.
+export function toBookingInvitationResponse(invitation: BookingInvitation) {
+  return {
+    id: invitation.id,
+    createdAt: invitation.createdAt,
+    updatedAt: invitation.updatedAt,
+    bookingId: invitation.bookingId,
+    technicianId: invitation.technicianId,
+    priorityOrder: invitation.priorityOrder,
+    status: invitation.status,
+    invitedAt: invitation.invitedAt,
+    respondedAt: invitation.respondedAt ?? null,
+    expiresAt: invitation.expiresAt ?? null,
+  };
+}
+
+export type BookingResponse<T extends object> = Omit<T, 'media' | 'invitations'> & {
   media?: BookingMediaResponseDto[] | null;
+  invitations?: ReturnType<typeof toBookingInvitationResponse>[] | null;
 };
 
 export function toBookingResponse<T extends object>(booking: T): BookingResponse<T> {
-  const withMedia = booking as T & { media?: BookingMedia[] | null };
-  if (!Array.isArray(withMedia.media)) return booking as BookingResponse<T>;
+  const withRelations = booking as T & {
+    media?: BookingMedia[] | null;
+    invitations?: BookingInvitation[] | null;
+  };
   return {
-    ...withMedia,
-    media: withMedia.media.map(toBookingMediaResponse),
+    ...withRelations,
+    ...(Array.isArray(withRelations.media)
+      ? { media: withRelations.media.map(toBookingMediaResponse) } : {}),
+    ...(Array.isArray(withRelations.invitations)
+      ? { invitations: withRelations.invitations.map(toBookingInvitationResponse) } : {}),
   } as BookingResponse<T>;
 }
 

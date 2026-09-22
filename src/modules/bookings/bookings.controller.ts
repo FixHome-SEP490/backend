@@ -24,24 +24,8 @@ import { InvitationsService } from './invitations.service';
 import { AttachBookingMediaDto, CreateBookingDto, ScheduleBookingDto, RebookDto, ShortlistDto } from './booking.dto';
 import { ReasonDto } from '../service-orders/order-command.dto';
 import { BookingStatus } from '../../shared/enums';
-import { toBookingMediaResponse, toBookingResponse } from './booking-privacy.dto';
+import { toBookingInvitationResponse, toBookingMediaResponse, toBookingResponse } from './booking-privacy.dto';
 import { BookingPrivateMediaContentService } from './booking-private-media-content.service';
-import type { BookingInvitation } from './entities/booking-invitation.entity';
-
-function toBookingInvitationResponse(invitation: BookingInvitation) {
-  return {
-    id: invitation.id,
-    createdAt: invitation.createdAt,
-    updatedAt: invitation.updatedAt,
-    bookingId: invitation.bookingId,
-    technicianId: invitation.technicianId,
-    priorityOrder: invitation.priorityOrder,
-    status: invitation.status,
-    invitedAt: invitation.invitedAt,
-    respondedAt: invitation.respondedAt ?? null,
-    expiresAt: invitation.expiresAt ?? null,
-  };
-}
 
 @ApiTags('Bookings')
 @Controller('bookings')

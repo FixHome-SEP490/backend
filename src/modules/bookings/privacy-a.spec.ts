@@ -13,6 +13,7 @@ import { BookingInvitation } from './entities/booking-invitation.entity';
 import { InvitationsController } from './invitations.controller';
 import { InvitationsService } from './invitations.service';
 import { PrivateBookingPhotoClaimService } from '../media/private-booking-photo-claim.service';
+import { toBookingResponse } from './booking-privacy.dto';
 
 const bookingId = 'synthetic-booking-1';
 const technicianId = 'synthetic-tech-1';
@@ -171,6 +172,107 @@ async function transformAndSerializeControllerResponse(response: unknown): Promi
 }
 
 describe('BE-PRIVACY-A synthetic booking reads', () => {
+  function withInternalInvitationFields(booking: ReturnType<typeof makeBooking>) {
+    for (const invitation of booking.invitations) {
+      Object.assign(invitation, {
+        createdAt: preferredStartAt,
+        updatedAt: preferredEndAt,
+        groupId: 'INTERNAL_GROUP_ID',
+        group: { marker: 'INTERNAL_GROUP_RELATION', extensionUsedAt: preferredStartAt },
+        extensionUsedAt: preferredStartAt,
+        objectRef: 'storage://INTERNAL_OBJECT',
+        booking: { address: 'INTERNAL_NESTED_ADDRESS', media: [{ objectRef: 'INTERNAL_MEDIA' }] },
+        technician: { passwordHash: 'INTERNAL_TECHNICIAN_RELATION' },
+      });
+    }
+    return booking;
+  }
+
+  function expectedInvitation(invitation: ReturnType<typeof makeBooking>['invitations'][number]) {
+    return {
+      id: invitation.id,
+      createdAt: preferredStartAt,
+      updatedAt: preferredEndAt,
+      bookingId: invitation.bookingId,
+      technicianId: invitation.technicianId,
+      priorityOrder: invitation.priorityOrder,
+      status: invitation.status,
+      invitedAt: invitation.invitedAt,
+      respondedAt: ('respondedAt' in invitation ? invitation.respondedAt : null) ?? null,
+      expiresAt: invitation.expiresAt ?? null,
+    };
+  }
+
+  it.each([{ media: undefined }, { media: null }, { media: [] }])('sanitizes invitations independently of media $media without mutating entities', ({ media }) => {
+    const booking = { ...withInternalInvitationFields(makeBooking()), media };
+    const response = toBookingResponse(booking);
+    expect(response).toEqual({ ...booking, invitations: booking.invitations.map(expectedInvitation) });
+    expect(stringify(response)).not.toContain('INTERNAL_');
+    expect(booking.invitations[0]).toHaveProperty('groupId', 'INTERNAL_GROUP_ID');
+  });
+
+  it.each([{ invitations: undefined }, { invitations: null }, { invitations: [] }])('preserves unloaded or empty invitations $invitations', ({ invitations }) => {
+    const booking = { id: bookingId, invitations };
+    expect(toBookingResponse(booking)).toEqual(booking);
+    expect(toBookingResponse({ id: bookingId })).toEqual({ id: bookingId });
+  });
+
+  it.each([
+    [Role.CUSTOMER, customerId],
+    [Role.ADMIN, 'synthetic-admin'],
+    [Role.SERVICE_MANAGER, 'synthetic-manager'],
+    [Role.TECHNICIAN, technicianId],
+  ])('serializes safe full Booking invitations for %s through the controller', async (role, id) => {
+    const isWinner = role === Role.TECHNICIAN;
+    const booking = withInternalInvitationFields(makeBooking(
+      isWinner ? InvitationStatus.ACCEPTED : InvitationStatus.PENDING,
+      isWinner ? BookingStatus.MATCHED : BookingStatus.MATCHING,
+    ));
+    const expected = booking.invitations.filter(item => !isWinner || item.technicianId === id).map(expectedInvitation);
+    const order = { id: 'synthetic-order-1', bookingId };
+    const { service } = makeBookingsHarness(booking, {
+      order, assignment: { serviceOrderId: order.id, technicianId, isActive: true },
+    });
+    const controller = new BookingsController(service, { refreshMatching: vi.fn() } as never, {} as never);
+    const result = await controller.findById(bookingId, { user: { id, role } });
+    expect(result.data).toMatchObject({
+      addressTextSnapshot: booking.addressTextSnapshot,
+      invitations: expected,
+      media: [{ url: null, isPrivate: false, legacyInsecure: true }],
+    });
+    expect('invitations' in result.data && result.data.invitations).toEqual(expected);
+    expect(stringify(await transformAndSerializeControllerResponse(result))).not.toContain('INTERNAL_');
+  });
+
+  it.each(['ACCEPT', 'DECLINE'] as const)('sanitizes the %s response invitation and preserves the result contract', async (action) => {
+    const booking = withInternalInvitationFields(makeBooking(
+      action === 'ACCEPT' ? InvitationStatus.ACCEPTED : InvitationStatus.DECLINED,
+    ));
+    const invitation = booking.invitations[0];
+    const result = action === 'ACCEPT'
+      ? { invitation, serviceOrder: { id: 'synthetic-order', bookingId } }
+      : { invitation };
+    const respond = vi.fn(async () => result);
+    const controller = new InvitationsController({ respond } as never);
+    const user = { id: technicianId, role: Role.TECHNICIAN };
+    const response = await controller.respond(invitation.id, { action }, { user });
+    expect(respond).toHaveBeenCalledWith(invitation.id, action, user);
+    expect(response).toEqual({ data: { ...result, invitation: expectedInvitation(invitation) } });
+    expect(stringify(await transformAndSerializeControllerResponse(response))).not.toContain('INTERNAL_');
+    expect(invitation).toHaveProperty('groupId', 'INTERNAL_GROUP_ID');
+  });
+
+  it('keeps shortlist invitations on the same safe contract', async () => {
+    const booking = withInternalInvitationFields(makeBooking());
+    const controller = new BookingsController({} as never, {
+      createShortlist: vi.fn(async () => booking.invitations),
+    } as never, {} as never);
+    const response = await controller.createShortlist(bookingId, { technicianIds: [technicianId] }, {
+      user: { id: customerId, role: Role.CUSTOMER },
+    });
+    expect(response).toEqual({ data: booking.invitations.map(expectedInvitation) });
+  });
+
   it('serializes only the safe preview from GET /invitations/my', async () => {
     const booking = makeBooking();
     const invitation = { ...booking.invitations[0], booking };
