@@ -36,7 +36,31 @@ function scenario(states: Array<{ status: InvitationStatus; minutesLeft?: number
 
 beforeEach(() => { vi.clearAllMocks(); });
 
-describe('BE-MATCH request-time refresh of simultaneous PENDING invitations', () => {
+describe('BE-MATCH request-time refresh of ordered PENDING invitations and legacy rows', () => {
+  it('expires priority #1 and activates ONLY priority #2 when #1 expires', async () => {
+    const s = scenario([
+      { status: InvitationStatus.PENDING, minutesLeft: -1 },
+      { status: InvitationStatus.STANDBY },
+    ]);
+    await s.service.refreshMatching('booking-1');
+    expect(s.invites.map(i => i.status)).toEqual([InvitationStatus.EXPIRED, InvitationStatus.PENDING]);
+    expect(s.invites[1].expiresAt!.getTime()).toBeGreaterThan(Date.now());
+    expect(s.configService.getInt).toHaveBeenCalledTimes(1);
+    expect(s.messagingService.ensureConversation).toHaveBeenCalledTimes(1);
+    expect(s.booking.status).toBe(BookingStatus.MATCHING);
+  });
+
+  it('does not prematurely invite priority #2 while #1 is live', async () => {
+    const s = scenario([
+      { status: InvitationStatus.PENDING, minutesLeft: 10 },
+      { status: InvitationStatus.STANDBY },
+    ]);
+    await s.service.refreshMatching('booking-1');
+    expect(s.invites.map(i => i.status)).toEqual([InvitationStatus.PENDING, InvitationStatus.STANDBY]);
+    expect(s.configService.getInt).not.toHaveBeenCalled();
+    expect(s.messagingService.ensureConversation).not.toHaveBeenCalled();
+  });
+
   it('expires a stale sibling even when the first pending invitation is still valid', async () => {
     const s = scenario([
       { status: InvitationStatus.PENDING, minutesLeft: 10 },

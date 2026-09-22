@@ -45,78 +45,74 @@ function setup(count: number, excluded: string[] = []) {
 
 beforeEach(() => { vi.clearAllMocks(); });
 
-describe('BE-MATCH activate selected concurrent invitation round (synthetic EntityManager)', () => {
-  it.each([1, 3, 5])('activates ALL %i eligible technicians as PENDING in the same round', async count => {
-    const scenario = setup(count);
+describe('BE-MATCH two customer-ranked technicians, sequential activation (synthetic EntityManager)', () => {
+  it.each([1, 2])('notifies ONLY the first of %i eligible technicians', async count => {
+    const s = setup(count);
     const before = Date.now();
-    await activateNextInvitation(scenario.manager, scenario.booking, 30, scenario.onActivated);
+    await activateNextInvitation(s.manager, s.booking, 30, s.onActivated);
     const after = Date.now();
-    expect(scenario.invitations.filter(i => i.status === InvitationStatus.PENDING)).toHaveLength(count);
-    expect(scenario.invitations.filter(i => i.status === InvitationStatus.STANDBY)).toHaveLength(0);
-    expect(scenario.onActivated).toHaveBeenCalledTimes(count);
-    for (const invitation of scenario.invitations) {
-      expect(invitation.expiresAt).toBeInstanceOf(Date);
-      const expiry = invitation.expiresAt!.getTime();
-      expect(expiry).toBeGreaterThanOrEqual(before + 30 * 60000);
-      expect(expiry).toBeLessThanOrEqual(after + 30 * 60000);
-    }
-    expect(scenario.bookingUpdates).toHaveLength(0);
+    expect(s.invitations[0].status).toBe(InvitationStatus.PENDING);
+    expect(s.invitations[0].expiresAt!.getTime()).toBeGreaterThanOrEqual(before + 30 * 60_000);
+    expect(s.invitations[0].expiresAt!.getTime()).toBeLessThanOrEqual(after + 30 * 60_000);
+    expect(s.invitations.slice(1).every(i => i.status === InvitationStatus.STANDBY && i.expiresAt === null)).toBe(true);
+    expect(s.onActivated).toHaveBeenCalledTimes(1);
+    expect(s.onActivated).toHaveBeenCalledWith(s.manager, s.booking, 'technician-1');
+    expect(s.bookingUpdates).toHaveLength(0);
   });
 
-  it('expires only ineligible standby candidates and activates every remaining eligible candidate', async () => {
-    const scenario = setup(5, ['technician-2', 'technician-4']);
-    await activateNextInvitation(scenario.manager, scenario.booking, 30, scenario.onActivated);
-    expect(scenario.invitations.map(i => i.status)).toEqual([
-      InvitationStatus.PENDING, InvitationStatus.EXPIRED, InvitationStatus.PENDING,
-      InvitationStatus.EXPIRED, InvitationStatus.PENDING,
-    ]);
-    expect(scenario.onActivated.mock.calls.map(call => call[2])).toEqual([
-      'technician-1', 'technician-3', 'technician-5',
-    ]);
-    expect(scenario.bookingUpdates).toHaveLength(0);
+  it('only invites the second technician when the first explicitly declines', async () => {
+    const s = setup(2);
+    await activateNextInvitation(s.manager, s.booking, 30, s.onActivated);
+    s.invitations[0].status = InvitationStatus.DECLINED;
+    await activateNextInvitation(s.manager, s.booking, 30, s.onActivated);
+    expect(s.invitations.map(i => i.status)).toEqual([InvitationStatus.DECLINED, InvitationStatus.PENDING]);
+    expect(s.onActivated.mock.calls.map(call => call[2])).toEqual(['technician-1', 'technician-2']);
+    expect(s.invitations[1].expiresAt).toBeInstanceOf(Date);
   });
 
-  it('does not re-activate or extend a still-active pending round', async () => {
-    const scenario = setup(3);
-    await activateNextInvitation(scenario.manager, scenario.booking, 30, scenario.onActivated);
-    const expiry = scenario.invitations.map(i => i.expiresAt?.getTime());
-    await activateNextInvitation(scenario.manager, scenario.booking, 30, scenario.onActivated);
-    expect(scenario.onActivated).toHaveBeenCalledTimes(3);
-    expect(scenario.invitations.map(i => i.expiresAt?.getTime())).toEqual(expiry);
-    expect(scenario.bookingUpdates).toHaveLength(0);
+  it('skips an ineligible first technician and invites the second only', async () => {
+    const s = setup(2, ['technician-1']);
+    await activateNextInvitation(s.manager, s.booking, 30, s.onActivated);
+    expect(s.invitations.map(i => i.status)).toEqual([InvitationStatus.EXPIRED, InvitationStatus.PENDING]);
+    expect(s.onActivated.mock.calls.map(call => call[2])).toEqual(['technician-2']);
   });
 
-  it('does not close Booking while any other PENDING invite is still active', async () => {
-    const scenario = setup(3);
-    await activateNextInvitation(scenario.manager, scenario.booking, 30, scenario.onActivated);
-    scenario.invitations[0].status = InvitationStatus.DECLINED;
-    await activateNextInvitation(scenario.manager, scenario.booking, 30, scenario.onActivated);
-    expect(scenario.invitations.filter(i => i.status === InvitationStatus.PENDING)).toHaveLength(2);
-    expect(scenario.bookingUpdates).toHaveLength(0);
+  it('does not notify the second technician or reset TTL while first is pending', async () => {
+    const s = setup(2);
+    await activateNextInvitation(s.manager, s.booking, 30, s.onActivated);
+    const firstExpiry = s.invitations[0].expiresAt?.getTime();
+    await activateNextInvitation(s.manager, s.booking, 30, s.onActivated);
+    expect(s.invitations[0].expiresAt?.getTime()).toBe(firstExpiry);
+    expect(s.invitations[1].status).toBe(InvitationStatus.STANDBY);
+    expect(s.invitations[1].expiresAt).toBeNull();
+    expect(s.onActivated).toHaveBeenCalledTimes(1);
   });
 
-  it('closes Booking only when no pending/standby candidates remain', async () => {
-    const scenario = setup(3);
-    await activateNextInvitation(scenario.manager, scenario.booking, 30, scenario.onActivated);
-    scenario.invitations.forEach(i => { i.status = InvitationStatus.EXPIRED; });
-    await activateNextInvitation(scenario.manager, scenario.booking, 30, scenario.onActivated);
-    expect(scenario.bookingUpdates).toEqual([{ status: BookingStatus.CLOSED }]);
+  it('closes only after both selected technicians are exhausted', async () => {
+    const s = setup(2);
+    await activateNextInvitation(s.manager, s.booking, 30, s.onActivated);
+    s.invitations[0].status = InvitationStatus.EXPIRED;
+    await activateNextInvitation(s.manager, s.booking, 30, s.onActivated);
+    expect(s.bookingUpdates).toHaveLength(0);
+    s.invitations[1].status = InvitationStatus.DECLINED;
+    await activateNextInvitation(s.manager, s.booking, 30, s.onActivated);
+    expect(s.bookingUpdates).toEqual([{ status: BookingStatus.CLOSED }]);
   });
 
-  it('closes Booking if all candidates are ineligible before activation', async () => {
-    const scenario = setup(3, ['technician-1', 'technician-2', 'technician-3']);
-    await activateNextInvitation(scenario.manager, scenario.booking, 30, scenario.onActivated);
-    expect(scenario.invitations.every(i => i.status === InvitationStatus.EXPIRED)).toBe(true);
-    expect(scenario.onActivated).not.toHaveBeenCalled();
-    expect(scenario.bookingUpdates).toEqual([{ status: BookingStatus.CLOSED }]);
+  it('closes if both candidates are no longer eligible', async () => {
+    const s = setup(2, ['technician-1', 'technician-2']);
+    await activateNextInvitation(s.manager, s.booking, 30, s.onActivated);
+    expect(s.invitations.every(i => i.status === InvitationStatus.EXPIRED)).toBe(true);
+    expect(s.onActivated).not.toHaveBeenCalled();
+    expect(s.bookingUpdates).toEqual([{ status: BookingStatus.CLOSED }]);
   });
 
-  it('does not activate any invitation outside MATCHING state', async () => {
-    const scenario = setup(3);
-    scenario.booking.status = BookingStatus.CANCELLED;
-    await activateNextInvitation(scenario.manager, scenario.booking, 30, scenario.onActivated);
-    expect(scenario.invitations.every(i => i.status === InvitationStatus.STANDBY)).toBe(true);
-    expect(scenario.onActivated).not.toHaveBeenCalled();
-    expect(scenario.bookingUpdates).toHaveLength(0);
+  it('does not activate standby invitations for a cancelled Booking', async () => {
+    const s = setup(2);
+    s.booking.status = BookingStatus.CANCELLED;
+    await activateNextInvitation(s.manager, s.booking, 30, s.onActivated);
+    expect(s.invitations.every(i => i.status === InvitationStatus.STANDBY)).toBe(true);
+    expect(s.onActivated).not.toHaveBeenCalled();
+    expect(s.bookingUpdates).toHaveLength(0);
   });
 });

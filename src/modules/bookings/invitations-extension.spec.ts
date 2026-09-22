@@ -103,6 +103,20 @@ function scenario(options: {
 describe('customer matching group one-time TTL extension', () => {
   beforeEach(() => vi.restoreAllMocks());
 
+  it('extends the currently invited #1 only; standby #2 retains no expiry or notification', async () => {
+    const s = scenario({ count: 1 });
+    s.invitations.splice(1, 0, {
+      id: 'invitation-standby-2', bookingId: BOOKING_ID, groupId: GROUP_ID,
+      status: InvitationStatus.STANDBY, expiresAt: null,
+    });
+    const result = await s.service.extendPendingInvitationGroup(BOOKING_ID, { id: CUSTOMER_ID, role: Role.CUSTOMER });
+    expect(result.extendedInvitationCount).toBe(1);
+    expect(s.invitations[0].expiresAt).toBeInstanceOf(Date);
+    expect(s.invitations[1].status).toBe(InvitationStatus.STANDBY);
+    expect(s.invitations[1].expiresAt).toBeNull();
+    expect(s.group?.extensionUsedAt).toBeInstanceOf(Date);
+  });
+
   it.each([1, 3, 5])('extends all %i live PENDING invitations to one shared expiry, preserving declined history', async count => {
     const s = scenario({ count });
 

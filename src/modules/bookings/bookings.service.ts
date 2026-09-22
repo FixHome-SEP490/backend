@@ -622,6 +622,23 @@ export class BookingsService {
       if (order && ![ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(order.status)) {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Repair already started or order closed');
       }
+      // A description-only edit is not a reschedule. Keep the active invitation group,
+      // its expiry and the stored arrival window intact when both timestamps are equal.
+      if (!order && [BookingStatus.SUBMITTED, BookingStatus.MATCHING].includes(booking.status) &&
+          booking.preferredStartAt?.getTime() === new Date(dto.preferredStartAt).getTime() &&
+          booking.preferredEndAt?.getTime() === new Date(dto.preferredEndAt).getTime()) {
+        if (!dto.description || dto.description === booking.description) return booking;
+        booking.description = dto.description;
+        await this.auditLogService.logWithManager(manager, {
+          actorUserId: customer.id,
+          actorRole: Role.CUSTOMER,
+          action: 'BOOKING_DESCRIPTION_UPDATE',
+          resourceType: 'booking',
+          resourceId: bookingId,
+          after: { description: dto.description },
+        });
+        return manager.save(booking);
+      }
       booking.preferredStartAt = new Date(dto.preferredStartAt);
       booking.preferredEndAt = new Date(dto.preferredEndAt);
       if (dto.description) booking.description = dto.description;

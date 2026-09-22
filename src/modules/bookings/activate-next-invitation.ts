@@ -26,19 +26,19 @@ export async function activateNextInvitation(
     if (booking.status !== BookingStatus.MATCHING) return;
     if (await manager.findOneBy(BookingInvitation, { bookingId: booking.id, status: InvitationStatus.PENDING })) return;
     const standby = await manager.find(BookingInvitation, { where: { bookingId: booking.id, status: InvitationStatus.STANDBY }, order: { priorityOrder: 'ASC' } });
-    // A shortlist is one simultaneous round: all eligible technicians get the same deadline.
-    // The caller holds the Booking row lock, so the round cannot race with Accept/cancel.
-    const invitedAt = new Date();
-    const expiresAt = new Date(invitedAt.getTime() + ttl * 60000);
-    let activated = false;
+    // Invite only the first eligible technician in customer priority order. The second
+    // technician remains STANDBY, without an invitation deadline or conversation, until
+    // the first DECLINES or expires. The caller holds the Booking row lock.
     for (const invitation of standby) {
       if (!(await technicianEligibility(manager, invitation.technicianId, booking)).eligible) {
         await manager.update(BookingInvitation, invitation.id, { status: InvitationStatus.EXPIRED, respondedAt: new Date() });
         continue;
       }
+      const invitedAt = new Date();
+      const expiresAt = new Date(invitedAt.getTime() + ttl * 60000);
       await manager.update(BookingInvitation, invitation.id, { status: InvitationStatus.PENDING, invitedAt, expiresAt });
       await onActivated?.(manager, booking, invitation.technicianId);
-      activated = true;
+      return;
     }
-    if (!activated) await manager.update(Booking, booking.id, { status: BookingStatus.CLOSED });
+    await manager.update(Booking, booking.id, { status: BookingStatus.CLOSED });
 }

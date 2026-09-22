@@ -60,7 +60,7 @@ export class RebookDto extends ScheduleBookingDto {
 }
 
 export class ShortlistDto {
-  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(5) @ArrayUnique()
+  @IsArray() @ArrayMinSize(2) @ArrayMaxSize(2) @ArrayUnique()
   @Matches(UUID_REGEX, { each: true, message: 'Each technician ID must be a valid UUID' })
   technicianIds: string[];
 }

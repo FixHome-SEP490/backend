@@ -134,25 +134,34 @@ describe('WEB-ACCEPT isolated real HTTP/JWT/PostgreSQL (three synthetic actors)'
     expect(shortlist.status, 'Synthetic shortlist failure: ' + JSON.stringify({ message: shortlist.body?.error?.message, code: shortlist.body?.error?.code })).toBe(201);
     const invitations = await database.getRepository('BookingInvitation').find({ where: { bookingId: booking.id } });
     expect(invitations).toHaveLength(2);
-    expect(invitations.every((inv: { status: string }) => inv.status === 'pending')).toBe(true);
-    for (const actor of [techA, techB]) {
-      const preview = await get('/invitations/my', actor);
-      expect(preview.status).toBe(200);
-      expect(JSON.stringify(preview.body)).toContain(booking.id);
-      expect(JSON.stringify(preview.body)).not.toContain(customer.id);
-      expect(JSON.stringify(preview.body)).not.toMatch(/PRIVATE_SYNTHETIC_ADDRESS_123|customerPhone|addressTextSnapshot|media|diagnosis/i);
-    }
-    const [a, b] = await Promise.all([techA, techB].map(actor => {
-      const invitation = invitations.find((item: { technicianId: string }) => item.technicianId === actor.id);
-      return post(`/invitations/${invitation!.id}/respond`, actor, { action: 'ACCEPT' });
-    }));
-    expect([a.status, b.status].sort((x, y) => x - y)).toEqual([200, 409]);
-    const rejectedAccept = a.status === 409 ? a : b;
+    const firstInvitation = invitations.find((inv: { technicianId: string }) => inv.technicianId === techA.id);
+    const secondInvitation = invitations.find((inv: { technicianId: string }) => inv.technicianId === techB.id);
+    expect(firstInvitation).toBeTruthy();
+    expect(secondInvitation).toBeTruthy();
+    expect(firstInvitation.status).toBe('pending');
+    expect(secondInvitation.status).toBe('standby');
+    expect(secondInvitation.expiresAt).toBeNull();
+    const previewA = await get('/invitations/my', techA);
+    const previewB = await get('/invitations/my', techB);
+    expect(previewA.status).toBe(200);
+    expect(previewB.status).toBe(200);
+    expect(JSON.stringify(previewA.body)).toContain(booking.id);
+    expect(JSON.stringify(previewB.body)).not.toContain(booking.id);
+    expect(JSON.stringify(previewA.body)).not.toContain(customer.id);
+    expect(JSON.stringify(previewA.body)).not.toMatch(/PRIVATE_SYNTHETIC_ADDRESS_123|customerPhone|addressTextSnapshot|media|diagnosis/i);
+    const prematureB = await post(`/invitations/${secondInvitation.id}/respond`, techB, { action: 'ACCEPT' });
+    expect(prematureB.status).toBe(409);
+    expect(prematureB.body?.error?.code).toBe('INVITATION_ALREADY_TAKEN');
+    expect(JSON.stringify(prematureB.body)).not.toMatch(/PRIVATE_SYNTHETIC_ADDRESS_123|customerPhone|addressTextSnapshot|media|diagnosis/i);
+    const firstAccept = await post(`/invitations/${firstInvitation.id}/respond`, techA, { action: 'ACCEPT' });
+    expect(firstAccept.status).toBe(200);
+    const rejectedAccept = await post(`/invitations/${secondInvitation.id}/respond`, techB, { action: 'ACCEPT' });
+    expect(rejectedAccept.status).toBe(409);
     expect(rejectedAccept.body?.error?.code).toBe('INVITATION_ALREADY_TAKEN');
     expect(JSON.stringify(rejectedAccept.body)).not.toMatch(/PRIVATE_SYNTHETIC_ADDRESS_123|customerPhone|addressTextSnapshot|media|diagnosis/i);
-    const winner = a.status === 200 ? techA : techB;
-    const loser = a.status === 200 ? techB : techA;
-    const serviceOrder = unwrap((a.status === 200 ? a : b).body).serviceOrder;
+    const winner = techA;
+    const loser = techB;
+    const serviceOrder = unwrap(firstAccept.body).serviceOrder;
     expect(serviceOrder?.id).toBeTruthy();
     const orders = await database.getRepository('ServiceOrder').find({ where: { bookingId: booking.id } });
     const assignments = await database.getRepository('TechnicianAssignment').find({ where: { serviceOrderId: serviceOrder.id } });
@@ -231,16 +240,25 @@ describe('WEB-ACCEPT isolated real HTTP/JWT/PostgreSQL (three synthetic actors)'
       where: { bookingId: first.id },
     });
     expect(firstInvitations).toHaveLength(2);
+    const inviteA = firstInvitations.find((invite: { technicianId: string }) => invite.technicianId === techA.id);
+    const inviteB = firstInvitations.find((invite: { technicianId: string }) => invite.technicianId === techB.id);
+    expect(inviteA.status).toBe('pending');
+    expect(inviteB.status).toBe('standby');
     await database.getRepository('BookingInvitation').update(
-      { bookingId: first.id }, { expiresAt: new Date(Date.now() - 60_000) });
+      { id: inviteA.id }, { expiresAt: new Date(Date.now() - 60_000) });
     const inbox = await get('/invitations/my', techA);
     expect(inbox.status).toBe(200);
     expect(JSON.stringify(inbox.body)).not.toContain(first.id);
-    const expiredInvitations = await database.getRepository('BookingInvitation').find({
-      where: { bookingId: first.id },
-    });
-    expect(expiredInvitations.map((invite: { status: string }) => invite.status))
-      .toEqual(['expired', 'expired']);
+    const firstRoundInboxB = await get('/invitations/my', techB);
+    expect(firstRoundInboxB.status).toBe(200);
+    expect(JSON.stringify(firstRoundInboxB.body)).toContain(inviteB.id);
+    const afterFirstExpired = await database.getRepository('BookingInvitation').find({ where: { bookingId: first.id } });
+    expect(afterFirstExpired.find((invite: { id: string }) => invite.id === inviteA.id)?.status).toBe('expired');
+    expect(afterFirstExpired.find((invite: { id: string }) => invite.id === inviteB.id)?.status).toBe('pending');
+    await database.getRepository('BookingInvitation').update({ id: inviteB.id }, { expiresAt: new Date(Date.now() - 60_000) });
+    await get('/invitations/my', techB);
+    const expiredInvitations = await database.getRepository('BookingInvitation').find({ where: { bookingId: first.id } });
+    expect(expiredInvitations.every((invite: { status: string }) => invite.status === 'expired')).toBe(true);
     const lateAccept = await post(`/invitations/${firstInvitations.find((invite: { technicianId: string }) => invite.technicianId === techA.id)!.id}/respond`, techA,
       { action: 'ACCEPT' });
     expect(lateAccept.status).toBe(409);

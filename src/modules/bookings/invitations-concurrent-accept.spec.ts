@@ -12,7 +12,7 @@ function scenario(count: number) {
   const invitations = Array.from({ length: count }, (_, i) => ({
     id: `invitation-${i + 1}`, bookingId: booking.id, technicianId: `tech-${i + 1}`,
     priorityOrder: i + 1, status: InvitationStatus.PENDING,
-    expiresAt: new Date(Date.now() + 30 * 60000), respondedAt: null as Date | null,
+    expiresAt: new Date(Date.now() + 30 * 60000) as Date | null, respondedAt: null as Date | null,
   }));
   let serviceOrder: { id: string; bookingId: string; code: string; status: ServiceOrderStatus } | null = null;
   const assignments: Array<{ serviceOrderId: string; technicianId: string; isActive: boolean }> = [];
@@ -96,7 +96,38 @@ function scenario(count: number) {
 beforeEach(() => { vi.clearAllMocks(); });
 
 describe('BE-MATCH first valid Accept is the only winner', () => {
-  it.each([[1, 1], [3, 2], [5, 5]])('%i simultaneously pending invitations: technician %i wins; remaining cannot Accept', async (count, winner) => {
+  it('rejects priority #2 before #1 responds; after #1 declines #2 receives invitation and can Accept one SO', async () => {
+    const s = scenario(2);
+    s.invitations[1].status = InvitationStatus.STANDBY;
+    s.invitations[1].expiresAt = null;
+    await expect(s.service.respond('invitation-2', 'ACCEPT', s.actor(2))).rejects.toThrow();
+    expect(s.orderCreated).toBe(0);
+    expect(s.invitations[1].status).toBe(InvitationStatus.STANDBY);
+    await s.service.respond('invitation-1', 'DECLINE', s.actor(1));
+    expect(s.invitations.map(i => i.status)).toEqual([InvitationStatus.DECLINED, InvitationStatus.PENDING]);
+    expect(s.invitations[1].expiresAt).toBeInstanceOf(Date);
+    const result = await s.service.respond('invitation-2', 'ACCEPT', s.actor(2));
+    expect(result.serviceOrder?.id).toBe('service-order-1');
+    expect(s.orderCreated).toBe(1);
+    expect(s.assignments).toHaveLength(1);
+    expect(s.assignments[0].technicianId).toBe('tech-2');
+    await expect(s.service.respond('invitation-1', 'ACCEPT', s.actor(1))).rejects.toThrow();
+    expect(s.orderCreated).toBe(1);
+  });
+
+  it('rejects priority #2 while #1 is live; first Accept cancels standby #2 without inviting it', async () => {
+    const s = scenario(2);
+    s.invitations[1].status = InvitationStatus.STANDBY;
+    s.invitations[1].expiresAt = null;
+    const result = await s.service.respond('invitation-1', 'ACCEPT', s.actor(1));
+    expect(result.serviceOrder?.id).toBe('service-order-1');
+    expect(s.invitations.map(i => i.status)).toEqual([InvitationStatus.ACCEPTED, InvitationStatus.CANCELLED]);
+    await expect(s.service.respond('invitation-2', 'ACCEPT', s.actor(2))).rejects.toThrow();
+    expect(s.assignments).toHaveLength(1);
+    expect(s.orderCreated).toBe(1);
+  });
+
+  it.each([[1, 1], [3, 2], [5, 5]])('legacy multi-PENDING rows (%i): technician %i wins but no duplicate SO', async (count, winner) => {
     const s = scenario(count);
     const result = await s.service.respond(`invitation-${winner}`, 'ACCEPT', s.actor(winner));
     expect(result.serviceOrder?.id).toBe('service-order-1');

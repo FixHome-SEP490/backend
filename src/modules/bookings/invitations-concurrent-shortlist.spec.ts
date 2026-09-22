@@ -41,40 +41,43 @@ function scenario(status: BookingStatus = BookingStatus.SUBMITTED) {
 
 beforeEach(() => { vi.clearAllMocks(); });
 
-describe('BE-MATCH customer shortlist sends all selected invitations in one round', () => {
-  it.each([1, 3, 5])('activates %i distinct selected technicians with identical expiry', async count => {
+describe('BE-MATCH customer selects exactly two technicians in priority order', () => {
+  it('creates two ordered rows but sends an invitation only to priority #1', async () => {
     const s = scenario();
-    const selected = Array.from({ length: count }, (_, i) => `tech-${i + 1}`);
+    const selected = ['tech-2', 'tech-1']; // customer order is authoritative, not ranking.
     const result = await s.service.createShortlist('booking-1', selected, { id: 'customer-1', role: Role.CUSTOMER });
-    expect(result).toHaveLength(count);
-    expect(result.every(i => i.status === InvitationStatus.PENDING)).toBe(true);
+    expect(result).toHaveLength(2);
     expect(s.invites.map(i => i.technicianId)).toEqual(selected);
-    expect(s.invites.map(i => i.priorityOrder)).toEqual(selected.map((_id, i) => i + 1));
+    expect(s.invites.map(i => i.priorityOrder)).toEqual([1, 2]);
+    expect(s.invites.map(i => i.status)).toEqual([InvitationStatus.PENDING, InvitationStatus.STANDBY]);
+    expect(s.invites[0].expiresAt).toBeInstanceOf(Date);
+    expect(s.invites[1].expiresAt).toBeNull();
     expect(new Set(s.invites.map(i => i.groupId)).size).toBe(1);
-    expect(s.invites[0].groupId).toBeDefined();
-    expect(new Set(s.invites.map(i => i.expiresAt?.getTime())).size).toBe(1);
-    expect(s.invites.every(i => i.expiresAt instanceof Date)).toBe(true);
     expect(s.booking.status).toBe(BookingStatus.MATCHING);
-    expect(s.messaging.ensureConversation).toHaveBeenCalledTimes(count);
+    expect(s.messaging.ensureConversation).toHaveBeenCalledTimes(1);
+    expect(s.messaging.ensureConversation).toHaveBeenCalledWith(s.manager, s.booking, 'tech-2');
     expect(s.audit.logWithManager).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects a duplicate technician ID without creating an invitation', async () => {
-    const s = scenario();
-    await expect(s.service.createShortlist('booking-1', ['tech-1', 'tech-1'], { id: 'customer-1', role: Role.CUSTOMER })).rejects.toThrow();
-    expect(s.invites).toHaveLength(0);
-    expect(s.booking.status).toBe(BookingStatus.SUBMITTED);
-  });
+  it.each([{ selected: [] }, { selected: ['tech-1'] }, { selected: ['tech-1', 'tech-2', 'tech-3'] }, { selected: ['tech-1', 'tech-1'] }])(
+    'refuses other than two distinct chosen technician IDs ($selected)', async ({ selected }) => {
+      const s = scenario();
+      await expect(s.service.createShortlist('booking-1', selected, { id: 'customer-1', role: Role.CUSTOMER })).rejects.toThrow();
+      expect(s.invites).toHaveLength(0);
+      expect(s.booking.status).toBe(BookingStatus.SUBMITTED);
+    },
+  );
 
-  it('rejects unauthorized customer, cancelled booking, and missing technician eligibility', async () => {
+  it('refuses unauthorized customer, cancelled booking and ineligible selected technician', async () => {
     const s = scenario();
-    await expect(s.service.createShortlist('booking-1', ['tech-1'], { id: 'someone-else', role: Role.CUSTOMER })).rejects.toThrow();
-    await expect(s.service.createShortlist('booking-1', ['tech-1'], { id: 'customer-1', role: Role.TECHNICIAN })).rejects.toThrow();
+    const selected = ['tech-1', 'tech-2'];
+    await expect(s.service.createShortlist('booking-1', selected, { id: 'someone-else', role: Role.CUSTOMER })).rejects.toThrow();
+    await expect(s.service.createShortlist('booking-1', selected, { id: 'customer-1', role: Role.TECHNICIAN })).rejects.toThrow();
     s.booking.status = BookingStatus.CANCELLED;
-    await expect(s.service.createShortlist('booking-1', ['tech-1'], { id: 'customer-1', role: Role.CUSTOMER })).rejects.toThrow();
+    await expect(s.service.createShortlist('booking-1', selected, { id: 'customer-1', role: Role.CUSTOMER })).rejects.toThrow();
     s.booking.status = BookingStatus.SUBMITTED;
     vi.mocked(technicianEligibility).mockResolvedValueOnce({ eligible: false, reason: 'Skill not verified' });
-    await expect(s.service.createShortlist('booking-1', ['tech-1'], { id: 'customer-1', role: Role.CUSTOMER })).rejects.toThrow();
+    await expect(s.service.createShortlist('booking-1', selected, { id: 'customer-1', role: Role.CUSTOMER })).rejects.toThrow();
     expect(s.invites).toHaveLength(0);
   });
 });
