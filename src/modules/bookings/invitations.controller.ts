@@ -41,7 +41,10 @@ export class InvitationsController {
   @RequirePermission('invitation:respond')
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Respond to invitation (ACCEPT / DECLINE)' })
+  @ApiOperation({
+    summary: 'Technician: accept or decline the current invitation',
+    description: 'Only the invited technician with a live PENDING invitation may respond. ACCEPT creates one ServiceOrder and cancels standby. DECLINE activates the next eligible technician in the customer-selected order. An expired, standby or already-taken invitation cannot be accepted.',
+  })
   async respond(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: InvitationResponseDto,

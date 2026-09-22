@@ -1,4 +1,5 @@
 import { Transform } from 'class-transformer';
+import { ApiProperty } from '@nestjs/swagger';
 import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsDateString, IsEnum, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
 import { UrgencyLevel } from '../../shared/enums';
 
@@ -60,15 +61,20 @@ export class RebookDto extends ScheduleBookingDto {
 }
 
 export class ShortlistDto {
+  @ApiProperty({
+    type: [String], minItems: 2, maxItems: 2, uniqueItems: true,
+    description: 'Exactly two distinct technician USER IDs in customer priority order. Only #1 is invited initially; #2 remains STANDBY until #1 declines or expires. Do not send TechnicianProfile IDs.',
+    example: ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'],
+  })
   @IsArray() @ArrayMinSize(2) @ArrayMaxSize(2) @ArrayUnique()
   @Matches(UUID_REGEX, { each: true, message: 'Each technician ID must be a valid UUID' })
   technicianIds: string[];
 }
 
 export class InvitationResponseDto {
+  @ApiProperty({ enum: ['ACCEPT', 'DECLINE'], example: 'DECLINE', description: 'Only a live PENDING invitation may be answered. DECLINE activates the next eligible standby technician; ACCEPT creates one ServiceOrder.' })
   @IsIn(['ACCEPT', 'DECLINE']) action: 'ACCEPT' | 'DECLINE';
 }
-
 export function validBookingWindow(start: string | Date, end: string | Date): boolean {
   const from = new Date(start).getTime();
   const to = new Date(end).getTime();
