@@ -40,7 +40,7 @@ export class BookingsController {
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('booking:create')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Create a new booking' })
+  @ApiOperation({ summary: 'Customer: create a Booking', description: 'Send catalog serviceId, saved addressId, description and ISO 8601 arrival window. photoUploadIds are optional PHOTO IDs, not technician IDs. Creates a submitted Booking, not a ServiceOrder or payment.' })
   async create(@Body() dto: CreateBookingDto, @Req() req: { user: { id: string; role: string } }) {
     const booking = await this.bookingsService.create(dto, req.user);
     return { data: toBookingResponse(booking) };
@@ -190,7 +190,7 @@ export class BookingsController {
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('booking:create')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Reschedule booking preferred date/time window' })
+  @ApiOperation({ summary: 'Customer: adjust pre-accept Booking schedule or description', description: 'Use preferredStartAt/preferredEndAt and optional description. An unchanged arrival window with description-only edits retains the invitation round; an actual time change before Accept can reset matching. Matched/linked ServiceOrder is not freely editable.' })
   async reschedule(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: ScheduleBookingDto,
