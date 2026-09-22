@@ -49,7 +49,7 @@ export function registerDev1Cases(context: () => Context) {
     }
     async function accept(f: Awaited<ReturnType<typeof fixture>>, booking?: any) {
       booking ??= await f.create();
-      await post(`/bookings/${booking.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id] }).expect(201);
+      await post(`/bookings/${booking.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.spare.user.id] }).expect(201);
       const invitation = await context().db.getRepository('BookingInvitation').findOneByOrFail({ bookingId: booking.id, status: 'pending' });
       const result = unwrap((await post(`/invitations/${invitation.id}/respond`, f.tech, { action: 'ACCEPT' }).expect(200)).body);
       return { order: result.serviceOrder, invitation, booking };
@@ -79,7 +79,7 @@ export function registerDev1Cases(context: () => Context) {
 
     it('serializes duplicate Accept and rejects overlapping assignments across bookings', async () => {
       const f = await fixture(), b = await f.create(), b2 = await f.create();
-      for (const booking of [b, b2]) await post(`/bookings/${booking.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id] }).expect(201);
+      for (const booking of [b, b2]) await post(`/bookings/${booking.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.spare.user.id] }).expect(201);
       const invitations = await context().db.getRepository('BookingInvitation').find({ where: { technicianId: f.tech.user.id, status: 'pending' } });
       const results = await Promise.all(invitations.map(i => post(`/invitations/${i.id}/respond`, f.tech, { action: 'ACCEPT' })));
       expect(results.filter(r => r.status === 200)).toHaveLength(1);
@@ -99,8 +99,8 @@ export function registerDev1Cases(context: () => Context) {
       expect(second.technicianId).toBe(f.spare.user.id);
       await repo.update(second.id, { expiresAt: new Date(Date.now() - 1000) });
       expect(unwrap((await get(`/bookings/${b.id}`, f.owner).expect(200)).body).status).toBe('closed');
-      await post(`/bookings/${b.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id] }).expect(201);
-      expect(await repo.count({ where: { bookingId: b.id } })).toBe(3);
+      await post(`/bookings/${b.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.spare.user.id] }).expect(201);
+      expect(await repo.count({ where: { bookingId: b.id } })).toBe(4);
       expect(await context().db.getRepository('CancellationStrike').count({ where: { userId: f.tech.user.id } })).toBe(0);
     });
 
@@ -166,7 +166,7 @@ export function registerDev1Cases(context: () => Context) {
       await post(path + '/reviews', f.owner, { rating: 5, comment: 'Complete' }).expect(201);
       denied(await post(path + '/reviews', f.owner, { rating: 5 }));
       const newBooking = await f.create();
-      denied(await post(`/bookings/${newBooking.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id] }));
+      denied(await post(`/bookings/${newBooking.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.spare.user.id] }));
       await context().db.getRepository('Service').update(f.service.id, { fixedPrice: 250000 });
       const rebooked = unwrap((await post(`/bookings/${newBooking.id}/rebook`, f.owner, { preferredStartAt: f.body.preferredStartAt, preferredEndAt: f.body.preferredEndAt }).expect(201)).body);
       expect(Number(rebooked.fixedUnitPriceSnapshot)).toBe(250000);

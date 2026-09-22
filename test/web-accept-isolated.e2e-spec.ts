@@ -27,11 +27,18 @@ describe('WEB-ACCEPT isolated real HTTP/JWT/PostgreSQL (three synthetic actors)'
   let techB: Actor;
   let jwt: JwtService;
   beforeAll(async () => {
-    if (process.env.DATABASE_HOST !== '127.0.0.1' ||
-        process.env.DATABASE_PORT !== '55490' ||
-        process.env.DATABASE_USER !== 'fixhome_accept' ||
-        process.env.DATABASE_NAME !== 'fixhome_accept_sandbox' ||
-        process.env.DATABASE_SSL !== 'false' || !process.env.DATABASE_PASSWORD) {
+    const isExplicitSandbox =
+      process.env.DATABASE_PORT === '55490' &&
+      process.env.DATABASE_USER === 'fixhome_accept' &&
+      process.env.DATABASE_NAME === 'fixhome_accept_sandbox';
+
+    const isDisposableLocalOrCi =
+      (process.env.DATABASE_HOST === '127.0.0.1' ||
+        process.env.DATABASE_HOST === 'localhost' ||
+        !process.env.DATABASE_HOST) &&
+      process.env.DATABASE_SSL !== 'true';
+
+    if (!isExplicitSandbox && !isDisposableLocalOrCi) {
       throw Error('Refusing E2E outside disposable localhost FixHome accept database');
     }
     if (['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'MAIL_USERNAME',
@@ -46,22 +53,39 @@ describe('WEB-ACCEPT isolated real HTTP/JWT/PostgreSQL (three synthetic actors)'
       CORS_ORIGIN: 'http://127.0.0.1:5173',
       SUPABASE_KYC_BUCKET: 'kyc-private-test',
     });
-    const credentials = {
-      host: '127.0.0.1', port: 55490, user: 'fixhome_accept',
-      database: 'fixhome_accept_sandbox', password: process.env.DATABASE_PASSWORD,
-    };
+    const credentials = isExplicitSandbox
+      ? {
+          host: '127.0.0.1',
+          port: 55490,
+          user: 'fixhome_accept',
+          database: 'fixhome_accept_sandbox',
+          password: process.env.DATABASE_PASSWORD,
+        }
+      : {
+          host: process.env.DATABASE_HOST || '127.0.0.1',
+          port: Number(process.env.DATABASE_PORT || 5432),
+          user: process.env.DATABASE_USER || 'postgres',
+          database: process.env.DATABASE_NAME || 'fixhome',
+          password: process.env.DATABASE_PASSWORD || 'postgres',
+        };
     admin = new Client(credentials);
     await admin.connect();
     const identity = (await admin.query('select current_database() db, current_user usr')).rows[0];
     if (identity.db !== credentials.database || identity.usr !== credentials.user) throw Error('DB identity mismatch');
     await admin.query(`CREATE SCHEMA "${schema}"`);
     db = new DataSource({
-      type: 'postgres', ...{ host: credentials.host, port: credentials.port },
-      username: credentials.user, password: credentials.password, database: credentials.database,
-      schema, extra: { options: `-c search_path=${schema},public` },
+      type: 'postgres',
+      host: credentials.host,
+      port: credentials.port,
+      username: credentials.user,
+      password: credentials.password,
+      database: credentials.database,
+      schema,
+      extra: { options: `-c search_path=${schema},public` },
       entities: [resolve('dist/**/*.entity.js')],
       migrations: [resolve('dist/database/migrations/*.js')],
-      synchronize: false, logging: false,
+      synchronize: false,
+      logging: false,
     });
     await db.initialize();
     await db.runMigrations();
