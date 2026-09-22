@@ -72,6 +72,7 @@ describe('WEB-ACCEPT isolated real HTTP/JWT/PostgreSQL (three synthetic actors)'
     await admin.connect();
     const identity = (await admin.query('select current_database() db, current_user usr')).rows[0];
     if (identity.db !== credentials.database || identity.usr !== credentials.user) throw Error('DB identity mismatch');
+    await admin.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;`);
     await admin.query(`CREATE SCHEMA "${schema}"`);
     db = new DataSource({
       type: 'postgres',
