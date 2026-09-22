@@ -10,7 +10,7 @@ export class FixHomePartCatalog1725898000000 implements MigrationInterface {
   name = 'FixHomePartCatalog1725898000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
+    await queryRunner.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;`);
 
     await queryRunner.query(`
       CREATE TABLE IF NOT EXISTS "fixhome_parts" (

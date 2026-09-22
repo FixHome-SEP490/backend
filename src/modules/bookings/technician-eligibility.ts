@@ -9,44 +9,70 @@ import { TechnicianServiceArea } from '../technicians/entities/technician-servic
 import { CommissionDue } from '../service-orders/entities/commission-due.entity';
 import { AccountStatus, CommissionDueStatus, Role, VerificationStatus } from '../../shared/enums';
 import { resolveServiceArea } from '../../shared/utils/administrative-areas';
+import { hasAvailableArrival, type ArrivalInterval } from './arrival-window';
 
 /** Same authority at discovery, shortlist, activation and Accept. IDs here are User IDs. */
 export async function technicianEligibility(
   manager: EntityManager, technicianId: string, booking: Booking,
   excludeOrderId?: string,
+  options?: { allowPausedExistingInvitation?: boolean },
 ): Promise<{ eligible: boolean; reason?: string }> {
   const fail = (reason: string) => ({ eligible: false, reason });
   const user = await manager.findOneBy(User, { id: technicianId });
   if (!user || user.role !== Role.TECHNICIAN || user.status !== AccountStatus.ACTIVE) return fail('Technician account is not active');
   const profile = await manager.findOneBy(TechnicianProfile, { userId: technicianId });
   if (!profile || profile.verificationStatus !== VerificationStatus.VERIFIED) return fail('Technician is not verified');
-  if (!profile.isAvailable || (profile.workSuspendedUntil && profile.workSuspendedUntil > new Date())) return fail('Technician is unavailable or suspended');
+  if (profile.workSuspendedUntil && profile.workSuspendedUntil > new Date()) return fail('Technician is unavailable or suspended');
+  if (!profile.isAvailable && !options?.allowPausedExistingInvitation) return fail('Technician is unavailable or paused');
   if (!await manager.findOneBy(TechnicianSkill, { technicianId: profile.id, serviceId: booking.serviceId, isActive: true, verificationStatus: VerificationStatus.VERIFIED })) return fail('Service is not offered or not yet verified');
   if (await manager.count(CommissionDue, { where: { technicianId, status: CommissionDueStatus.PENDING } })) return fail('Active unpaid PlatformDue');
   if (!booking.preferredStartAt || !booking.preferredEndAt) return fail('Booking time window is missing');
   const start = new Date(booking.preferredStartAt);
   const end = new Date(booking.preferredEndAt);
-  if (!(start < end) || end <= new Date()) return fail('Booking time window is invalid or expired');
-  // Working schedules are local Vietnam wall-clock times (UTC+7); intervals must fit one day.
-  const localStart = new Date(start.getTime() + 7 * 3600000);
-  const localEnd = new Date(end.getTime() + 7 * 3600000);
-  if (localStart.toISOString().slice(0, 10) !== localEnd.toISOString().slice(0, 10)) return fail('Time window crosses working days');
-  const schedules = await manager.find(TechnicianSchedule, { where: { technicianId: profile.id, dayOfWeek: localStart.getUTCDay() } });
-  const from = localStart.toISOString().slice(11, 16);
-  const to = localEnd.toISOString().slice(11, 16);
-  if (!schedules.some(s => s.startTime.slice(0, 5) <= from && s.endTime.slice(0, 5) >= to)) return fail('Outside working schedule');
+  const now = Date.now();
+  if (!(start < end) || end.getTime() <= now) return fail('Booking time window is invalid or expired');
+  const arrivalStart = new Date(Math.max(start.getTime(), now));
+  const schedules = await manager.find(TechnicianSchedule, { where: { technicianId: profile.id } });
   const timeOff = await manager.createQueryBuilder(TechnicianTimeOff, 't')
     .where('t.technicianId = :id', { id: profile.id })
-    .andWhere('t.startAt < :end AND t.endAt > :start', { start, end }).getCount();
-  if (timeOff) return fail('Technician has time off');
+    .andWhere('t.startAt < :end AND t.endAt > :start', { start: arrivalStart, end }).getMany();
   const conflict = await manager.createQueryBuilder('technician_assignments', 'a')
+    .select('b.preferred_start_at', 'busyStart')
+    .addSelect('b.preferred_end_at', 'busyEnd')
     .innerJoin('service_orders', 'o', 'o.id = a.service_order_id')
     .innerJoin('bookings', 'b', 'b.id = o.booking_id')
     .where('a.technician_id = :id AND a.is_active = true', { id: technicianId })
     .andWhere('o.status NOT IN (:...terminal)', { terminal: ['completed', 'cancelled'] })
-    .andWhere('(b.preferred_start_at IS NULL OR b.preferred_end_at IS NULL OR (b.preferred_start_at < :end AND b.preferred_end_at > :start))', { start, end });
+    .andWhere('(b.preferred_start_at IS NULL OR b.preferred_end_at IS NULL OR (b.preferred_start_at < :end AND b.preferred_end_at > :start))', { start: arrivalStart, end });
   if (excludeOrderId) conflict.andWhere('o.id != :excludeOrderId', { excludeOrderId });
-  if (await conflict.getCount()) return fail('Assignment schedule conflict');
+  const assignments = await conflict.getRawMany<{
+    busyStart: Date | string | null;
+    busyEnd: Date | string | null;
+  }>();
+  if (assignments.some(assignment => assignment.busyStart == null || assignment.busyEnd == null)) {
+    return fail('Assignment schedule conflict');
+  }
+
+  const window: ArrivalInterval = { start: arrivalStart, end };
+  if (!hasAvailableArrival(window, schedules, [])) return fail('Outside working schedule');
+  const timeOffIntervals = timeOff.map(interval => ({
+    start: interval.startAt,
+    end: interval.endAt,
+  }));
+  const assignmentIntervals = assignments.map(assignment => ({
+    start: assignment.busyStart instanceof Date ? assignment.busyStart : new Date(assignment.busyStart!),
+    end: assignment.busyEnd instanceof Date ? assignment.busyEnd : new Date(assignment.busyEnd!),
+  }));
+  const unavailable = [...timeOffIntervals, ...assignmentIntervals];
+  if (!hasAvailableArrival(window, schedules, unavailable)) {
+    if (timeOffIntervals.length && !hasAvailableArrival(window, schedules, timeOffIntervals)) {
+      return fail('Technician has time off');
+    }
+    if (assignmentIntervals.length && !hasAvailableArrival(window, schedules, assignmentIntervals)) {
+      return fail('Assignment schedule conflict');
+    }
+    return fail('No available arrival interval');
+  }
   if (!booking.provinceSnapshot && !booking.districtSnapshot && !booking.addressId) return fail('Service area snapshot is missing');
   const targetArea = resolveServiceArea({
     province: booking.provinceSnapshot,

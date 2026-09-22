@@ -1,4 +1,5 @@
 import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository, In, LessThanOrEqual } from 'typeorm';
 import { ServiceOrder } from './entities/service-order.entity';
@@ -17,6 +18,7 @@ import { AdditionalCostItem } from './entities/additional-cost-item.entity';
 import { WarrantyClaim } from './entities/warranty-claim.entity';
 import { CustomerServiceConfirmation } from './entities/customer-service-confirmation.entity';
 import { BookingInvitation } from '../bookings/entities/booking-invitation.entity';
+import { BookingInvitationGroup } from '../bookings/entities/booking-invitation-group.entity';
 import { activateNextInvitation } from '../bookings/activate-next-invitation';
 import { Booking } from '../bookings/entities/booking.entity';
 import { User } from '../users/entities/user.entity';
@@ -61,6 +63,7 @@ import type { EntityManager } from 'typeorm';
 import { OrderEvidenceStorage, EvidenceFile } from '../media/order-evidence-storage.service';
 import { expireAdditionalCosts } from './expire-additional-costs';
 import { authorizeOrder } from './order-access';
+import { historicalOrderSummary, type HistoricalOrderSummary } from './historical-order-summary';
 
 @Injectable()
 export class ServiceOrdersService {
@@ -152,7 +155,7 @@ export class ServiceOrdersService {
     userId: string,
     role: string,
     options: { page?: number; limit?: number; status?: ServiceOrderStatus },
-  ): Promise<{ data: ServiceOrder[]; total: number }> {
+  ): Promise<{ data: (ServiceOrder | HistoricalOrderSummary)[]; total: number }> {
     await this.cancelOverdueOrders();
     const page = options.page || 1;
     const limit = Math.min(options.limit || 20, 100);
@@ -168,6 +171,8 @@ export class ServiceOrdersService {
         'ta',
         'ta.service_order_id = o.id',
       ).where('ta.technician_id = :userId', { userId });
+    } else {
+      throw new ForbiddenException('Order list access denied');
     }
 
     if (options.status) {
@@ -179,17 +184,37 @@ export class ServiceOrdersService {
       .take(limit);
 
     const [data, total] = await qb.getManyAndCount();
-    return { data: await Promise.all(data.map(order => this.presentOrder(order))), total };
+    return {
+      data: await Promise.all(data.map(async order => {
+        if (role !== Role.TECHNICIAN) return this.presentOrder(order);
+        const assignment = await this.dataSource.manager.findOneBy(TechnicianAssignment, {
+          serviceOrderId: order.id, technicianId: userId, isActive: true,
+        });
+        return assignment ? this.presentOrder(order) : historicalOrderSummary(order);
+      })),
+      total,
+    };
   }
 
   async findById(
     id: string,
     actor: { id: string; role: string },
-  ): Promise<ServiceOrder> {
+  ): Promise<ServiceOrder | HistoricalOrderSummary> {
     await this.cancelOverdueOrders();
     const order = await this.orderRepo.findOneBy({ id });
     if (!order) {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Order not found');
+    }
+    if (actor.role === Role.TECHNICIAN) {
+      const active = await this.dataSource.manager.findOneBy(TechnicianAssignment, {
+        serviceOrderId: id, technicianId: actor.id, isActive: true,
+      });
+      if (active) return this.presentOrder(order);
+      const historical = await this.dataSource.manager.findOneBy(TechnicianAssignment, {
+        serviceOrderId: id, technicianId: actor.id,
+      });
+      if (historical) return historicalOrderSummary(order);
+      throw new ForbiddenException('Order not found or access denied');
     }
     await this.checkOrderAccess(order, actor);
     return this.presentOrder(order);
@@ -343,7 +368,11 @@ export class ServiceOrdersService {
         // Append a fresh invitation round; the original dispatch history stays immutable.
         const remaining = previous.filter(inv => inv.priorityOrder > last && inv.status === InvitationStatus.CANCELLED);
         const offset = Math.max(0, ...previous.map(inv => inv.priorityOrder));
-        for (const [index, candidate] of remaining.entries()) await manager.save(BookingInvitation, manager.create(BookingInvitation, { bookingId: booking.id, technicianId: candidate.technicianId, priorityOrder: offset + index + 1, status: InvitationStatus.STANDBY, invitedAt: new Date(), expiresAt: null }));
+        const group = remaining.length > 0
+          ? manager.create(BookingInvitationGroup, { id: randomUUID(), bookingId: booking.id })
+          : null;
+        if (group) await manager.save(group);
+        for (const [index, candidate] of remaining.entries()) await manager.save(BookingInvitation, manager.create(BookingInvitation, { groupId: group!.id, bookingId: booking.id, technicianId: candidate.technicianId, priorityOrder: offset + index + 1, status: InvitationStatus.STANDBY, invitedAt: new Date(), expiresAt: null }));
         booking.status = BookingStatus.MATCHING;
         await manager.save(booking);
         await activateNextInvitation(manager, booking, await this.configService.getInt('matching.invitation_ttl_minutes', 30));

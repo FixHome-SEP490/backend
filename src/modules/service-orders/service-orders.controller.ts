@@ -19,6 +19,8 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import type { EvidenceFile } from '../media/order-evidence-storage.service';
 import {
   ApiBadRequestResponse,
+  ApiBody,
+  ApiConsumes,
   ApiBearerAuth,
   ApiConflictResponse,
   ApiNotFoundResponse,
@@ -133,7 +135,7 @@ export class ServiceOrdersController {
   @RequirePermission('arrival_checkin:create')
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Technician arrival check-in with GPS verification' })
+  @ApiOperation({ summary: 'Technician: GPS arrival check-in', description: 'Only the assigned technician while EN_ROUTE. Inspect result: valid, low_accuracy or out_of_geofence. Only valid permits BEFORE evidence. A successful HTTP response alone is not proof of valid arrival.' })
   async checkIn(
     @Param('id', ParseUUIDPipe) id: string,
     @Body()
@@ -165,7 +167,17 @@ export class ServiceOrdersController {
   @RequirePermission('evidence:upload')
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Upload repair evidence (BEFORE / AFTER / ADDITIONAL)' })
+  @ApiOperation({ summary: 'Technician: upload BEFORE / AFTER / ADDITIONAL evidence', description: 'Multipart/form-data with one image file (max 10 MB) and lowercase type. BEFORE requires a valid check-in while EN_ROUTE; AFTER and ADDITIONAL are only during UNDER_REPAIR before completion request. If the storage provider is unavailable, the API may return 503: an image picker alone is not successful upload.' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({ schema: {
+    type: 'object', required: ['type', 'file'],
+    properties: {
+      type: { type: 'string', enum: ['before', 'after', 'additional'], example: 'before' },
+      file: { type: 'string', format: 'binary', description: 'One JPEG, PNG or WebP image up to 10 MB.' },
+      note: { type: 'string', maxLength: 2000, description: 'Optional short evidence note.' },
+      capturedAt: { type: 'string', format: 'date-time', description: 'Optional ISO 8601 capture timestamp.' },
+    },
+  } })
   async uploadEvidence(
     @Param('id', ParseUUIDPipe) id: string,
     @Body()
@@ -217,7 +229,8 @@ export class ServiceOrdersController {
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Technician requests completion (work done, requires AFTER evidence)',
+    summary: 'Technician requests completion (requires AFTER evidence)',
+    description: 'Requires UNDER_REPAIR and required evidence/approvals. Generates invoice and records the completion request, but does NOT immediately change status to COMPLETED.',
   })
   async requestCompletion(
     @Param('id', ParseUUIDPipe) id: string,
@@ -238,7 +251,8 @@ export class ServiceOrdersController {
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Customer confirms completion (checks payment gate before COMPLETED)',
+    summary: 'Customer confirms work; verified payment still required',
+    description: 'Only the booking customer can confirm after the technician requested completion. COMPLETED requires both confirmation and a verified paid invoice/order; this endpoint does not itself charge Wallet or mark payment PAID.',
   })
   async confirmCompletion(
     @Param('id', ParseUUIDPipe) id: string,

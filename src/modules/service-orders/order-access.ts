@@ -31,7 +31,7 @@ export async function authorizeOrder(
     const assignment = await manager.findOneBy(TechnicianAssignment, {
       serviceOrderId: orderId,
       technicianId: actor.id,
-      ...(command === 'technician' ? { isActive: true } : {}),
+      isActive: true,
     });
     if (assignment) return order;
   }
