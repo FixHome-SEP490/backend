@@ -3,41 +3,50 @@ import { resolveServiceArea } from '../../shared/utils/administrative-areas';
 import { UUID_REGEX } from './booking.dto';
 
 describe('Service Area Resolution & Shortlist Integrity', () => {
-  it('resolves HCMC District 1 names to standard codes 79 and 760 with legacy aliases', () => {
+  it('resolves HCMC ward names (post-2025 reform, no district layer) to standard codes', () => {
     const res = resolveServiceArea({
       province: 'TP. Hồ Chí Minh',
-      district: 'Quận 1',
+      district: 'Phường Bến Thành',
     });
 
     expect(res.provinceCode).toBe('79');
-    expect(res.districtCode).toBe('760');
-    expect(res.provinceName).toBe('TP. Hồ Chí Minh');
-    expect(res.districtName).toBe('Quận 1');
-    expect(res.districtAliasCodes).toContain('760');
-    expect(res.districtAliasCodes).toContain('7901');
-    expect(res.districtAliasCodes).toContain('q1');
+    expect(res.districtCode).toBe('26743');
+    expect(res.provinceName).toBe('Thành phố Hồ Chí Minh');
+    expect(res.districtName).toBe('Phường Bến Thành');
+    expect(res.districtAliasCodes).toContain('26743');
   });
 
-  it('resolves Hanoi Ba Dinh district correctly', () => {
+  it('is diacritic/spelling tolerant (dataset "Hoà" vs geocoder "Hòa")', () => {
+    const res = resolveServiceArea({
+      province: 'Thành phố Hồ Chí Minh',
+      district: 'Phường Đông Hòa',
+    });
+
+    expect(res.provinceCode).toBe('79');
+    expect(res.districtCode).toBe('25951');
+    expect(res.districtName).toBe('Phường Đông Hoà');
+  });
+
+  it('resolves Hanoi Ba Dinh ward correctly', () => {
     const res = resolveServiceArea({
       province: 'Hà Nội',
-      district: 'Quận Ba Đình',
+      district: 'Phường Ba Đình',
     });
 
     expect(res.provinceCode).toBe('01');
-    expect(res.districtCode).toBe('001');
-    expect(res.districtName).toBe('Quận Ba Đình');
+    expect(res.districtCode).toBe('00004');
+    expect(res.districtName).toBe('Phường Ba Đình');
   });
 
   it('handles code-first inputs without mangling', () => {
     const res = resolveServiceArea({
       provinceCode: '79',
-      districtCode: '760',
+      districtCode: '26743',
     });
 
     expect(res.provinceCode).toBe('79');
-    expect(res.districtCode).toBe('760');
-    expect(res.districtName).toBe('Quận 1');
+    expect(res.districtCode).toBe('26743');
+    expect(res.districtName).toBe('Phường Bến Thành');
   });
 
   it('preserves unmapped/custom province and district codes', () => {
