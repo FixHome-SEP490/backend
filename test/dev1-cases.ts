@@ -39,7 +39,7 @@ export function registerDev1Cases(context: () => Context) {
         const profile = await db.getRepository('TechnicianProfile').findOneByOrFail({ userId: actor.user.id });
         await db.getRepository('TechnicianProfile').update(profile.id, { verificationStatus: 'verified', isAvailable: true });
         await save('TechnicianSkill', { technicianId: profile.id, serviceId: service.id, listedLaborPrice: 100000, verificationStatus: 'verified' });
-        await save('TechnicianServiceArea', { technicianId: profile.id, provinceCode: 'P1', districtCode: 'D1' });
+        await save('Address', { userId: actor.user.id, line1: 'Tech shop', district: 'D1', province: 'P1', lat: 10.77, lng: 106.69, isDefault: true });
         for (let dayOfWeek = 0; dayOfWeek < 7; dayOfWeek++) await save('TechnicianSchedule', { technicianId: profile.id, dayOfWeek, startTime: '08:00', endTime: '18:00' });
       }
       const start = new Date(); start.setUTCDate(start.getUTCDate() + 2); start.setUTCHours(1, 0, 0, 0);

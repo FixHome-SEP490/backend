@@ -5,6 +5,7 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Body,
   Param,
   Query,
@@ -216,6 +217,21 @@ export class ServiceOrdersController {
   ) {
     const evidence = await this.serviceOrdersService.getEvidence(id, req.user);
     return { data: evidence };
+  }
+
+  @Delete('service-orders/:id/evidence/:evidenceId')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('evidence:upload')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Technician: delete evidence photo' })
+  async deleteEvidence(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('evidenceId', ParseUUIDPipe) evidenceId: string,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    await this.serviceOrdersService.deleteEvidence(id, evidenceId, req.user);
+    return { data: { success: true } };
   }
 
   @Post('service-orders/:id/start-repair')

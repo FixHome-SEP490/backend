@@ -104,6 +104,7 @@ const makeFinanceService = (options: {
     auditLogService as any,
     verificationPort as any,
     nestConfigService as any,
+    {} as any,
   );
 
   return {

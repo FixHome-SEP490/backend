@@ -27,12 +27,13 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionGuard, RolesGuard } from '../../common/guards';
 import { RequirePermission, Roles } from '../../common/decorators';
 import { Role } from '../../shared/enums';
-import { IsBoolean, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { IsBoolean, IsInt, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 
 export class UpdateTechnicianProfileDto {
   @IsOptional() @IsString() @MaxLength(2000) bio?: string;
   @IsOptional() @IsBoolean() isAvailable?: boolean;
   @IsOptional() @IsInt() @Min(0) @Max(80) yearsExperience?: number;
+  @IsOptional() @IsNumber() @Min(1) @Max(100) serviceRadiusKm?: number;
 }
 import {
   TechniciansService,

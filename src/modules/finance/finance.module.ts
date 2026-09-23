@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { HttpModule } from '@nestjs/axios';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuditLogModule } from '../audit-log/audit-log.module';
 import { SupportCasesModule } from '../support-cases/support-cases.module';
@@ -20,6 +21,7 @@ import { UnconfiguredPaymentVerificationAdapter } from './unconfigured-payment-v
 
 @Module({
   imports: [
+    HttpModule,
     AuditLogModule,
     SupportCasesModule,
     TypeOrmModule.forFeature([

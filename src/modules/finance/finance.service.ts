@@ -1,7 +1,9 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
+import { firstValueFrom, timeout } from 'rxjs';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes, FINANCE_COMMISSION_RATE } from '../../shared/constants';
@@ -52,7 +54,7 @@ import {
 } from './dto';
 import { PaymentVerificationPort, PAYMENT_VERIFICATION_PORT } from './payment-verification.port';
 import { SupportCasesService } from '../support-cases/support-cases.service';
-import { buildPaymentUrl, verifySignature } from './vnpay/vnpay.util';
+import { buildPaymentUrl, buildQueryDrRequest, verifySignature } from './vnpay/vnpay.util';
 
 export interface FinanceActor {
   id: string;
@@ -61,6 +63,8 @@ export interface FinanceActor {
 
 @Injectable()
 export class FinanceService {
+  private readonly logger = new Logger(FinanceService.name);
+
   constructor(
     @InjectRepository(Invoice)
     private readonly invoiceRepository: Repository<Invoice>,
@@ -85,6 +89,7 @@ export class FinanceService {
     @Inject(PAYMENT_VERIFICATION_PORT)
     private readonly paymentVerificationPort: PaymentVerificationPort,
     private readonly config: ConfigService,
+    private readonly httpService: HttpService,
   ) {}
 
   async getInvoice(
@@ -348,24 +353,71 @@ export class FinanceService {
     return { RspCode: '00', Message: 'Confirm Success' };
   }
 
-  /** Browser return leg — display only, never mutates payment/invoice state. */
+  /**
+   * Browser return leg. Does not trust the redirect alone to mark anything paid — but
+   * since IPN is an async webhook that a non-public backend (e.g. localhost in local
+   * dev, or a slow network in prod) may never receive, this also makes one best-effort
+   * server-to-server "querydr" call to VNPay to reconcile the payment immediately, using
+   * the exact same `applyVerification` authority path as the IPN handler above.
+   */
   async handleVnpayReturn(
     query: Record<string, string>,
-  ): Promise<{ ok: boolean; invoiceId: string | null }> {
+  ): Promise<{ ok: boolean; invoiceId: string | null; serviceOrderId: string | null }> {
     const hashSecret = this.config.get<string>('VNPAY_HASH_SECRET');
     if (!hashSecret || !verifySignature(query, hashSecret)) {
-      return { ok: false, invoiceId: null };
+      return { ok: false, invoiceId: null, serviceOrderId: null };
     }
     const payment = await this.paymentRepository.findOne({
       where: { idempotencyKey: query.vnp_TxnRef, provider: 'vnpay' },
     });
     if (!payment) {
-      return { ok: false, invoiceId: null };
+      return { ok: false, invoiceId: null, serviceOrderId: null };
     }
+    if (query.vnp_ResponseCode === '00' && payment.status === PaymentAttemptStatus.PENDING) {
+      await this.reconcileVnpayPayment(payment, hashSecret).catch((error) => {
+        this.logger.warn(`VNPay querydr reconciliation failed: ${(error as Error)?.message}`);
+      });
+    }
+    const invoice = payment.invoiceId
+      ? await this.invoiceRepository.findOneBy({ id: payment.invoiceId })
+      : null;
     return {
       ok: query.vnp_ResponseCode === '00',
       invoiceId: payment.invoiceId ?? null,
+      serviceOrderId: invoice?.serviceOrderId ?? null,
     };
+  }
+
+  /** Best-effort synchronous reconciliation for the return leg; IPN remains authoritative for async delivery. */
+  private async reconcileVnpayPayment(payment: Payment, hashSecret: string): Promise<void> {
+    const tmnCode = this.config.get<string>('VNPAY_TMN_CODE');
+    const queryDrUrl = this.config.get<string>('VNPAY_QUERYDR_URL');
+    if (!tmnCode || !queryDrUrl) return;
+    const body = buildQueryDrRequest({
+      tmnCode,
+      hashSecret,
+      txnRef: payment.idempotencyKey,
+      orderInfo: `Thanh toan hoa don ${payment.invoiceId}`,
+      transactionDate: payment.requestedAt,
+      ipAddr: '127.0.0.1',
+    });
+    const response = await firstValueFrom(
+      this.httpService.post(queryDrUrl, body).pipe(timeout(8000)),
+    );
+    const data = response.data as Record<string, string>;
+    if (data?.vnp_ResponseCode === '00' && data?.vnp_TransactionStatus === '00') {
+      const vnpAmount = Number(data.vnp_Amount) / 100;
+      await this.applyVerification(
+        payment,
+        {
+          outcome: 'verified',
+          amount: vnpAmount,
+          currency: 'VND',
+          providerReference: data.vnp_TransactionNo || payment.idempotencyKey,
+        },
+        PaymentMode.LIVE,
+      );
+    }
   }
 
   async declareCashSettlement(
@@ -1044,7 +1096,45 @@ export class FinanceService {
         const order = await manager.findOne(ServiceOrder, {
           where: { id: invoice.serviceOrderId },
         });
-        if (order) await this.ensureFinancialDues(manager, invoice, order, null, now);
+        if (order) {
+          await this.ensureFinancialDues(manager, invoice, order, null, now);
+          const confirmation = await manager.findOne(CustomerServiceConfirmation, {
+            where: { serviceOrderId: invoice.serviceOrderId },
+          });
+          if (confirmation && order.status === ServiceOrderStatus.UNDER_REPAIR) {
+            if (ServiceOrderStateMachine.canTransition(order.status, ServiceOrderStatus.COMPLETED)) {
+              order.status = ServiceOrderStatus.COMPLETED;
+              order.completedAt = now;
+              await orderRepository.save(order);
+              await manager.insert(OrderStatusHistory, {
+                serviceOrderId: order.id,
+                fromStatus: ServiceOrderStatus.UNDER_REPAIR,
+                toStatus: ServiceOrderStatus.COMPLETED,
+                actorUserId: current.requestedByUserId,
+                actorRole: Role.CUSTOMER,
+                reason: 'Work, customer confirmation and payment satisfied',
+              });
+              const items = await manager.find(InvoiceItem, { where: { invoiceId: invoice.id } });
+              for (const item of items) {
+                if (
+                  item.warrantyDaysSnapshot <= 0 ||
+                  (item.partSource === PartSource.TECHNICIAN &&
+                    item.partWarrantyOption !== PartWarrantyOption.PAID_WARRANTY)
+                ) {
+                  continue;
+                }
+                await manager.insert(WarrantyCoverage, {
+                  serviceOrderId: order.id,
+                  invoiceItemId: item.id,
+                  warrantyDaysSnapshot: item.warrantyDaysSnapshot,
+                  startsAt: now,
+                  expiresAt: new Date(now.getTime() + item.warrantyDaysSnapshot * 86400000),
+                  status: WarrantyStatus.ACTIVE,
+                });
+              }
+            }
+          }
+        }
       } else if (current.purpose === PaymentPurpose.COMMISSION_DUE && current.commissionDueId) {
         const dueRepository = manager.getRepository(CommissionDue);
         const due = await dueRepository.findOne({

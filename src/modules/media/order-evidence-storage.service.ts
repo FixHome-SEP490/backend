@@ -53,4 +53,16 @@ export class OrderEvidenceStorage {
       throw new ServiceUnavailableException('Evidence access is temporarily unavailable');
     }
   }
+
+  async delete(reference: string): Promise<void> {
+    const { http, bucket } = this.client();
+    if (!reference.startsWith(`storage://${bucket}/`)) return;
+    const path = reference.slice(`storage://${bucket}/`.length);
+    try {
+      await http.delete(`/object/${bucket}`, { data: { prefixes: [path] } });
+    } catch {
+      // Non-blocking storage deletion
+    }
+  }
 }
+

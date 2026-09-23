@@ -42,7 +42,7 @@ function fixture() {
   };
   const service = new BookingsService(
     bookingRepo as never, {} as never, userRepo as never, serviceRepo as never, addressRepo as never,
-    {} as never, {} as never, {} as never, audit as never,
+    {} as never, {} as never, audit as never,
     dataSource as never, new PrivateBookingPhotoClaimService(), {} as never,
   );
   const dto: CreateBookingDto = { serviceId: 'service-1', addressId: 'address-1',

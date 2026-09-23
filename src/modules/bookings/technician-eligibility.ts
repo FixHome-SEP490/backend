@@ -5,10 +5,10 @@ import { TechnicianProfile } from '../technicians/entities/technician-profile.en
 import { TechnicianSkill } from '../technicians/entities/technician-skill.entity';
 import { TechnicianSchedule } from '../technicians/entities/technician-schedule.entity';
 import { TechnicianTimeOff } from '../technicians/entities/technician-time-off.entity';
-import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
+import { Address } from '../users/entities/address.entity';
 import { CommissionDue } from '../service-orders/entities/commission-due.entity';
 import { AccountStatus, CommissionDueStatus, Role, VerificationStatus } from '../../shared/enums';
-import { resolveServiceArea } from '../../shared/utils/administrative-areas';
+import { haversineKm } from '../../shared/utils/geo';
 import { hasAvailableArrival, type ArrivalInterval } from './arrival-window';
 
 /** Same authority at discovery, shortlist, activation and Accept. IDs here are User IDs. */
@@ -73,19 +73,13 @@ export async function technicianEligibility(
     }
     return fail('No available arrival interval');
   }
-  if (!booking.provinceSnapshot && !booking.districtSnapshot && !booking.addressId) return fail('Service area snapshot is missing');
-  const targetArea = resolveServiceArea({
-    province: booking.provinceSnapshot,
-    district: booking.districtSnapshot,
-  });
-  const areas = await manager.find(TechnicianServiceArea, { where: { technicianId: profile.id } });
-  const inArea = areas.some(area => {
-    const provMatch = area.provinceCode === targetArea.provinceCode || area.provinceCode === booking.provinceSnapshot;
-    const distMatch = area.districtCode === targetArea.districtCode ||
-                      targetArea.districtAliasCodes.includes(area.districtCode) ||
-                      area.districtCode === booking.districtSnapshot;
-    return provMatch && distMatch;
-  });
-  if (!inArea) return fail('Outside service area');
+  if (booking.latitudeSnapshot == null || booking.longitudeSnapshot == null) return fail('Booking location is missing');
+  const address = await manager.findOneBy(Address, { userId: technicianId, isDefault: true });
+  if (!address || address.lat == null || address.lng == null) return fail('Technician location is missing');
+  const distanceKm = haversineKm(
+    Number(booking.latitudeSnapshot), Number(booking.longitudeSnapshot),
+    Number(address.lat), Number(address.lng),
+  );
+  if (distanceKm > Number(profile.serviceRadiusKm)) return fail('Outside technician service radius');
   return { eligible: true };
 }

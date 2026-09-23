@@ -7,12 +7,12 @@ import { technicianEligibility } from './technician-eligibility';
 function scenario() {
   const user = { id: 'tech-1', role: Role.TECHNICIAN, status: AccountStatus.ACTIVE };
   const profile = { id: 'profile-1', userId: user.id, verificationStatus: VerificationStatus.VERIFIED,
-    isAvailable: false, workSuspendedUntil: null as Date | null };
+    isAvailable: false, workSuspendedUntil: null as Date | null, serviceRadiusKm: 10 };
   let hasVerifiedSkill = true;
   let hasTimeOff = false;
   let hasConflict = false;
   const booking = { id: 'booking-1', serviceId: 'service-1', addressId: 'address-1',
-    provinceSnapshot: '79', districtSnapshot: '760',
+    latitudeSnapshot: 10.77, longitudeSnapshot: 106.7,
     preferredStartAt: new Date('2030-10-15T03:00:00Z'),
     preferredEndAt: new Date('2030-10-15T04:00:00Z') } as Booking;
   const manager = {
@@ -20,12 +20,12 @@ function scenario() {
       if (entity.name === 'User') return user;
       if (entity.name === 'TechnicianProfile') return profile;
       if (entity.name === 'TechnicianSkill') return hasVerifiedSkill ? { id: 'verified-skill-1' } : null;
+      if (entity.name === 'Address') return { lat: 10.77, lng: 106.7 };
       return null;
     }),
     count: vi.fn(async () => 0),
     find: vi.fn(async (entity: { name?: string }) => {
       if (entity.name === 'TechnicianSchedule') return [{ dayOfWeek: 2, startTime: '08:00', endTime: '18:00' }];
-      if (entity.name === 'TechnicianServiceArea') return [{ provinceCode: '79', districtCode: '760' }];
       return [];
     }),
     createQueryBuilder: vi.fn((entity: { name?: string } | string) => {

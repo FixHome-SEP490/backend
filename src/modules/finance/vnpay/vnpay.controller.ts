@@ -26,10 +26,9 @@ export class VnpayController {
   async returnUrl(@Query() query: Record<string, string>, @Res() res: Response) {
     const result = await this.financeService.handleVnpayReturn(query);
     const frontendUrl = this.config.get<string>('FRONTEND_URL', 'http://localhost:5173');
-    const status = result.ok ? 'success' : 'failed';
-    const target = result.invoiceId
-      ? `${frontendUrl}/vnpay-return?payment=${status}&invoiceId=${result.invoiceId}`
-      : `${frontendUrl}/vnpay-return?payment=${status}`;
-    res.redirect(target);
+    const params = new URLSearchParams({ payment: result.ok ? 'success' : 'failed' });
+    if (result.invoiceId) params.set('invoiceId', result.invoiceId);
+    if (result.serviceOrderId) params.set('orderId', result.serviceOrderId);
+    res.redirect(`${frontendUrl}/vnpay-return?${params.toString()}`);
   }
 }

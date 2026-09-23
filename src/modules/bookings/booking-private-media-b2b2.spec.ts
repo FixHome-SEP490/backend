@@ -145,7 +145,6 @@ function makeTransactionFixture(seeds: UploadSeed[] = []) {
     addressRepository as never,
     {} as never,
     {} as never,
-    {} as never,
     audit as never,
     dataSource as never,
     new PrivateBookingPhotoClaimService(),

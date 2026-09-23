@@ -447,6 +447,30 @@ export class ServiceOrdersService {
     return Promise.all(evidence.map(async item => ({ ...item, mediaUrl: await this.evidenceStorage.signedUrl(item.mediaUrl) })));
   }
 
+  async deleteEvidence(
+    orderId: string,
+    evidenceId: string,
+    actor: { id: string; role: string },
+  ): Promise<void> {
+    await authorizeOrder(this.dataSource.manager, orderId, actor);
+    const evidence = await this.evidenceRepo.findOne({
+      where: { id: evidenceId, serviceOrderId: orderId },
+    });
+    if (!evidence) {
+      throw new BusinessException(ErrorCodes.NOT_FOUND, 'Evidence not found');
+    }
+    const order = await this.dataSource.manager.findOneBy(ServiceOrder, { id: orderId });
+    if (order?.completionRequestedAt || order?.status === ServiceOrderStatus.COMPLETED) {
+      throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Cannot delete evidence after completion requested');
+    }
+    await this.evidenceRepo.delete({ id: evidenceId, serviceOrderId: orderId });
+    try {
+      await this.evidenceStorage.delete(evidence.mediaUrl);
+    } catch {
+      // Non-blocking
+    }
+  }
+
   /**
    * Get status history for an order (D-22 audit trail).
    */
