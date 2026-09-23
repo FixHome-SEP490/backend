@@ -29,13 +29,14 @@ import {
   ApiServiceUnavailableResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionGuard } from '../../common/guards/permission.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../shared/enums';
-import { CheckInDto, UpdateLocationDto, EvidenceDto, CompletionRequestDto, CompletionConfirmationDto, ReasonDto } from './order-command.dto';
+import { CheckInDto, UpdateLocationDto, EvidenceDto, CompletionRequestDto, CompletionConfirmationDto, ReasonDto, TrackOrderDto } from './order-command.dto';
 import { ServiceOrdersService } from './service-orders.service';
 import {
   ServiceOrderStatus,
@@ -56,6 +57,16 @@ export class ServiceOrdersController {
   constructor(private readonly serviceOrdersService: ServiceOrdersService) {}
 
   // ── 1. Order Queries ──
+
+  @Post('service-orders/public/track')
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Public guest lookup by order code + registered phone (no auth)' })
+  async trackPublic(@Body() dto: TrackOrderDto) {
+    const data = await this.serviceOrdersService.trackPublic(dto.orderCode, dto.phone);
+    return { data };
+  }
 
   @Get('service-orders')
   @Roles(Role.ADMIN, Role.SERVICE_MANAGER)

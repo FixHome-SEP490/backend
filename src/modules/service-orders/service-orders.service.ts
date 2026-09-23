@@ -27,6 +27,7 @@ import { ServiceOrderStateMachine } from './service-order-state-machine';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import { haversineKm } from '../../shared/utils/geo';
+import { normalizePhone } from '../../shared/validation/input.transforms';
 import {
   ServiceOrderStatus,
   BookingStatus,
@@ -218,6 +219,35 @@ export class ServiceOrdersService {
     }
     await this.checkOrderAccess(order, actor);
     return this.presentOrder(order);
+  }
+
+  /**
+   * Public guest lookup by order code + registered phone (no auth).
+   * Same generic not-found error whether the code or the phone is wrong,
+   * to avoid letting a caller enumerate order codes.
+   */
+  async trackPublic(orderCode: string, phone: string) {
+    const order = await this.orderRepo.findOneBy({ code: orderCode });
+    if (!order) {
+      throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Order not found');
+    }
+    const booking = await this.dataSource.manager.findOneBy(Booking, { id: order.bookingId });
+    const customer = booking ? await this.dataSource.manager.findOneBy(User, { id: booking.customerId }) : null;
+    if (!customer || customer.phoneNumber !== normalizePhone(phone)) {
+      throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Order not found');
+    }
+    const presented = await this.presentOrder(order);
+    const trackableStatus = presented.status === ServiceOrderStatus.EN_ROUTE || presented.status === ServiceOrderStatus.UNDER_REPAIR;
+    return {
+      code: presented.code,
+      status: presented.status,
+      serviceName: (presented as unknown as { serviceName?: string }).serviceName,
+      technician: (presented as unknown as { technician?: { fullName: string; phoneNumber: string } }).technician,
+      destination: (presented as unknown as { destination?: { lat: number; lng: number } | null }).destination,
+      technicianLocation: trackableStatus ? (presented as unknown as { technicianLocation?: unknown }).technicianLocation : null,
+      timeline: ((presented as unknown as { timeline: { status: string; timestamp: string }[] }).timeline)
+        .map((t) => ({ status: t.status, timestamp: t.timestamp })),
+    };
   }
 
   // ── State Transitions (D-22: all within transaction) ──
