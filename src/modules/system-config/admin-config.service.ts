@@ -234,11 +234,12 @@ const KEY_EFFECT: Record<
     evidence:
       'src/modules/ai-diagnosis/ — AI rate limit is not read from BusinessConfigService; no rate-limiting consumer found in current source. Wire into AI diagnosis rate-limiting logic to make ACTIVE.',
   },
-  // NOT_IMPLEMENTED: PaymentTransaction provider-verification foundation not yet built (Wave 3)
+  // ACTIVE: src/modules/finance/finance.service.ts getPaymentMode() gates both
+  // initiateInvoicePayment (legacy sync verify) and createVnpayPaymentUrl (VNPay redirect).
+  // Must be 'LIVE' — with VNPAY_* env vars set — before VNPay URLs are issued.
   'payment.mode': {
-    status: 'NOT_IMPLEMENTED',
-    evidence:
-      'PaymentTransaction provider-verification foundation not yet implemented (Wave 3). Value has no runtime effect.',
+    status: 'ACTIVE',
+    evidence: null,
   },
 };
 

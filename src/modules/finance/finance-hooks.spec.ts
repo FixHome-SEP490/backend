@@ -70,6 +70,7 @@ const makeHooksService = (options: {
     {} as any,
     {} as any,
     {} as any,
+    {} as any,
   );
 
   return {

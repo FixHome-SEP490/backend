@@ -447,6 +447,14 @@ export class ServiceOrdersService {
     return this.financeService.initiateInvoicePayment(invoiceId, actor, dto);
   }
 
+  async createInvoiceVnpayUrl(
+    invoiceId: string,
+    actor: FinanceActor,
+    ipAddr: string,
+  ): Promise<{ paymentUrl: string }> {
+    return this.financeService.createVnpayPaymentUrl(invoiceId, actor, ipAddr);
+  }
+
 
   async getWarranties(orderId: string, actor: { id: string; role: string }): Promise<WarrantyCoverage[]> {
     await authorizeOrder(this.dataSource.manager, orderId, actor);

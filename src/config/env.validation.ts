@@ -156,6 +156,27 @@ export class EnvironmentVariables {
   @IsString()
   @IsOptional()
   MAIL_FROM?: string;
+
+  // VNPay (Optional — required only when payment.mode business config is LIVE)
+  @IsString()
+  @IsOptional()
+  VNPAY_TMN_CODE?: string;
+
+  @IsString()
+  @IsOptional()
+  VNPAY_HASH_SECRET?: string;
+
+  @IsString()
+  @IsOptional()
+  VNPAY_PAYMENT_URL?: string;
+
+  @IsString()
+  @IsOptional()
+  VNPAY_RETURN_URL?: string;
+
+  @IsString()
+  @IsOptional()
+  FRONTEND_URL?: string;
 }
 
 export function validate(

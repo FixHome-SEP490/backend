@@ -10,6 +10,7 @@ import { Invoice } from '../service-orders/entities/invoice.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { FinanceController } from './finance.controller';
 import { FinanceService } from './finance.service';
+import { VnpayController } from './vnpay/vnpay.controller';
 import { Payment } from './entities/payment.entity';
 import { PlatformDue } from './entities/platform-due.entity';
 import {
@@ -32,7 +33,7 @@ import { UnconfiguredPaymentVerificationAdapter } from './unconfigured-payment-v
       PlatformDue,
     ]),
   ],
-  controllers: [FinanceController],
+  controllers: [FinanceController, VnpayController],
   providers: [
     FinanceService,
     UnconfiguredPaymentVerificationAdapter,

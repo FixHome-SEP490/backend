@@ -77,10 +77,10 @@ describe('AdminConfigService', () => {
       expect(comp?.effectStatus).toBe('STALE_REVIEW');
     });
 
-    it('annotates payment.mode as NOT_IMPLEMENTED', async () => {
+    it('annotates payment.mode as ACTIVE (gates VNPay URL issuance)', async () => {
       const result = await adminConfigService.findAll();
       const pm = result.find((r) => r.key === 'payment.mode');
-      expect(pm?.effectStatus).toBe('NOT_IMPLEMENTED');
+      expect(pm?.effectStatus).toBe('ACTIVE');
     });
 
     it('annotates commission.base as TO_WIRE (hard-coded in service-orders)', async () => {

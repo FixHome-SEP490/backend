@@ -353,6 +353,25 @@ export class ServiceOrdersController {
     return { data: payment };
   }
 
+  @Post('invoices/:id/vnpay-url')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('invoice:pay_own')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Create a VNPay redirect URL for an unpaid invoice' })
+  @ApiServiceUnavailableResponse({ description: 'VNPay is not configured or not LIVE' })
+  async createInvoiceVnpayUrl(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: { user: { id: string; role: string }; ip: string },
+  ) {
+    const result = await this.serviceOrdersService.createInvoiceVnpayUrl(
+      id,
+      req.user,
+      req.ip,
+    );
+    return { data: result };
+  }
+
   @Get('service-orders/:id/warranties')
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('warranty:read_related')
