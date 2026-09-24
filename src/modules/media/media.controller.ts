@@ -61,7 +61,7 @@ export class MediaController {
   )
   @ApiConsumes('multipart/form-data')
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'Upload an image file to Supabase public storage' })
+  @ApiOperation({ summary: 'Upload an image file to Cloudinary public storage' })
   async uploadFile(@UploadedFile() file?: UploadedMediaFile) {
     const result = await this.mediaService.saveFile(file!);
     return { data: result };

@@ -9,7 +9,7 @@ import { PrivateBookingPhotoStorage } from './private-booking-photo-storage.serv
 
 const OWNER_ID = '7f2fd9d2-e616-4d44-b2c3-9be271029eba';
 const UPLOAD_ID = '25b11d61-7c97-4a29-a53b-97ca76ac3435';
-const OBJECT_REF = `storage://booking-private/${OWNER_ID}/2debcf6f-1df5-488d-ae63-48ecbe44af45`;
+const OBJECT_REF = `cloudinary://booking-photos/fixhome/booking-photos/${OWNER_ID}/2debcf6f-1df5-488d-ae63-48ecbe44af45`;
 const PNG_BYTES = Buffer.from('89504e470d0a1a0a00', 'hex');
 const PNG_FILE = { buffer: PNG_BYTES, mimetype: 'image/png', size: PNG_BYTES.length };
 const FIXED_NOW = new Date('2026-09-21T12:00:00.000Z');
@@ -95,7 +95,7 @@ describe('PrivateBookingPhotoUploadService', () => {
       sizeBytes: PNG_BYTES.length,
     });
     expect(Object.keys(result).sort()).toEqual(['mimeType', 'sizeBytes', 'uploadId']);
-    expect(JSON.stringify(result)).not.toContain('storage://');
+    expect(JSON.stringify(result)).not.toContain('cloudinary://');
     expect(JSON.stringify(result)).not.toContain('https://');
     expect(providerFactory).not.toHaveBeenCalled();
   });

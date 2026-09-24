@@ -1,12 +1,18 @@
-import { BadRequestException, Injectable, ServiceUnavailableException } from '@nestjs/common';
-import axios from 'axios';
+import { BadRequestException, Inject, Injectable, Optional, ServiceUnavailableException } from '@nestjs/common';
+import { Readable } from 'stream';
 import { randomUUID } from 'crypto';
+import { CLOUDINARY } from '../../shared/cloudinary';
+import type { CloudinaryInstance, UploadApiResponse } from '../../shared/cloudinary';
 
 export type EvidenceFile = { buffer: Buffer; mimetype: string; size: number };
 
-/** Private Supabase objects; only the order service may issue short-lived read URLs. */
+/** Private Cloudinary objects; only the order service may issue short-lived read URLs. */
 @Injectable()
 export class OrderEvidenceStorage {
+  constructor(
+    @Optional() @Inject(CLOUDINARY) private readonly cloudinary: CloudinaryInstance | null,
+  ) {}
+
   validate(file?: EvidenceFile): asserts file is EvidenceFile {
     if (!file?.buffer?.length || file.size !== file.buffer.length || file.size > 10 * 1024 * 1024) throw new BadRequestException('Select an image up to 10 MB');
     const bytes = file.buffer;
@@ -16,23 +22,25 @@ export class OrderEvidenceStorage {
     if (!valid) throw new BadRequestException('Only JPEG, PNG and WebP image files are accepted');
   }
 
-  private client() {
-    const url = process.env.SUPABASE_URL;
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    const bucket = process.env.SUPABASE_EVIDENCE_BUCKET;
-    if (!url || !key || !bucket || !/^https:\/\/[a-z0-9.-]+\/?$/i.test(url) || !/^[a-z0-9_-]+$/.test(bucket)) throw new ServiceUnavailableException('Private evidence storage is not configured');
-    return { bucket, url: url.replace(/\/$/, ''), http: axios.create({ baseURL: `${url.replace(/\/$/, '')}/storage/v1`, timeout: 10000, maxRedirects: 0, headers: { apikey: key, Authorization: `Bearer ${key}` } }) };
+  private getCloudinary(): CloudinaryInstance {
+    if (!this.cloudinary) throw new ServiceUnavailableException('Private evidence storage is not configured');
+    return this.cloudinary;
   }
 
   async upload(orderId: string, ownerId: string, file: EvidenceFile): Promise<string> {
     this.validate(file);
-    const { http, bucket } = this.client();
-    const path = `${orderId}/${ownerId}/${randomUUID()}`;
+    const cld = this.getCloudinary();
+
+    const publicId = `fixhome/evidence/${orderId}/${ownerId}/${randomUUID()}`;
+
     try {
-      const info = await http.get(`/bucket/${bucket}`);
-      if (info.data.public !== false) throw new Error('Evidence bucket must be private');
-      await http.post(`/object/${bucket}/${path}`, file.buffer, { headers: { 'Content-Type': file.mimetype, 'x-upsert': 'false' }, maxBodyLength: 10 * 1024 * 1024 });
-      return `storage://${bucket}/${path}`;
+      await this.uploadToCloudinary(cld, file.buffer, {
+        public_id: publicId,
+        resource_type: 'image',
+        type: 'authenticated', // Private — requires signed URLs to access
+        overwrite: false,
+      });
+      return `cloudinary://evidence/${publicId}`;
     } catch {
       // Do not expose provider responses, credentials or object paths to clients.
       throw new ServiceUnavailableException('Private evidence upload failed');
@@ -40,29 +48,60 @@ export class OrderEvidenceStorage {
   }
 
   async signedUrl(reference: string): Promise<string> {
-    const { http, bucket, url } = this.client();
-    if (!reference.startsWith(`storage://${bucket}/`)) throw new ServiceUnavailableException('Legacy evidence requires private storage migration');
-    const path = reference.slice(`storage://${bucket}/`.length);
-    if (!/^[a-f0-9-]+\/[a-f0-9-]+\/[a-f0-9-]+$/.test(path)) throw new ServiceUnavailableException('Invalid evidence reference');
+    const cld = this.getCloudinary();
+    const prefix = 'cloudinary://evidence/';
+
+    // Support legacy Supabase references for backward compatibility
+    if (reference.startsWith('storage://')) {
+      throw new ServiceUnavailableException('Legacy evidence requires private storage migration');
+    }
+
+    if (!reference.startsWith(prefix)) throw new ServiceUnavailableException('Invalid evidence reference');
+    const publicId = reference.slice(prefix.length);
+    if (!publicId || publicId.includes('..')) throw new ServiceUnavailableException('Invalid evidence reference');
+
     try {
-      const result = await http.post(`/object/sign/${bucket}/${path}`, { expiresIn: 300 });
-      const signed = result.data.signedURL;
-      if (typeof signed !== 'string' || !signed.startsWith('/object/sign/')) throw new Error('Invalid signed URL');
-      return `${url}/storage/v1${signed}`;
+      // Generate a time-limited signed URL (5 minutes)
+      const expiresAt = Math.floor(Date.now() / 1000) + 300;
+      const url = cld.url(publicId, {
+        type: 'authenticated',
+        sign_url: true,
+        resource_type: 'image',
+        secure: true,
+        expires_at: expiresAt,
+      });
+      return url;
     } catch {
       throw new ServiceUnavailableException('Evidence access is temporarily unavailable');
     }
   }
 
   async delete(reference: string): Promise<void> {
-    const { http, bucket } = this.client();
-    if (!reference.startsWith(`storage://${bucket}/`)) return;
-    const path = reference.slice(`storage://${bucket}/`.length);
+    const cld = this.getCloudinary();
+    const prefix = 'cloudinary://evidence/';
+    if (!reference.startsWith(prefix)) return;
+    const publicId = reference.slice(prefix.length);
     try {
-      await http.delete(`/object/${bucket}`, { data: { prefixes: [path] } });
+      await cld.uploader.destroy(publicId, { resource_type: 'image', type: 'authenticated' });
     } catch {
       // Non-blocking storage deletion
     }
   }
-}
 
+  private uploadToCloudinary(
+    cld: CloudinaryInstance,
+    buffer: Buffer,
+    options: Record<string, unknown>,
+  ): Promise<UploadApiResponse> {
+    return new Promise((resolve, reject) => {
+      const stream = cld.uploader.upload_stream(
+        options,
+        (error, result) => {
+          if (error || !result) return reject(error || new Error('Empty Cloudinary response'));
+          resolve(result);
+        },
+      );
+      Readable.from(buffer).pipe(stream);
+    });
+  }
+}
