@@ -106,6 +106,11 @@ export class EnvironmentVariables {
   @IsOptional()
   SUPABASE_KYC_SIGNED_URL_TTL_SECONDS: number = 300;
 
+  @IsString()
+  @IsOptional()
+  @Matches(/^[A-Za-z0-9][A-Za-z0-9._-]{1,62}$/)
+  SUPABASE_BOOKING_PRIVATE_BUCKET?: string = 'booking-private';
+
   // Cloudinary (Optional)
   @IsString()
   @IsOptional()

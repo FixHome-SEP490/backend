@@ -2,6 +2,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { DatabaseModule } from './database/database.module';
+import { CloudinaryModule } from './shared/cloudinary';
 import { validate } from './config';
 
 // Phase 0 — Bootstrap infrastructure
@@ -46,6 +47,9 @@ import { GeoModule } from './modules/geo/geo.module';
 
     // Database
     DatabaseModule,
+
+    // Cloudinary (global — available to all modules)
+    CloudinaryModule,
 
     // Phase 0 — Bootstrap infrastructure (global modules)
     SystemConfigModule,

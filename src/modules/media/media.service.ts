@@ -1,7 +1,9 @@
 // src/modules/media/media.service.ts
-import { Injectable, BadRequestException, Logger, ServiceUnavailableException } from '@nestjs/common';
-import axios, { AxiosError } from 'axios';
+import { Injectable, BadRequestException, Logger, ServiceUnavailableException, Inject, Optional } from '@nestjs/common';
+import { Readable } from 'stream';
 import { randomUUID } from 'crypto';
+import { CLOUDINARY } from '../../shared/cloudinary';
+import type { CloudinaryInstance, UploadApiResponse } from '../../shared/cloudinary';
 
 export type UploadedMediaFile = {
   buffer: Buffer;
@@ -14,31 +16,9 @@ export type UploadedMediaFile = {
 export class MediaService {
   private readonly logger = new Logger(MediaService.name);
 
-  private client() {
-    const url = process.env.SUPABASE_URL;
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    const bucket = process.env.SUPABASE_MEDIA_BUCKET;
-    if (!url || !key || !bucket) {
-      this.logger.error(
-        `MediaService: missing env — SUPABASE_URL=${!!url} SUPABASE_SERVICE_ROLE_KEY=${!!key} SUPABASE_MEDIA_BUCKET=${!!bucket}`,
-      );
-      throw new ServiceUnavailableException('Media storage is not configured');
-    }
-    const baseUrl = url.replace(/\/$/, '');
-    return {
-      bucket,
-      baseUrl,
-      http: axios.create({
-        baseURL: `${baseUrl}/storage/v1`,
-        timeout: 15000,
-        maxRedirects: 0,
-        headers: {
-          apikey: key,
-          Authorization: `Bearer ${key}`,
-        },
-      }),
-    };
-  }
+  constructor(
+    @Optional() @Inject(CLOUDINARY) private readonly cloudinary: CloudinaryInstance | null,
+  ) {}
 
   validate(file?: UploadedMediaFile): asserts file is UploadedMediaFile {
     if (!file?.buffer?.length || file.size !== file.buffer.length || file.size > 10 * 1024 * 1024) {
@@ -60,39 +40,49 @@ export class MediaService {
   ): Promise<{ url: string; mimeType: string; sizeBytes: number; filename: string }> {
     this.validate(file);
 
+    if (!this.cloudinary) {
+      this.logger.error('MediaService: Cloudinary is not configured');
+      throw new ServiceUnavailableException('Media storage is not configured');
+    }
+
     const ext = file.mimetype === 'image/png' ? '.png' : file.mimetype === 'image/webp' ? '.webp' : '.jpg';
     const filename = `${randomUUID()}${ext}`;
-    const objectPath = subfolder ? `${subfolder}/${filename}` : filename;
-
-    const { http, bucket, baseUrl } = this.client();
+    const publicId = subfolder ? `fixhome/media/${subfolder}/${filename}` : `fixhome/media/${filename}`;
 
     try {
-      await http.post(`/object/${bucket}/${objectPath}`, file.buffer, {
-        headers: {
-          'Content-Type': file.mimetype,
-          'x-upsert': 'true', // upsert=true to avoid 409 if UUID collides (practically impossible)
-          'Cache-Control': 'public, max-age=31536000',
-        },
-        maxBodyLength: 11 * 1024 * 1024,
-        maxContentLength: 11 * 1024 * 1024,
+      const result = await this.uploadToCloudinary(file.buffer, {
+        public_id: publicId,
+        resource_type: 'image',
+        overwrite: true,
       });
+
+      return {
+        url: result.secure_url,
+        mimeType: file.mimetype,
+        sizeBytes: file.size,
+        filename,
+      };
     } catch (err) {
-      const axiosErr = err as AxiosError;
       this.logger.error(
-        `Supabase upload failed — bucket=${bucket} path=${objectPath} ` +
-        `status=${axiosErr.response?.status} body=${JSON.stringify(axiosErr.response?.data)}`,
+        `Cloudinary upload failed — publicId=${publicId} error=${(err as Error).message}`,
       );
       throw new ServiceUnavailableException('Không thể tải ảnh lên. Vui lòng thử lại.');
     }
+  }
 
-    // Public bucket: return the public URL directly (no signed URL needed)
-    const publicUrl = `${baseUrl}/storage/v1/object/public/${bucket}/${objectPath}`;
-
-    return {
-      url: publicUrl,
-      mimeType: file.mimetype,
-      sizeBytes: file.size,
-      filename,
-    };
+  private uploadToCloudinary(
+    buffer: Buffer,
+    options: Record<string, unknown>,
+  ): Promise<UploadApiResponse> {
+    return new Promise((resolve, reject) => {
+      const stream = this.cloudinary!.uploader.upload_stream(
+        options,
+        (error, result) => {
+          if (error || !result) return reject(error || new Error('Empty Cloudinary response'));
+          resolve(result);
+        },
+      );
+      Readable.from(buffer).pipe(stream);
+    });
   }
 }

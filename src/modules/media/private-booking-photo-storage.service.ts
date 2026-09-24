@@ -1,6 +1,9 @@
-import { BadRequestException, Injectable, ServiceUnavailableException } from '@nestjs/common';
-import axios, { AxiosInstance } from 'axios';
+import { BadRequestException, Inject, Injectable, Optional, ServiceUnavailableException } from '@nestjs/common';
+import { Readable } from 'stream';
 import { randomUUID } from 'crypto';
+import axios from 'axios';
+import { CLOUDINARY } from '../../shared/cloudinary';
+import type { CloudinaryInstance, UploadApiResponse } from '../../shared/cloudinary';
 
 export type PrivateBookingPhotoFile = {
   buffer: Buffer;
@@ -15,17 +18,13 @@ export type PrivateBookingPhotoContent = {
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const SUPABASE_HOST_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.supabase\.co$/i;
-const BUCKET_PATTERN = /^[a-z0-9][a-z0-9_-]{0,62}$/;
-
-type StorageConfiguration = {
-  bucket: string;
-  url: string;
-  key: string;
-};
 
 @Injectable()
 export class PrivateBookingPhotoStorage {
+  constructor(
+    @Optional() @Inject(CLOUDINARY) private readonly cloudinary: CloudinaryInstance | null,
+  ) {}
+
   validate(file?: PrivateBookingPhotoFile): asserts file is PrivateBookingPhotoFile {
     if (
       !file ||
@@ -46,38 +45,47 @@ export class PrivateBookingPhotoStorage {
   async upload(ownerId: string, file: PrivateBookingPhotoFile): Promise<string> {
     this.validate(file);
     const normalizedOwnerId = this.normalizeOwnerId(ownerId);
-    const configuration = this.getConfiguration();
-    const http = this.createClient(configuration);
-    const objectPath = `${normalizedOwnerId}/${randomUUID()}`;
+    const cld = this.getCloudinary();
+
+    const publicId = `fixhome/booking-photos/${normalizedOwnerId}/${randomUUID()}`;
 
     try {
-      await this.assertPrivateBucket(http, configuration.bucket);
-      await http.post(`/object/${configuration.bucket}/${objectPath}`, file.buffer, {
-        headers: { 'Content-Type': file.mimetype },
-        maxBodyLength: MAX_FILE_SIZE,
-        maxContentLength: MAX_FILE_SIZE,
-        maxRedirects: 0,
+      await this.uploadToCloudinary(cld, file.buffer, {
+        public_id: publicId,
+        resource_type: 'image',
+        type: 'authenticated', // Private — requires signed URLs to access
+        overwrite: false,
       });
-      return `storage://${configuration.bucket}/${objectPath}`;
+      return `cloudinary://booking-photos/${publicId}`;
     } catch {
       throw new ServiceUnavailableException('Private booking photo storage is unavailable');
     }
   }
 
   async download(reference: string, expectedOwnerId: string): Promise<PrivateBookingPhotoContent> {
-    const configuration = this.getConfiguration();
-    const objectPath = this.getOwnedObjectPath(reference, configuration.bucket, expectedOwnerId);
-    const http = this.createClient(configuration);
+    const cld = this.getCloudinary();
+    const publicId = this.getOwnedPublicId(reference, expectedOwnerId);
 
     try {
-      await this.assertPrivateBucket(http, configuration.bucket);
-      const response = await http.get(`/object/${configuration.bucket}/${objectPath}`, {
+      // Generate a short-lived signed URL to download the image
+      const expiresAt = Math.floor(Date.now() / 1000) + 300;
+      const signedUrl = cld.url(publicId, {
+        type: 'authenticated',
+        sign_url: true,
+        resource_type: 'image',
+        secure: true,
+        expires_at: expiresAt,
+      });
+
+      const response = await axios.get(signedUrl, {
         responseType: 'arraybuffer',
         maxContentLength: MAX_FILE_SIZE,
         maxRedirects: 0,
+        timeout: 15000,
       });
-      const buffer = response?.data;
-      if (!Buffer.isBuffer(buffer) || buffer.length === 0 || buffer.length > MAX_FILE_SIZE) {
+
+      const buffer = Buffer.from(response.data);
+      if (buffer.length === 0 || buffer.length > MAX_FILE_SIZE) {
         throw new Error('Invalid booking photo response');
       }
 
@@ -99,85 +107,35 @@ export class PrivateBookingPhotoStorage {
     return ownerId.toLowerCase();
   }
 
-  private getOwnedObjectPath(reference: string, bucket: string, expectedOwnerId: string): string {
+  private getOwnedPublicId(reference: string, expectedOwnerId: string): string {
     const ownerId = this.normalizeOwnerId(expectedOwnerId);
-    const prefix = `storage://${bucket}/`;
-    if (typeof reference !== 'string' || !reference.startsWith(prefix)) {
+
+    if (typeof reference !== 'string' || !reference.startsWith('cloudinary://booking-photos/')) {
       throw new BadRequestException('Invalid booking photo reference');
     }
 
-    const path = reference.slice(prefix.length);
-    const segments = path.split('/');
+    const fullPrefix = 'cloudinary://booking-photos/';
+    const publicId = reference.slice(fullPrefix.length);
+    // publicId should be fixhome/booking-photos/{ownerId}/{uuid}
+    const segments = publicId.split('/');
     if (
-      segments.length !== 2 ||
-      !UUID_PATTERN.test(segments[0]) ||
-      !UUID_PATTERN.test(segments[1]) ||
-      segments[0] !== ownerId
+      segments.length !== 4 ||
+      segments[0] !== 'fixhome' ||
+      segments[1] !== 'booking-photos' ||
+      !UUID_PATTERN.test(segments[2]) ||
+      !UUID_PATTERN.test(segments[3]) ||
+      segments[2] !== ownerId
     ) {
       throw new BadRequestException('Invalid booking photo reference');
     }
-    return `${segments[0]}/${segments[1]}`;
+    return publicId;
   }
 
-  private getConfiguration(): StorageConfiguration {
-    const rawUrl = process.env.SUPABASE_URL;
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    const bucket = process.env.SUPABASE_BOOKING_PRIVATE_BUCKET;
-
-    if (
-      !rawUrl ||
-      !key?.trim() ||
-      /[\r\n]/.test(key) ||
-      !bucket ||
-      !BUCKET_PATTERN.test(bucket) ||
-      bucket === process.env.SUPABASE_MEDIA_BUCKET ||
-      bucket === process.env.SUPABASE_EVIDENCE_BUCKET
-    ) {
+  private getCloudinary(): CloudinaryInstance {
+    if (!this.cloudinary) {
       throw new ServiceUnavailableException('Private booking photo storage is not configured');
     }
-
-    let parsedUrl: URL;
-    try {
-      parsedUrl = new URL(rawUrl);
-    } catch {
-      throw new ServiceUnavailableException('Private booking photo storage is not configured');
-    }
-
-    if (
-      parsedUrl.protocol !== 'https:' ||
-      !SUPABASE_HOST_PATTERN.test(parsedUrl.hostname) ||
-      parsedUrl.username ||
-      parsedUrl.password ||
-      parsedUrl.port ||
-      (parsedUrl.pathname !== '' && parsedUrl.pathname !== '/') ||
-      parsedUrl.search ||
-      parsedUrl.hash
-    ) {
-      throw new ServiceUnavailableException('Private booking photo storage is not configured');
-    }
-
-    return { bucket, url: parsedUrl.origin, key };
-  }
-
-  private createClient(configuration: StorageConfiguration): AxiosInstance {
-    return axios.create({
-      baseURL: `${configuration.url}/storage/v1`,
-      timeout: 15000,
-      maxRedirects: 0,
-      maxContentLength: MAX_FILE_SIZE,
-      headers: {
-        apikey: configuration.key,
-        Authorization: `Bearer ${configuration.key}`,
-      },
-    });
-  }
-
-  private async assertPrivateBucket(http: AxiosInstance, bucket: string): Promise<void> {
-    const response = await http.get(`/bucket/${bucket}`);
-    const data = response?.data;
-    if (!data || typeof data !== 'object' || Array.isArray(data) || data.public !== false) {
-      throw new Error('Booking photo bucket must be private');
-    }
+    return this.cloudinary;
   }
 
   private detectMimeType(buffer: Buffer): PrivateBookingPhotoContent['mimeType'] | undefined {
@@ -194,5 +152,22 @@ export class PrivateBookingPhotoStorage {
       return 'image/webp';
     }
     return undefined;
+  }
+
+  private uploadToCloudinary(
+    cld: CloudinaryInstance,
+    buffer: Buffer,
+    options: Record<string, unknown>,
+  ): Promise<UploadApiResponse> {
+    return new Promise((resolve, reject) => {
+      const stream = cld.uploader.upload_stream(
+        options,
+        (error, result) => {
+          if (error || !result) return reject(error || new Error('Empty Cloudinary response'));
+          resolve(result);
+        },
+      );
+      Readable.from(buffer).pipe(stream);
+    });
   }
 }
