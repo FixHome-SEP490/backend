@@ -10,16 +10,16 @@ const at = (hour: number, minute = 0) => new Date(`${day}T${String(hour).padStar
 function fixture() {
   const booking = {
     id: 'booking-1', serviceId: 'service-1', addressId: 'address-1',
-    provinceSnapshot: '79', districtSnapshot: '760',
+    latitudeSnapshot: 10.77, longitudeSnapshot: 106.7,
     preferredStartAt: at(10), preferredEndAt: at(12),
   } as Booking;
   const user = { id: 'tech-1', role: Role.TECHNICIAN, status: AccountStatus.ACTIVE };
   const profile = { id: 'profile-1', verificationStatus: VerificationStatus.VERIFIED,
-    isAvailable: true, workSuspendedUntil: null as Date | null };
+    isAvailable: true, workSuspendedUntil: null as Date | null, serviceRadiusKm: 10 };
   const schedules = [{ dayOfWeek: 2, startTime: '08:00', endTime: '18:00' }];
   let verifiedSkill = true;
   let unpaidDues = false;
-  let missingArea = false;
+  let missingAddress = false;
   const timeOff: Array<{ startAt: Date; endAt: Date }> = [];
   const assignments: Array<{ busyStart: Date | null; busyEnd: Date | null }> = [];
   const manager = {
@@ -27,12 +27,12 @@ function fixture() {
       if (entity.name === 'User') return user;
       if (entity.name === 'TechnicianProfile') return profile;
       if (entity.name === 'TechnicianSkill') return verifiedSkill ? { id: 'skill' } : null;
+      if (entity.name === 'Address') return missingAddress ? null : { lat: 10.77, lng: 106.7 };
       return null;
     }),
     count: vi.fn(async () => Number(unpaidDues)),
     find: vi.fn(async (entity: { name?: string }) => {
       if (entity.name === 'TechnicianSchedule') return schedules;
-      if (entity.name === 'TechnicianServiceArea') return missingArea ? [] : [{ provinceCode: '79', districtCode: '760' }];
       return [];
     }),
     createQueryBuilder: vi.fn((entity: { name?: string } | string) => {
@@ -51,7 +51,7 @@ function fixture() {
     manager: manager as unknown as EntityManager,
     revokeSkill: () => { verifiedSkill = false; },
     setDues: () => { unpaidDues = true; },
-    removeArea: () => { missingArea = true; },
+    removeAddress: () => { missingAddress = true; },
   };
 }
 const allowed = async (f: ReturnType<typeof fixture>, excludeOrderId?: string) =>
@@ -94,7 +94,7 @@ describe('ARRIVAL: actual shared technicianEligibility permits a valid arrival s
     f.schedules.push({ dayOfWeek: 3, startTime: '08:00', endTime: '18:00' });
     expect(await allowed(f)).toBe(true);
   });
-  it('still blocks paused NEW, suspended technician, unverified skill, dues and missing area', async () => {
+  it('still blocks paused NEW, suspended technician, unverified skill, dues and missing address', async () => {
     const f = fixture();
     f.profile.isAvailable = false;
     expect(await allowed(f)).toBe(false);
@@ -107,7 +107,7 @@ describe('ARRIVAL: actual shared technicianEligibility permits a valid arrival s
     f.revokeSkill();
     expect(await allowed(f)).toBe(false);
     const d = fixture(); d.setDues(); expect(await allowed(d)).toBe(false);
-    const a = fixture(); a.removeArea(); expect(await allowed(a)).toBe(false);
+    const a = fixture(); a.removeAddress(); expect(await allowed(a)).toBe(false);
   });
   it('rejects an expired window and a window with no technician schedule', async () => {
     const expired = fixture();

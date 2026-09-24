@@ -122,7 +122,6 @@ function makeBookingsHarness(
     {} as never,
     {} as never,
     {} as never,
-    {} as never,
     dataSource as never,
     new PrivateBookingPhotoClaimService(),
     {} as never,

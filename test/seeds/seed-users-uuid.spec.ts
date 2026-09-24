@@ -6,11 +6,22 @@ type QueryCall = [sql: string, parameters: unknown[]];
 
 function createHarness() {
   const calls: QueryCall[] = [];
+  const userIdByEmail = new Map<string, string>();
+  const profileIdByUserId = new Map<string, string>();
   const queryRunner = {
     connect: vi.fn().mockResolvedValue(undefined),
     release: vi.fn().mockResolvedValue(undefined),
     query: vi.fn(async (sql: string, parameters: unknown[] = []) => {
       calls.push([sql, parameters]);
+      if (sql.includes('INSERT INTO "users"')) {
+        userIdByEmail.set(String(parameters[1]), String(parameters[0]));
+      } else if (sql.includes('INSERT INTO "technician_profiles"')) {
+        profileIdByUserId.set(String(parameters[1]), String(parameters[0]));
+      } else if (sql.includes('SELECT "id" FROM "users" WHERE "email"')) {
+        return [{ id: userIdByEmail.get(String(parameters[0])) }];
+      } else if (sql.includes('SELECT "id" FROM "technician_profiles" WHERE "user_id"')) {
+        return [{ id: profileIdByUserId.get(String(parameters[0])) }];
+      }
       return [];
     }),
   };

@@ -61,6 +61,7 @@ const makeFinanceService = (options: {
   const auditLogService = { logWithManager: vi.fn().mockResolvedValue(undefined) };
   const configService = { getString: vi.fn().mockResolvedValue('DEMO') };
   const verificationPort = { verify: vi.fn() };
+  const nestConfigService = { get: vi.fn() };
 
   const repositories = new Map<unknown, any>([
     [Invoice, invoiceRepository],
@@ -102,6 +103,8 @@ const makeFinanceService = (options: {
     supportCasesService as any,
     auditLogService as any,
     verificationPort as any,
+    nestConfigService as any,
+    {} as any,
   );
 
   return {

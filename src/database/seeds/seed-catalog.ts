@@ -1,5 +1,19 @@
 // src/database/seeds/seed-catalog.ts
 import { DataSource } from 'typeorm';
+import vietnamUnits from '../../shared/data/vietnam-administrative-units.json';
+
+interface RawWard { Code: string; FullName: string; ProvinceCode: string }
+interface RawProvince { Code: string; FullName: string; Wards: RawWard[] }
+
+function wardsOf(provinceCode: string) {
+  const province = (vietnamUnits as RawProvince[]).find((p) => p.Code === provinceCode)!;
+  return province.Wards.map((w) => ({
+    provinceCode: province.Code,
+    provinceName: province.FullName,
+    districtCode: w.Code,
+    districtName: w.FullName,
+  }));
+}
 
 export async function seedCatalog(dataSource: DataSource): Promise<void> {
   const queryRunner = dataSource.createQueryRunner();
@@ -575,41 +589,12 @@ export async function seedCatalog(dataSource: DataSource): Promise<void> {
       }
     }
 
-    // 3. Service Areas
-    const serviceAreas = [
-      // Hà Nội (01)
-      { provinceCode: '01', provinceName: 'Hà Nội', districtCode: '001', districtName: 'Quận Ba Đình' },
-      { provinceCode: '01', provinceName: 'Hà Nội', districtCode: '002', districtName: 'Quận Hoàn Kiếm' },
-      { provinceCode: '01', provinceName: 'Hà Nội', districtCode: '003', districtName: 'Quận Tây Hồ' },
-      { provinceCode: '01', provinceName: 'Hà Nội', districtCode: '004', districtName: 'Quận Long Biên' },
-      { provinceCode: '01', provinceName: 'Hà Nội', districtCode: '005', districtName: 'Quận Cầu Giấy' },
-      { provinceCode: '01', provinceName: 'Hà Nội', districtCode: '006', districtName: 'Quận Đống Đa' },
-      { provinceCode: '01', provinceName: 'Hà Nội', districtCode: '007', districtName: 'Quận Hai Bà Trưng' },
-      { provinceCode: '01', provinceName: 'Hà Nội', districtCode: '008', districtName: 'Quận Hoàng Mai' },
-      { provinceCode: '01', provinceName: 'Hà Nội', districtCode: '009', districtName: 'Quận Thanh Xuân' },
-      { provinceCode: '01', provinceName: 'Hà Nội', districtCode: '016', districtName: 'Quận Nam Từ Liêm' },
-      { provinceCode: '01', provinceName: 'Hà Nội', districtCode: '019', districtName: 'Quận Bắc Từ Liêm' },
-      { provinceCode: '01', provinceName: 'Hà Nội', districtCode: '021', districtName: 'Quận Hà Đông' },
-      // TP. Hồ Chí Minh (79)
-      { provinceCode: '79', provinceName: 'TP. Hồ Chí Minh', districtCode: '760', districtName: 'Quận 1' },
-      { provinceCode: '79', provinceName: 'TP. Hồ Chí Minh', districtCode: '761', districtName: 'Quận 12' },
-      { provinceCode: '79', provinceName: 'TP. Hồ Chí Minh', districtCode: '764', districtName: 'Quận Gò Vấp' },
-      { provinceCode: '79', provinceName: 'TP. Hồ Chí Minh', districtCode: '765', districtName: 'Quận Bình Thạnh' },
-      { provinceCode: '79', provinceName: 'TP. Hồ Chí Minh', districtCode: '766', districtName: 'Quận Tân Bình' },
-      { provinceCode: '79', provinceName: 'TP. Hồ Chí Minh', districtCode: '767', districtName: 'Quận Tân Phú' },
-      { provinceCode: '79', provinceName: 'TP. Hồ Chí Minh', districtCode: '768', districtName: 'Quận Phú Nhuận' },
-      { provinceCode: '79', provinceName: 'TP. Hồ Chí Minh', districtCode: '769', districtName: 'Thành phố Thủ Đức' },
-      { provinceCode: '79', provinceName: 'TP. Hồ Chí Minh', districtCode: '770', districtName: 'Quận 3' },
-      { provinceCode: '79', provinceName: 'TP. Hồ Chí Minh', districtCode: '771', districtName: 'Quận 10' },
-      { provinceCode: '79', provinceName: 'TP. Hồ Chí Minh', districtCode: '772', districtName: 'Quận 11' },
-      { provinceCode: '79', provinceName: 'TP. Hồ Chí Minh', districtCode: '773', districtName: 'Quận 4' },
-      { provinceCode: '79', provinceName: 'TP. Hồ Chí Minh', districtCode: '774', districtName: 'Quận 5' },
-      { provinceCode: '79', provinceName: 'TP. Hồ Chí Minh', districtCode: '775', districtName: 'Quận 6' },
-      { provinceCode: '79', provinceName: 'TP. Hồ Chí Minh', districtCode: '776', districtName: 'Quận 8' },
-      { provinceCode: '79', provinceName: 'TP. Hồ Chí Minh', districtCode: '777', districtName: 'Quận Bình Tân' },
-      { provinceCode: '79', provinceName: 'TP. Hồ Chí Minh', districtCode: '778', districtName: 'Quận 7' },
-    ];
+    // 3. Service Areas — real wards (post-2025 reform, no district layer) for the
+    // app's demo cities: Hà Nội (01) and TP.HCM (79, which now also covers old
+    // Bình Dương + Bà Rịa-Vũng Tàu).
+    const serviceAreas = [...wardsOf('01'), ...wardsOf('79')];
 
+    await queryRunner.query(`DELETE FROM "service_areas" WHERE "province_code" IN ('01', '79')`);
     for (const area of serviceAreas) {
       await queryRunner.query(
         `INSERT INTO "service_areas" ("province_code", "province_name", "district_code", "district_name", "is_active")

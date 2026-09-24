@@ -71,6 +71,9 @@ export class TechnicianProfile extends BaseEntity {
   @Column({ name: 'is_available', type: 'boolean', default: true })
   isAvailable: boolean;
 
+  @Column({ name: 'service_radius_km', type: 'decimal', precision: 5, scale: 1, default: 10 })
+  serviceRadiusKm: number;
+
   @OneToMany(() => TechnicianSkill, (skill) => skill.technician)
   skills: TechnicianSkill[];
 

@@ -14,6 +14,7 @@ import { QuotationsService } from '../quotations/quotations.service';
 import { ServiceOrdersController } from '../service-orders/service-orders.controller';
 import { ServiceOrdersService } from '../service-orders/service-orders.service';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { ThrottlerGuard } from '@nestjs/throttler';
 
 describe('Booking Swagger contract: ordered invitations', () => {
   let app: INestApplication | undefined;
@@ -33,6 +34,7 @@ describe('Booking Swagger contract: ordered invitations', () => {
       .overrideGuard(PermissionGuard).useValue({ canActivate: () => true })
       .overrideGuard(JwtAuthGuard).useValue({ canActivate: () => true })
       .overrideGuard(RolesGuard).useValue({ canActivate: () => true })
+      .overrideGuard(ThrottlerGuard).useValue({ canActivate: () => true })
       .compile();
     app = module.createNestApplication();
     app.setGlobalPrefix('api/v1');

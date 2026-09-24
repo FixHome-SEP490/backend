@@ -5,6 +5,7 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Body,
   Param,
   Query,
@@ -29,13 +30,14 @@ import {
   ApiServiceUnavailableResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionGuard } from '../../common/guards/permission.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../shared/enums';
-import { CheckInDto, UpdateLocationDto, EvidenceDto, CompletionRequestDto, CompletionConfirmationDto, ReasonDto } from './order-command.dto';
+import { CheckInDto, UpdateLocationDto, EvidenceDto, CompletionRequestDto, CompletionConfirmationDto, ReasonDto, TrackOrderDto } from './order-command.dto';
 import { ServiceOrdersService } from './service-orders.service';
 import {
   ServiceOrderStatus,
@@ -56,6 +58,16 @@ export class ServiceOrdersController {
   constructor(private readonly serviceOrdersService: ServiceOrdersService) {}
 
   // ── 1. Order Queries ──
+
+  @Post('service-orders/public/track')
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Public guest lookup by order code + registered phone (no auth)' })
+  async trackPublic(@Body() dto: TrackOrderDto) {
+    const data = await this.serviceOrdersService.trackPublic(dto.orderCode, dto.phone);
+    return { data };
+  }
 
   @Get('service-orders')
   @Roles(Role.ADMIN, Role.SERVICE_MANAGER)
@@ -207,6 +219,21 @@ export class ServiceOrdersController {
     return { data: evidence };
   }
 
+  @Delete('service-orders/:id/evidence/:evidenceId')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('evidence:upload')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Technician: delete evidence photo' })
+  async deleteEvidence(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('evidenceId', ParseUUIDPipe) evidenceId: string,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    await this.serviceOrdersService.deleteEvidence(id, evidenceId, req.user);
+    return { data: { success: true } };
+  }
+
   @Post('service-orders/:id/start-repair')
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('order:update_status')
@@ -351,6 +378,25 @@ export class ServiceOrdersController {
   ) {
     const payment = await this.serviceOrdersService.payInvoice(id, req.user, dto);
     return { data: payment };
+  }
+
+  @Post('invoices/:id/vnpay-url')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('invoice:pay_own')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Create a VNPay redirect URL for an unpaid invoice' })
+  @ApiServiceUnavailableResponse({ description: 'VNPay is not configured or not LIVE' })
+  async createInvoiceVnpayUrl(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: { user: { id: string; role: string }; ip: string },
+  ) {
+    const result = await this.serviceOrdersService.createInvoiceVnpayUrl(
+      id,
+      req.user,
+      req.ip,
+    );
+    return { data: result };
   }
 
   @Get('service-orders/:id/warranties')

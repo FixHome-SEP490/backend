@@ -30,7 +30,7 @@ export default new DataSource({
   ssl:
     process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false,
   entities: [__dirname + '/../**/*.entity{.ts,.js}'],
-  migrations: [__dirname + '/migrations/*{.ts,.js}'],
+  migrations: [__dirname + '/migrations/!(*.spec){.ts,.js}'],
   migrationsTableName: 'migrations',
   synchronize: false,
   logging: false,

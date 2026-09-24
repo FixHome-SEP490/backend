@@ -2,6 +2,14 @@ import { Transform } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsBoolean, IsDateString, IsEnum, IsInt, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, IsUrl, Max, MaxLength, Min } from 'class-validator';
 import { EvidenceType } from '../../shared/enums';
+import { Trim, Phone } from '../../shared/validation/input.transforms';
+
+export class TrackOrderDto {
+  @ApiProperty({ example: 'FH-8821', description: 'Service order code.' })
+  @Trim() @IsString() @IsNotEmpty() @MaxLength(50) orderCode: string;
+  @ApiProperty({ example: '0901234567', description: 'Phone number registered on the booking.' })
+  @Phone() @IsString() @IsNotEmpty() @MaxLength(20) phone: string;
+}
 
 export class CheckInDto {
   @ApiProperty({ example: 10.7769, minimum: -90, maximum: 90, description: 'Technician GPS latitude; compared with the saved repair address.' })

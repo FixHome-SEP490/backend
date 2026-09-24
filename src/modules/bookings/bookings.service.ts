@@ -20,7 +20,6 @@ import { BookingStatus, Role, ServicePricingMode, UrgencyLevel } from '../../sha
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { TechnicianSkill } from '../technicians/entities/technician-skill.entity';
-import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
 
 export { CreateBookingDto } from './booking.dto';
 import { AttachBookingMediaDto, CreateBookingDto, RebookDto, validBookingWindow } from './booking.dto';
@@ -78,8 +77,6 @@ export class BookingsService {
     private readonly techProfileRepo: Repository<TechnicianProfile>,
     @InjectRepository(TechnicianSkill)
     private readonly techSkillRepo: Repository<TechnicianSkill>,
-    @InjectRepository(TechnicianServiceArea)
-    private readonly techAreaRepo: Repository<TechnicianServiceArea>,
     private readonly auditLogService: AuditLogService,
     private readonly dataSource: DataSource,
     private readonly privateBookingPhotoClaimService: PrivateBookingPhotoClaimService,
@@ -481,7 +478,7 @@ export class BookingsService {
 
   /**
    * Get technician candidates for a booking.
-   * Hard-filter by skill + area, then rank by rating, reliability.
+   * Hard-filter by skill + technician's own service radius, then rank by distance, rating, reliability.
    */
   async getCandidates(
     bookingId: string,
@@ -496,14 +493,7 @@ export class BookingsService {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
     }
 
-    // Service-area prefilter (province/district match, incl. legacy district aliases).
-    // Optimization only: technicianEligibility() below remains the final authority.
-    const targetArea = resolveServiceArea({
-      province: booking.provinceSnapshot,
-      district: booking.districtSnapshot,
-    });
-
-    // Find technicians with the matching skill in the booking's service area
+    // Find technicians with the matching skill; the location/radius hard-filter below decides who's shown.
     const qb = this.techProfileRepo
       .createQueryBuilder('tp')
       .innerJoinAndSelect('tp.user', 'user')
@@ -516,12 +506,6 @@ export class BookingsService {
           skillVerified: 'verified',
         },
       )
-      .innerJoin(
-        'tp.serviceAreas',
-        'serviceArea',
-        'serviceArea.provinceCode = :provinceCode AND serviceArea.districtCode IN (:...districtCodes)',
-        { provinceCode: targetArea.provinceCode, districtCodes: targetArea.districtAliasCodes },
-      )
       .where('tp.isAvailable = :available', { available: true })
       .andWhere('tp.verificationStatus = :verified', { verified: 'verified' })
       .andWhere('(tp.workSuspendedUntil IS NULL OR tp.workSuspendedUntil < :now)', {
@@ -529,11 +513,15 @@ export class BookingsService {
       })
       .andWhere('user.status = :active', { active: 'active' });
 
-    const ranked = await qb.getMany();
+    const withSkill = await qb.getMany();
 
-    // Nearest-first: pull each technician's default work address to compute distance
-    // from the booking's coordinate snapshot (both may be missing -> distance omitted).
-    const userIds = ranked.map((tp) => tp.userId);
+    // Location/radius hard-filter (optimization only: technicianEligibility() below remains
+    // the final authority). Pull each technician's default address to compute distance from
+    // the booking's coordinate snapshot; a technician without a set location, radius, or a
+    // booking without coordinates never matches — this is intentionally fail-closed.
+    // ponytail: filtered in memory after fetching every skilled technician — move to a SQL/
+    // PostGIS radius filter if the technician count makes this scan too slow.
+    const userIds = withSkill.map((tp) => tp.userId);
     const workAddresses = userIds.length
       ? await this.addressRepo.find({ where: { userId: In(userIds), isDefault: true } })
       : [];
@@ -542,14 +530,15 @@ export class BookingsService {
     const bookingLat = booking.latitudeSnapshot != null ? Number(booking.latitudeSnapshot) : null;
     const bookingLng = booking.longitudeSnapshot != null ? Number(booking.longitudeSnapshot) : null;
     const distanceByProfileId = new Map<string, number | null>();
-    for (const tp of ranked) {
+    const ranked = withSkill.filter((tp) => {
+      if (bookingLat == null || bookingLng == null) return false;
       const addr = addressByUserId.get(tp.userId);
-      const distance =
-        bookingLat != null && bookingLng != null && addr?.lat != null && addr?.lng != null
-          ? Math.round(haversineKm(bookingLat, bookingLng, Number(addr.lat), Number(addr.lng)) * 10) / 10
-          : null;
+      if (addr?.lat == null || addr?.lng == null) return false;
+      const distance = Math.round(haversineKm(bookingLat, bookingLng, Number(addr.lat), Number(addr.lng)) * 10) / 10;
+      if (distance > Number(tp.serviceRadiusKm)) return false;
       distanceByProfileId.set(tp.id, distance);
-    }
+      return true;
+    });
 
     // Spec v1.2: Priority Boost first, then nearest distance, then rating and reliability
     const now = new Date();

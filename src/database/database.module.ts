@@ -23,7 +23,7 @@ import { ConfigService } from '@nestjs/config';
         synchronize: false,
         logging: false,
         // Migration config
-        migrations: [__dirname + '/migrations/*{.ts,.js}'],
+        migrations: [__dirname + '/migrations/!(*.spec){.ts,.js}'],
         migrationsTableName: 'migrations',
       }),
     }),

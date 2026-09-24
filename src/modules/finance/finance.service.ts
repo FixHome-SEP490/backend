@@ -1,5 +1,9 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { HttpService } from '@nestjs/axios';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
+import { randomUUID } from 'crypto';
+import { firstValueFrom, timeout } from 'rxjs';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes, FINANCE_COMMISSION_RATE } from '../../shared/constants';
@@ -50,6 +54,7 @@ import {
 } from './dto';
 import { PaymentVerificationPort, PAYMENT_VERIFICATION_PORT } from './payment-verification.port';
 import { SupportCasesService } from '../support-cases/support-cases.service';
+import { buildPaymentUrl, buildQueryDrRequest, verifySignature } from './vnpay/vnpay.util';
 
 export interface FinanceActor {
   id: string;
@@ -58,6 +63,8 @@ export interface FinanceActor {
 
 @Injectable()
 export class FinanceService {
+  private readonly logger = new Logger(FinanceService.name);
+
   constructor(
     @InjectRepository(Invoice)
     private readonly invoiceRepository: Repository<Invoice>,
@@ -81,6 +88,8 @@ export class FinanceService {
     private readonly auditLogService: AuditLogService,
     @Inject(PAYMENT_VERIFICATION_PORT)
     private readonly paymentVerificationPort: PaymentVerificationPort,
+    private readonly config: ConfigService,
+    private readonly httpService: HttpService,
   ) {}
 
   async getInvoice(
@@ -205,6 +214,210 @@ export class FinanceService {
       );
     }
     return toPaymentResponse(applied);
+  }
+
+  async createVnpayPaymentUrl(
+    invoiceId: string,
+    actor: FinanceActor,
+    ipAddr: string,
+  ): Promise<{ paymentUrl: string }> {
+    if (actor.role !== Role.CUSTOMER) {
+      throw new BusinessException(
+        ErrorCodes.OWNERSHIP_DENIED,
+        'Only the invoice customer can initiate payment',
+      );
+    }
+    if ((await this.getPaymentMode()) !== PaymentMode.LIVE) {
+      throw new BusinessException(
+        ErrorCodes.PAYMENT_PROVIDER_UNAVAILABLE,
+        'Payment mode is not LIVE',
+      );
+    }
+    const tmnCode = this.config.get<string>('VNPAY_TMN_CODE');
+    const hashSecret = this.config.get<string>('VNPAY_HASH_SECRET');
+    const vnpayPaymentUrl = this.config.get<string>('VNPAY_PAYMENT_URL');
+    const returnUrl = this.config.get<string>('VNPAY_RETURN_URL');
+    if (!tmnCode || !hashSecret || !vnpayPaymentUrl || !returnUrl) {
+      throw new BusinessException(
+        ErrorCodes.PAYMENT_PROVIDER_UNAVAILABLE,
+        'VNPay is not configured',
+      );
+    }
+
+    const payment = await this.dataSource.transaction(async (manager) => {
+      const invoiceRepository = manager.getRepository(Invoice);
+      const paymentRepository = manager.getRepository(Payment);
+      const invoice = await invoiceRepository.findOne({
+        where: { id: invoiceId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!invoice) {
+        throw new BusinessException(ErrorCodes.NOT_FOUND, 'Invoice not found');
+      }
+      if (invoice.paymentStatus === PaymentStatus.PAID) {
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Invoice is already paid');
+      }
+      const order = await manager.findOne(ServiceOrder, {
+        where: { id: invoice.serviceOrderId },
+      });
+      if (!order) {
+        throw new BusinessException(ErrorCodes.NOT_FOUND, 'Service order not found');
+      }
+      const booking = await manager.findOne(Booking, {
+        where: { id: order.bookingId },
+      });
+      if (!booking || booking.customerId !== actor.id) {
+        throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Invoice not found');
+      }
+
+      const txnRef = randomUUID().replace(/-/g, '');
+      const created = paymentRepository.create({
+        invoiceId: invoice.id,
+        commissionDueId: null,
+        purpose: PaymentPurpose.INVOICE,
+        amount: this.requireWholeVnd(invoice.grandTotal, 'Invoice amount'),
+        currency: 'VND',
+        mode: PaymentMode.LIVE,
+        provider: 'vnpay',
+        status: PaymentAttemptStatus.PENDING,
+        idempotencyKey: txnRef,
+        requestedByUserId: actor.id,
+        failureCode: null,
+        requestedAt: new Date(),
+        verifiedAt: null,
+      });
+      return paymentRepository.save(created);
+    });
+
+    return {
+      paymentUrl: buildPaymentUrl({
+        paymentUrl: vnpayPaymentUrl,
+        tmnCode,
+        hashSecret,
+        amount: Number(payment.amount),
+        txnRef: payment.idempotencyKey,
+        orderInfo: `Thanh toan hoa don ${payment.invoiceId}`,
+        returnUrl,
+        ipAddr,
+      }),
+    };
+  }
+
+  /** VNPay server-to-server notification — the sole source of truth for marking an invoice paid. */
+  async handleVnpayIpn(
+    query: Record<string, string>,
+  ): Promise<{ RspCode: string; Message: string }> {
+    const hashSecret = this.config.get<string>('VNPAY_HASH_SECRET');
+    if (!hashSecret || !verifySignature(query, hashSecret)) {
+      return { RspCode: '97', Message: 'Invalid signature' };
+    }
+    const payment = await this.paymentRepository.findOne({
+      where: { idempotencyKey: query.vnp_TxnRef, provider: 'vnpay' },
+    });
+    if (!payment) {
+      return { RspCode: '01', Message: 'Order not found' };
+    }
+    if (payment.status !== PaymentAttemptStatus.PENDING) {
+      return { RspCode: '02', Message: 'Order already confirmed' };
+    }
+    const vnpAmount = Number(query.vnp_Amount) / 100;
+    if (!Number.isSafeInteger(vnpAmount) || vnpAmount !== Number(payment.amount)) {
+      return { RspCode: '04', Message: 'Invalid amount' };
+    }
+
+    if (query.vnp_ResponseCode === '00' && query.vnp_TransactionStatus === '00') {
+      await this.applyVerification(
+        payment,
+        {
+          outcome: 'verified',
+          amount: vnpAmount,
+          currency: 'VND',
+          providerReference: query.vnp_TransactionNo || query.vnp_TxnRef,
+        },
+        PaymentMode.LIVE,
+      );
+    } else {
+      await this.dataSource.transaction(async (manager) => {
+        const repository = manager.getRepository(Payment);
+        const current = await repository.findOne({
+          where: { id: payment.id },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (current && current.status === PaymentAttemptStatus.PENDING) {
+          current.status = PaymentAttemptStatus.FAILED;
+          current.failureCode = `VNPAY_${query.vnp_ResponseCode ?? 'UNKNOWN'}`;
+          await repository.save(current);
+        }
+      });
+    }
+    return { RspCode: '00', Message: 'Confirm Success' };
+  }
+
+  /**
+   * Browser return leg. Does not trust the redirect alone to mark anything paid — but
+   * since IPN is an async webhook that a non-public backend (e.g. localhost in local
+   * dev, or a slow network in prod) may never receive, this also makes one best-effort
+   * server-to-server "querydr" call to VNPay to reconcile the payment immediately, using
+   * the exact same `applyVerification` authority path as the IPN handler above.
+   */
+  async handleVnpayReturn(
+    query: Record<string, string>,
+  ): Promise<{ ok: boolean; invoiceId: string | null; serviceOrderId: string | null }> {
+    const hashSecret = this.config.get<string>('VNPAY_HASH_SECRET');
+    if (!hashSecret || !verifySignature(query, hashSecret)) {
+      return { ok: false, invoiceId: null, serviceOrderId: null };
+    }
+    const payment = await this.paymentRepository.findOne({
+      where: { idempotencyKey: query.vnp_TxnRef, provider: 'vnpay' },
+    });
+    if (!payment) {
+      return { ok: false, invoiceId: null, serviceOrderId: null };
+    }
+    if (query.vnp_ResponseCode === '00' && payment.status === PaymentAttemptStatus.PENDING) {
+      await this.reconcileVnpayPayment(payment, hashSecret).catch((error) => {
+        this.logger.warn(`VNPay querydr reconciliation failed: ${(error as Error)?.message}`);
+      });
+    }
+    const invoice = payment.invoiceId
+      ? await this.invoiceRepository.findOneBy({ id: payment.invoiceId })
+      : null;
+    return {
+      ok: query.vnp_ResponseCode === '00',
+      invoiceId: payment.invoiceId ?? null,
+      serviceOrderId: invoice?.serviceOrderId ?? null,
+    };
+  }
+
+  /** Best-effort synchronous reconciliation for the return leg; IPN remains authoritative for async delivery. */
+  private async reconcileVnpayPayment(payment: Payment, hashSecret: string): Promise<void> {
+    const tmnCode = this.config.get<string>('VNPAY_TMN_CODE');
+    const queryDrUrl = this.config.get<string>('VNPAY_QUERYDR_URL');
+    if (!tmnCode || !queryDrUrl) return;
+    const body = buildQueryDrRequest({
+      tmnCode,
+      hashSecret,
+      txnRef: payment.idempotencyKey,
+      orderInfo: `Thanh toan hoa don ${payment.invoiceId}`,
+      transactionDate: payment.requestedAt,
+      ipAddr: '127.0.0.1',
+    });
+    const response = await firstValueFrom(
+      this.httpService.post(queryDrUrl, body).pipe(timeout(8000)),
+    );
+    const data = response.data as Record<string, string>;
+    if (data?.vnp_ResponseCode === '00' && data?.vnp_TransactionStatus === '00') {
+      const vnpAmount = Number(data.vnp_Amount) / 100;
+      await this.applyVerification(
+        payment,
+        {
+          outcome: 'verified',
+          amount: vnpAmount,
+          currency: 'VND',
+          providerReference: data.vnp_TransactionNo || payment.idempotencyKey,
+        },
+        PaymentMode.LIVE,
+      );
+    }
   }
 
   async declareCashSettlement(
@@ -883,7 +1096,45 @@ export class FinanceService {
         const order = await manager.findOne(ServiceOrder, {
           where: { id: invoice.serviceOrderId },
         });
-        if (order) await this.ensureFinancialDues(manager, invoice, order, null, now);
+        if (order) {
+          await this.ensureFinancialDues(manager, invoice, order, null, now);
+          const confirmation = await manager.findOne(CustomerServiceConfirmation, {
+            where: { serviceOrderId: invoice.serviceOrderId },
+          });
+          if (confirmation && order.status === ServiceOrderStatus.UNDER_REPAIR) {
+            if (ServiceOrderStateMachine.canTransition(order.status, ServiceOrderStatus.COMPLETED)) {
+              order.status = ServiceOrderStatus.COMPLETED;
+              order.completedAt = now;
+              await orderRepository.save(order);
+              await manager.insert(OrderStatusHistory, {
+                serviceOrderId: order.id,
+                fromStatus: ServiceOrderStatus.UNDER_REPAIR,
+                toStatus: ServiceOrderStatus.COMPLETED,
+                actorUserId: current.requestedByUserId,
+                actorRole: Role.CUSTOMER,
+                reason: 'Work, customer confirmation and payment satisfied',
+              });
+              const items = await manager.find(InvoiceItem, { where: { invoiceId: invoice.id } });
+              for (const item of items) {
+                if (
+                  item.warrantyDaysSnapshot <= 0 ||
+                  (item.partSource === PartSource.TECHNICIAN &&
+                    item.partWarrantyOption !== PartWarrantyOption.PAID_WARRANTY)
+                ) {
+                  continue;
+                }
+                await manager.insert(WarrantyCoverage, {
+                  serviceOrderId: order.id,
+                  invoiceItemId: item.id,
+                  warrantyDaysSnapshot: item.warrantyDaysSnapshot,
+                  startsAt: now,
+                  expiresAt: new Date(now.getTime() + item.warrantyDaysSnapshot * 86400000),
+                  status: WarrantyStatus.ACTIVE,
+                });
+              }
+            }
+          }
+        }
       } else if (current.purpose === PaymentPurpose.COMMISSION_DUE && current.commissionDueId) {
         const dueRepository = manager.getRepository(CommissionDue);
         const due = await dueRepository.findOne({

@@ -143,7 +143,8 @@ describe('WEB-ACCEPT isolated real HTTP/JWT/PostgreSQL (three synthetic actors)'
       await database.getRepository('TechnicianProfile').update(profile.id, { verificationStatus: 'verified', isAvailable: true });
       await save('TechnicianSkill', { technicianId: profile.id, serviceId: service.id,
         listedLaborPrice: 100000, verificationStatus: 'verified' });
-      await save('TechnicianServiceArea', { technicianId: profile.id, provinceCode: 'P1', districtCode: 'D1' });
+      await save('Address', { userId: actor.id, line1: 'Synthetic tech shop',
+        district: 'D1', province: 'P1', lat: 10.77, lng: 106.69, isDefault: true });
       for (let dayOfWeek = 0; dayOfWeek < 7; dayOfWeek++) {
         await save('TechnicianSchedule', { technicianId: profile.id, dayOfWeek, startTime: '08:00', endTime: '18:00' });
       }
@@ -236,9 +237,9 @@ describe('WEB-ACCEPT isolated real HTTP/JWT/PostgreSQL (three synthetic actors)'
         { verificationStatus: 'verified', isAvailable: true });
       await save('TechnicianSkill', { technicianId: profile.id, serviceId: service.id,
         listedLaborPrice: 100000, verificationStatus: 'verified' });
-      if (!await database.getRepository('TechnicianServiceArea').count({ where: { technicianId: profile.id } })) {
-        await save('TechnicianServiceArea', { technicianId: profile.id,
-          provinceCode: 'P1', districtCode: 'D1' });
+      if (!await database.getRepository('Address').count({ where: { userId: actor.id, isDefault: true } })) {
+        await save('Address', { userId: actor.id, line1: 'Synthetic tech shop',
+          district: 'D1', province: 'P1', lat: 10.77, lng: 106.69, isDefault: true });
       }
       if (!await database.getRepository('TechnicianSchedule').count({ where: { technicianId: profile.id } })) {
         for (let dayOfWeek = 0; dayOfWeek < 7; dayOfWeek++) {
