@@ -1,7 +1,7 @@
 // src/modules/part-requests/part-requests.service.ts
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository, Not } from 'typeorm';
 import * as crypto from 'crypto';
 import {
   PartRequestStatus,
@@ -21,6 +21,7 @@ import { PartRequest } from './entities/part-request.entity';
 import { PartRequestItem } from './entities/part-request-item.entity';
 import { FixHomePart } from '../parts-catalog/entities/fixhome-part.entity';
 import { User } from '../users/entities/user.entity';
+import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { PartRequestStateMachine } from './part-request-state-machine';
 import {
   CreatePartRequestDto,
@@ -46,6 +47,29 @@ export class PartRequestsService {
     private readonly auditLogService: AuditLogService,
     private readonly notificationsService: NotificationsService,
   ) {}
+
+  // Always lock the order before its request, matching cancellation and invoicing.
+  // Do not lock a LEFT JOIN of items: PostgreSQL forbids locking its nullable side.
+  private async lockRequest(manager: EntityManager, id: string, actor: { id: string; role: string }) {
+    const reference = await manager.findOne(PartRequest, { where: { id } });
+    if (!reference) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Part request not found');
+    const order = await authorizeOrder(manager, reference.serviceOrderId, actor, 'read', true);
+    if ([ServiceOrderStatus.CANCELLED, ServiceOrderStatus.COMPLETED].includes(order.status) || order.completionRequestedAt) {
+      throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Parts are immutable after order closure or completion request');
+    }
+    const request = await manager.findOneOrFail(PartRequest, { where: { id }, lock: { mode: 'pessimistic_write' } });
+    if (actor.role === Role.TECHNICIAN && request.technicianId !== actor.id) throw new ForbiddenException('This part request belongs to another technician');
+    request.items = await manager.find(PartRequestItem, { where: { partRequestId: id } });
+    return { request, order };
+  }
+
+  private visible(request: PartRequest, actor: { role: string }): PartRequest {
+    // Only the handover operator may retrieve the token. The receiver must obtain it at handover.
+    if (actor.role !== Role.SERVICE_MANAGER) request.qrToken = null;
+    request.shippingFee = Number(request.shippingFee);
+    for (const item of request.items || []) item.unitPriceSnapshot = Number(item.unitPriceSnapshot);
+    return request;
+  }
 
   /**
    * Flow 1: Technician creates a Pre-Repair Parts Request
@@ -82,13 +106,11 @@ export class PartRequestsService {
         where: {
           serviceOrderId: orderId,
           requestType: PartRequestType.PRE_REPAIR,
+          status: Not(PartRequestStatus.CANCELLED),
         },
       });
 
-      if (
-        existingActive &&
-        existingActive.status !== PartRequestStatus.CANCELLED
-      ) {
+      if (existingActive) {
         throw new BusinessException(
           ErrorCodes.CONFLICT,
           'A pre-repair parts request already exists for this order',
@@ -109,6 +131,7 @@ export class PartRequestsService {
           );
         }
 
+        if (!Number.isSafeInteger(Number(part.sellingPrice))) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Billable catalog price must be whole VND');
         itemsToInsert.push({
           partCatalogId: part.id,
           partSource: PartSource.FIXHOME,
@@ -207,6 +230,15 @@ export class PartRequestsService {
     );
     if (fixHomeItems.length === 0) return null;
 
+    if (!await manager.findOneBy(TechnicianAssignment, { serviceOrderId: orderId, technicianId, isActive: true })) {
+      throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Additional cost technician is no longer assigned to this order');
+    }
+
+    for (const item of fixHomeItems) {
+      if (!item.partCatalogId || !await manager.findOne(FixHomePart, { where: { id: item.partCatalogId, isActive: true } })) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Approved part is no longer active in FixHome catalog');
+      }
+    }
     const partRequest = manager.create(PartRequest, {
       serviceOrderId: orderId,
       technicianId,
@@ -263,12 +295,9 @@ export class PartRequestsService {
     actor: { id: string; role: string },
     dto?: MarkReadyDto,
   ): Promise<PartRequest> {
+    if (actor.role !== Role.SERVICE_MANAGER) throw new ForbiddenException('Service Manager role required');
     return this.dataSource.transaction(async (manager: EntityManager) => {
-      const request = await manager.findOne(PartRequest, {
-        where: { id: requestId },
-        relations: ['items'],
-        lock: { mode: 'pessimistic_write' },
-      });
+      const { request } = await this.lockRequest(manager, requestId, actor);
 
       if (!request) {
         throw new BusinessException(
@@ -345,12 +374,9 @@ export class PartRequestsService {
     actor: { id: string; role: string },
     dto?: MarkDeliveringDto,
   ): Promise<PartRequest> {
+    if (actor.role !== Role.SERVICE_MANAGER) throw new ForbiddenException('Service Manager role required');
     return this.dataSource.transaction(async (manager: EntityManager) => {
-      const request = await manager.findOne(PartRequest, {
-        where: { id: requestId },
-        relations: ['items'],
-        lock: { mode: 'pessimistic_write' },
-      });
+      const { request } = await this.lockRequest(manager, requestId, actor);
 
       if (!request) {
         throw new BusinessException(
@@ -380,8 +406,8 @@ export class PartRequestsService {
         );
       }
 
-      if (dto?.shippingFee !== undefined) {
-        request.shippingFee = dto.shippingFee;
+      if (dto?.shippingFee !== undefined && dto.shippingFee !== Number(request.shippingFee)) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Approved shipping fee is immutable');
       }
 
       request.status = PartRequestStatus.DELIVERING;
@@ -420,13 +446,27 @@ export class PartRequestsService {
     });
   }
 
+  async regenerateQr(requestId: string, actor: { id: string; role: string }): Promise<PartRequest> {
+    if (actor.role !== Role.SERVICE_MANAGER) throw new ForbiddenException('Service Manager role required');
+    return this.dataSource.transaction(async manager => {
+      const { request } = await this.lockRequest(manager, requestId, actor);
+      if (![PartRequestStatus.READY, PartRequestStatus.DELIVERING].includes(request.status) || request.receivedAt) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'QR can only be rotated before handover');
+      }
+      request.qrToken = `FH-PR-${request.id.slice(0, 8)}-${crypto.randomBytes(16).toString('hex')}`;
+      request.qrGeneratedAt = new Date();
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'PART_REQUEST_QR_ROTATED', resourceType: 'part_request', resourceId: requestId });
+      return manager.save(PartRequest, request);
+    });
+  }
+
   /**
    * Flow 1 & 2: Technician receives parts via QR code scanning
    * Backend validates:
    * 1. Request exists
    * 2. Request belongs to this technician
    * 3. Request belongs to an active order
-   * 4. Request status is READY (for PICKUP) or READY/DELIVERING (for DELIVERY)
+   * 4. Request status is READY (for PICKUP) or DELIVERING (for DELIVERY)
    * 5. QR token matches and is not expired (valid for 48h)
    * 6. Request has not already been received
    */
@@ -435,12 +475,9 @@ export class PartRequestsService {
     dto: ReceivePartRequestDto,
     actor: { id: string; role: string },
   ): Promise<PartRequest> {
+    if (actor.role !== Role.TECHNICIAN) throw new ForbiddenException('Technician role required');
     return this.dataSource.transaction(async (manager: EntityManager) => {
-      const request = await manager.findOne(PartRequest, {
-        where: { id: requestId },
-        relations: ['items'],
-        lock: { mode: 'pessimistic_write' },
-      });
+      const { request } = await this.lockRequest(manager, requestId, actor);
 
       if (!request) {
         throw new BusinessException(
@@ -489,6 +526,7 @@ export class PartRequestsService {
       }
 
       // Token expiry check: 48 hours
+      if (!request.qrGeneratedAt) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'QR token has no issue date');
       if (request.qrGeneratedAt) {
         const expiryMs = 48 * 60 * 60 * 1000;
         if (Date.now() - new Date(request.qrGeneratedAt).getTime() > expiryMs) {
@@ -502,6 +540,7 @@ export class PartRequestsService {
       // Mark RECEIVED
       request.status = PartRequestStatus.RECEIVED;
       request.receivedAt = new Date();
+      request.qrToken = null;
 
       const saved = await manager.save(PartRequest, request);
 
@@ -550,10 +589,11 @@ export class PartRequestsService {
     dto: UpdateItemUsageDto,
     actor: { id: string; role: string },
   ): Promise<PartRequestItem> {
+    if (actor.role !== Role.TECHNICIAN) throw new ForbiddenException('Technician role required');
+    if (![PartUsageStatus.USED, PartUsageStatus.RETURNED].includes(dto.usageStatus)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Usage must be USED or RETURNED');
     return this.dataSource.transaction(async (manager: EntityManager) => {
-      const request = await manager.findOne(PartRequest, {
-        where: { id: requestId },
-      });
+      const { request, order } = await this.lockRequest(manager, requestId, actor);
+      if (order.status !== ServiceOrderStatus.UNDER_REPAIR) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Item usage requires UNDER_REPAIR');
 
       if (!request) {
         throw new BusinessException(
@@ -562,7 +602,7 @@ export class PartRequestsService {
         );
       }
 
-      if (request.technicianId !== actor.id && actor.role !== Role.ADMIN) {
+      if (request.technicianId !== actor.id) {
         throw new BusinessException(
           ErrorCodes.OWNERSHIP_DENIED,
           'Access denied to this part request',
@@ -608,7 +648,7 @@ export class PartRequestsService {
 
   /**
    * Cancel a Part Request
-   * SM / Admin can cancel any non-terminal request
+   * SM can cancel unreceived requests
    * Technician can only cancel if still REQUESTED
    */
   async cancelPartRequest(
@@ -616,12 +656,9 @@ export class PartRequestsService {
     actor: { id: string; role: string },
     reason?: string,
   ): Promise<PartRequest> {
+    if (![Role.SERVICE_MANAGER, Role.TECHNICIAN].includes(actor.role as Role)) throw new ForbiddenException('Operation not permitted');
     return this.dataSource.transaction(async (manager: EntityManager) => {
-      const request = await manager.findOne(PartRequest, {
-        where: { id: requestId },
-        relations: ['items'],
-        lock: { mode: 'pessimistic_write' },
-      });
+      const { request } = await this.lockRequest(manager, requestId, actor);
 
       if (!request) {
         throw new BusinessException(
@@ -647,8 +684,8 @@ export class PartRequestsService {
       }
 
       if (
-        request.status === PartRequestStatus.COMPLETED ||
-        request.status === PartRequestStatus.CANCELLED
+        !PartRequestStateMachine.canTransition(request.status, PartRequestStatus.CANCELLED, actor.role as Role) ||
+        request.status === PartRequestStatus.RECEIVED
       ) {
         throw new BusinessException(
           ErrorCodes.ORDER_INVALID_TRANSITION,
@@ -659,6 +696,7 @@ export class PartRequestsService {
       const previous = request.status;
       request.status = PartRequestStatus.CANCELLED;
       request.cancelledAt = new Date();
+      request.qrToken = null;
 
       const saved = await manager.save(PartRequest, request);
 
@@ -687,11 +725,12 @@ export class PartRequestsService {
     return this.dataSource.transaction(async (manager: EntityManager) => {
       await authorizeOrder(manager, orderId, actor, 'read');
 
-      return manager.find(PartRequest, {
-        where: { serviceOrderId: orderId },
+      const requests = await manager.find(PartRequest, {
+        where: { serviceOrderId: orderId, ...(actor.role === Role.TECHNICIAN ? { technicianId: actor.id } : {}) },
         relations: ['items'],
         order: { createdAt: 'DESC' },
       });
+      return requests.map(request => this.visible(request, actor));
     });
   }
 
@@ -715,6 +754,7 @@ export class PartRequestsService {
     }
 
     // Role validation
+    await authorizeOrder(this.dataSource.manager, request.serviceOrderId, actor);
     if (
       actor.role === Role.TECHNICIAN &&
       request.technicianId !== actor.id
@@ -722,7 +762,7 @@ export class PartRequestsService {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Access denied');
     }
 
-    return request;
+    return this.visible(request, actor);
   }
 
   /**
@@ -732,6 +772,8 @@ export class PartRequestsService {
     query: QueryPartRequestsDto,
     actor: { id: string; role: string },
   ): Promise<{ data: PartRequest[]; total: number }> {
+    if (![Role.SERVICE_MANAGER, Role.ADMIN, Role.TECHNICIAN].includes(actor.role as Role)) throw new ForbiddenException('Operation not permitted');
+    if (query.createdFrom && query.createdTo && new Date(query.createdFrom) > new Date(query.createdTo)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid date range');
     const page = query.page || 1;
     const pageSize = query.pageSize || 20;
 
@@ -745,6 +787,11 @@ export class PartRequestsService {
     if (query.status) {
       qb.andWhere('pr.status = :status', { status: query.status });
     }
+    if (query.requestType) qb.andWhere('pr.requestType = :requestType', { requestType: query.requestType });
+    if (query.fulfillmentMethod) qb.andWhere('pr.fulfillmentMethod = :fulfillmentMethod', { fulfillmentMethod: query.fulfillmentMethod });
+    if (query.createdFrom) qb.andWhere('pr.createdAt >= :createdFrom', { createdFrom: query.createdFrom });
+    if (query.createdTo) qb.andWhere('pr.createdAt <= :createdTo', { createdTo: query.createdTo });
+    if (query.search) qb.andWhere('(CAST(pr.id AS text) ILIKE :search OR CAST(pr.serviceOrderId AS text) ILIKE :search OR CAST(pr.technicianId AS text) ILIKE :search OR EXISTS (SELECT 1 FROM part_request_items item WHERE item.part_request_id = pr.id AND item.part_name_snapshot ILIKE :search))', { search: `%${query.search}%` });
 
     if (query.serviceOrderId) {
       qb.andWhere('pr.serviceOrderId = :orderId', {
@@ -761,10 +808,11 @@ export class PartRequestsService {
     // If technician, force filter to their own
     if (actor.role === Role.TECHNICIAN) {
       qb.andWhere('pr.technicianId = :selfId', { selfId: actor.id });
+      qb.andWhere('EXISTS (SELECT 1 FROM technician_assignments a WHERE a.service_order_id = pr.service_order_id AND a.technician_id = :selfId AND a.is_active = true)');
     }
 
     const [data, total] = await qb.getManyAndCount();
-    return { data, total };
+    return { data: data.map(request => this.visible(request, actor)), total };
   }
 
   /**
@@ -789,6 +837,7 @@ export class PartRequestsService {
       ) {
         pr.status = PartRequestStatus.CANCELLED;
         pr.cancelledAt = new Date();
+        pr.qrToken = null;
         await manager.save(PartRequest, pr);
 
         await this.auditLogService.logWithManager(manager, {

@@ -7,7 +7,7 @@ import { PartRequestStatus, FulfillmentMethod, Role } from '../../shared/enums';
  * Lifecycle:
  *   REQUESTED → READY → RECEIVED → COMPLETED
  *   REQUESTED → READY → DELIVERING → RECEIVED → COMPLETED  (delivery)
- *   Any non-terminal → CANCELLED
+ *   Any unreceived → CANCELLED
  *
  * Terminal states: COMPLETED, CANCELLED
  */
@@ -28,7 +28,6 @@ export class PartRequestStateMachine {
     ],
     [PartRequestStatus.RECEIVED]: [
       PartRequestStatus.COMPLETED,
-      PartRequestStatus.CANCELLED,
     ],
     [PartRequestStatus.COMPLETED]: [],
     [PartRequestStatus.CANCELLED]: [],
@@ -38,7 +37,7 @@ export class PartRequestStateMachine {
    * Role-based permissions:
    * - SERVICE_MANAGER: REQUESTED→READY, READY→DELIVERING
    * - TECHNICIAN: READY→RECEIVED (pickup), DELIVERING→RECEIVED (delivery scan)
-   * - ADMIN / SERVICE_MANAGER: any→CANCELLED
+   * - SERVICE_MANAGER: unreceived→CANCELLED
    * - System: RECEIVED→COMPLETED (auto on order complete)
    */
   private static readonly ROLE_TRANSITIONS: Partial<
@@ -48,17 +47,11 @@ export class PartRequestStateMachine {
       [PartRequestStatus.REQUESTED]: [PartRequestStatus.READY, PartRequestStatus.CANCELLED],
       [PartRequestStatus.READY]: [PartRequestStatus.DELIVERING, PartRequestStatus.CANCELLED],
       [PartRequestStatus.DELIVERING]: [PartRequestStatus.CANCELLED],
-      [PartRequestStatus.RECEIVED]: [PartRequestStatus.CANCELLED],
     },
     [Role.TECHNICIAN]: {
+      [PartRequestStatus.REQUESTED]: [PartRequestStatus.CANCELLED],
       [PartRequestStatus.READY]: [PartRequestStatus.RECEIVED],
       [PartRequestStatus.DELIVERING]: [PartRequestStatus.RECEIVED],
-    },
-    [Role.ADMIN]: {
-      [PartRequestStatus.REQUESTED]: [PartRequestStatus.READY, PartRequestStatus.CANCELLED],
-      [PartRequestStatus.READY]: [PartRequestStatus.DELIVERING, PartRequestStatus.CANCELLED],
-      [PartRequestStatus.DELIVERING]: [PartRequestStatus.CANCELLED],
-      [PartRequestStatus.RECEIVED]: [PartRequestStatus.CANCELLED],
     },
   };
 
@@ -92,6 +85,8 @@ export class PartRequestStateMachine {
     if (fulfillment === FulfillmentMethod.PICKUP && next === PartRequestStatus.DELIVERING) {
       return false;
     }
+    if (next === PartRequestStatus.RECEIVED &&
+      current !== (fulfillment === FulfillmentMethod.PICKUP ? PartRequestStatus.READY : PartRequestStatus.DELIVERING)) return false;
     return this.canTransition(current, next, role);
   }
 

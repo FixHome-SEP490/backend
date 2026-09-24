@@ -27,6 +27,9 @@ export class Invoice extends BaseEntity {
   @Column({ name: 'technician_part_warranty_fee_total', type: 'bigint', default: 0 })
   technicianPartWarrantyFeeTotal: number;
 
+  @Column({ name: 'shipping_fee', type: 'bigint', default: 0 })
+  shippingFee: number;
+
   @Column({ name: 'grand_total', type: 'bigint', default: 0 })
   grandTotal: number;
 

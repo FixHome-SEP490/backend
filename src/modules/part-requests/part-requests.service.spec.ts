@@ -10,6 +10,8 @@ import {
   ServiceOrderStatus,
 } from '../../shared/enums';
 import { PartRequestStateMachine } from './part-request-state-machine';
+import { ServiceOrder } from '../service-orders/entities/service-order.entity';
+import { PartRequestItem } from './entities/part-request-item.entity';
 import { BusinessException } from '../../common/exceptions/business.exception';
 
 describe('PartRequestStateMachine', () => {
@@ -92,6 +94,12 @@ describe('PartRequestStateMachine', () => {
       ),
     ).toBe(false);
   });
+
+  it('blocks delivery shortcuts, terminal transitions and Admin operations', () => {
+    expect(PartRequestStateMachine.canTransitionWithFulfillment(PartRequestStatus.READY, PartRequestStatus.RECEIVED, FulfillmentMethod.DELIVERY, Role.TECHNICIAN)).toBe(false);
+    expect(PartRequestStateMachine.canTransition(PartRequestStatus.CANCELLED, PartRequestStatus.READY, Role.SERVICE_MANAGER)).toBe(false);
+    expect(PartRequestStateMachine.canTransition(PartRequestStatus.REQUESTED, PartRequestStatus.READY, Role.ADMIN)).toBe(false);
+  });
 });
 
 describe('PartRequestsService', () => {
@@ -107,8 +115,9 @@ describe('PartRequestsService', () => {
   beforeEach(() => {
     mockEntityManager = {
       findOne: vi.fn(),
+      findOneOrFail: vi.fn(),
       findOneBy: vi.fn(),
-      find: vi.fn(),
+      find: vi.fn().mockResolvedValue([]),
       create: vi.fn((entityClass, data) => ({ ...data, id: 'pr-uuid-1' })),
       save: vi.fn((entityClass, data) => Promise.resolve(data)),
     };
@@ -241,6 +250,40 @@ describe('PartRequestsService', () => {
     });
   });
 
+  function mockMutation(request: any, item?: any, order: any = { id: 'order-1', status: ServiceOrderStatus.UNDER_REPAIR }) {
+    mockEntityManager.findOne.mockImplementation(async (entity: any) => entity === ServiceOrder ? order : entity === PartRequestItem ? item : request);
+    mockEntityManager.findOneOrFail.mockResolvedValue(request);
+    mockEntityManager.findOneBy.mockResolvedValue({ technicianId: 'tech-1', isActive: true });
+  }
+
+  it('denies request detail to an unrelated Customer and strips handover token from owner reads', async () => {
+    const request = { id: 'pr-1', serviceOrderId: 'order-1', qrToken: 'secret', items: [] };
+    mockPartRequestRepo.findOne.mockResolvedValue(request);
+    mockDataSource.manager = mockEntityManager;
+    mockEntityManager.findOne.mockResolvedValue({ id: 'order-1', bookingId: 'booking-1' });
+    mockEntityManager.findOneBy.mockResolvedValue(null);
+    await expect(service.getById('pr-1', { id: 'outsider', role: Role.CUSTOMER })).rejects.toThrow('access denied');
+    mockEntityManager.findOneBy.mockResolvedValue({ customerId: 'owner' });
+    expect((await service.getById('pr-1', { id: 'owner', role: Role.CUSTOMER })).qrToken).toBeNull();
+  });
+
+  it('blocks mutations after cancellation, reassignment, or invoice freeze', async () => {
+    const request = { id: 'pr-1', serviceOrderId: 'order-1', technicianId: 'tech-1', status: PartRequestStatus.REQUESTED };
+    mockMutation(request, undefined, { status: ServiceOrderStatus.CANCELLED });
+    await expect(service.markReady('pr-1', { id: 'sm', role: Role.SERVICE_MANAGER })).rejects.toThrow('immutable');
+    mockMutation(request, undefined, { status: ServiceOrderStatus.UNDER_REPAIR, completionRequestedAt: new Date() });
+    await expect(service.updateItemUsage('pr-1', 'item', { usageStatus: PartUsageStatus.RETURNED }, { id: 'tech-1', role: Role.TECHNICIAN })).rejects.toThrow('immutable');
+    mockMutation(request);
+    mockEntityManager.findOneBy.mockResolvedValue(null);
+    await expect(service.receiveByQr('pr-1', { qrToken: 'token' }, { id: 'tech-1', role: Role.TECHNICIAN })).rejects.toThrow('access denied');
+  });
+
+  it('rejects expired QR and resetting usage to PENDING', async () => {
+    mockMutation({ id: 'pr-1', technicianId: 'tech-1', status: PartRequestStatus.READY, fulfillmentMethod: FulfillmentMethod.PICKUP, qrToken: 'token', qrGeneratedAt: new Date(Date.now() - 49 * 3600000) });
+    await expect(service.receiveByQr('pr-1', { qrToken: 'token' }, { id: 'tech-1', role: Role.TECHNICIAN })).rejects.toThrow('expired');
+    await expect(service.updateItemUsage('pr-1', 'item', { usageStatus: PartUsageStatus.PENDING }, { id: 'tech-1', role: Role.TECHNICIAN })).rejects.toThrow('USED or RETURNED');
+  });
+
   describe('markReady', () => {
     it('should generate secure QR token and update status to READY', async () => {
       const existingRequest = {
@@ -251,7 +294,7 @@ describe('PartRequestsService', () => {
         serviceOrderId: 'order-1',
       };
 
-      mockEntityManager.findOne.mockResolvedValueOnce(existingRequest);
+      mockMutation(existingRequest);
 
       const result = await service.markReady(
         'pr-1',
@@ -281,7 +324,7 @@ describe('PartRequestsService', () => {
         receivedAt: null,
       };
 
-      mockEntityManager.findOne.mockResolvedValueOnce(request);
+      mockMutation(request);
 
       const result = await service.receiveByQr(
         'pr-1',
@@ -291,6 +334,8 @@ describe('PartRequestsService', () => {
 
       expect(result.status).toBe(PartRequestStatus.RECEIVED);
       expect(result.receivedAt).toBeDefined();
+      expect(result.qrToken).toBeNull();
+      await expect(service.receiveByQr('pr-1', { qrToken: validToken }, { id: 'tech-1', role: Role.TECHNICIAN })).rejects.toThrow('already been received');
     });
 
     it('should reject if scanned by another technician', async () => {
@@ -303,7 +348,7 @@ describe('PartRequestsService', () => {
         qrToken: 'valid-token',
       };
 
-      mockEntityManager.findOne.mockResolvedValueOnce(request);
+      mockMutation(request);
 
       await expect(
         service.receiveByQr(
@@ -324,7 +369,7 @@ describe('PartRequestsService', () => {
         qrToken: 'correct-token',
       };
 
-      mockEntityManager.findOne.mockResolvedValueOnce(request);
+      mockMutation(request);
 
       await expect(
         service.receiveByQr(
@@ -349,9 +394,7 @@ describe('PartRequestsService', () => {
         usageStatus: PartUsageStatus.PENDING,
       };
 
-      mockEntityManager.findOne
-        .mockResolvedValueOnce(request)
-        .mockResolvedValueOnce(item);
+      mockMutation(request, item);
 
       const result = await service.updateItemUsage(
         'pr-1',

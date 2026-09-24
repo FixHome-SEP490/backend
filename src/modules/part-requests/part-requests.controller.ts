@@ -35,6 +35,7 @@ import {
   MarkReadyDto,
   MarkDeliveringDto,
   QueryPartRequestsDto,
+  CancelPartRequestDto,
 } from './dto';
 
 @ApiTags('Part Requests')
@@ -43,6 +44,13 @@ import {
 @ApiBearerAuth()
 export class PartRequestsController {
   constructor(private readonly partRequestsService: PartRequestsService) {}
+
+  @Patch('part-requests/:id/qr')
+  @Roles(Role.SERVICE_MANAGER)
+  @ApiOperation({ summary: 'Rotate unreceived handover QR, invalidating the previous token' })
+  async regenerateQr(@Param('id', ParseUUIDPipe) id: string, @Req() req: { user: { id: string; role: string } }) {
+    return { data: await this.partRequestsService.regenerateQr(id, req.user) };
+  }
 
   // ── 1. Technician: Pre-Repair Parts Request ──
 
@@ -119,7 +127,7 @@ export class PartRequestsController {
   // ── 4. Technician: Update Part Item Usage (USED / RETURNED) ──
 
   @Patch('part-requests/:id/items/:itemId/usage')
-  @Roles(Role.TECHNICIAN, Role.ADMIN)
+  @Roles(Role.TECHNICIAN)
   @ApiOperation({
     summary: 'Technician: Mark part item as USED or RETURNED',
     description:
@@ -144,22 +152,22 @@ export class PartRequestsController {
   // ── 5. Cancel Part Request ──
 
   @Patch('part-requests/:id/cancel')
-  @Roles(Role.TECHNICIAN, Role.SERVICE_MANAGER, Role.ADMIN)
+  @Roles(Role.TECHNICIAN, Role.SERVICE_MANAGER)
   @ApiOperation({
     summary: 'Cancel a parts request',
     description:
-      'SM/Admin can cancel any non-terminal request; Technician can only cancel if still REQUESTED.',
+      'SM can cancel unreceived requests; Technician can only cancel if still REQUESTED.',
   })
   @ApiOkResponse({ description: 'Request cancelled' })
   async cancelPartRequest(
     @Param('id', ParseUUIDPipe) id: string,
     @Req() req: { user: { id: string; role: string } },
-    @Body('reason') reason?: string,
+    @Body() dto: CancelPartRequestDto,
   ) {
     const data = await this.partRequestsService.cancelPartRequest(
       id,
       req.user,
-      reason,
+      dto.reason,
     );
     return { data };
   }
@@ -200,7 +208,7 @@ export class PartRequestsController {
   // ── 8. Service Manager: Mark READY (Generates QR) ──
 
   @Patch('part-requests/:id/ready')
-  @Roles(Role.SERVICE_MANAGER, Role.ADMIN)
+  @Roles(Role.SERVICE_MANAGER)
   @ApiOperation({
     summary: 'Service Manager: Mark parts READY for pickup/delivery',
     description:
@@ -223,7 +231,7 @@ export class PartRequestsController {
   // ── 9. Service Manager: Mark DELIVERING ──
 
   @Patch('part-requests/:id/delivering')
-  @Roles(Role.SERVICE_MANAGER, Role.ADMIN)
+  @Roles(Role.SERVICE_MANAGER)
   @ApiOperation({
     summary: 'Service Manager: Mark DELIVERY parts as DELIVERING',
     description:

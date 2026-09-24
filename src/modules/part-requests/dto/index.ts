@@ -6,6 +6,8 @@ import {
   ArrayMinSize,
   IsArray,
   IsEnum,
+  IsIn,
+  IsDateString,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -16,7 +18,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
-import { FulfillmentMethod, PartUsageStatus } from '../../../shared/enums';
+import { FulfillmentMethod, PartUsageStatus, PartRequestStatus, PartRequestType } from '../../../shared/enums';
 
 // ── Technician: Create Part Request ──
 
@@ -72,6 +74,7 @@ export class ReceivePartRequestDto {
   @ApiProperty({ description: 'QR token from the part request' })
   @IsString()
   @IsNotEmpty()
+  @MaxLength(128)
   qrToken: string;
 }
 
@@ -79,7 +82,7 @@ export class ReceivePartRequestDto {
 
 export class UpdateItemUsageDto {
   @ApiProperty({ enum: [PartUsageStatus.USED, PartUsageStatus.RETURNED] })
-  @IsEnum(PartUsageStatus)
+  @IsIn([PartUsageStatus.USED, PartUsageStatus.RETURNED])
   usageStatus: PartUsageStatus;
 }
 
@@ -115,8 +118,29 @@ export class MarkDeliveringDto {
 export class QueryPartRequestsDto {
   @ApiPropertyOptional()
   @IsOptional()
+  @IsEnum(PartRequestStatus)
+  status?: PartRequestStatus;
+
+  @IsOptional()
+  @IsEnum(PartRequestType)
+  requestType?: PartRequestType;
+
+  @IsOptional()
+  @IsEnum(FulfillmentMethod)
+  fulfillmentMethod?: FulfillmentMethod;
+
+  @IsOptional()
+  @IsDateString()
+  createdFrom?: string;
+
+  @IsOptional()
+  @IsDateString()
+  createdTo?: string;
+
+  @IsOptional()
   @IsString()
-  status?: string;
+  @MaxLength(100)
+  search?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -129,15 +153,24 @@ export class QueryPartRequestsDto {
   technicianId?: string;
 
   @ApiPropertyOptional({ default: 1 })
+  @Type(() => Number)
   @IsOptional()
   @IsInt()
   @Min(1)
   page?: number;
 
   @ApiPropertyOptional({ default: 20 })
+  @Type(() => Number)
   @IsOptional()
   @IsInt()
   @Min(1)
   @Max(100)
   pageSize?: number;
+}
+
+export class CancelPartRequestDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  reason?: string;
 }

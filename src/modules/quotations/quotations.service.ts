@@ -1,5 +1,6 @@
+import { closeOrderPartRequests } from '../part-requests/part-request-lifecycle';
 import { expireAdditionalCosts } from '../service-orders/expire-additional-costs';
-import { Injectable, ForbiddenException, Optional } from '@nestjs/common';
+import { Injectable, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { Quotation } from './entities/quotation.entity';
@@ -20,7 +21,6 @@ import { QuotationStatus, AdditionalCostStatus, CostItemType, ServiceOrderStatus
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { CreateCostItemDto, CreateQuotationDto, CreateAdditionalCostDto } from './quotation.dto';
-import { PartCatalog } from '../services/entities/part-catalog.entity';
 import { FixHomePart } from '../parts-catalog/entities/fixhome-part.entity';
 import { PartRequestsService } from '../part-requests/part-requests.service';
 export { CreateCostItemDto, CreateQuotationDto, CreateAdditionalCostDto } from './quotation.dto';
@@ -39,7 +39,7 @@ export class QuotationsService {
     private readonly dataSource: DataSource,
     private readonly configService: BusinessConfigService,
     private readonly auditLogService: AuditLogService,
-    @Optional() private readonly partRequestsService?: PartRequestsService,
+    private readonly partRequestsService: PartRequestsService,
   ) {}
 
   private async validateItems(manager: EntityManager, items: CreateCostItemDto[]): Promise<CreateCostItemDto[]> {
@@ -59,14 +59,10 @@ export class QuotationsService {
         if (!Object.values(PartSource).includes(item.partSource!)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Part source required');
         if (item.partSource === PartSource.FIXHOME) {
           if (!item.partCatalogId) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'FixHome parts require a valid partCatalogId');
-          let catalogPart: { price: number; name: string; warrantyDays: number } | null = await manager.findOne(PartCatalog, { where: { id: item.partCatalogId, isActive: true } });
-          if (!catalogPart) {
-            const fhp = await manager.findOne(FixHomePart, { where: { id: item.partCatalogId, isActive: true } });
-            if (fhp) {
-              catalogPart = { price: Number(fhp.sellingPrice), name: fhp.name, warrantyDays: fhp.warrantyDays ?? 90 };
-            }
-          }
+          const part = await manager.findOne(FixHomePart, { where: { id: item.partCatalogId, isActive: true } });
+          const catalogPart = part ? { price: Number(part.sellingPrice), name: part.name, warrantyDays: part.warrantyDays ?? 0 } : null;
           if (!catalogPart) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Part not found in FixHome catalog');
+          if (!Number.isSafeInteger(catalogPart.price)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Billable catalog price must be whole VND');
           item.unitPrice = Number(catalogPart.price);
           item.partNameSnapshot = catalogPart.name;
           item.description = catalogPart.name;
@@ -172,6 +168,9 @@ export class QuotationsService {
     const ttl = await this.configService.getInt('additional_cost.ttl_minutes',120);
     const shippingFee = Number(dto.shippingFee ?? 0);
     const fulfillmentMethod = dto.fulfillmentMethod ?? FulfillmentMethod.PICKUP;
+    if (shippingFee > 0 && (fulfillmentMethod !== FulfillmentMethod.DELIVERY || !items.some(i => i.partSource === PartSource.FIXHOME))) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Shipping fee requires delivery of FixHome parts');
+    }
     const cost = await manager.save(AdditionalCostRequest, manager.create(AdditionalCostRequest, {
       serviceOrderId: order.id,
       technicianId: actor.id,
@@ -219,27 +218,21 @@ export class QuotationsService {
         });
 
         // Flow 2: If FixHome parts are included in the approved additional cost, generate a PartRequest
-        if (this.partRequestsService) {
-          try {
-            await this.partRequestsService.createAdditionalRequestFromApprovedCost(
+        await this.partRequestsService.createAdditionalRequestFromApprovedCost(
               manager,
               order.id,
               cost.technicianId,
               cost.id,
               cost.fulfillmentMethod || FulfillmentMethod.PICKUP,
               shippingFee,
-              cost.items.map((i) => ({
+              cost.items.filter(i => i.type === CostItemType.PARTS_EQUIPMENT).map((i) => ({
                 partCatalogId: i.partCatalogId,
                 partName: i.partNameSnapshot || i.description,
                 quantity: i.quantity,
                 unitPrice: Number(i.unitPrice),
                 partSource: i.partSource || PartSource.FIXHOME,
               })),
-            );
-          } catch {
-            // Keep transaction going
-          }
-        }
+        );
       }
       cost.status = target;
       cost.decidedAt = new Date();
@@ -276,6 +269,7 @@ export class QuotationsService {
   private async closeNoAgreement(manager: EntityManager, order: ServiceOrder, actor: Actor, reason: string): Promise<void> {
     if (!ServiceOrderStateMachine.canTransition(order.status, ServiceOrderStatus.CANCELLED)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Cannot close order');
     await manager.update(ServiceOrder, order.id, { status: ServiceOrderStatus.CANCELLED, cancelledAt: new Date() });
+    await closeOrderPartRequests(manager, order.id, true);
     await manager.insert(OrderStatusHistory, { serviceOrderId: order.id, fromStatus: order.status, toStatus: ServiceOrderStatus.CANCELLED, actorUserId: actor.id, actorRole: actor.role, reason });
     await manager.insert(Cancellation, { serviceOrderId: order.id, actor: CancelActor.CUSTOMER, actorUserId: actor.id, reason, stateAtCancel: order.status, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE });
     await manager.update(TechnicianAssignment, { serviceOrderId: order.id, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: reason });
