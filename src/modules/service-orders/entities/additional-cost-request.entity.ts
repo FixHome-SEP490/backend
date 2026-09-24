@@ -1,7 +1,7 @@
 // src/modules/service-orders/entities/additional-cost-request.entity.ts
 import { Entity, Column, OneToMany } from 'typeorm';
 import { BaseEntity } from '../../../database/base.entity';
-import { AdditionalCostStatus } from '../../../shared/enums';
+import { AdditionalCostStatus, FulfillmentMethod } from '../../../shared/enums';
 import { AdditionalCostItem } from './additional-cost-item.entity';
 
 @Entity('additional_cost_requests')
@@ -42,6 +42,17 @@ export class AdditionalCostRequest extends BaseEntity {
 
   @Column({ name: 'evidence_urls', type: 'jsonb', nullable: true })
   evidenceUrls?: string[] | null;
+
+  @Column({
+    name: 'fulfillment_method',
+    type: 'enum',
+    enum: FulfillmentMethod,
+    nullable: true,
+  })
+  fulfillmentMethod?: FulfillmentMethod | null;
+
+  @Column({ name: 'shipping_fee', type: 'bigint', default: 0 })
+  shippingFee: number;
 
   @OneToMany(() => AdditionalCostItem, (item) => item.request)
   items: AdditionalCostItem[];

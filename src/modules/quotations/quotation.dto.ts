@@ -1,7 +1,7 @@
 import { Transform, Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsEnum, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Max, MaxLength, Min, ValidateNested } from 'class-validator';
-import { CostItemType, PartSource, PartWarrantyOption } from '../../shared/enums';
+import { CostItemType, PartSource, PartWarrantyOption, FulfillmentMethod } from '../../shared/enums';
 
 export class CreateCostItemDto {
   @ApiProperty({ enum: CostItemType, example: CostItemType.LABOR, description: 'labor = tiền công; parts_equipment = linh kiện hoặc thiết bị.' })
@@ -40,6 +40,10 @@ export class CreateAdditionalCostDto extends CreateQuotationDto {
   @IsString() @IsNotEmpty() @MaxLength(2000) reason: string;
   @ApiPropertyOptional({ type: [String], maxItems: 10, description: 'Các tham chiếu bằng chứng kèm chi phí phát sinh, nếu có.' })
   @IsOptional() @IsArray() @ArrayMaxSize(10) @IsString({ each: true }) evidenceUrls?: string[];
+  @ApiPropertyOptional({ enum: FulfillmentMethod, default: FulfillmentMethod.PICKUP, description: 'Phương thức nhận linh kiện: PICKUP hoặc DELIVERY' })
+  @IsOptional() @IsEnum(FulfillmentMethod) fulfillmentMethod?: FulfillmentMethod;
+  @ApiPropertyOptional({ minimum: 0, maximum: 999999999, description: 'Phí vận chuyển nếu chọn DELIVERY' })
+  @IsOptional() @IsInt() @Min(0) @Max(999999999) shippingFee?: number;
 }
 export class FinancialDecisionDto {
   @ApiProperty({ enum: ['APPROVE', 'REJECT'], example: 'APPROVE', description: 'Khách duyệt hoặc từ chối báo giá/chi phí phát sinh.' })

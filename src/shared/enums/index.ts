@@ -29,3 +29,7 @@ export * from './payment-purpose.enum';
 export * from './platform-due-status.enum';
 export * from './otp-purpose.enum';
 export * from './conversation-status.enum';
+export * from './part-request-status.enum';
+export * from './part-request-type.enum';
+export * from './fulfillment-method.enum';
+export * from './part-usage-status.enum';
