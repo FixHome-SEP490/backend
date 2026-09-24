@@ -18,7 +18,7 @@ describe('Private order evidence storage boundary', () => {
   const serviceUnconfigured = new OrderEvidenceStorage(null);
   const png = Buffer.from('89504e470d0a1a0a', 'hex');
   const file = { buffer: png, size: png.length, mimetype: 'image/png' };
-  afterEach(() => { vi.restoreAllMocks(); });
+  afterEach(() => { vi.clearAllMocks(); });
 
   it('rejects empty, oversized and forged image uploads', () => {
     for (const input of [undefined, { ...file, size: 11 * 1024 * 1024 }, { ...file, buffer: Buffer.from('<script>'), size: 8 }, { ...file, mimetype: 'image/svg+xml' }]) expect(() => service.validate(input)).toThrow();
