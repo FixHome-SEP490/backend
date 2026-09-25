@@ -89,5 +89,6 @@ export class InvitationResponseDto {
 export function validBookingWindow(start: string | Date, end: string | Date): boolean {
   const from = new Date(start).getTime();
   const to = new Date(end).getTime();
-  return Number.isFinite(from) && Number.isFinite(to) && from > Date.now() && from < to;
+  // 2-minute buffer for network transmission and client-server clock skew
+  return Number.isFinite(from) && Number.isFinite(to) && from > (Date.now() - 120_000) && from < to;
 }
