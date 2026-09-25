@@ -21,6 +21,11 @@ export class CreateCostItemDto {
   @IsOptional() @IsUUID() partCatalogId?: string | null;
   @ApiPropertyOptional({ maxLength: 255, description: 'Tên linh kiện tại thời điểm lập báo giá.' })
   @IsOptional() @IsString() @MaxLength(255) partNameSnapshot?: string | null;
+  @ApiPropertyOptional({ maxLength: 100, description: 'Mã SKU linh kiện.' })
+  @IsOptional() @IsString() @MaxLength(100) partSku?: string | null;
+  @ApiPropertyOptional({ maxLength: 255, description: 'Chính sách bảo hành linh kiện.' })
+  @IsOptional() @IsString() @MaxLength(255) warrantyPolicy?: string | null;
+
   @ApiPropertyOptional({ enum: PartWarrantyOption, description: 'Lựa chọn bảo hành linh kiện nếu áp dụng.' })
   @IsOptional() @IsEnum(PartWarrantyOption) partWarrantyOption?: PartWarrantyOption | null;
   @ApiPropertyOptional({ minimum: 0, maximum: 999999999, description: 'Phí bảo hành linh kiện, VND, nếu có.' })
