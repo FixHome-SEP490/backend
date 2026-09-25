@@ -1,6 +1,7 @@
 import { closeOrderPartRequests, assertPartsResolved, usedPartQuantities } from '../part-requests/part-request-lifecycle';
 import { PartRequest } from '../part-requests/entities/part-request.entity';
-import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, ForbiddenException, Optional } from '@nestjs/common';
+import { NotificationsService } from '../notifications/notifications.service';
 import { randomUUID } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository, In, LessThanOrEqual } from 'typeorm';
@@ -108,7 +109,28 @@ export class ServiceOrdersService {
     private readonly auditLogService: AuditLogService,
     private readonly evidenceStorage: OrderEvidenceStorage,
     private readonly financeService: FinanceService,
+    @Optional() private readonly notificationsService?: NotificationsService,
   ) {}
+
+  private async notifyCustomerForOrder(orderId: string, title: string, message: string, type: string): Promise<void> {
+    if (!this.notificationsService) return;
+    try {
+      const order = await this.orderRepo.findOneBy({ id: orderId });
+      if (!order) return;
+      const booking = await this.dataSource.manager.findOneBy(Booking, { id: order.bookingId });
+      if (!booking?.customerId) return;
+      await this.notificationsService.createNotification({
+        userId: booking.customerId,
+        title,
+        message,
+        type,
+        referenceId: order.id,
+        referenceType: 'SERVICE_ORDER',
+      });
+    } catch {
+      // Non-blocking notification dispatch
+    }
+  }
 
   // ── Queries ──
 
@@ -293,12 +315,19 @@ export class ServiceOrdersService {
     orderId: string,
     actor: { id: string; role: string },
   ): Promise<ServiceOrder> {
-    return this.transitionStatus(
+    const res = await this.transitionStatus(
       orderId,
       ServiceOrderStatus.EN_ROUTE,
       actor,
       'Technician en route',
     );
+    void this.notifyCustomerForOrder(
+      orderId,
+      'Kỹ thuật viên đang di chuyển',
+      `Kỹ thuật viên đang trên đường đến địa chỉ của bạn cho đơn hàng #${res.code}.`,
+      'TECHNICIAN_EN_ROUTE',
+    );
+    return res;
   }
 
   /**
@@ -316,6 +345,14 @@ export class ServiceOrdersService {
       const radius = await this.configService.getInt('geofence.radius_meters', 300);
       const accuracy = await this.configService.getInt('geofence.min_gps_accuracy_meters', 100);
       const result = body.accuracyMeters > accuracy ? CheckInResult.LOW_ACCURACY : distanceMeters > radius ? CheckInResult.OUT_OF_GEOFENCE : CheckInResult.VALID;
+      if (result === CheckInResult.VALID) {
+        void this.notifyCustomerForOrder(
+          orderId,
+          'Kỹ thuật viên đã đến nơi',
+          `Kỹ thuật viên đã có mặt tại điểm hẹn cho đơn hàng #${order.code} và bắt đầu kiểm tra thiết bị.`,
+          'TECHNICIAN_ARRIVED',
+        );
+      }
       return manager.save(ArrivalCheckIn, manager.create(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, lat: body.lat, lng: body.lng, accuracyMeters: body.accuracyMeters, distanceMeters, result, checkedInAt: new Date(), deviceInfo: body.deviceInfo || null }));
     });
   }
@@ -349,6 +386,12 @@ export class ServiceOrdersService {
       await this.generateInvoice(orderId, manager);
       await manager.update(ServiceOrder, orderId, { completionRequestedAt: new Date(), completionNote: body.completionNote?.trim() || null });
       await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'ORDER_COMPLETION_REQUESTED', resourceType: 'service_order', resourceId: orderId });
+      void this.notifyCustomerForOrder(
+        orderId,
+        'Yêu cầu nghiệm thu dịch vụ',
+        `Kỹ thuật viên đã hoàn thành công việc cho đơn #${order.code} và tải ảnh nghiệm thu. Vui lòng kiểm tra và xác nhận nghiệm thu.`,
+        'COMPLETION_REQUESTED',
+      );
       return manager.findOneByOrFail(ServiceOrder, { id: orderId });
     });
   }

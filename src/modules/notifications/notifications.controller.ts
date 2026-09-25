@@ -1,17 +1,22 @@
-// src/modules/notifications/notifications.controller.ts
 import {
   Controller,
   Get,
+  Post,
   Patch,
   Param,
   Query,
+  Body,
   Req,
   UseGuards,
   ParseUUIDPipe,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { Role } from '../../shared/enums';
 import { NotificationsService } from './notifications.service';
+import { CreateNotificationDto } from './dto/create-notification.dto';
 
 @ApiTags('Notifications')
 @ApiBearerAuth()
@@ -38,6 +43,16 @@ export class NotificationsController {
     return this.notificationsService.getUnreadCount(req.user.id);
   }
 
+  @Post()
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN, Role.SERVICE_MANAGER, Role.TECHNICIAN)
+  @ApiOperation({ summary: 'Send notification to a user (Admin, SM, Technician)' })
+  async sendNotification(
+    @Body() body: CreateNotificationDto,
+  ) {
+    return this.notificationsService.createNotification(body);
+  }
+
   @Patch(':id/read')
   @ApiOperation({ summary: 'Mark notification as read' })
   async markAsRead(
@@ -53,3 +68,4 @@ export class NotificationsController {
     return this.notificationsService.markAllAsRead(req.user.id);
   }
 }
+
