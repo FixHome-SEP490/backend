@@ -3,4 +3,5 @@
 export enum PartSource {
   FIXHOME = 'fixhome',
   TECHNICIAN = 'technician',
+  EXTERNAL = 'external',
 }

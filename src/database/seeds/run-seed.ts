@@ -9,6 +9,7 @@ import { seedRbac } from './seed-rbac';
 import { seedUsers } from './seed-users';
 import { seedCatalog } from './seed-catalog';
 import { seedPartsCatalog } from './seed-parts-catalog';
+import { seedPartsCatalog791 } from './seed-parts-catalog-791';
 
 async function runSeed(): Promise<void> {
   console.log('🌱 Starting FixHome seed...\n');
@@ -47,6 +48,10 @@ async function runSeed(): Promise<void> {
 
     // Seed bounded Part Catalog demo fixture (Dev2)
     await seedPartsCatalog(dataSource);
+    console.log();
+
+    // Seed full 791 items FixHome Part Catalog
+    await seedPartsCatalog791(dataSource);
     console.log();
 
     console.log('🎉 Seed complete!\n');

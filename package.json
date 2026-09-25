@@ -29,6 +29,7 @@
     "migration:run:prod": "typeorm migration:run -d dist/database/data-source.js",
     "migration:revert": "npm run typeorm -- migration:revert -d src/database/data-source.ts",
     "seed:demo": "npx ts-node src/database/seeds/run-seed.ts",
+    "seed:parts": "npx ts-node src/database/seeds/seed-parts-catalog-791.ts",
     "ai:point": "node scripts/point-at-ai.js"
   },
   "dependencies": {

@@ -35,6 +35,7 @@ import { SupportCasesModule } from './modules/support-cases/support-cases.module
 import { FinanceModule } from './modules/finance/finance.module';
 import { MailModule } from './modules/mail/mail.module';
 import { GeoModule } from './modules/geo/geo.module';
+import { PartRequestsModule } from './modules/part-requests/part-requests.module';
 
 @Module({
   imports: [
@@ -67,6 +68,7 @@ import { GeoModule } from './modules/geo/geo.module';
     AiDiagnosisModule,
     ServiceOrdersModule,
     QuotationsModule,
+    PartRequestsModule,
     NotificationsModule,
     MessagingModule,
     ReviewsModule,

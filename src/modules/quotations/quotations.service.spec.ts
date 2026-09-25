@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { QuotationsService } from './quotations.service';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { CostItemType, PartSource, PartWarrantyOption } from '../../shared/enums';
-import { PartCatalog } from '../services/entities/part-catalog.entity';
+import { FixHomePart } from '../parts-catalog/entities/fixhome-part.entity';
 
 describe('QuotationsService - Item Validation & Authoritative Catalog', () => {
   let service: QuotationsService;
@@ -25,6 +25,7 @@ describe('QuotationsService - Item Validation & Authoritative Catalog', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
     );
   });
 
@@ -33,7 +34,7 @@ describe('QuotationsService - Item Validation & Authoritative Catalog', () => {
       id: 'part-uuid-1',
       name: 'Tụ ngậm điều hòa Daikin 35uF',
       partCode: 'DAIKIN-CAP-35',
-      price: '180000',
+      sellingPrice: '180000',
       warrantyDays: 90,
       isActive: true,
     });
@@ -52,7 +53,7 @@ describe('QuotationsService - Item Validation & Authoritative Catalog', () => {
     // Access private validateItems for isolated test
     const validated = await (service as any).validateItems(mockManager, items);
 
-    expect(mockManager.findOne).toHaveBeenCalledWith(PartCatalog, {
+    expect(mockManager.findOne).toHaveBeenCalledWith(FixHomePart, {
       where: { id: 'part-uuid-1', isActive: true },
     });
     expect(validated[0].unitPrice).toBe(180000); // Overwritten authoritatively

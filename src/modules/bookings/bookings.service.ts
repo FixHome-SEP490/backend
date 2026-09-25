@@ -89,7 +89,7 @@ export class BookingsService {
   async create(dto: CreateBookingDto, customer: { id: string; role: string }): Promise<Booking> {
     if (customer.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
     this.validateCreateMediaInput(dto);
-    if (!validBookingWindow(dto.preferredStartAt, dto.preferredEndAt)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Choose a valid future start and end time');
+    if (!validBookingWindow(dto.preferredStartAt, dto.preferredEndAt)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Vui lòng chọn khung giờ hẹn trong tương lai (Choose a valid future start and end time)');
     if (!dto.addressId || !Number.isInteger(dto.quantity ?? 1) || (dto.quantity ?? 1) < 1) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Address and positive integer quantity required');
 
     // Check suspension

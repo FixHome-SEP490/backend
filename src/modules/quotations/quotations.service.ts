@@ -1,3 +1,4 @@
+import { closeOrderPartRequests } from '../part-requests/part-request-lifecycle';
 import { expireAdditionalCosts } from '../service-orders/expire-additional-costs';
 import { Injectable, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -16,11 +17,12 @@ import { ServiceOrderStateMachine } from '../service-orders/service-order-state-
 import { authorizeOrder } from '../service-orders/order-access';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
-import { QuotationStatus, AdditionalCostStatus, CostItemType, ServiceOrderStatus, ServicePricingMode, PartSource, PartWarrantyOption, CheckInResult, CancelActor, CompensationStatus } from '../../shared/enums';
+import { QuotationStatus, AdditionalCostStatus, CostItemType, ServiceOrderStatus, ServicePricingMode, PartSource, PartWarrantyOption, CheckInResult, CancelActor, CompensationStatus, FulfillmentMethod } from '../../shared/enums';
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { CreateCostItemDto, CreateQuotationDto, CreateAdditionalCostDto } from './quotation.dto';
-import { PartCatalog } from '../services/entities/part-catalog.entity';
+import { FixHomePart } from '../parts-catalog/entities/fixhome-part.entity';
+import { PartRequestsService } from '../part-requests/part-requests.service';
 export { CreateCostItemDto, CreateQuotationDto, CreateAdditionalCostDto } from './quotation.dto';
 type Actor = { id: string; role: string };
 
@@ -37,6 +39,7 @@ export class QuotationsService {
     private readonly dataSource: DataSource,
     private readonly configService: BusinessConfigService,
     private readonly auditLogService: AuditLogService,
+    private readonly partRequestsService: PartRequestsService,
   ) {}
 
   private async validateItems(manager: EntityManager, items: CreateCostItemDto[]): Promise<CreateCostItemDto[]> {
@@ -56,8 +59,10 @@ export class QuotationsService {
         if (!Object.values(PartSource).includes(item.partSource!)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Part source required');
         if (item.partSource === PartSource.FIXHOME) {
           if (!item.partCatalogId) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'FixHome parts require a valid partCatalogId');
-          const catalogPart = await manager.findOne(PartCatalog, { where: { id: item.partCatalogId, isActive: true } });
+          const part = await manager.findOne(FixHomePart, { where: { id: item.partCatalogId, isActive: true } });
+          const catalogPart = part ? { price: Number(part.sellingPrice), name: part.name, warrantyDays: part.warrantyDays ?? 0 } : null;
           if (!catalogPart) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Part not found in FixHome catalog');
+          if (!Number.isSafeInteger(catalogPart.price)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Billable catalog price must be whole VND');
           item.unitPrice = Number(catalogPart.price);
           item.partNameSnapshot = catalogPart.name;
           item.description = catalogPart.name;
@@ -65,6 +70,14 @@ export class QuotationsService {
           item.partWarrantyOption = PartWarrantyOption.INCLUDED;
           item.warrantyFee = 0;
           item.warrantyTermDays = catalogPart.warrantyDays;
+        } else if (item.partSource === PartSource.EXTERNAL) {
+          if (!Number.isInteger(item.unitPrice) || item.unitPrice < 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid part unit price');
+          if (item.partCatalogId) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'External parts cannot reference FixHome catalog');
+          item.partNameSnapshot = item.partNameSnapshot?.trim() || item.description.trim();
+          item.partWarrantyOption = PartWarrantyOption.NO_WARRANTY;
+          item.warrantyFee = 0;
+          item.warrantyTermDays = 0;
+          item.warrantyDays = 0;
         } else {
           if (!Number.isInteger(item.unitPrice) || item.unitPrice < 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid part unit price');
           if (item.partCatalogId) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Technician parts cannot reference FixHome catalog');
@@ -153,9 +166,26 @@ export class QuotationsService {
     const labor = items.filter(i=>i.type===CostItemType.LABOR).reduce((v,i)=>v+i.quantity*i.unitPrice,0);
     const parts = items.filter(i=>i.type===CostItemType.PARTS_EQUIPMENT).reduce((v,i)=>v+i.quantity*i.unitPrice,0);
     const ttl = await this.configService.getInt('additional_cost.ttl_minutes',120);
-    const cost = await manager.save(AdditionalCostRequest, manager.create(AdditionalCostRequest, { serviceOrderId: order.id, technicianId: actor.id, status: AdditionalCostStatus.PENDING_APPROVAL, reason: dto.reason, totalLaborDelta: labor, totalPartsDelta: parts, expiresAt: new Date(Date.now()+ttl*60000), supersedesId, evidenceUrls: dto.evidenceUrls ?? null }));
+    const shippingFee = Number(dto.shippingFee ?? 0);
+    const fulfillmentMethod = dto.fulfillmentMethod ?? FulfillmentMethod.PICKUP;
+    if (shippingFee > 0 && (fulfillmentMethod !== FulfillmentMethod.DELIVERY || !items.some(i => i.partSource === PartSource.FIXHOME))) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Shipping fee requires delivery of FixHome parts');
+    }
+    const cost = await manager.save(AdditionalCostRequest, manager.create(AdditionalCostRequest, {
+      serviceOrderId: order.id,
+      technicianId: actor.id,
+      status: AdditionalCostStatus.PENDING_APPROVAL,
+      reason: dto.reason,
+      totalLaborDelta: labor,
+      totalPartsDelta: parts,
+      fulfillmentMethod,
+      shippingFee,
+      expiresAt: new Date(Date.now()+ttl*60000),
+      supersedesId,
+      evidenceUrls: dto.evidenceUrls ?? null,
+    }));
     cost.items = await manager.save(AdditionalCostItem, items.map(item=>manager.create(AdditionalCostItem, { ...item, requestId: cost.id, lineTotal: item.quantity*item.unitPrice, warrantyDays: item.warrantyDays ?? 0 })));
-    await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'ADDITIONAL_COST_CREATED', resourceType: 'additional_cost_request', resourceId: cost.id, after: { supersedesId, labor, parts } });
+    await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'ADDITIONAL_COST_CREATED', resourceType: 'additional_cost_request', resourceId: cost.id, after: { supersedesId, labor, parts, shippingFee, fulfillmentMethod } });
     return cost;
   }
 
@@ -180,7 +210,29 @@ export class QuotationsService {
       if (action === 'APPROVE') {
         this.selectWarranty(cost.items, paidWarrantyItemIds);
         await manager.save(AdditionalCostItem, cost.items);
-        await manager.update(ServiceOrder, order.id, { laborTotal: Number(order.laborTotal)+Number(cost.totalLaborDelta), partsTotal: Number(order.partsTotal)+Number(cost.totalPartsDelta), grandTotal: Number(order.grandTotal)+Number(cost.totalLaborDelta)+Number(cost.totalPartsDelta)+cost.items.reduce((v,i)=>v+Number(i.warrantyFee ?? 0),0) });
+        const shippingFee = Number(cost.shippingFee ?? 0);
+        await manager.update(ServiceOrder, order.id, {
+          laborTotal: Number(order.laborTotal) + Number(cost.totalLaborDelta),
+          partsTotal: Number(order.partsTotal) + Number(cost.totalPartsDelta),
+          grandTotal: Number(order.grandTotal) + Number(cost.totalLaborDelta) + Number(cost.totalPartsDelta) + shippingFee + cost.items.reduce((v, i) => v + Number(i.warrantyFee ?? 0), 0),
+        });
+
+        // Flow 2: If FixHome parts are included in the approved additional cost, generate a PartRequest
+        await this.partRequestsService.createAdditionalRequestFromApprovedCost(
+              manager,
+              order.id,
+              cost.technicianId,
+              cost.id,
+              cost.fulfillmentMethod || FulfillmentMethod.PICKUP,
+              shippingFee,
+              cost.items.filter(i => i.type === CostItemType.PARTS_EQUIPMENT).map((i) => ({
+                partCatalogId: i.partCatalogId,
+                partName: i.partNameSnapshot || i.description,
+                quantity: i.quantity,
+                unitPrice: Number(i.unitPrice),
+                partSource: i.partSource || PartSource.FIXHOME,
+              })),
+        );
       }
       cost.status = target;
       cost.decidedAt = new Date();
@@ -217,6 +269,7 @@ export class QuotationsService {
   private async closeNoAgreement(manager: EntityManager, order: ServiceOrder, actor: Actor, reason: string): Promise<void> {
     if (!ServiceOrderStateMachine.canTransition(order.status, ServiceOrderStatus.CANCELLED)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Cannot close order');
     await manager.update(ServiceOrder, order.id, { status: ServiceOrderStatus.CANCELLED, cancelledAt: new Date() });
+    await closeOrderPartRequests(manager, order.id, true);
     await manager.insert(OrderStatusHistory, { serviceOrderId: order.id, fromStatus: order.status, toStatus: ServiceOrderStatus.CANCELLED, actorUserId: actor.id, actorRole: actor.role, reason });
     await manager.insert(Cancellation, { serviceOrderId: order.id, actor: CancelActor.CUSTOMER, actorUserId: actor.id, reason, stateAtCancel: order.status, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE });
     await manager.update(TechnicianAssignment, { serviceOrderId: order.id, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: reason });

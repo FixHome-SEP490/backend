@@ -66,14 +66,22 @@ export class HttpExceptionFilter implements ExceptionFilter {
       code = 'BAD_REQUEST';
     }
     if (status >= 500) {
-      // Neither SQL parameters, query strings, nor exception messages enter logs/responses.
       this.logger.error(
         `Request failed: ${request.method} ${request.path || request.url.split('?')[0]} (${status})`,
+        exception instanceof Error ? exception.stack : String(exception),
       );
       message =
         status === 503 ? 'Service unavailable' : 'Internal server error';
       code = this.getErrorCodeFromStatus(status);
-      details = undefined;
+      if (process.env.NODE_ENV !== 'production' && exception instanceof Error) {
+        details = { message: exception.message, stack: exception.stack };
+      } else {
+        details = undefined;
+      }
+    } else {
+      this.logger.warn(
+        `Request warning: ${request.method} ${request.path || request.url.split('?')[0]} (${status}) - ${message}`,
+      );
     }
 
     response.status(status).json({

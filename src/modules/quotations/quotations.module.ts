@@ -10,9 +10,11 @@ import { AdditionalCostItem } from '../service-orders/entities/additional-cost-i
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { Booking } from '../bookings/entities/booking.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
+import { PartRequestsModule } from '../part-requests/part-requests.module';
 
 @Module({
   imports: [
+    PartRequestsModule,
     TypeOrmModule.forFeature([
       Quotation,
       QuotationItem,

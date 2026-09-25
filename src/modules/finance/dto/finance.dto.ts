@@ -152,6 +152,8 @@ export class InvoiceResponseDto {
 
   @ApiPropertyOptional()
   technicianPartWarrantyFeeTotal?: number;
+  @ApiPropertyOptional()
+  shippingFee?: number;
 
   @ApiProperty()
   grandTotal: number;
@@ -347,6 +349,7 @@ export const toInvoiceResponse = (invoice: Invoice): InvoiceResponseDto => ({
   fixHomePartsTotal: Number(invoice.fixHomePartsTotal ?? 0),
   technicianPartsTotal: Number(invoice.technicianPartsTotal ?? 0),
   technicianPartWarrantyFeeTotal: Number(invoice.technicianPartWarrantyFeeTotal ?? 0),
+  shippingFee: Number(invoice.shippingFee ?? 0),
   grandTotal: Number(invoice.grandTotal),
   commissionBase: invoice.commissionBase,
   commissionRateSnapshot: Number(invoice.commissionRateSnapshot ?? 0.1),

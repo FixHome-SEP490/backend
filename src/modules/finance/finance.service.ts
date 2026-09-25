@@ -1224,12 +1224,13 @@ export class FinanceService {
     const fixHomePartsTotal = this.requireWholeVnd(invoice.fixHomePartsTotal, 'FixHome parts total');
     const technicianPartsTotal = this.requireWholeVnd(invoice.technicianPartsTotal, 'Technician parts total');
     const warrantyFeeTotal = this.requireWholeVnd(invoice.technicianPartWarrantyFeeTotal, 'Warranty fee total');
+    const shippingFee = this.requireWholeVnd(invoice.shippingFee ?? 0, 'Shipping fee');
     const grandTotal = this.requireWholeVnd(invoice.grandTotal, 'Invoice amount');
     const commissionAmount = this.requireWholeVnd(
       invoice.commissionAmount,
       'Commission amount',
     );
-    if (partsTotal !== fixHomePartsTotal + technicianPartsTotal || grandTotal !== laborTotal + partsTotal + warrantyFeeTotal) {
+    if (partsTotal !== fixHomePartsTotal + technicianPartsTotal || grandTotal !== laborTotal + partsTotal + warrantyFeeTotal + shippingFee) {
       throw new BusinessException(
         ErrorCodes.CONFLICT,
         'Invoice total snapshot is inconsistent',
@@ -1283,7 +1284,7 @@ export class FinanceService {
     const existingPlatformDue = await platformDueRepository.findOne({
       where: { serviceOrderId: order.id },
     });
-    const platformAmount = commissionAmount + fixHomePartsTotal;
+    const platformAmount = commissionAmount + fixHomePartsTotal + shippingFee;
     if (existingPlatformDue) {
       if (
         Number(existingPlatformDue.dueAmount) !== platformAmount ||

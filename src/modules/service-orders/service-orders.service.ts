@@ -1,3 +1,5 @@
+import { closeOrderPartRequests, assertPartsResolved, usedPartQuantities } from '../part-requests/part-request-lifecycle';
+import { PartRequest } from '../part-requests/entities/part-request.entity';
 import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -119,6 +121,7 @@ export class ServiceOrdersService {
         const fresh = await manager.findOne(ServiceOrder, { where: { id: order.id }, lock: { mode: 'pessimistic_write' } });
         if (!fresh || fresh.status !== ServiceOrderStatus.ACCEPTED) return;
         await manager.update(ServiceOrder, fresh.id, { status: ServiceOrderStatus.CANCELLED, cancelledAt: new Date() });
+        await closeOrderPartRequests(manager, fresh.id, true);
         await manager.update(TechnicianAssignment, { serviceOrderId: fresh.id, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: 'Overdue: technician did not start on schedule' });
         await manager.insert(OrderStatusHistory, { serviceOrderId: fresh.id, fromStatus: ServiceOrderStatus.ACCEPTED, toStatus: ServiceOrderStatus.CANCELLED, reason: 'Auto-cancelled: overdue past scheduled time' });
       });
@@ -863,10 +866,12 @@ export class ServiceOrdersService {
     await manager.update(ServiceOrder, order.id, { status: next, ...(next === ServiceOrderStatus.UNDER_REPAIR ? { startedAt: now } : {}), ...(next === ServiceOrderStatus.COMPLETED ? { completedAt: now } : {}), ...(next === ServiceOrderStatus.CANCELLED ? { cancelledAt: now } : {}) });
     await manager.insert(OrderStatusHistory, { serviceOrderId: order.id, fromStatus: previous, toStatus: next, actorUserId: actor.id, actorRole: actor.role, reason });
     await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'ORDER_TRANSITION', resourceType: 'service_order', resourceId: order.id, before: { status: previous }, after: { status: next, reason } });
+    if ([ServiceOrderStatus.CANCELLED, ServiceOrderStatus.COMPLETED].includes(next)) await closeOrderPartRequests(manager, order.id, next === ServiceOrderStatus.CANCELLED);
     order.status = next;
   }
 
   private async assertCompletionReady(manager: EntityManager, order: ServiceOrder): Promise<void> {
+    assertPartsResolved(await manager.find(PartRequest, { where: { serviceOrderId: order.id }, relations: ['items'] }));
     await expireAdditionalCosts(manager, order.id);
     const required = await this.configService.getInt('evidence.after.min_count', 1);
     if (await manager.count(RepairEvidence, { where: { serviceOrderId: order.id, type: EvidenceType.AFTER } }) < required) throw new BusinessException(ErrorCodes.EVIDENCE_REQUIRED_AFTER, 'AFTER evidence required');
@@ -928,6 +933,10 @@ export class ServiceOrdersService {
         .getMany();
     }
 
+    const requests = await manager.find(PartRequest, { where: { serviceOrderId: orderId }, relations: ['items'] });
+    assertPartsResolved(requests);
+    const billableQuantity = usedPartQuantities(requests);
+
     // Calculate totals
     let laborTotal = 0;
     let fixHomePartsTotal = 0;
@@ -965,7 +974,9 @@ export class ServiceOrdersService {
     if (!isFixedPrice && quotation?.items) {
       // 2. Inspection-based quotation items
       for (const qi of quotation.items) {
-        const lineTotal = Number(qi.lineTotal);
+        const quantity = billableQuantity('quotation', qi);
+        if (!quantity) continue;
+        const lineTotal = quantity * Number(qi.unitPrice);
         if (qi.type === CostItemType.LABOR) {
           laborTotal += lineTotal;
         } else {
@@ -984,7 +995,7 @@ export class ServiceOrdersService {
           sourceItemId: qi.id,
           type: qi.type,
           description: qi.description,
-          quantity: qi.quantity,
+          quantity,
           unitPrice: Number(qi.unitPrice),
           lineTotal,
           warrantyDaysSnapshot: qi.partSource === PartSource.TECHNICIAN ? (qi.partWarrantyOption === PartWarrantyOption.PAID_WARRANTY ? qi.warrantyTermDays ?? 0 : 0) : qi.warrantyDaysSnapshot,
@@ -997,7 +1008,9 @@ export class ServiceOrdersService {
 
     // 3. Approved Additional cost items
     for (const aci of additionalItems) {
-      const lineTotal = Number(aci.lineTotal);
+      const quantity = billableQuantity(aci.requestId, aci);
+      if (!quantity) continue;
+      const lineTotal = quantity * Number(aci.unitPrice);
       if (aci.type === CostItemType.LABOR) {
         laborTotal += lineTotal;
       } else {
@@ -1016,7 +1029,7 @@ export class ServiceOrdersService {
         sourceItemId: aci.id,
         type: aci.type,
         description: aci.description,
-        quantity: aci.quantity,
+        quantity,
         unitPrice: Number(aci.unitPrice),
         lineTotal,
         warrantyDaysSnapshot: aci.partSource === PartSource.TECHNICIAN ? (aci.partWarrantyOption === PartWarrantyOption.PAID_WARRANTY ? aci.warrantyTermDays ?? 0 : 0) : aci.warrantyDays,
@@ -1027,7 +1040,10 @@ export class ServiceOrdersService {
     }
 
     const partsTotal = fixHomePartsTotal + technicianPartsTotal;
-    const grandTotal = laborTotal + partsTotal + technicianPartWarrantyFeeTotal;
+    const shippingFee = additionalCosts.reduce((sum, cost) => sum + (
+      requests.some(r => r.additionalCostId === cost.id && r.receivedAt && r.fulfillmentMethod === 'delivery' && ['received', 'completed'].includes(r.status))
+        ? Number(cost.shippingFee || 0) : 0), 0);
+    const grandTotal = laborTotal + partsTotal + technicianPartWarrantyFeeTotal + shippingFee;
 
     // Spec v1.4 BRX-026: Platform commission is 10% on Final Labor Total. 0% on parts. Rate snapshotted.
     const commissionBase = 'LABOR';
@@ -1043,6 +1059,7 @@ export class ServiceOrdersService {
       fixHomePartsTotal,
       technicianPartsTotal,
       technicianPartWarrantyFeeTotal,
+      shippingFee,
       grandTotal,
       commissionBase,
       commissionRateSnapshot,
