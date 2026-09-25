@@ -379,6 +379,27 @@ describe('PartRequestsService', () => {
         ),
       ).rejects.toThrow('Invalid QR token for this part request');
     });
+
+    it('should accept TEST_SCAN token for dev testing and transition to RECEIVED', async () => {
+      const request = {
+        id: 'pr-1',
+        technicianId: 'tech-1',
+        serviceOrderId: 'order-1',
+        status: PartRequestStatus.REQUESTED,
+        fulfillmentMethod: FulfillmentMethod.PICKUP,
+      };
+
+      mockMutation(request);
+
+      const result = await service.receiveByQr(
+        'pr-1',
+        { qrToken: 'TEST_SCAN' },
+        { id: 'tech-1', role: Role.TECHNICIAN },
+      );
+
+      expect(result.status).toBe(PartRequestStatus.RECEIVED);
+      expect(result.receivedAt).toBeDefined();
+    });
   });
 
   describe('updateItemUsage', () => {
