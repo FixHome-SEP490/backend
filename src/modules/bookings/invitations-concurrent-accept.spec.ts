@@ -96,6 +96,17 @@ function scenario(count: number) {
 beforeEach(() => { vi.clearAllMocks(); });
 
 describe('BE-MATCH first valid Accept is the only winner', () => {
+  it('lets a single selected technician accept the only PENDING invitation and creates one ServiceOrder', async () => {
+    const s = scenario(1);
+    const result = await s.service.respond('invitation-1', 'ACCEPT', s.actor(1));
+    expect(result.serviceOrder?.id).toBe('service-order-1');
+    expect(s.booking.status).toBe(BookingStatus.MATCHED);
+    expect(s.invitations.map(i => i.status)).toEqual([InvitationStatus.ACCEPTED]);
+    expect(s.assignments).toHaveLength(1);
+    expect(s.assignments[0].technicianId).toBe('tech-1');
+    expect(s.orderCreated).toBe(1);
+  });
+
   it('rejects priority #2 before #1 responds; after #1 declines #2 receives invitation and can Accept one SO', async () => {
     const s = scenario(2);
     s.invitations[1].status = InvitationStatus.STANDBY;

@@ -1,49 +1,72 @@
-services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: fixhome-postgres
-    restart: unless-stopped
-    ports:
-      - '5432:5432'
-    environment:
-      POSTGRES_DB: fixhome
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U postgres']
-      interval: 10s
-      timeout: 5s
-      retries: 5
+# Chạy backend FixHome bằng Docker, dùng chung database Supabase với cả đội.
+#
+#   docker compose up -d      bật lên
+#   docker compose logs -f    xem log
+#   docker compose down       tắt đi
+#
+# Không có PostgreSQL cục bộ ở đây. Trước kia file này dựng một Postgres rỗng,
+# mà `synchronize` thì tắt và không có bước chạy migration, nên container lên là
+# gặp database không có bảng nào. Giờ trỏ thẳng vào Supabase trong `.env`, đúng
+# thứ mọi người đang dùng khi chạy `npm run dev`.
 
+services:
   backend:
     build:
       context: .
       dockerfile: Dockerfile
+      # Tầng `dev` có theo dõi file. Muốn chạy bản đã biên dịch như lúc triển
+      # khai thật thì đổi thành `runner`.
+      target: dev
     container_name: fixhome-backend
     restart: unless-stopped
+
+    # Nạp nguyên `.env`. Đây là lý do thêm biến mới không phải sửa file này:
+    # ai thêm một dòng vào `.env` là container tự có biến đó.
+    env_file:
+      - .env
+
+    environment:
+      # Bên trong container luôn nghe cổng 3000, bất kể `.env` ghi gì. Phần ánh
+      # xạ ra ngoài do mục `ports` bên dưới lo.
+      PORT: 3000
+
+      # `localhost` bên trong container là chính container đó, không phải máy
+      # thật. Mà `.env` thì ghi AI_SERVICE_URL=http://localhost:8000 để chạy
+      # ngoài Docker, nên nếu cứ để nguyên thì trong Docker sẽ gọi vào hư không.
+      #
+      # Dùng một biến riêng để phá thế kẹt đó: mặc định trong Docker là
+      # `host.docker.internal`, còn ai muốn trỏ AI sang máy khác — chẳng hạn GPU
+      # thuê trên vast.ai — thì đặt AI_SERVICE_URL_DOCKER trong `.env`, không
+      # phải sửa file này. Mục `environment` luôn thắng `env_file`.
+      AI_SERVICE_URL: ${AI_SERVICE_URL_DOCKER:-http://host.docker.internal:8000}
+
     ports:
       - '3000:3000'
-    environment:
-      PORT: 3000
-      NODE_ENV: production
-      DATABASE_HOST: postgres
-      DATABASE_PORT: 5432
-      DATABASE_USER: postgres
-      DATABASE_PASSWORD: postgres
-      DATABASE_NAME: fixhome
-      DATABASE_SSL: 'false'
-      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Set JWT_REFRESH_SECRET}
-      JWT_ACCESS_EXPIRES_IN: 15m
-      JWT_REFRESH_EXPIRES_IN: 7d
-      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173,http://localhost:8081}
-      CLOUDINARY_CLOUD_NAME: ${CLOUDINARY_CLOUD_NAME:-}
-    depends_on:
-      postgres:
-        condition: service_healthy
 
-volumes:
-  postgres_data:
+    volumes:
+      # Chỉ gắn thư mục mã nguồn, cố ý không gắn cả thư mục gốc.
+      #
+      # Gắn cả thư mục gốc thì `node_modules` của Windows sẽ đè lên
+      # `node_modules` của Linux trong container, mà bcrypt biên dịch ra mã máy
+      # riêng cho từng hệ — đè vào là container chết ngay khi khởi động.
+      - ./src:/app/src
+      - ./test:/app/test
+
+    # Cho phép gọi về máy thật bằng tên `host.docker.internal`.
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'wget',
+          '--quiet',
+          '--tries=1',
+          '--spider',
+          'http://127.0.0.1:3000/health',
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s

@@ -33,7 +33,7 @@ export class InvitationsService {
 
   async createShortlist(bookingId: string, technicianIds: string[], customer: { id: string; role: string }): Promise<BookingInvitation[]> {
     if (customer.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
-    if (!Array.isArray(technicianIds) || technicianIds.length !== 2 || new Set(technicianIds).size !== technicianIds.length) throw new BusinessException(ErrorCodes.SHORTLIST_LIMIT_EXCEEDED, 'Select exactly 2 distinct technicians in priority order');
+    if (!Array.isArray(technicianIds) || technicianIds.length < 1 || technicianIds.length > 2 || new Set(technicianIds).size !== technicianIds.length) throw new BusinessException(ErrorCodes.SHORTLIST_LIMIT_EXCEEDED, 'Select 1 or 2 distinct technicians in priority order');
     return this.dataSource.transaction(async manager => {
       const booking = await manager.findOne(Booking, { where: { id: bookingId, customerId: customer.id }, lock: { mode: 'pessimistic_write' } });
       if (!booking) throw new ForbiddenException('Booking not found');

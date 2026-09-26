@@ -45,7 +45,7 @@ function setup(count: number, excluded: string[] = []) {
 
 beforeEach(() => { vi.clearAllMocks(); });
 
-describe('BE-MATCH two customer-ranked technicians, sequential activation (synthetic EntityManager)', () => {
+describe('BE-MATCH one-or-two customer-ranked technicians, sequential activation (synthetic EntityManager)', () => {
   it.each([1, 2])('notifies ONLY the first of %i eligible technicians', async count => {
     const s = setup(count);
     const before = Date.now();
