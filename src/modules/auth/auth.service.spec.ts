@@ -13,7 +13,7 @@ import { AuthService } from './auth.service';
 import { User } from '../users/entities/user.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 import { OtpVerification } from './entities/otp-verification.entity';
-import { Role, AccountStatus, OtpPurpose } from '../../shared/enums';
+import { Role, AccountStatus, OtpPurpose, AuthProvider } from '../../shared/enums';
 
 describe('AuthService', () => {
   let authService: AuthService;
@@ -28,6 +28,7 @@ describe('AuthService', () => {
     id: 'user-uuid-1',
     email: 'customer@fixhome.vn',
     passwordHash: '',
+    authProvider: AuthProvider.LOCAL,
     fullName: 'Nguyen Van A',
     phoneNumber: '0912345678',
     role: Role.CUSTOMER,

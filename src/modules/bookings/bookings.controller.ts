@@ -156,8 +156,8 @@ export class BookingsController {
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Customer: invite exactly two technicians in priority order',
-    description: 'Send two distinct Technician User IDs in customer-selected order. The first eligible technician is invited immediately. The second remains STANDBY and cannot see or accept this Booking until the first declines or expires. This creates invitations, not a ServiceOrder.',
+    summary: 'Customer: invite one or two technicians in priority order',
+    description: 'Send one or two distinct Technician User IDs in customer-selected order. The first eligible technician is invited immediately. When a second technician is selected, that technician remains STANDBY and cannot see or accept this Booking until the first declines or expires. This creates invitations, not a ServiceOrder.',
   })
   async createShortlist(
     @Param('id', ParseUUIDPipe) id: string,

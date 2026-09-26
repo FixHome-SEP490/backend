@@ -14,6 +14,10 @@ import {
   ValidateIf,
 } from 'class-validator';
 import { Trim, Phone } from '../../../shared/validation/input.transforms';
+import {
+  IsPersonName,
+  NoUnsafeText,
+} from '../../../shared/validation/text.validators';
 import { Role } from '../../../shared/enums';
 
 export class RegisterDto {
@@ -24,6 +28,7 @@ export class RegisterDto {
   @IsEmail({}, { message: 'email must be a valid email address' })
   @Trim()
   @MaxLength(254)
+  @NoUnsafeText()
   email: string;
 
   @ApiProperty({
@@ -34,6 +39,9 @@ export class RegisterDto {
   @IsString()
   @MinLength(8, { message: 'password must be at least 8 characters long' })
   @IsByteLength(0, 72)
+  // bcrypt cắt chuỗi tại byte NUL đầu tiên, nên một mật khẩu chứa `\u0000` sẽ
+  // được băm ngắn hơn hẳn những gì người dùng gõ. Chặn ngay lúc đặt mật khẩu.
+  @NoUnsafeText()
   @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).+$/, {
     message:
       'password requires uppercase, lowercase, number and special character',
@@ -46,6 +54,7 @@ export class RegisterDto {
   @MinLength(2)
   @MaxLength(200)
   @IsNotEmpty({ message: 'fullName is required' })
+  @IsPersonName()
   fullName: string;
 
   @ApiPropertyOptional({
@@ -60,13 +69,19 @@ export class RegisterDto {
   })
   phoneNumber?: string;
 
+  /**
+   * Chỉ CUSTOMER được tự đăng ký; tài khoản TECHNICIAN do Service Manager hoặc
+   * Admin tạo. `AuthService.register` vẫn luôn từ chối mọi role khác, nhưng
+   * trước đây DTO lại khai là nhận cả TECHNICIAN nên Swagger mô tả một đằng mà
+   * hệ thống xử một nẻo. Thu hẹp lại cho khớp đúng hành vi thật.
+   */
   @ApiPropertyOptional({
-    enum: [Role.CUSTOMER, Role.TECHNICIAN],
+    enum: [Role.CUSTOMER],
     default: Role.CUSTOMER,
-    description: 'Registration role (CUSTOMER or TECHNICIAN only)',
+    description: 'Registration role (CUSTOMER only)',
   })
   @ValidateIf((_dto, value) => value !== undefined)
   @IsEnum(Role, { message: 'role must be a valid role' })
-  @IsIn([Role.CUSTOMER, Role.TECHNICIAN])
+  @IsIn([Role.CUSTOMER])
   role?: Role = Role.CUSTOMER;
 }

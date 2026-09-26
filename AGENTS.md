@@ -31,6 +31,26 @@ If the technical guide has not been read, implementation must not begin.
   and `Docs-FixHome`.
 - Never commit `.env`, credentials, access tokens, customer data, or provider keys.
 
+## Keep Docker working
+
+This repository ships a `docker-compose.yml` that other developers run daily. It reads the whole
+`.env` through `env_file`, so a new environment variable needs no compose change. Everything else
+does:
+
+- Adding or removing a dependency changes the image. Say so in the handover and tell the team to
+  run `docker compose up -d --build`; the mounted volumes only carry `src` and `test`.
+- Changing the listening port means updating `ports`, the `HEALTHCHECK` in `docker-compose.yml`,
+  and `CORS_ORIGIN`.
+- A service the backend calls that runs on the developer's machine rather than in Docker must be
+  reached through `host.docker.internal`, never `localhost`.
+- Do not reintroduce a local PostgreSQL service. The database is the shared Supabase instance
+  declared in `.env`; a local one comes up with no tables because `synchronize` is off and no
+  migration step runs.
+
+After a change that touches the image or the runtime contract, verify with
+`docker compose up -d --build` and a request against `/health` before handing over. `docs/DOCKER.md`
+explains the setup for people new to Docker — keep it true when you change the setup.
+
 ## Required verification
 
 Run the gates supported by the change: `npm run lint`, `npm run typecheck`, `npm test`,
