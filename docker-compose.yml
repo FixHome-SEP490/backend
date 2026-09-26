@@ -30,15 +30,17 @@ services:
       # xạ ra ngoài do mục `ports` bên dưới lo.
       PORT: 3000
 
-      # `localhost` bên trong container là chính container đó, không phải máy
-      # thật. Mà `.env` thì ghi AI_SERVICE_URL=http://localhost:8000 để chạy
-      # ngoài Docker, nên nếu cứ để nguyên thì trong Docker sẽ gọi vào hư không.
+      # Địa chỉ AI Service, xét theo ba mức từ trên xuống:
       #
-      # Dùng một biến riêng để phá thế kẹt đó: mặc định trong Docker là
-      # `host.docker.internal`, còn ai muốn trỏ AI sang máy khác — chẳng hạn GPU
-      # thuê trên vast.ai — thì đặt AI_SERVICE_URL_DOCKER trong `.env`, không
-      # phải sửa file này. Mục `environment` luôn thắng `env_file`.
-      AI_SERVICE_URL: ${AI_SERVICE_URL_DOCKER:-http://host.docker.internal:8000}
+      # 1. `AI_SERVICE_URL_DOCKER` nếu có. Chỉ cần tới khi AI Service chạy ngay
+      #    trên máy thật, vì `localhost` bên trong container là chính container
+      #    đó. Lúc đó đặt `http://host.docker.internal:8000`.
+      # 2. `AI_SERVICE_URL` trong `.env`. Đây là đường thường dùng: `npm run
+      #    ai:point -- http://<ip>:<port>` ghi vào đúng biến này sau mỗi lần
+      #    thuê GPU mới, và địa chỉ công khai thì trong hay ngoài Docker đều gọi
+      #    được như nhau.
+      # 3. Không có gì thì đoán là AI chạy trên máy thật.
+      AI_SERVICE_URL: ${AI_SERVICE_URL_DOCKER:-${AI_SERVICE_URL:-http://host.docker.internal:8000}}
 
     ports:
       - '3000:3000'

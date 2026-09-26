@@ -84,14 +84,25 @@ Hai biến bị ghi đè có chủ ý:
 `PORT` luôn là 3000 bên trong container, bất kể `.env` ghi gì. Muốn đổi cổng
 nhìn thấy từ máy thật thì sửa mục `ports` trong compose, ví dụ `'3001:3000'`.
 
-`AI_SERVICE_URL` bị ép thành `host.docker.internal:8000`. Lý do: bên trong
-container, `localhost` là chính container đó chứ không phải máy thật, mà `.env`
-lại ghi `AI_SERVICE_URL=http://localhost:8000` để chạy ngoài Docker. Cứ để
-nguyên thì trong Docker gọi AI Service sẽ rơi vào hư không.
+`AI_SERVICE_URL` xét theo ba mức từ trên xuống: `AI_SERVICE_URL_DOCKER` nếu có,
+không thì `AI_SERVICE_URL` trong `.env`, không nữa thì đoán là AI chạy trên máy
+thật.
 
-Muốn trỏ AI sang chỗ khác — chẳng hạn GPU thuê trên vast.ai — thì thêm
-`AI_SERVICE_URL_DOCKER` vào `.env`, đừng sửa `AI_SERVICE_URL` vì biến đó còn
-dùng khi chạy ngoài Docker.
+Cách dùng thường ngày chỉ có một bước. Sau mỗi lần thuê GPU mới:
+
+```
+npm run ai:point -- http://<ip>:<port>
+```
+
+Lệnh này kiểm GPU đã nạp xong model chưa, ghi địa chỉ vào `.env`, **tự nhận ra
+backend đang chạy trong Docker và restart đúng container**, rồi chờ tới khi
+backend báo đã nối được với AI mới dừng. Không phải nhớ thêm biến nào.
+
+`AI_SERVICE_URL_DOCKER` chỉ cần tới trong đúng một trường hợp: AI Service chạy
+ngay trên máy này. Khi đó `localhost` bên trong container là chính container chứ
+không phải máy thật, nên phải đặt `AI_SERVICE_URL_DOCKER=http://host.docker.internal:8000`.
+Trỏ sang địa chỉ công khai như GPU vast.ai thì bỏ trống, vì địa chỉ đó trong hay
+ngoài Docker đều gọi được như nhau.
 
 ## Khi gặp lỗi
 

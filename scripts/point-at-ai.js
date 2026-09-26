@@ -18,6 +18,10 @@
  * and a half minutes before the models finish loading, so the check reports
  * which of the two is true rather than just succeeding.
  *
+ * Running under Docker needs nothing extra: if a `fixhome-backend` container is
+ * up, this restarts that container instead of starting a second backend on the
+ * host. Compose re-reads .env on every start, so the new address takes effect.
+ *
  * On a server, do not let this stop and start the process itself - whatever
  * supervises it will fight you. Set AI_POINT_RESTART to the command that owns
  * the lifecycle and it is run instead:
@@ -101,6 +105,27 @@ function writeEnv(target) {
 }
 
 /**
+ * True when this project's backend is running as a Docker container.
+ *
+ * Without this check the script does the wrong thing for anyone on Docker: it
+ * kills nothing useful on the port, then starts a second backend on the host
+ * that fights the container for port 3000. The container is the thing holding
+ * the old address, so the container is the thing that has to restart.
+ */
+function dockerBackendIsRunning() {
+  try {
+    const out = execSync(
+      'docker ps --filter name=fixhome-backend --filter status=running --format "{{.Names}}"',
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    return out.includes('fixhome-backend');
+  } catch {
+    // Docker not installed, or the daemon is down. Either way, not our case.
+    return false;
+  }
+}
+
+/**
  * Stop whatever is listening on the API port, whichever port that is.
  *
  * The port is read from .env rather than assumed: this project runs on 3001
@@ -157,6 +182,11 @@ function stopWhateverIsOnPort(port) {
   if (supervised) {
     console.log(`  Restarting: ${supervised}`);
     execSync(supervised, { stdio: 'inherit', cwd: ROOT });
+  } else if (dockerBackendIsRunning()) {
+    // Restarting is enough: compose reads .env afresh on every start, and the
+    // container mounts src rather than baking it, so nothing needs rebuilding.
+    console.log('  Docker container detected - restarting it');
+    execSync('docker compose restart backend', { stdio: 'inherit', cwd: ROOT });
   } else {
     const stopped = stopWhateverIsOnPort(port);
     console.log(`  Stopped ${stopped} process(es) on port ${port}`);
