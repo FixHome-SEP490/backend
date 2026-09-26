@@ -16,6 +16,27 @@ Với đồ án này, cái lợi cụ thể: người mới vào nhóm chỉ c�
 sao chép `.env`, gõ một dòng lệnh là backend chạy — không cần cài Node, không
 cần `npm install`, không cần biết dự án dùng Node 20 hay Node 22.
 
+## Đừng bấm nút Run trong giao diện Docker Desktop
+
+Đây là bẫy đã làm mất thời gian thật. Thấy image trong tab Images rồi bấm **Run**
+thì Docker tạo container từ image đó, nhưng **bỏ qua toàn bộ `docker-compose.yml`**.
+
+Mà mọi thứ khiến ứng dụng chạy được đều nằm trong file đó: ánh xạ cổng ra máy
+thật, nạp `.env`, gắn thư mục `src`. Thiếu chúng thì container vẫn "Up" trong
+giao diện, nhìn như đang chạy, nhưng trình duyệt không vào được vì cổng không
+thông ra ngoài, và bản thân nó cũng chết ngay lúc nạp vì không có biến môi
+trường nào.
+
+Dấu hiệu nhận ra: container mang tên ngẫu nhiên kiểu `pedantic_williamson` thay
+vì `fixhome-backend`, và cột Ports ghi `3000/tcp` trơ trọi thay vì
+`0.0.0.0:3000->3000/tcp`.
+
+Luôn khởi động bằng dòng lệnh, trong đúng thư mục repo:
+
+```
+docker compose up -d
+```
+
 ## Ba lệnh cần nhớ
 
 ```
