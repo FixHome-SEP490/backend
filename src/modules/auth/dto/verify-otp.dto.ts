@@ -1,7 +1,15 @@
 // src/modules/auth/dto/verify-otp.dto.ts
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEmail, IsNotEmpty, IsString, Length, Matches } from 'class-validator';
+import {
+  IsEmail,
+  IsNotEmpty,
+  IsString,
+  Length,
+  Matches,
+  MaxLength,
+} from 'class-validator';
 import { Trim } from '../../../shared/validation/input.transforms';
+import { NoUnsafeText } from '../../../shared/validation/text.validators';
 
 export class VerifyOtpDto {
   @ApiProperty({
@@ -10,6 +18,8 @@ export class VerifyOtpDto {
   })
   @IsEmail({}, { message: 'email must be a valid email address' })
   @Trim()
+  @MaxLength(254)
+  @NoUnsafeText()
   email: string;
 
   @ApiProperty({

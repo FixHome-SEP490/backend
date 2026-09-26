@@ -10,6 +10,50 @@ import {
 import { Request, Response } from 'express';
 import { QueryFailedError } from 'typeorm';
 
+/**
+ * Lỗi do middleware của Express ném ra trước khi request chạm tới Nest.
+ *
+ * Body parser dùng thư viện `http-errors`: đối tượng lỗi mang sẵn `status` và
+ * cờ `expose` báo rằng thông báo này an toàn để trả về cho client. Chúng không
+ * phải `HttpException` nên trước đây rơi xuống nhánh 500, khiến một body quá
+ * khổ bị báo là "Internal server error" kèm stack trace thay vì 413.
+ *
+ * Đo trên hệ thống đang chạy thì adapter của Nest có bọc sẵn lỗi JSON sai cú
+ * pháp thành `BadRequestException` (nên ca đó vốn đã trả 400 đúng), nhưng lỗi
+ * body quá khổ thì đi thẳng tới đây ở dạng thô. Các nhánh còn lại bên dưới giữ
+ * lại để phòng khi adapter đổi cách xử lý.
+ */
+interface ExposedHttpError extends Error {
+  status?: number;
+  statusCode?: number;
+  expose?: boolean;
+  type?: string;
+}
+
+function asExposedClientError(
+  exception: unknown,
+): { status: number; message: string } | null {
+  if (!(exception instanceof Error)) return null;
+  const candidate = exception as ExposedHttpError;
+  if (candidate.expose !== true) return null;
+
+  const status = candidate.status ?? candidate.statusCode;
+  if (typeof status !== 'number' || status < 400 || status > 499) return null;
+
+  // Thông báo cố định theo loại lỗi, không lấy nguyên văn từ thư viện, để không
+  // vô tình trả lại một mẩu nội dung request cho người gửi.
+  if (candidate.type === 'entity.too.large') {
+    return { status, message: 'Request payload is too large' };
+  }
+  if (candidate.type === 'entity.parse.failed') {
+    return { status, message: 'Malformed request body' };
+  }
+  if (candidate.type === 'charset.unsupported' || candidate.type === 'encoding.unsupported') {
+    return { status, message: 'Unsupported request encoding' };
+  }
+  return { status, message: 'Bad request' };
+}
+
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger(HttpExceptionFilter.name);
@@ -24,7 +68,13 @@ export class HttpExceptionFilter implements ExceptionFilter {
     let code = 'INTERNAL_SERVER_ERROR';
     let details: unknown = undefined;
 
-    if (exception instanceof HttpException) {
+    const exposedClientError = asExposedClientError(exception);
+
+    if (exposedClientError) {
+      status = exposedClientError.status;
+      message = exposedClientError.message;
+      code = this.getErrorCodeFromStatus(status);
+    } else if (exception instanceof HttpException) {
       status = exception.getStatus();
       const exceptionResponse = exception.getResponse();
 

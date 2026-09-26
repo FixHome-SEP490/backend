@@ -134,6 +134,42 @@ export class EnvironmentVariables {
   @IsOptional()
   MAPTILER_API_KEY?: string;
 
+  /**
+   * Google Sign-In. Cả ba đều tuỳ chọn để backend vẫn khởi động được khi chưa
+   * ai điền — lúc đó các endpoint /auth/google trả 503 kèm lời nhắc, thay vì
+   * làm sập cả ứng dụng và chặn luôn những phần không liên quan.
+   *
+   * Một cặp dùng chung cho cả đội, không phải mỗi máy một cặp. CLIENT_ID là
+   * công khai (nó nằm trong bundle web), CLIENT_SECRET chỉ backend giữ.
+   */
+  @IsString()
+  @IsOptional()
+  GOOGLE_CLIENT_ID?: string;
+
+  @IsString()
+  @IsOptional()
+  GOOGLE_CLIENT_SECRET?: string;
+
+  /**
+   * Địa chỉ Google gọi ngược về sau khi người dùng đồng ý. Phải trùng từng ký
+   * tự với ô Authorized redirect URIs trong Google Console.
+   */
+  @IsString()
+  @IsOptional()
+  GOOGLE_CALLBACK_URL: string =
+    'http://localhost:3000/api/v1/auth/google/callback';
+
+  /**
+   * Các tiền tố mà backend được phép chuyển hướng về sau khi đăng nhập xong.
+   * Mobile tự sinh địa chỉ của mình lúc chạy (Expo Go dùng exp://<IP-LAN>:8081)
+   * nên không thể liệt kê cứng từng máy, nhưng cũng không được nhận bừa mọi địa
+   * chỉ — nếu không kẻ tấn công sẽ lái token về máy của họ.
+   */
+  @IsString()
+  @IsOptional()
+  GOOGLE_ALLOWED_APP_REDIRECTS: string =
+    'exp://,fixhome://,http://localhost:5173,http://localhost:8081';
+
   // CORS
   @IsString()
   @IsOptional()

@@ -33,3 +33,4 @@ export * from './part-request-status.enum';
 export * from './part-request-type.enum';
 export * from './fulfillment-method.enum';
 export * from './part-usage-status.enum';
+export * from './auth-provider.enum';

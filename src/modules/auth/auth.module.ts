@@ -7,6 +7,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
+import { GoogleIdentityService } from './google-identity.service';
+import { GoogleRedirectService } from './google-redirect.service';
 import { RefreshToken } from './entities/refresh-token.entity';
 import { OtpVerification } from './entities/otp-verification.entity';
 import { User } from '../users/entities/user.entity';
@@ -32,7 +34,12 @@ import { ThrottlerModule } from '@nestjs/throttler';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy],
+  providers: [
+    AuthService,
+    JwtStrategy,
+    GoogleIdentityService,
+    GoogleRedirectService,
+  ],
   exports: [AuthService, JwtModule, TypeOrmModule],
 })
 export class AuthModule {}

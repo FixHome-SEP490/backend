@@ -1,7 +1,8 @@
 // src/modules/auth/dto/forgot-password.dto.ts
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEmail } from 'class-validator';
+import { IsEmail, MaxLength } from 'class-validator';
 import { Trim } from '../../../shared/validation/input.transforms';
+import { NoUnsafeText } from '../../../shared/validation/text.validators';
 
 export class ForgotPasswordDto {
   @ApiProperty({
@@ -10,5 +11,7 @@ export class ForgotPasswordDto {
   })
   @IsEmail({}, { message: 'email must be a valid email address' })
   @Trim()
+  @MaxLength(254)
+  @NoUnsafeText()
   email: string;
 }

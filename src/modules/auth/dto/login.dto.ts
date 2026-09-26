@@ -8,6 +8,7 @@ import {
   ValidateIf,
 } from 'class-validator';
 import { Trim } from '../../../shared/validation/input.transforms';
+import { NoUnsafeText } from '../../../shared/validation/text.validators';
 
 export class LoginDto {
   @ApiPropertyOptional({
@@ -17,6 +18,7 @@ export class LoginDto {
   @IsString()
   @Trim()
   @MaxLength(254)
+  @NoUnsafeText()
   @ValidateIf(
     (dto, value) => value !== undefined || dto.identifier === undefined,
   )
@@ -31,6 +33,7 @@ export class LoginDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(254)
+  @NoUnsafeText()
   identifier?: string;
 
   @ApiProperty({

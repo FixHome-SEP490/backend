@@ -74,6 +74,15 @@ export function configureApplication(
   app: INestApplication & Partial<NestExpressApplication>,
 ): void {
   const configService = app.get(ConfigService);
+
+  // MAX_BODY_SIZE đã được khai báo từ trước nhưng chưa bao giờ nối vào ứng dụng,
+  // nên giới hạn thực tế vẫn là 100 KB mặc định của Express và đúng triệu chứng
+  // mô tả ở phần khai báo vẫn còn nguyên. Nối vào đây cho giới hạn có hiệu lực.
+  // `app` khai kiểu Partial<NestExpressApplication> vì test dựng app tối giản,
+  // nên gọi có điều kiện.
+  app.useBodyParser?.('json', { limit: MAX_BODY_SIZE });
+  app.useBodyParser?.('urlencoded', { limit: MAX_BODY_SIZE, extended: true });
+
   // Security. Media (avatars, device photos, evidence, KYC previews) is served from
   // this API origin and embedded cross-origin by the web/mobile clients, so relax
   // Helmet's default same-origin Cross-Origin-Resource-Policy or every <img> pointed

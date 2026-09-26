@@ -1,7 +1,7 @@
 // src/modules/users/entities/user.entity.ts
 import { Entity, Column, Index, OneToMany } from 'typeorm';
 import { BaseEntity } from '../../../database/base.entity';
-import { Role, AccountStatus } from '../../../shared/enums';
+import { Role, AccountStatus, AuthProvider } from '../../../shared/enums';
 import { RefreshToken } from '../../auth/entities/refresh-token.entity';
 
 @Entity('users')
@@ -12,12 +12,20 @@ import { RefreshToken } from '../../auth/entities/refresh-token.entity';
 })
 @Index('idx_users_role', ['role'])
 @Index('idx_users_status', ['status'])
+@Index('ux_users_google_id', ['googleId'], {
+  unique: true,
+  where: '"google_id" IS NOT NULL',
+})
 export class User extends BaseEntity {
   @Column({ name: 'email', type: 'varchar' })
   email: string;
 
-  @Column({ name: 'password_hash', type: 'varchar', select: false })
-  passwordHash: string;
+  /**
+   * NULL với tài khoản chỉ đăng nhập bằng Google — họ không có mật khẩu nào cả.
+   * Mọi chỗ so khớp mật khẩu phải kiểm NULL trước khi gọi bcrypt.
+   */
+  @Column({ name: 'password_hash', type: 'varchar', nullable: true, select: false })
+  passwordHash: string | null;
 
   @Column({ name: 'full_name', type: 'varchar' })
   fullName: string;
@@ -44,6 +52,21 @@ export class User extends BaseEntity {
 
   @Column({ name: 'avatar_url', type: 'varchar', nullable: true })
   avatarUrl?: string | null;
+
+  /**
+   * Trường `sub` của Google: định danh ổn định, không đổi kể cả khi người dùng
+   * đổi địa chỉ Gmail. Không dùng email làm khoá liên kết vì email đổi được.
+   */
+  @Column({ name: 'google_id', type: 'varchar', nullable: true })
+  googleId?: string | null;
+
+  @Column({
+    name: 'auth_provider',
+    type: 'varchar',
+    length: 20,
+    default: AuthProvider.LOCAL,
+  })
+  authProvider: AuthProvider;
 
   @Column({
     name: 'booking_suspended_until',

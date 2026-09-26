@@ -5,7 +5,7 @@ import { ConflictException, NotFoundException } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { User } from './entities/user.entity';
 import { RefreshToken } from '../auth/entities/refresh-token.entity';
-import { Role, AccountStatus } from '../../shared/enums';
+import { Role, AccountStatus, AuthProvider } from '../../shared/enums';
 
 describe('UsersService', () => {
   let usersService: UsersService;
@@ -16,6 +16,7 @@ describe('UsersService', () => {
     id: 'user-123',
     email: 'user@fixhome.vn',
     passwordHash: 'hash',
+    authProvider: AuthProvider.LOCAL,
     fullName: 'Nguyen Van A',
     phoneNumber: '0912345678',
     role: Role.CUSTOMER,
