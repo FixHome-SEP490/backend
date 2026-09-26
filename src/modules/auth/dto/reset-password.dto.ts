@@ -7,9 +7,11 @@ import {
   IsString,
   Length,
   Matches,
+  MaxLength,
   MinLength,
 } from 'class-validator';
 import { Trim } from '../../../shared/validation/input.transforms';
+import { NoUnsafeText } from '../../../shared/validation/text.validators';
 
 export class ResetPasswordDto {
   @ApiProperty({
@@ -18,6 +20,8 @@ export class ResetPasswordDto {
   })
   @IsEmail({}, { message: 'email must be a valid email address' })
   @Trim()
+  @MaxLength(254)
+  @NoUnsafeText()
   email: string;
 
   @ApiProperty({
@@ -39,6 +43,8 @@ export class ResetPasswordDto {
   @IsString()
   @MinLength(8, { message: 'newPassword must be at least 8 characters long' })
   @IsByteLength(0, 72)
+  // Giống RegisterDto: bcrypt cắt tại byte NUL nên mật khẩu mới phải sạch.
+  @NoUnsafeText()
   @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).+$/, {
     message:
       'newPassword requires uppercase, lowercase, number and special character',
