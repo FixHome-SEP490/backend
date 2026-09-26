@@ -41,7 +41,20 @@ function scenario(status: BookingStatus = BookingStatus.SUBMITTED) {
 
 beforeEach(() => { vi.clearAllMocks(); });
 
-describe('BE-MATCH customer selects exactly two technicians in priority order', () => {
+describe('BE-MATCH customer selects one or two technicians in priority order', () => {
+  it('accepts one selected technician and immediately makes that invitation PENDING', async () => {
+    const s = scenario();
+    const result = await s.service.createShortlist('booking-1', ['tech-1'], { id: 'customer-1', role: Role.CUSTOMER });
+    expect(result).toHaveLength(1);
+    expect(s.invites.map(i => i.technicianId)).toEqual(['tech-1']);
+    expect(s.invites.map(i => i.priorityOrder)).toEqual([1]);
+    expect(s.invites.map(i => i.status)).toEqual([InvitationStatus.PENDING]);
+    expect(s.invites[0].expiresAt).toBeInstanceOf(Date);
+    expect(s.booking.status).toBe(BookingStatus.MATCHING);
+    expect(s.messaging.ensureConversation).toHaveBeenCalledTimes(1);
+    expect(s.messaging.ensureConversation).toHaveBeenCalledWith(s.manager, s.booking, 'tech-1');
+  });
+
   it('creates two ordered rows but sends an invitation only to priority #1', async () => {
     const s = scenario();
     const selected = ['tech-2', 'tech-1']; // customer order is authoritative, not ranking.
@@ -59,8 +72,8 @@ describe('BE-MATCH customer selects exactly two technicians in priority order', 
     expect(s.audit.logWithManager).toHaveBeenCalledTimes(1);
   });
 
-  it.each([{ selected: [] }, { selected: ['tech-1'] }, { selected: ['tech-1', 'tech-2', 'tech-3'] }, { selected: ['tech-1', 'tech-1'] }])(
-    'refuses other than two distinct chosen technician IDs ($selected)', async ({ selected }) => {
+  it.each([{ selected: [] }, { selected: ['tech-1', 'tech-2', 'tech-3'] }, { selected: ['tech-1', 'tech-1'] }])(
+    'refuses empty, more-than-two, or duplicate technician IDs ($selected)', async ({ selected }) => {
       const s = scenario();
       await expect(s.service.createShortlist('booking-1', selected, { id: 'customer-1', role: Role.CUSTOMER })).rejects.toThrow();
       expect(s.invites).toHaveLength(0);
