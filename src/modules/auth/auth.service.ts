@@ -17,7 +17,19 @@ import { createHash, randomInt, randomUUID } from 'crypto';
 import { User } from '../users/entities/user.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 import { OtpVerification } from './entities/otp-verification.entity';
-import { Role, AccountStatus, OtpPurpose } from '../../shared/enums';
+import {
+  Role,
+  AccountStatus,
+  OtpPurpose,
+  AuthProvider,
+} from '../../shared/enums';
+import type { GoogleProfile } from './google-identity.service';
+
+/**
+ * Mã bàn giao của luồng Google dùng chung khoá ký với access token, nên nó
+ * phải tự khai mục đích để không bị nhầm lẫn với một access token thường.
+ */
+const GOOGLE_HANDOFF_PURPOSE = 'google_handoff';
 import { normalizePhone } from '../../shared/validation/input.transforms';
 import { RbacService } from '../rbac/rbac.service';
 import { MailService } from '../mail/mail.service';
@@ -297,9 +309,24 @@ export class AuthService {
         { email: identifier.toLowerCase() },
         { phoneNumber: normalizePhone(identifier) },
       ],
-      select: ['id', 'passwordHash', 'status', 'isActive'],
+      select: ['id', 'passwordHash', 'status', 'isActive', 'authProvider'],
     });
-    if (!user || !(await bcrypt.compare(dto.password, user.passwordHash)))
+
+    // Tài khoản tạo ra từ Google không có mật khẩu nào cả. Gọi thẳng
+    // bcrypt.compare với NULL sẽ ném lỗi và nổi lên thành HTTP 500, nên phải
+    // chặn trước. Câu trả lời nói rõ phải bấm nút nào, vì nếu chỉ trả "sai mật
+    // khẩu" thì người dùng sẽ thử lại mãi một thứ họ chưa từng đặt.
+    if (user && !user.passwordHash) {
+      throw new UnauthorizedException(
+        'Tài khoản này đăng nhập bằng Google. Vui lòng dùng nút "Đăng nhập với Google".',
+      );
+    }
+
+    if (
+      !user ||
+      !user.passwordHash ||
+      !(await bcrypt.compare(dto.password, user.passwordHash))
+    )
       throw new UnauthorizedException('Invalid email or password');
 
     if (user.status === AccountStatus.PENDING_VERIFICATION) {
@@ -314,6 +341,154 @@ export class AuthService {
       const permissions = await this.getPermissions(current.role);
       return { ...tokens, user: UserProfileDto.fromUser(current, permissions) };
     });
+  }
+
+  /**
+   * Biến một hồ sơ Google đã xác thực thành phiên đăng nhập FixHome.
+   *
+   * Ba tình huống, xử lý khác nhau:
+   *
+   * Đã từng đăng nhập Google — tìm thấy theo `googleId`. Đây là đường thường
+   * gặp nhất. Tra theo `googleId` chứ không theo email, vì người dùng đổi được
+   * địa chỉ Gmail còn `sub` thì không đổi.
+   *
+   * Email đã có tài khoản mật khẩu — **tự động liên kết** theo quyết định của
+   * PO. An toàn vì Google đã xác minh email đó là của họ, và
+   * `GoogleIdentityService` đã chặn mọi hồ sơ có `email_verified` khác true.
+   * Tài khoản giữ nguyên `authProvider` LOCAL vì mật khẩu cũ vẫn dùng được.
+   *
+   * Chưa có gì — tạo tài khoản CUSTOMER mới, không mật khẩu, trạng thái ACTIVE
+   * luôn. Không bắt xác thực OTP nữa vì Google đã làm đúng việc đó rồi; bắt
+   * thêm một lần nữa chỉ làm phiền người dùng mà không thêm bảo đảm nào.
+   *
+   * Vai trò luôn là CUSTOMER, đúng luật tự đăng ký hiện hành: tài khoản
+   * TECHNICIAN do Service Manager hoặc Admin tạo.
+   */
+  private async resolveGoogleUser(profile: GoogleProfile): Promise<string> {
+    const existing =
+      (await this.userRepository.findOne({
+        where: { googleId: profile.googleId },
+      })) ??
+      (await this.userRepository.findOne({ where: { email: profile.email } }));
+
+    if (existing) {
+      if (
+        existing.status !== AccountStatus.ACTIVE ||
+        !existing.isActive
+      ) {
+        // Dùng đúng câu của luồng đăng nhập thường, để một tài khoản bị khoá
+        // không thể lách qua bằng cách đổi sang nút Google.
+        throw new ForbiddenException('Account is locked or suspended');
+      }
+
+      return this.userRepository.manager.transaction(async (manager) => {
+        const users = manager.getRepository(User);
+        const user = await this.lockActiveUser(manager, existing.id);
+
+        // Gắn google_id lần đầu tiên nếu tài khoản này vốn là tài khoản mật
+        // khẩu. Nếu đã có google_id khác thì có gì đó rất sai — cùng một email
+        // không thể thuộc hai tài khoản Google — nên dừng lại thay vì ghi đè.
+        if (user.googleId && user.googleId !== profile.googleId) {
+          throw new ConflictException(
+            'Email này đã được liên kết với một tài khoản Google khác',
+          );
+        }
+        if (!user.googleId) {
+          user.googleId = profile.googleId;
+        }
+        // Google đã xác minh email, nên một tài khoản đăng ký bằng mật khẩu mà
+        // chưa kịp nhập OTP coi như được xác minh từ đây.
+        user.isEmailVerified = true;
+        if (!user.avatarUrl && profile.avatarUrl) {
+          user.avatarUrl = profile.avatarUrl;
+        }
+        await users.save(user);
+        return user.id;
+      });
+    }
+
+    return this.userRepository.manager.transaction(async (manager) => {
+      const users = manager.getRepository(User);
+      const created = await users.save(
+        users.create({
+          email: profile.email,
+          passwordHash: null,
+          googleId: profile.googleId,
+          authProvider: AuthProvider.GOOGLE,
+          fullName: profile.fullName,
+          avatarUrl: profile.avatarUrl,
+          role: Role.CUSTOMER,
+          status: AccountStatus.ACTIVE,
+          isActive: true,
+          isEmailVerified: true,
+        }),
+      );
+      return created.id;
+    });
+  }
+
+  /** Cấp phiên cho một tài khoản đã xác định, dùng chung cho mọi lối vào. */
+  private async issueSessionForUser(
+    userId: string,
+    deviceInfo?: string,
+  ): Promise<AuthResponseDto> {
+    return this.userRepository.manager.transaction(async (manager) => {
+      const user = await this.lockActiveUser(manager, userId);
+      const tokens = await this.issueTokens(user, manager, deviceInfo);
+      const permissions = await this.getPermissions(user.role);
+      return { ...tokens, user: UserProfileDto.fromUser(user, permissions) };
+    });
+  }
+
+  /** Lối vào của web: đã có ID token trong tay, trả luôn phiên. */
+  async loginWithGoogle(
+    profile: GoogleProfile,
+    deviceInfo?: string,
+  ): Promise<AuthResponseDto> {
+    const userId = await this.resolveGoogleUser(profile);
+    return this.issueSessionForUser(userId, deviceInfo);
+  }
+
+  /**
+   * Lối vào của mobile, bước một.
+   *
+   * Không trả token thật ở đây, vì kết quả sẽ đi qua thanh địa chỉ của trình
+   * duyệt để về lại app — mà URL thì bị ghi vào lịch sử duyệt web và log. Thay
+   * vào đó trả một mã bàn giao sống 60 giây, dùng đúng một lần để đổi lấy
+   * phiên thật qua POST. Kể cả có lộ, nó hết hạn trước khi ai kịp dùng.
+   */
+  async createGoogleHandoffCode(profile: GoogleProfile): Promise<string> {
+    const userId = await this.resolveGoogleUser(profile);
+    return this.jwtService.signAsync(
+      { sub: userId, purpose: GOOGLE_HANDOFF_PURPOSE },
+      {
+        secret: this.configService.getOrThrow<string>('JWT_ACCESS_SECRET'),
+        expiresIn: '60s',
+        algorithm: 'HS256',
+      },
+    );
+  }
+
+  /** Lối vào của mobile, bước hai: đổi mã bàn giao lấy phiên thật. */
+  async exchangeGoogleHandoffCode(
+    code: string,
+    deviceInfo?: string,
+  ): Promise<AuthResponseDto> {
+    let payload: { sub?: string; purpose?: string };
+    try {
+      payload = await this.jwtService.verifyAsync(code, {
+        secret: this.configService.getOrThrow<string>('JWT_ACCESS_SECRET'),
+        algorithms: ['HS256'],
+      });
+    } catch {
+      throw new UnauthorizedException('Mã đăng nhập đã hết hạn hoặc không hợp lệ');
+    }
+    // Cùng một khoá ký với access token, nên phải kiểm `purpose`; thiếu bước
+    // này thì một access token thường cũng đổi được thành phiên mới.
+    if (payload.purpose !== GOOGLE_HANDOFF_PURPOSE || !payload.sub) {
+      throw new UnauthorizedException('Mã đăng nhập không hợp lệ');
+    }
+    return this.issueSessionForUser(payload.sub, deviceInfo);
   }
 
   async forgotPassword(dto: ForgotPasswordDto): Promise<{ message: string }> {
@@ -393,6 +568,11 @@ export class AuthService {
         .update(otpRecord.id, { isUsed: true });
 
       user.passwordHash = passwordHash;
+      // Người chỉ từng đăng nhập bằng Google vẫn được đặt mật khẩu qua đường
+      // này, vì OTP gửi về chính email mà Google đã xác minh. Sau bước đó họ có
+      // hai cách vào, nên `authProvider` chuyển về LOCAL đúng với nghĩa "tài
+      // khoản này có mật khẩu"; `googleId` giữ nguyên nên nút Google vẫn chạy.
+      user.authProvider = AuthProvider.LOCAL;
       await manager.getRepository(User).save(user);
 
       await manager
