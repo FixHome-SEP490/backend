@@ -85,9 +85,6 @@ describe('PrivateBookingPhotoStorage', () => {
   });
 
   it('downloads via signed URL and detects MIME type from magic bytes', async () => {
-    const publicId = `fixhome/booking-photos/${OWNER_ID}/${OWNER_ID}`;
-    const reference = `cloudinary://booking-photos/${publicId}`;
-
     // Mock getOwnedPublicId to return a valid publicId — but the actual check
     // is that the reference format matches correctly. Use a valid format.
     const validRef = `cloudinary://booking-photos/fixhome/booking-photos/${OWNER_ID}/2debcf6f-1df5-488d-ae63-48ecbe44af45`;

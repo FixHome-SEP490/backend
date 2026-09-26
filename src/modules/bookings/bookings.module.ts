@@ -17,9 +17,11 @@ import { TechnicianProfile } from '../technicians/entities/technician-profile.en
 import { TechnicianSkill } from '../technicians/entities/technician-skill.entity';
 import { MessagingModule } from '../messaging/messaging.module';
 import { MediaModule } from '../media/media.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
+    NotificationsModule,
     TypeOrmModule.forFeature([
       Booking,
       BookingMedia,

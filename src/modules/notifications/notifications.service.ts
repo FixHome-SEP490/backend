@@ -60,4 +60,30 @@ export class NotificationsService {
     });
     return this.notificationRepo.save(notif);
   }
+
+  async createManyNotifications(
+    notifications: Array<{
+      userId: string;
+      title: string;
+      message: string;
+      type?: string;
+      referenceId?: string;
+      referenceType?: string;
+    }>,
+  ): Promise<Notification[]> {
+    if (!notifications.length) return [];
+    const entities = notifications.map((params) =>
+      this.notificationRepo.create({
+        userId: params.userId,
+        title: params.title,
+        message: params.message,
+        type: params.type || 'INFO',
+        referenceId: params.referenceId || null,
+        referenceType: params.referenceType || null,
+        isRead: false,
+      }),
+    );
+    return this.notificationRepo.save(entities);
+  }
 }
+

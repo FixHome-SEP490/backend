@@ -16,6 +16,8 @@ import { InvitationStatus, BookingStatus, ServiceOrderStatus, Role } from '../..
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { MessagingService } from '../messaging/messaging.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { Optional } from '@nestjs/common';
 import { activateNextInvitation } from './activate-next-invitation';
 import { technicianEligibility } from './technician-eligibility';
 import { TechnicianInvitationPreviewDto, toTechnicianInvitationPreview } from './booking-privacy.dto';
@@ -29,6 +31,7 @@ export class InvitationsService {
     private readonly configService: BusinessConfigService,
     private readonly auditLogService: AuditLogService,
     private readonly messagingService: MessagingService,
+    @Optional() private readonly notificationsService?: NotificationsService,
   ) {}
 
   async createShortlist(bookingId: string, technicianIds: string[], customer: { id: string; role: string }): Promise<BookingInvitation[]> {
@@ -164,6 +167,16 @@ export class InvitationsService {
       await this.messagingService.attachToServiceOrder(manager, booking.id, technician.id, serviceOrder.id);
       await manager.update(TechnicianProfile, { userId: technician.id }, { priorityBoostUntil: null });
       await this.auditLogService.logWithManager(manager, { actorUserId: technician.id, actorRole: technician.role, action: 'INVITATION_ACCEPT', resourceType: 'booking_invitation', resourceId: invitation.id, after: { serviceOrderId: serviceOrder.id, code } });
+      if (this.notificationsService && booking.customerId) {
+        void this.notificationsService.createNotification({
+          userId: booking.customerId,
+          title: 'Đã có Kỹ thuật viên nhận đơn!',
+          message: `Kỹ thuật viên đã đồng ý tiếp nhận đơn hàng #${code}. Kỹ thuật viên sẽ di chuyển và liên hệ với bạn theo đúng lịch hẹn.`,
+          type: 'TECHNICIAN_ASSIGNED',
+          referenceId: serviceOrder.id,
+          referenceType: 'SERVICE_ORDER',
+        });
+      }
       return { invitation, serviceOrder };
     });
     if ('expired' in outcome) throw new BusinessException(ErrorCodes.INVITATION_EXPIRED, 'Invitation expired');
@@ -268,6 +281,16 @@ export class InvitationsService {
       // Spec 8.6 / CHAT-BR-01: chat opens with the invitation, not with Accept.
       async (txManager, txBooking, technicianId) => {
         await this.messagingService.ensureConversation(txManager, txBooking, technicianId);
+        if (this.notificationsService) {
+          void this.notificationsService.createNotification({
+            userId: technicianId,
+            title: 'Lời mời nhận việc mới!',
+            message: 'Bạn có một lời mời nhận việc mới từ khách hàng. Vui lòng kiểm tra và phản hồi sớm trước khi hết hạn.',
+            type: 'BOOKING_INVITATION',
+            referenceId: txBooking.id,
+            referenceType: 'BOOKING',
+          });
+        }
       },
     );
   }
