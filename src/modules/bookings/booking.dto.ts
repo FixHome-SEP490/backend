@@ -45,7 +45,7 @@ export class CreateBookingDto extends ScheduleBookingDto {
   @IsOptional() @IsArray() @IsString({ each: true })
   mediaUrls?: string[];
 
-  @ApiPropertyOptional({ type: [String], maxItems: 5, uniqueItems: true, description: 'Up to five PRIVATE booking PHOTO upload UUIDs; distinct from exactly two technician shortlist IDs.' })
+  @ApiPropertyOptional({ type: [String], maxItems: 5, uniqueItems: true, description: 'Up to five PRIVATE booking PHOTO upload UUIDs; distinct from the one-or-two technician shortlist IDs.' })
   @IsOptional() @IsArray() @ArrayMaxSize(5) @ArrayUnique()
   @Matches(UUID_REGEX, { each: true, message: 'Each photo upload ID must be a valid UUID' })
   photoUploadIds?: string[];
@@ -73,11 +73,11 @@ export class RebookDto extends ScheduleBookingDto {
 
 export class ShortlistDto {
   @ApiProperty({
-    type: [String], minItems: 2, maxItems: 2, uniqueItems: true,
-    description: 'Exactly two distinct technician USER IDs in customer priority order. Only #1 is invited initially; #2 remains STANDBY until #1 declines or expires. Do not send TechnicianProfile IDs.',
+    type: [String], minItems: 1, maxItems: 2, uniqueItems: true,
+    description: 'One or two distinct technician USER IDs in customer priority order. #1 is invited immediately; when #2 exists it remains STANDBY until #1 declines or expires. Do not send TechnicianProfile IDs.',
     example: ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'],
   })
-  @IsArray() @ArrayMinSize(2) @ArrayMaxSize(2) @ArrayUnique()
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(2) @ArrayUnique()
   @Matches(UUID_REGEX, { each: true, message: 'Each technician ID must be a valid UUID' })
   technicianIds: string[];
 }

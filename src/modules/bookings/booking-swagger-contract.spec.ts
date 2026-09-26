@@ -74,13 +74,13 @@ describe('Booking Swagger contract: ordered invitations', () => {
     expect(doc.components?.schemas?.CompletionRequestDto).toMatchObject({ properties: { completionNote: { type: 'string' } } });
     expect(doc.components?.schemas?.CompletionConfirmationDto).toMatchObject({
       properties: { feedback: { type: 'string' }, rating: { type: 'number', minimum: 1, maximum: 5 }, signatureUrl: { type: 'string', format: 'uri' } },
-    });    expect(shortlist?.summary).toContain('exactly two');
+    });    expect(shortlist?.summary).toContain('one or two');
     expect(shortlist?.description).toContain('STANDBY');
     expect(shortlist?.summary).not.toContain('5');
     expect(doc.components?.schemas?.ShortlistDto).toMatchObject({
       required: ['technicianIds'],
       properties: { technicianIds: {
-        type: 'array', minItems: 2, maxItems: 2, uniqueItems: true,
+        type: 'array', minItems: 1, maxItems: 2, uniqueItems: true,
         items: { type: 'string' },
       } },
     });
