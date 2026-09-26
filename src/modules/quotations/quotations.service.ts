@@ -23,6 +23,8 @@ import { AuditLogService } from '../audit-log/audit-log.service';
 import { CreateCostItemDto, CreateQuotationDto, CreateAdditionalCostDto } from './quotation.dto';
 import { FixHomePart } from '../parts-catalog/entities/fixhome-part.entity';
 import { PartRequestsService } from '../part-requests/part-requests.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { Optional } from '@nestjs/common';
 export { CreateCostItemDto, CreateQuotationDto, CreateAdditionalCostDto } from './quotation.dto';
 type Actor = { id: string; role: string };
 
@@ -40,6 +42,7 @@ export class QuotationsService {
     private readonly configService: BusinessConfigService,
     private readonly auditLogService: AuditLogService,
     private readonly partRequestsService: PartRequestsService,
+    @Optional() private readonly notificationsService?: NotificationsService,
   ) {}
 
   private async validateItems(manager: EntityManager, items: CreateCostItemDto[]): Promise<CreateCostItemDto[]> {
@@ -113,6 +116,16 @@ export class QuotationsService {
       const quote = await manager.save(Quotation, manager.create(Quotation, { serviceOrderId: orderId, technicianId: actor.id, status: QuotationStatus.SENT, version, laborTotal, partsTotal, note: dto.note || null, sentAt: new Date() }));
       quote.items = await manager.save(QuotationItem, items.map(item => manager.create(QuotationItem, { ...item, quotationId: quote.id, lineTotal: item.quantity*item.unitPrice, warrantyDaysSnapshot: item.warrantyDays ?? 0 })));
       await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'QUOTATION_CREATED', resourceType: 'quotation', resourceId: quote.id, after: { version, laborTotal, partsTotal } });
+      if (this.notificationsService && booking.customerId) {
+        void this.notificationsService.createNotification({
+          userId: booking.customerId,
+          title: 'Báo giá sửa chữa đã sẵn sàng',
+          message: `Kỹ thuật viên đã lập báo giá chính thức cho đơn #${order.code} với tổng chi phí ${Number(laborTotal + partsTotal).toLocaleString('vi-VN')}đ. Vui lòng xem và xác nhận.`,
+          type: 'QUOTATION_SUBMITTED',
+          referenceId: order.id,
+          referenceType: 'SERVICE_ORDER',
+        });
+      }
       return quote;
     });
   }
@@ -148,6 +161,18 @@ export class QuotationsService {
       quote.status = target;
       quote.decidedAt = new Date();
       await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'QUOTATION_DECISION', resourceType: 'quotation', resourceId: id, after: { action, paidWarrantyItemIds } });
+      if (this.notificationsService && quote.technicianId) {
+        void this.notificationsService.createNotification({
+          userId: quote.technicianId,
+          title: target === QuotationStatus.APPROVED ? 'Báo giá đã được phê duyệt' : 'Khách hàng từ chối báo giá',
+          message: target === QuotationStatus.APPROVED
+            ? `Khách hàng đã duyệt bảng báo giá cho đơn #${order.code}. Bạn có thể tiến hành sửa chữa ngay.`
+            : `Khách hàng đã từ chối bảng báo giá cho đơn #${order.code}.`,
+          type: target === QuotationStatus.APPROVED ? 'QUOTATION_APPROVED' : 'QUOTATION_REJECTED',
+          referenceId: order.id,
+          referenceType: 'SERVICE_ORDER',
+        });
+      }
       return manager.save(quote);
     });
   }
@@ -186,6 +211,26 @@ export class QuotationsService {
     }));
     cost.items = await manager.save(AdditionalCostItem, items.map(item=>manager.create(AdditionalCostItem, { ...item, requestId: cost.id, lineTotal: item.quantity*item.unitPrice, warrantyDays: item.warrantyDays ?? 0 })));
     await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'ADDITIONAL_COST_CREATED', resourceType: 'additional_cost_request', resourceId: cost.id, after: { supersedesId, labor, parts, shippingFee, fulfillmentMethod } });
+    if (this.notificationsService) {
+      void (async () => {
+        try {
+          const booking = await manager.findOneBy(Booking, { id: order.bookingId });
+          if (booking?.customerId) {
+            const totalDelta = Number(labor) + Number(parts) + Number(shippingFee);
+            await this.notificationsService.createNotification({
+              userId: booking.customerId,
+              title: 'Phát sinh chi phí sửa chữa',
+              message: `Kỹ thuật viên đề xuất thêm linh kiện/chi phí phát sinh (+${totalDelta.toLocaleString('vi-VN')}đ) cho đơn #${order.code}: "${dto.reason}". Vui lòng xem và phê duyệt.`,
+              type: 'ADDITIONAL_COST_REQUESTED',
+              referenceId: order.id,
+              referenceType: 'SERVICE_ORDER',
+            });
+          }
+        } catch {
+          // ignore notification error
+        }
+      })();
+    }
     return cost;
   }
 
@@ -238,6 +283,18 @@ export class QuotationsService {
       cost.decidedAt = new Date();
       cost.decidedByCustomerId = actor.id;
       await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'ADDITIONAL_COST_DECISION', resourceType: 'additional_cost_request', resourceId: id, after: { action, paidWarrantyItemIds } });
+      if (this.notificationsService && cost.technicianId) {
+        void this.notificationsService.createNotification({
+          userId: cost.technicianId,
+          title: target === AdditionalCostStatus.APPROVED ? 'Khách hàng đã duyệt chi phí phát sinh' : 'Khách hàng từ chối chi phí phát sinh',
+          message: target === AdditionalCostStatus.APPROVED
+            ? `Khách hàng đã phê duyệt yêu cầu chi phí phát sinh cho đơn #${order.code}. Bạn có thể tiếp tục công việc.`
+            : `Khách hàng đã từ chối yêu cầu chi phí phát sinh cho đơn #${order.code}.`,
+          type: target === AdditionalCostStatus.APPROVED ? 'ADDITIONAL_COST_APPROVED' : 'ADDITIONAL_COST_REJECTED',
+          referenceId: order.id,
+          referenceType: 'SERVICE_ORDER',
+        });
+      }
       return manager.save(cost);
     });
   }

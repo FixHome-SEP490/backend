@@ -1,6 +1,7 @@
 // src/modules/service-orders/service-orders.module.ts
 import { Module } from '@nestjs/common';
 import { MediaModule } from '../media/media.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ServiceOrdersController } from './service-orders.controller';
 import { ServiceOrdersService } from './service-orders.service';
@@ -28,6 +29,7 @@ import { FinanceModule } from '../finance/finance.module';
   imports: [
     MediaModule,
     FinanceModule,
+    NotificationsModule,
     TypeOrmModule.forFeature([
       ServiceOrder,
       TechnicianAssignment,

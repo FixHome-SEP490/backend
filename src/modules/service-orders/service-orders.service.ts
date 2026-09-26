@@ -1,6 +1,7 @@
 import { closeOrderPartRequests, assertPartsResolved, usedPartQuantities } from '../part-requests/part-request-lifecycle';
 import { PartRequest } from '../part-requests/entities/part-request.entity';
-import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, ForbiddenException, Optional } from '@nestjs/common';
+import { NotificationsService } from '../notifications/notifications.service';
 import { randomUUID } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository, In, LessThanOrEqual } from 'typeorm';
@@ -108,7 +109,28 @@ export class ServiceOrdersService {
     private readonly auditLogService: AuditLogService,
     private readonly evidenceStorage: OrderEvidenceStorage,
     private readonly financeService: FinanceService,
+    @Optional() private readonly notificationsService?: NotificationsService,
   ) {}
+
+  private async notifyCustomerForOrder(orderId: string, title: string, message: string, type: string): Promise<void> {
+    if (!this.notificationsService) return;
+    try {
+      const order = await this.orderRepo.findOneBy({ id: orderId });
+      if (!order) return;
+      const booking = await this.dataSource.manager.findOneBy(Booking, { id: order.bookingId });
+      if (!booking?.customerId) return;
+      await this.notificationsService.createNotification({
+        userId: booking.customerId,
+        title,
+        message,
+        type,
+        referenceId: order.id,
+        referenceType: 'SERVICE_ORDER',
+      });
+    } catch {
+      // Non-blocking notification dispatch
+    }
+  }
 
   // ── Queries ──
 
@@ -293,12 +315,19 @@ export class ServiceOrdersService {
     orderId: string,
     actor: { id: string; role: string },
   ): Promise<ServiceOrder> {
-    return this.transitionStatus(
+    const res = await this.transitionStatus(
       orderId,
       ServiceOrderStatus.EN_ROUTE,
       actor,
       'Technician en route',
     );
+    void this.notifyCustomerForOrder(
+      orderId,
+      'Kỹ thuật viên đang di chuyển',
+      `Kỹ thuật viên đang trên đường đến địa chỉ của bạn cho đơn hàng #${res.code}.`,
+      'TECHNICIAN_EN_ROUTE',
+    );
+    return res;
   }
 
   /**
@@ -316,6 +345,14 @@ export class ServiceOrdersService {
       const radius = await this.configService.getInt('geofence.radius_meters', 300);
       const accuracy = await this.configService.getInt('geofence.min_gps_accuracy_meters', 100);
       const result = body.accuracyMeters > accuracy ? CheckInResult.LOW_ACCURACY : distanceMeters > radius ? CheckInResult.OUT_OF_GEOFENCE : CheckInResult.VALID;
+      if (result === CheckInResult.VALID) {
+        void this.notifyCustomerForOrder(
+          orderId,
+          'Kỹ thuật viên đã đến nơi',
+          `Kỹ thuật viên đã có mặt tại điểm hẹn cho đơn hàng #${order.code} và bắt đầu kiểm tra thiết bị.`,
+          'TECHNICIAN_ARRIVED',
+        );
+      }
       return manager.save(ArrivalCheckIn, manager.create(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, lat: body.lat, lng: body.lng, accuracyMeters: body.accuracyMeters, distanceMeters, result, checkedInAt: new Date(), deviceInfo: body.deviceInfo || null }));
     });
   }
@@ -336,7 +373,14 @@ export class ServiceOrdersService {
 
 
   async startRepair(orderId: string, actor: { id: string; role: string }): Promise<ServiceOrder> {
-    return this.transitionStatus(orderId, ServiceOrderStatus.UNDER_REPAIR, actor, 'Repair started');
+    const res = await this.transitionStatus(orderId, ServiceOrderStatus.UNDER_REPAIR, actor, 'Repair started');
+    void this.notifyCustomerForOrder(
+      orderId,
+      'Kỹ thuật viên đã bắt đầu sửa chữa',
+      `Kỹ thuật viên đã có mặt và bắt đầu tiến hành sửa chữa cho đơn hàng #${res.code}.`,
+      'TECHNICIAN_ARRIVED',
+    );
+    return res;
   }
 
 
@@ -349,6 +393,12 @@ export class ServiceOrdersService {
       await this.generateInvoice(orderId, manager);
       await manager.update(ServiceOrder, orderId, { completionRequestedAt: new Date(), completionNote: body.completionNote?.trim() || null });
       await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'ORDER_COMPLETION_REQUESTED', resourceType: 'service_order', resourceId: orderId });
+      void this.notifyCustomerForOrder(
+        orderId,
+        'Yêu cầu nghiệm thu dịch vụ',
+        `Kỹ thuật viên đã hoàn thành công việc cho đơn #${order.code} và tải ảnh nghiệm thu. Vui lòng kiểm tra và xác nhận nghiệm thu.`,
+        'COMPLETION_REQUESTED',
+      );
       return manager.findOneByOrFail(ServiceOrder, { id: orderId });
     });
   }
@@ -364,6 +414,19 @@ export class ServiceOrdersService {
       if (!confirmation) {
         confirmation = await manager.save(CustomerServiceConfirmation, manager.create(CustomerServiceConfirmation, { serviceOrderId: orderId, customerId: actor.id, confirmedAt: new Date(), feedback: body.feedback || null, rating: body.rating ?? null, signatureUrl: body.signatureUrl || null }));
         await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'CUSTOMER_COMPLETION_CONFIRMED', resourceType: 'service_order', resourceId: orderId });
+        if (this.notificationsService) {
+          const assignment = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: orderId, isActive: true });
+          if (assignment?.technicianId) {
+            void this.notificationsService.createNotification({
+              userId: assignment.technicianId,
+              title: 'Khách hàng đã nghiệm thu công việc!',
+              message: `Khách hàng đã xác nhận nghiệm thu dịch vụ cho đơn #${order.code}${body.rating ? ` và đánh giá ${body.rating} sao!` : '.'} Cảm ơn bạn!`,
+              type: 'COMPLETION_CONFIRMED',
+              referenceId: order.id,
+              referenceType: 'SERVICE_ORDER',
+            });
+          }
+        }
       }
       await this.finalizeIfSatisfied(manager, order, actor);
       return { confirmation, order: await manager.findOneByOrFail(ServiceOrder, { id: orderId }) };
@@ -396,6 +459,16 @@ export class ServiceOrdersService {
       if (actor.role === Role.TECHNICIAN && !arrived && [ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(from)) {
         await manager.update(TechnicianAssignment, { serviceOrderId: orderId, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: body.reason });
         await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: CancelActor.TECHNICIAN, actorUserId: actor.id, reason: body.reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
+        if (this.notificationsService && booking.customerId) {
+          void this.notificationsService.createNotification({
+            userId: booking.customerId,
+            title: 'Kỹ thuật viên đã huỷ nhận đơn',
+            message: `Kỹ thuật viên đã xin rút khỏi đơn #${order.code} (Lý do: "${body.reason}"). Hệ thống đang tự động tìm kiếm thợ thay thế cho bạn.`,
+            type: 'ORDER_CANCELLED',
+            referenceId: order.id,
+            referenceType: 'SERVICE_ORDER',
+          });
+        }
         const previous = await manager.find(BookingInvitation, { where: { bookingId: booking.id }, order: { priorityOrder: 'ASC' } });
         const last = Math.max(0, ...previous.filter(inv => inv.status === InvitationStatus.ACCEPTED).map(inv => inv.priorityOrder));
         // Append a fresh invitation round; the original dispatch history stays immutable.
@@ -419,6 +492,29 @@ export class ServiceOrdersService {
       await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: actor.role as unknown as CancelActor, actorUserId: actor.id, reason: body.reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
       await manager.update(TechnicianAssignment, { serviceOrderId: orderId, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: body.reason });
       await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: arrived ? 'CANCELLATION_REQUIRES_REVIEW' : 'ORDER_CANCEL', resourceType: 'service_order', resourceId: orderId, after: { reason: body.reason, strikeApplied: false } });
+      if (this.notificationsService) {
+        const assignment = await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: orderId }, order: { assignedAt: 'DESC' } });
+        if (assignment?.technicianId && actor.role !== Role.TECHNICIAN) {
+          void this.notificationsService.createNotification({
+            userId: assignment.technicianId,
+            title: 'Đơn hàng đã bị huỷ',
+            message: `Đơn hàng #${order.code} đã bị huỷ bởi ${actor.role === Role.CUSTOMER ? 'Khách hàng' : 'Quản trị viên'}. Lý do: "${body.reason}".`,
+            type: 'ORDER_CANCELLED',
+            referenceId: order.id,
+            referenceType: 'SERVICE_ORDER',
+          });
+        }
+        if (booking.customerId && actor.role !== Role.CUSTOMER) {
+          void this.notificationsService.createNotification({
+            userId: booking.customerId,
+            title: 'Đơn hàng đã bị huỷ',
+            message: `Đơn hàng #${order.code} đã bị huỷ. Lý do: "${body.reason}".`,
+            type: 'ORDER_CANCELLED',
+            referenceId: order.id,
+            referenceType: 'SERVICE_ORDER',
+          });
+        }
+      }
       return manager.findOneByOrFail(ServiceOrder, { id: orderId });
     });
   }
@@ -887,6 +983,36 @@ export class ServiceOrdersService {
     const invoice = await manager.findOneBy(Invoice, { serviceOrderId: order.id, paymentStatus: PaymentStatus.PAID });
     if (!invoice || order.paymentStatus !== PaymentStatus.PAID) return false;
     await this.commitTransition(manager, order, ServiceOrderStatus.COMPLETED, actor, 'Work, customer confirmation and payment satisfied');
+    if (this.notificationsService) {
+      void (async () => {
+        try {
+          const booking = await manager.findOneBy(Booking, { id: order.bookingId });
+          if (booking?.customerId) {
+            await this.notificationsService.createNotification({
+              userId: booking.customerId,
+              title: 'Đơn hàng đã hoàn thành xuất sắc!',
+              message: `Đơn hàng #${order.code} đã hoàn tất. Cảm ơn bạn đã tin tưởng dịch vụ FixHome. Gói bảo hành điện tử của bạn đã được kích hoạt.`,
+              type: 'ORDER_COMPLETED',
+              referenceId: order.id,
+              referenceType: 'SERVICE_ORDER',
+            });
+          }
+          const assignment = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, isActive: true });
+          if (assignment?.technicianId) {
+            await this.notificationsService.createNotification({
+              userId: assignment.technicianId,
+              title: 'Đơn hàng hoàn tất & Đã thanh toán',
+              message: `Đơn hàng #${order.code} đã hoàn tất thanh toán thành công. Thu nhập đã được cập nhật vào ví của bạn.`,
+              type: 'ORDER_COMPLETED',
+              referenceId: order.id,
+              referenceType: 'SERVICE_ORDER',
+            });
+          }
+        } catch {
+          // ignore notification error
+        }
+      })();
+    }
     const items = await manager.find(InvoiceItem, { where: { invoiceId: invoice.id } });
     for (const item of items) {
       if (item.warrantyDaysSnapshot <= 0 || (item.partSource === PartSource.TECHNICIAN && item.partWarrantyOption !== PartWarrantyOption.PAID_WARRANTY)) continue;
