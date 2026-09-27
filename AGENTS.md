@@ -5,9 +5,16 @@ not move code to another FixHome repository.
 
 ## Mandatory pre-implementation gate
 
+Before every task, read FIXHOME-DESIGN-SYSTEM.md completely together with
+docs/AI-TECHNICAL-GUIDE.md. Follow its cross-platform language, terminology,
+design-token, typography, title, component, status, and verification rules.
+For UI or user-facing output changes, inspect the matching Web/Mobile behavior.
+Preserve this repository's architecture, API contracts, permissions, and tests.
+If cross-repository verification is unavailable, explicitly report NOT VERIFIED.
+
 Before doing any task:
 
-1. Read `docs/AI-TECHNICAL-GUIDE.md` completely.
+1. Read `docs/AI-TECHNICAL-GUIDE.md` and `FIXHOME-DESIGN-SYSTEM.md` completely.
 2. Inspect the existing project structure and the affected feature module.
 3. Understand the current controller → service → repository/entity architecture.
 4. Identify existing TypeScript, NestJS, DTO, error, and test conventions.
