@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -55,6 +55,8 @@ import {
 import { PaymentVerificationPort, PAYMENT_VERIFICATION_PORT } from './payment-verification.port';
 import { SupportCasesService } from '../support-cases/support-cases.service';
 import { buildPaymentUrl, buildQueryDrRequest, verifySignature } from './vnpay/vnpay.util';
+import { SettlementService } from '../wallet/settlement.service';
+import { WalletService } from '../wallet/wallet.service';
 
 export interface FinanceActor {
   id: string;
@@ -90,6 +92,8 @@ export class FinanceService {
     private readonly paymentVerificationPort: PaymentVerificationPort,
     private readonly config: ConfigService,
     private readonly httpService: HttpService,
+    @Optional() private readonly settlementService?: SettlementService,
+    @Optional() private readonly walletService?: WalletService,
   ) {}
 
   async getInvoice(
@@ -731,6 +735,9 @@ export class FinanceService {
 
       await this.ensureCashPayment(manager, invoice, savedSettlement, actor.id, now);
       await this.ensureFinancialDues(manager, invoice, order, savedSettlement, now);
+      if (this.settlementService) {
+        await this.settlementService.trySettleOrder(orderId, manager);
+      }
       await this.auditLogService.logWithManager(manager, {
         actorUserId: actor.id,
         actorRole: actor.role,
@@ -1134,6 +1141,9 @@ export class FinanceService {
               }
             }
           }
+          if (this.settlementService && order.status === ServiceOrderStatus.COMPLETED) {
+            await this.settlementService.trySettleOrder(order.id, manager);
+          }
         }
       } else if (current.purpose === PaymentPurpose.COMMISSION_DUE && current.commissionDueId) {
         const dueRepository = manager.getRepository(CommissionDue);
@@ -1151,6 +1161,13 @@ export class FinanceService {
         due.paidAt = now;
         due.paymentReference = current.id;
         await dueRepository.save(due);
+      } else if (current.purpose === PaymentPurpose.WALLET_TOP_UP && this.walletService) {
+        await this.walletService.topUp(
+          current.requestedByUserId,
+          Number(current.amount),
+          current.idempotencyKey,
+          manager,
+        );
       }
 
       current.status = PaymentAttemptStatus.VERIFIED;

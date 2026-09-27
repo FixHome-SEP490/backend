@@ -36,6 +36,7 @@ import { FinanceModule } from './modules/finance/finance.module';
 import { MailModule } from './modules/mail/mail.module';
 import { GeoModule } from './modules/geo/geo.module';
 import { PartRequestsModule } from './modules/part-requests/part-requests.module';
+import { WalletModule } from './modules/wallet/wallet.module';
 
 @Module({
   imports: [
@@ -81,6 +82,7 @@ import { PartRequestsModule } from './modules/part-requests/part-requests.module
     PartsCatalogModule,
     SupportCasesModule,
     FinanceModule,
+    WalletModule,
     MailModule,
     GeoModule,
   ],

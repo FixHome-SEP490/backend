@@ -45,6 +45,7 @@ export const CONFIG_SEED: ConfigSeedItem[] = [
   { key: 'ai.timeout_ms', value: '15000', valueType: 'int', description: 'AI service timeout (milliseconds)' },
   { key: 'ai.rate_limit_per_user_per_hour', value: '10', valueType: 'int', description: 'AI requests per user per hour' },
   { key: 'payment.mode', value: 'DEMO', valueType: 'enum', description: 'Payment mode: DEMO (manual marking) or LIVE' },
+  { key: 'wallet.minimum_balance', value: '200000', valueType: 'bigint', description: 'Minimum wallet balance required for technician job eligibility (VND)' },
 ];
 
 export async function seedConfig(dataSource: DataSource): Promise<void> {
