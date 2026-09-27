@@ -1,22 +1,24 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsInt, IsNotEmpty, IsString, Max, Min } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
 
 export class TopUpRequestDto {
   @ApiProperty({ description: 'Số tiền muốn nạp vào ví (tối thiểu 10.000 ₫, tối đa 50.000.000 ₫)', example: 200000 })
+  @Type(() => Number)
   @IsInt()
   @Min(10000)
   @Max(50000000)
   amount: number;
 
-  @ApiProperty({ description: 'Khóa chống gửi trùng (idempotency key)', example: 'TOP_UP_RANDOM_UUID' })
+  @ApiPropertyOptional({ description: 'Khóa chống gửi trùng (idempotency key)', example: 'TOP_UP_RANDOM_UUID' })
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  idempotencyKey: string;
+  idempotencyKey?: string;
 }
 
 export class TopUpResponseDto {
-  @ApiProperty({ description: 'Thành công hay không' })
-  success: boolean;
+  @ApiPropertyOptional({ description: 'Thành công hay không' })
+  success?: boolean;
 
   @ApiProperty({ description: 'Mã định danh giao dịch nạp / paymentId' })
   paymentId: string;

@@ -85,13 +85,15 @@ export class TechnicianWalletController {
     @CurrentUser() user: User,
     @Body() dto: TopUpRequestDto,
   ): Promise<TopUpResponseDto> {
+    const idempotencyKey =
+      dto.idempotencyKey?.trim() ||
+      `TOPUP_${user.id.substring(0, 8)}_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     const result = await this.walletService.topUp(
       user.id,
       dto.amount,
-      dto.idempotencyKey,
+      idempotencyKey,
     );
     return {
-      success: true,
       paymentId: result.transaction.id,
       balanceAfter: result.transaction.balanceAfter,
       message: 'Nạp tiền vào ví thành công',
