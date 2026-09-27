@@ -5,14 +5,12 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
-  UnauthorizedException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { createHash } from 'crypto';
 import { AuthService } from './auth.service';
 import { User } from '../users/entities/user.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
-import { OtpVerification } from './entities/otp-verification.entity';
 import { Role, AccountStatus, OtpPurpose, AuthProvider } from '../../shared/enums';
 
 describe('AuthService', () => {
