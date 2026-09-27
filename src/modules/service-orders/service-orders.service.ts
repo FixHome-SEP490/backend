@@ -425,19 +425,31 @@ export class ServiceOrdersService {
 
 
   async uploadEvidence(orderId: string, body: { type: EvidenceType; note?: string; capturedAt?: string }, actor: { id: string; role: string }, file?: EvidenceFile): Promise<RepairEvidence> {
-    return this.dataSource.transaction(async manager => {
+    this.evidenceStorage.validate(file);
+    if (body.capturedAt && new Date(body.capturedAt) > new Date()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Evidence timestamp cannot be in the future');
+    const expected = body.type === EvidenceType.BEFORE ? ServiceOrderStatus.EN_ROUTE : ServiceOrderStatus.UNDER_REPAIR;
+    const max = await this.configService.getInt('evidence.max_count_per_type', 20);
+    const checkEligible = async (manager: EntityManager): Promise<void> => {
       const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
-      const expected = body.type === EvidenceType.BEFORE ? ServiceOrderStatus.EN_ROUTE : ServiceOrderStatus.UNDER_REPAIR;
       if (order.status !== expected || order.completionRequestedAt) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Evidence timing is invalid');
       if (body.type === EvidenceType.BEFORE && !await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, result: CheckInResult.VALID })) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Valid arrival required before BEFORE evidence');
       const count = await manager.count(RepairEvidence, { where: { serviceOrderId: orderId, type: body.type } });
-      const max = await this.configService.getInt('evidence.max_count_per_type', 20);
       if (count >= max) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Evidence limit exceeded');
-      if (body.capturedAt && new Date(body.capturedAt) > new Date()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Evidence timestamp cannot be in the future');
-      this.evidenceStorage.validate(file);
-      const mediaUrl = await this.evidenceStorage.upload(orderId, actor.id, file);
-      return manager.save(RepairEvidence, manager.create(RepairEvidence, { serviceOrderId: orderId, uploaderId: actor.id, type: body.type, mediaUrl, mimeType: file.mimetype, fileSize: file.size, note: body.note || null, capturedAt: body.capturedAt ? new Date(body.capturedAt) : new Date() }));
-    });
+    };
+    // Pre-check under the row lock, released immediately — the Cloudinary round-trip below
+    // must never run while the ServiceOrder row lock is held, or every other read/write on
+    // the same order blocks for as long as the upload takes (observed: 30s+ GETs).
+    await this.dataSource.transaction(manager => checkEligible(manager));
+    const mediaUrl = await this.evidenceStorage.upload(orderId, actor.id, file);
+    try {
+      return await this.dataSource.transaction(async manager => {
+        await checkEligible(manager); // re-validate: state may have changed during the upload
+        return manager.save(RepairEvidence, manager.create(RepairEvidence, { serviceOrderId: orderId, uploaderId: actor.id, type: body.type, mediaUrl, mimeType: file.mimetype, fileSize: file.size, note: body.note || null, capturedAt: body.capturedAt ? new Date(body.capturedAt) : new Date() }));
+      });
+    } catch (error) {
+      await this.evidenceStorage.delete(mediaUrl); // avoid an orphaned upload when the re-check rejects it
+      throw error;
+    }
   }
 
 
