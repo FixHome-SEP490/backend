@@ -11,10 +11,12 @@ import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { Booking } from '../bookings/entities/booking.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { PartRequestsModule } from '../part-requests/part-requests.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
     PartRequestsModule,
+    NotificationsModule,
     TypeOrmModule.forFeature([
       Quotation,
       QuotationItem,
