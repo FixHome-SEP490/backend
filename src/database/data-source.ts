@@ -32,6 +32,7 @@ export default new DataSource({
   entities: [__dirname + '/../**/*.entity{.ts,.js}'],
   migrations: [__dirname + '/migrations/!(*.spec){.ts,.js}'],
   migrationsTableName: 'migrations',
+  migrationsTransactionMode: 'each',
   synchronize: false,
   logging: false,
 });

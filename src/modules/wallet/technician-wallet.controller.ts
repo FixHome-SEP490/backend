@@ -1,11 +1,15 @@
 import {
   Body,
   Controller,
+  forwardRef,
   Get,
   HttpCode,
   HttpStatus,
+  Inject,
+  Optional,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -18,8 +22,9 @@ import {
 } from '@nestjs/swagger';
 import { CurrentUser, Roles } from '../../common/decorators';
 import { JwtAuthGuard, RolesGuard } from '../../common/guards';
-import { Role } from '../../shared/enums';
+import { PaymentMode, Role } from '../../shared/enums';
 import { User } from '../users/entities/user.entity';
+import { FinanceService } from '../finance/finance.service';
 import {
   CreateWithdrawalDto,
   QueryWalletTransactionsDto,
@@ -38,7 +43,12 @@ import { WalletService } from './wallet.service';
 @Roles(Role.TECHNICIAN)
 @ApiBearerAuth()
 export class TechnicianWalletController {
-  constructor(private readonly walletService: WalletService) {}
+  constructor(
+    private readonly walletService: WalletService,
+    @Optional()
+    @Inject(forwardRef(() => FinanceService))
+    private readonly financeService?: FinanceService,
+  ) {}
 
   @Get()
   @ApiOperation({
@@ -84,17 +94,46 @@ export class TechnicianWalletController {
   async topUp(
     @CurrentUser() user: User,
     @Body() dto: TopUpRequestDto,
+    @Req() req: { ip?: string; headers?: Record<string, string> },
   ): Promise<TopUpResponseDto> {
     const idempotencyKey =
       dto.idempotencyKey?.trim() ||
       `TOPUP_${user.id.substring(0, 8)}_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+    const paymentMode = this.financeService
+      ? await this.financeService.getPaymentMode().catch(() => PaymentMode.DEMO)
+      : PaymentMode.DEMO;
+
+    if (paymentMode === PaymentMode.LIVE && this.financeService) {
+      const isMobile =
+        req.headers?.['x-client-platform'] === 'mobile' ||
+        req.headers?.['user-agent']?.toLowerCase().includes('okhttp') ||
+        req.headers?.['user-agent']?.toLowerCase().includes('cfnetwork');
+      const vnpay = await this.financeService.createWalletTopUpVnpayUrl(
+        user.id,
+        dto.amount,
+        req.ip || '127.0.0.1',
+        idempotencyKey,
+        isMobile ? 'mobile' : 'web',
+      );
+      return {
+        success: true,
+        paymentId: vnpay.paymentId,
+        paymentUrl: vnpay.paymentUrl,
+        balanceAfter: null,
+        message: 'Khởi tạo cổng thanh toán VNPay thành công',
+      };
+    }
+
     const result = await this.walletService.topUp(
       user.id,
       dto.amount,
       idempotencyKey,
     );
     return {
+      success: true,
       paymentId: result.transaction.id,
+      paymentUrl: null,
       balanceAfter: result.transaction.balanceAfter,
       message: 'Nạp tiền vào ví thành công',
     };

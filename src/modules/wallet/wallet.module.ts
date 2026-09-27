@@ -1,6 +1,7 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuditLogModule } from '../audit-log/audit-log.module';
+import { FinanceModule } from '../finance/finance.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { SystemConfigModule } from '../system-config/system-config.module';
 import { User } from '../users/entities/user.entity';
@@ -22,6 +23,7 @@ import { WalletService } from './wallet.service';
     SystemConfigModule,
     AuditLogModule,
     NotificationsModule,
+    forwardRef(() => FinanceModule),
   ],
   controllers: [
     TechnicianWalletController,

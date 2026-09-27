@@ -119,6 +119,7 @@ const makeFinanceService = (options: {
     supportCasesService,
     auditLogService,
     verificationPort,
+    nestConfigService,
   };
 };
 
@@ -324,5 +325,49 @@ describe('FinanceService money-state invariants', () => {
       ),
     ).rejects.toBeInstanceOf(BusinessException);
     expect(setup.serviceOrderRepository.findOne).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid amounts for wallet top-up', async () => {
+    const setup = makeFinanceService({});
+    await expect(
+      setup.service.createWalletTopUpVnpayUrl('tech-1', 5000, '127.0.0.1'),
+    ).rejects.toBeInstanceOf(BusinessException);
+
+    await expect(
+      setup.service.createWalletTopUpVnpayUrl('tech-1', 60000000, '127.0.0.1'),
+    ).rejects.toBeInstanceOf(BusinessException);
+  });
+
+  it('creates wallet top-up payment record and generates valid VNPay URL', async () => {
+    const setup = makeFinanceService({});
+    setup.nestConfigService.get.mockImplementation((key: string) => {
+      if (key === 'VNPAY_TMN_CODE') return 'TEST_TMN';
+      if (key === 'VNPAY_HASH_SECRET') return 'SECRET1234567890SECRET1234567890';
+      if (key === 'VNPAY_PAYMENT_URL') return 'https://sandbox.vnpayment.vn/vpcpay.html';
+      if (key === 'VNPAY_RETURN_URL') return 'http://localhost:3000/api/v1/finance/vnpay/return';
+      return null;
+    });
+
+    const paymentSaved = {
+      id: 'pay-topup-1',
+      idempotencyKey: 'IDEMP_TOPUP_1',
+      amount: 200000,
+    };
+    setup.paymentRepository.findOne = vi.fn().mockResolvedValue(null);
+    setup.paymentRepository.create = vi.fn().mockImplementation((val) => val);
+    setup.paymentRepository.save = vi.fn().mockResolvedValue(paymentSaved);
+
+    const result = await setup.service.createWalletTopUpVnpayUrl(
+      'tech-1',
+      200000,
+      '127.0.0.1',
+      'IDEMP_TOPUP_1',
+      'mobile',
+    );
+
+    expect(result.paymentId).toBe('pay-topup-1');
+    expect(result.paymentUrl).toContain('https://sandbox.vnpayment.vn/vpcpay.html?');
+    expect(result.paymentUrl).toContain('vnp_Amount=20000000');
+    expect(result.paymentUrl).toContain('vnp_SecureHash=');
   });
 });

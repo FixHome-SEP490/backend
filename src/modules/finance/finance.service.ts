@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -92,8 +92,8 @@ export class FinanceService {
     private readonly paymentVerificationPort: PaymentVerificationPort,
     private readonly config: ConfigService,
     private readonly httpService: HttpService,
-    @Optional() private readonly settlementService?: SettlementService,
-    @Optional() private readonly walletService?: WalletService,
+    @Optional() @Inject(forwardRef(() => SettlementService)) private readonly settlementService?: SettlementService,
+    @Optional() @Inject(forwardRef(() => WalletService)) private readonly walletService?: WalletService,
   ) {}
 
   async getInvoice(
@@ -307,6 +307,90 @@ export class FinanceService {
     };
   }
 
+  async createWalletTopUpVnpayUrl(
+    technicianId: string,
+    amount: number,
+    ipAddr: string,
+    idempotencyKey?: string,
+    platform: 'web' | 'mobile' = 'web',
+  ): Promise<{ paymentId: string; paymentUrl: string }> {
+    const wholeAmount = this.requireWholeVnd(amount, 'Top up amount');
+    if (wholeAmount < 10000 || wholeAmount > 50000000) {
+      throw new BusinessException(
+        ErrorCodes.VALIDATION_FAILED,
+        'Số tiền nạp ví phải từ 10.000 ₫ đến 50.000.000 ₫',
+      );
+    }
+
+    const tmnCode = this.config.get<string>('VNPAY_TMN_CODE');
+    const hashSecret = this.config.get<string>('VNPAY_HASH_SECRET');
+    const vnpayPaymentUrl = this.config.get<string>('VNPAY_PAYMENT_URL');
+    const returnUrl = this.config.get<string>('VNPAY_RETURN_URL');
+    if (!tmnCode || !hashSecret || !vnpayPaymentUrl || !returnUrl) {
+      throw new BusinessException(
+        ErrorCodes.PAYMENT_PROVIDER_UNAVAILABLE,
+        'VNPay is not configured',
+      );
+    }
+
+    const txnRef = idempotencyKey?.trim() || randomUUID().replace(/-/g, '');
+    const payment = await this.dataSource.transaction(async (manager) => {
+      const paymentRepository = manager.getRepository(Payment);
+      const existing = await paymentRepository.findOne({
+        where: { idempotencyKey: txnRef },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (existing) {
+        if (
+          existing.requestedByUserId !== technicianId ||
+          existing.purpose !== PaymentPurpose.WALLET_TOP_UP
+        ) {
+          throw new BusinessException(
+            ErrorCodes.PAYMENT_IDEMPOTENCY_CONFLICT,
+            'Idempotency key is already bound to another payment',
+          );
+        }
+        return existing;
+      }
+
+      const created = paymentRepository.create({
+        invoiceId: null,
+        commissionDueId: null,
+        purpose: PaymentPurpose.WALLET_TOP_UP,
+        amount: wholeAmount,
+        currency: 'VND',
+        mode: PaymentMode.LIVE,
+        provider: 'vnpay',
+        status: PaymentAttemptStatus.PENDING,
+        idempotencyKey: txnRef,
+        requestedByUserId: technicianId,
+        failureCode: null,
+        requestedAt: new Date(),
+        verifiedAt: null,
+      });
+      return paymentRepository.save(created);
+    });
+
+    const orderInfo =
+      platform === 'mobile'
+        ? `Nap tien vi FixHome mobile ${payment.idempotencyKey.substring(0, 16)}`
+        : `Nap tien vi FixHome ${payment.idempotencyKey.substring(0, 16)}`;
+
+    return {
+      paymentId: payment.id,
+      paymentUrl: buildPaymentUrl({
+        paymentUrl: vnpayPaymentUrl,
+        tmnCode,
+        hashSecret,
+        amount: Number(payment.amount),
+        txnRef: payment.idempotencyKey,
+        orderInfo,
+        returnUrl,
+        ipAddr: ipAddr || '127.0.0.1',
+      }),
+    };
+  }
+
   /** VNPay server-to-server notification — the sole source of truth for marking an invoice paid. */
   async handleVnpayIpn(
     query: Record<string, string>,
@@ -366,7 +450,14 @@ export class FinanceService {
    */
   async handleVnpayReturn(
     query: Record<string, string>,
-  ): Promise<{ ok: boolean; invoiceId: string | null; serviceOrderId: string | null }> {
+  ): Promise<{
+    ok: boolean;
+    invoiceId: string | null;
+    serviceOrderId: string | null;
+    purpose?: PaymentPurpose;
+    amount?: number;
+    orderInfo?: string;
+  }> {
     const hashSecret = this.config.get<string>('VNPAY_HASH_SECRET');
     if (!hashSecret || !verifySignature(query, hashSecret)) {
       return { ok: false, invoiceId: null, serviceOrderId: null };
@@ -389,6 +480,9 @@ export class FinanceService {
       ok: query.vnp_ResponseCode === '00',
       invoiceId: payment.invoiceId ?? null,
       serviceOrderId: invoice?.serviceOrderId ?? null,
+      purpose: payment.purpose,
+      amount: Number(payment.amount),
+      orderInfo: query.vnp_OrderInfo,
     };
   }
 
@@ -397,11 +491,15 @@ export class FinanceService {
     const tmnCode = this.config.get<string>('VNPAY_TMN_CODE');
     const queryDrUrl = this.config.get<string>('VNPAY_QUERYDR_URL');
     if (!tmnCode || !queryDrUrl) return;
+    const orderInfo =
+      payment.purpose === PaymentPurpose.WALLET_TOP_UP
+        ? `Nap tien vi FixHome ${payment.idempotencyKey.substring(0, 16)}`
+        : `Thanh toan hoa don ${payment.invoiceId ?? payment.idempotencyKey}`;
     const body = buildQueryDrRequest({
       tmnCode,
       hashSecret,
       txnRef: payment.idempotencyKey,
-      orderInfo: `Thanh toan hoa don ${payment.invoiceId}`,
+      orderInfo,
       transactionDate: payment.requestedAt,
       ipAddr: '127.0.0.1',
     });
@@ -990,7 +1088,7 @@ export class FinanceService {
     throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Order not found');
   }
 
-  private async getPaymentMode(): Promise<PaymentMode> {
+  async getPaymentMode(): Promise<PaymentMode> {
     const raw = (await this.configService.getString('payment.mode', 'DEMO'))
       .trim()
       .toUpperCase();
@@ -1178,7 +1276,8 @@ export class FinanceService {
       await this.auditLogService.logWithManager(manager, {
         actorUserId: current.requestedByUserId,
         actorRole:
-          current.purpose === PaymentPurpose.COMMISSION_DUE
+          current.purpose === PaymentPurpose.COMMISSION_DUE ||
+          current.purpose === PaymentPurpose.WALLET_TOP_UP
             ? Role.TECHNICIAN
             : Role.CUSTOMER,
         action: 'PAYMENT_VERIFIED',
