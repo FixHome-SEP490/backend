@@ -10,6 +10,8 @@ import { CommissionDue } from '../service-orders/entities/commission-due.entity'
 import { AccountStatus, CommissionDueStatus, Role, VerificationStatus } from '../../shared/enums';
 import { haversineKm } from '../../shared/utils/geo';
 import { hasAvailableArrival, type ArrivalInterval } from './arrival-window';
+import { Wallet } from '../wallet/entities/wallet.entity';
+import { SystemConfig } from '../system-config/entities/system-config.entity';
 
 /** Same authority at discovery, shortlist, activation and Accept. IDs here are User IDs. */
 export async function technicianEligibility(
@@ -26,6 +28,14 @@ export async function technicianEligibility(
   if (!profile.isAvailable && !options?.allowPausedExistingInvitation) return fail('Technician is unavailable or paused');
   if (!await manager.findOneBy(TechnicianSkill, { technicianId: profile.id, serviceId: booking.serviceId, isActive: true, verificationStatus: VerificationStatus.VERIFIED })) return fail('Service is not offered or not yet verified');
   if (await manager.count(CommissionDue, { where: { technicianId, status: CommissionDueStatus.PENDING } })) return fail('Active unpaid PlatformDue');
+  const wallet = await manager.findOneBy(Wallet, { technicianId });
+  if (wallet) {
+    const minConfig = await manager.findOneBy(SystemConfig, { key: 'wallet.minimum_balance' });
+    const minimumBalance = minConfig ? Number(minConfig.value) : 200000;
+    if (Number(wallet.balance) < minimumBalance) {
+      return fail('Minimum wallet balance is required to accept new jobs');
+    }
+  }
   if (!booking.preferredStartAt || !booking.preferredEndAt) return fail('Booking time window is missing');
   const start = new Date(booking.preferredStartAt);
   const end = new Date(booking.preferredEndAt);

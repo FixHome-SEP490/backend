@@ -24,11 +24,13 @@ import { User } from '../users/entities/user.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { CustomerServiceConfirmation } from './entities/customer-service-confirmation.entity';
 import { FinanceModule } from '../finance/finance.module';
+import { WalletModule } from '../wallet/wallet.module';
 
 @Module({
   imports: [
     MediaModule,
     FinanceModule,
+    WalletModule,
     NotificationsModule,
     TypeOrmModule.forFeature([
       ServiceOrder,

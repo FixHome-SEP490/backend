@@ -82,6 +82,7 @@ const KEY_VALIDATION: Record<string, KeyValidationRule> = {
   'ai.timeout_ms':                      { type: 'int', min: 1000, max: 60000 },
   'ai.rate_limit_per_user_per_hour':    { type: 'int', min: 1, max: 1000 },
   'payment.mode':                       { type: 'enum', enumValues: ['DEMO', 'LIVE'] },
+  'wallet.minimum_balance':             { type: 'bigint', min: 0, max: 100000000 },
 };
 
 /**
@@ -100,6 +101,10 @@ const KEY_EFFECT: Record<
   string,
   { status: ConfigEffectStatus; evidence: string | null }
 > = {
+  'wallet.minimum_balance': {
+    status: 'ACTIVE',
+    evidence: null,
+  },
   // ACTIVE: src/modules/bookings/invitations.service.ts reads via BusinessConfigService.getInt
   'matching.max_shortlist': {
     status: 'ACTIVE',
