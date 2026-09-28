@@ -1,6 +1,6 @@
 # FixHome — Quy chuẩn UI/UX và ngôn ngữ chung cho Web & Mobile
 
-> Version: 1.0.0 · Ngày lập: 27/09/2026 · Phạm vi: tổ chức `FixHome-SEP490`.
+> Version: 1.0.1 · Ngày cập nhật: 28/09/2026 · Phạm vi: tổ chức `FixHome-SEP490`.
 > Trạng thái áp dụng vào sản phẩm: **PLANNED**. Đây là quy chuẩn đích được soạn theo yêu cầu đồng bộ web/mobile; việc tạo file chưa thay đổi giao diện hay repository GitHub.
 > AI phải đọc toàn bộ file này trước khi sửa UI, nội dung hiển thị, điều hướng, theme, component hoặc dữ liệu ảnh hưởng đến cách hiển thị của FixHome.
 
@@ -380,6 +380,16 @@ Giá trị 1–2 cho border/focus, 6 cho status dot hoặc điều chỉnh quang
 - Mobile đang trộn Lucide, Ionicons và các bộ khác. Migrate dần icon chức năng về Lucide theo task; logo provider và minh họa chuyên biệt là ngoại lệ có chủ đích. Không dùng emoji thay icon nghiệp vụ chính.
 - Định nghĩa layer theo vai trò content/sticky/menu/dialog/toast; không tự tăng `z-index` hoặc elevation tùy màn để che lỗi layout.
 - Motion ưu tiên transform/opacity; tôn trọng reduced motion. Không để gradient/blur/animation trở thành ngôn ngữ riêng của một màn.
+
+### 9.1 Chuyển động cho landing page Web
+
+Theo yêu cầu trực tiếp ngày 28/09/2026, landing page Web sử dụng kể chuyện theo cuộn: ghim từng phần khi nội dung vừa khung nhìn, parallax nhiều lớp và chữ marquee chuyển động theo vị trí cuộn. Đây là quyết định riêng cho trang giới thiệu, không áp dụng lên màn giao dịch hoặc Mobile native.
+
+- Giữ cuộn tự nhiên và điều hướng bàn phím; không chặn hoặc chiếm thao tác cuộn.
+- Nội dung và CTA luôn truy cập được. Ở màn hình hẹp, thấp hoặc nội dung dài, chuyển sang bố cục cuộn thông thường.
+- Khi người dùng bật giảm chuyển động, bỏ ghim, parallax và marquee động.
+- Ưu tiên transform; cập nhật theo requestAnimationFrame khi có cuộn/resize, dọn listener và observer khi rời trang. Không thêm vòng animation liên tục.
+- Giữ nguyên màu, font, thuật ngữ, API và quyền. Nội dung AI vẫn là gợi ý sơ bộ; ảnh và ví dụ minh họa phải ghi rõ.
 
 ## 10. Contract của các component chung
 
