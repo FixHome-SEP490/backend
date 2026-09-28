@@ -1,8 +1,9 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { HttpModule } from '@nestjs/axios';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuditLogModule } from '../audit-log/audit-log.module';
 import { SupportCasesModule } from '../support-cases/support-cases.module';
+import { WalletModule } from '../wallet/wallet.module';
 import { Booking } from '../bookings/entities/booking.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { CashSettlement } from '../service-orders/entities/cash-settlement.entity';
@@ -24,6 +25,7 @@ import { UnconfiguredPaymentVerificationAdapter } from './unconfigured-payment-v
     HttpModule,
     AuditLogModule,
     SupportCasesModule,
+    forwardRef(() => WalletModule),
     TypeOrmModule.forFeature([
       Booking,
       TechnicianAssignment,

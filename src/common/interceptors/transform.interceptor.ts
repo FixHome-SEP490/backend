@@ -45,12 +45,14 @@ export class TransformInterceptor<T> implements NestInterceptor<
           typeof (data as Record<string, unknown>).success === 'boolean'
         ) {
           const resObj = data as Record<string, unknown>;
+          const { success: _s, statusCode: code, message, meta, data: innerData, ...rest } = resObj;
+          const finalData = 'data' in resObj ? innerData : (Object.keys(rest).length > 0 ? rest : null);
           return {
             success: resObj.success as boolean,
-            statusCode: (resObj.statusCode as number) || statusCode,
-            message: (resObj.message as string) || 'Success',
-            data: (resObj.data as T) ?? (null as unknown as T),
-            ...(resObj.meta ? { meta: resObj.meta } : {}),
+            statusCode: (code as number) || statusCode,
+            message: (message as string) || 'Success',
+            data: (finalData as T) ?? (null as unknown as T),
+            ...(meta ? { meta } : {}),
           };
         }
 
