@@ -1,0 +1,7 @@
+export enum WalletTransactionType {
+  TOP_UP = 'TOP_UP',
+  WITHDRAW = 'WITHDRAW',
+  ONLINE_EARNING = 'ONLINE_EARNING',
+  PLATFORM_FEE = 'PLATFORM_FEE',
+  ADJUSTMENT = 'ADJUSTMENT',
+}

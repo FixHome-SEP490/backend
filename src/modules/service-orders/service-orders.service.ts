@@ -54,6 +54,7 @@ import {
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { FinanceService, FinanceActor } from '../finance/finance.service';
+import { SettlementService } from '../wallet/settlement.service';
 import {
   CashSettlementConfirmationDto,
   CashSettlementDeclarationDto,
@@ -109,6 +110,7 @@ export class ServiceOrdersService {
     private readonly auditLogService: AuditLogService,
     private readonly evidenceStorage: OrderEvidenceStorage,
     private readonly financeService: FinanceService,
+    @Optional() private readonly settlementService?: SettlementService,
     @Optional() private readonly notificationsService?: NotificationsService,
   ) {}
 
@@ -1029,6 +1031,9 @@ export class ServiceOrdersService {
     for (const item of items) {
       if (item.warrantyDaysSnapshot <= 0 || (item.partSource === PartSource.TECHNICIAN && item.partWarrantyOption !== PartWarrantyOption.PAID_WARRANTY)) continue;
       await manager.insert(WarrantyCoverage, { serviceOrderId: order.id, invoiceItemId: item.id, warrantyDaysSnapshot: item.warrantyDaysSnapshot, startsAt: new Date(), expiresAt: new Date(Date.now() + item.warrantyDaysSnapshot * 86400000), status: WarrantyStatus.ACTIVE });
+    }
+    if (this.settlementService) {
+      await this.settlementService.trySettleOrder(order.id, manager);
     }
     return true;
   }

@@ -34,3 +34,5 @@ export * from './part-request-type.enum';
 export * from './fulfillment-method.enum';
 export * from './part-usage-status.enum';
 export * from './auth-provider.enum';
+export * from './wallet-transaction-type.enum';
+export * from './withdrawal-status.enum';
