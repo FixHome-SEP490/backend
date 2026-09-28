@@ -56,7 +56,11 @@ const makeFinanceService = (options: {
   };
   const commissionDueRepository = { find: vi.fn(), findOne: vi.fn() };
   const platformDueRepository = { findAndCount: vi.fn() };
-  const paymentRepository = { findOne: vi.fn() };
+  const paymentRepository = {
+    findOne: vi.fn(),
+    create: vi.fn((val) => val),
+    save: vi.fn(async (val) => val),
+  };
   const supportCasesService = { openCase: vi.fn().mockResolvedValue(undefined) };
   const auditLogService = { logWithManager: vi.fn().mockResolvedValue(undefined) };
   const configService = { getString: vi.fn().mockResolvedValue('DEMO') };

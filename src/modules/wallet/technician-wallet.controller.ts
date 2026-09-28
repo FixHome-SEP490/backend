@@ -94,7 +94,7 @@ export class TechnicianWalletController {
   async topUp(
     @CurrentUser() user: User,
     @Body() dto: TopUpRequestDto,
-    @Req() req: { ip?: string; headers?: Record<string, string> },
+    @Req() req: { ip?: string; headers?: Record<string, string> } = {},
   ): Promise<TopUpResponseDto> {
     const idempotencyKey =
       dto.idempotencyKey?.trim() ||

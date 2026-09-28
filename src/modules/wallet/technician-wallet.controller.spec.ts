@@ -21,7 +21,7 @@ describe('TechnicianWalletController', () => {
       transaction: { id: 'tx-1', balanceAfter: 500000 } as any,
     });
 
-    const res = await controller.topUp(mockUser, { amount: 200000 });
+    const res = await controller.topUp(mockUser, { amount: 200000 }, {} as any);
 
     expect(mockWalletService.topUp).toHaveBeenCalledWith(
       'tech-user-123',
