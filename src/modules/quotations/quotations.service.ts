@@ -87,9 +87,10 @@ export class QuotationsService {
           item.partNameSnapshot = item.partNameSnapshot?.trim() || item.description.trim();
           item.partWarrantyOption ??= PartWarrantyOption.NO_WARRANTY;
           if (item.partWarrantyOption === PartWarrantyOption.PAID_WARRANTY) {
-            if (!item.warrantyFee || item.warrantyFee <= 0 || !item.warrantyTermDays || item.warrantyTermDays <= 0) {
-              throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Paid warranty requires fee and term');
+            if (!item.warrantyTermDays || item.warrantyTermDays <= 0) {
+              throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Paid warranty requires a term');
             }
+            item.warrantyFee = item.warrantyFee && item.warrantyFee > 0 ? item.warrantyFee : 0;
           } else if (item.partWarrantyOption !== PartWarrantyOption.NO_WARRANTY || item.warrantyFee || item.warrantyTermDays || item.warrantyDays) {
             throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Technician parts have no included warranty');
           }
