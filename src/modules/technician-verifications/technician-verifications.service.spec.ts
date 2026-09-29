@@ -34,6 +34,7 @@ describe('TechnicianVerificationsService', () => {
     reviewedById: null,
     reviewedBy: null,
     rejectionReason: null,
+    verifiedFullName: null,
     documents: [],
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -101,6 +102,7 @@ describe('TechnicianVerificationsService', () => {
           role: Role.TECHNICIAN,
           status: AccountStatus.ACTIVE,
           isActive: true,
+          fullName: 'Nguyễn Văn Thọ',
         }),
     };
     manager = {
@@ -379,6 +381,23 @@ describe('TechnicianVerificationsService', () => {
       );
     });
 
+    it('freezes the verified name so a later profile edit cannot move it', async () => {
+      verificationRepository.findOne.mockResolvedValue({
+        ...mockVerification,
+        status: VerificationStatus.PENDING,
+      });
+
+      await verificationsService.approveVerification(
+        'verif-uuid-1',
+        'admin-uuid-1',
+      );
+
+      expect(verificationRepository.update).toHaveBeenCalledWith(
+        { id: 'verif-uuid-1', status: VerificationStatus.PENDING },
+        expect.objectContaining({ verifiedFullName: 'Nguyễn Văn Thọ' }),
+      );
+    });
+
     it('throws ConflictException if already processed', async () => {
       verificationRepository.findOne.mockResolvedValue({
         ...mockVerification,
@@ -408,6 +427,11 @@ describe('TechnicianVerificationsService', () => {
       );
 
       expect(result.status).toBe(VerificationStatus.REJECTED);
+      // Only an approval vouches for a name; a rejection must not record one.
+      expect(verificationRepository.update).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.not.objectContaining({ verifiedFullName: expect.anything() }),
+      );
       expect(result.rejectionReason).toBe('ID card image is blurry');
       expect(result.reviewedById).toBe('admin-uuid-1');
       expect(profileRepository.update).toHaveBeenCalledWith(

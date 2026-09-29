@@ -2,8 +2,12 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
+  ParseUUIDPipe,
   Patch,
+  Post,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -14,7 +18,7 @@ import {
 } from '@nestjs/swagger';
 import { CurrentUser, Roles } from '../../common/decorators';
 import { JwtAuthGuard, RolesGuard } from '../../common/guards';
-import { Role } from '../../shared/enums';
+import { Role, WithdrawalStatus } from '../../shared/enums';
 import { User } from '../users/entities/user.entity';
 import {
   QueryWalletsDto,
@@ -23,6 +27,8 @@ import {
   RejectWithdrawalDto,
 } from './dto';
 import { WalletService } from './wallet.service';
+import { toWithdrawalResponse } from './withdrawal.mapper';
+import { WithdrawalPayoutService } from './withdrawal-payout.service';
 
 @ApiTags('Service Manager / Wallets')
 @Controller('service-manager')
@@ -30,7 +36,10 @@ import { WalletService } from './wallet.service';
 @Roles(Role.SERVICE_MANAGER, Role.ADMIN)
 @ApiBearerAuth()
 export class ServiceManagerWalletController {
-  constructor(private readonly walletService: WalletService) {}
+  constructor(
+    private readonly walletService: WalletService,
+    private readonly payoutService: WithdrawalPayoutService,
+  ) {}
 
   @Get('wallets')
   @ApiOperation({
@@ -85,29 +94,7 @@ export class ServiceManagerWalletController {
   async listWithdrawals(@Query() query: QueryWithdrawalsDto) {
     const result = await this.walletService.listWithdrawals(query);
     return {
-      data: result.data.map((r) => ({
-        id: r.id,
-        walletId: r.walletId,
-        technicianId: r.technicianId,
-        amount: Number(r.amount),
-        bankName: r.bankName,
-        bankAccountNumber: r.bankAccountNumber,
-        bankAccountName: r.bankAccountName,
-        status: r.status,
-        requestedAt: r.requestedAt,
-        processedAt: r.processedAt,
-        processedByUserId: r.processedByUserId,
-        rejectReason: r.rejectReason,
-        technician: r.technician
-          ? {
-              id: r.technician.id,
-              fullName: r.technician.fullName,
-              phoneNumber: r.technician.phoneNumber,
-              email: r.technician.email,
-              avatarUrl: r.technician.avatarUrl,
-            }
-          : null,
-      })),
+      data: result.data.map((r) => toWithdrawalResponse(r)),
       meta: {
         page: query.page || 1,
         limit: query.limit || 20,
@@ -117,24 +104,44 @@ export class ServiceManagerWalletController {
     };
   }
 
+  @Get('withdrawals/payout-overview')
+  @ApiOperation({
+    summary: 'SM/Admin: Tổng tiền đã chi, đang chuyển và số dư ví nguồn chi hộ',
+  })
+  overview() {
+    return this.payoutService.overview();
+  }
+
   @Patch('withdrawals/:id/approve')
   @ApiOperation({
-    summary: 'SM/Admin: Phê duyệt yêu cầu rút tiền của Kỹ thuật viên',
+    summary: 'SM/Admin: Duyệt yêu cầu rút tiền và chi tự động qua payOS',
+    description:
+      'Kiểm tra ví nguồn đủ tiền, trừ ví kỹ thuật viên rồi gửi lệnh chi. Kết quả trả về là SUCCESS, PROCESSING (payOS đang xử lý) hoặc FAILED (đã hoàn tiền về ví).',
   })
   async approveWithdrawal(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: User,
   ) {
-    const result = await this.walletService.approveWithdrawal(id, {
+    const result = await this.payoutService.approve(id, {
       id: user.id,
       role: user.role,
     });
     return {
-      success: true,
-      id: result.id,
-      status: result.status,
-      processedAt: result.processedAt,
-      message: 'Phê duyệt yêu cầu rút tiền thành công',
+      ...toWithdrawalResponse(result),
+      message: approvalMessage(result.status),
+    };
+  }
+
+  @Post('withdrawals/:id/reconcile')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'SM/Admin: Hỏi lại payOS kết quả của một lệnh rút đang chuyển',
+  })
+  async reconcileWithdrawal(@Param('id', ParseUUIDPipe) id: string) {
+    const result = await this.payoutService.reconcile(id);
+    return {
+      ...toWithdrawalResponse(result),
+      message: approvalMessage(result.status),
     };
   }
 
@@ -143,7 +150,7 @@ export class ServiceManagerWalletController {
     summary: 'SM/Admin: Từ chối yêu cầu rút tiền của Kỹ thuật viên',
   })
   async rejectWithdrawal(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: RejectWithdrawalDto,
     @CurrentUser() user: User,
   ) {
@@ -159,5 +166,18 @@ export class ServiceManagerWalletController {
       processedAt: result.processedAt,
       message: 'Từ chối yêu cầu rút tiền thành công',
     };
+  }
+}
+
+function approvalMessage(status: WithdrawalStatus): string {
+  switch (status) {
+    case WithdrawalStatus.SUCCESS:
+      return 'Đã chi tiền về tài khoản ngân hàng của kỹ thuật viên';
+    case WithdrawalStatus.PROCESSING:
+      return 'Đã gửi lệnh chi, payOS đang xử lý. Hệ thống sẽ tự cập nhật kết quả.';
+    case WithdrawalStatus.FAILED:
+      return 'Chi tiền không thành công, số tiền đã được hoàn lại vào ví kỹ thuật viên';
+    default:
+      return 'Đã cập nhật yêu cầu rút tiền';
   }
 }
