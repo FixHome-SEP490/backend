@@ -9,6 +9,8 @@ import { Booking } from '../bookings/entities/booking.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 
+import { NotificationsModule } from '../notifications/notifications.module';
+
 @Module({
   imports: [
     TypeOrmModule.forFeature([
@@ -18,6 +20,7 @@ import { TechnicianProfile } from '../technicians/entities/technician-profile.en
       TechnicianAssignment,
       TechnicianProfile,
     ]),
+    NotificationsModule,
   ],
   controllers: [ReviewsController],
   providers: [ReviewsService],

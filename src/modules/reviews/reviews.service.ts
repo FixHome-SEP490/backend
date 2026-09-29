@@ -12,6 +12,7 @@ import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import { ServiceOrderStatus, Role } from '../../shared/enums';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 import { CreateReviewDto } from './review.dto';
 export { CreateReviewDto } from './review.dto';
@@ -34,6 +35,7 @@ export class ReviewsService {
     private readonly techProfileRepo: Repository<TechnicianProfile>,
     private readonly dataSource: DataSource,
     private readonly auditLogService: AuditLogService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   /**
@@ -99,7 +101,7 @@ export class ReviewsService {
 
     const technicianId = assignment.technicianId;
 
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       await authorizeOrder(manager, orderId, customerUser, 'customer', true);
       await manager.findOne(TechnicianProfile, { where: { userId: technicianId }, lock: { mode: 'pessimistic_write' } });
       if (await manager.findOneBy(Review, { serviceOrderId: orderId })) throw new BusinessException(ErrorCodes.CONFLICT, 'Review already exists');
@@ -143,6 +145,21 @@ export class ReviewsService {
 
       return savedReview;
     });
+
+    try {
+      await this.notificationsService.createNotification({
+        userId: technicianId,
+        title: 'Đánh giá mới từ khách hàng',
+        message: `Khách hàng vừa đánh giá bạn ${Math.round(dto.rating)}/5 sao cho đơn sửa chữa ${order.code || ''}.`,
+        type: 'REVIEW',
+        referenceId: result.id,
+        referenceType: 'review',
+      });
+    } catch (notifErr) {
+      this.logger.warn(`Failed to dispatch review notification to technician ${technicianId}: ${(notifErr as Error).message}`);
+    }
+
+    return result;
   }
 
   async findByOrderId(orderId: string, actor: { id: string; role: string }): Promise<Review | null> {
