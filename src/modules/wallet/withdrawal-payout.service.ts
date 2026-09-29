@@ -168,7 +168,7 @@ export class WithdrawalPayoutService implements OnModuleInit, OnModuleDestroy {
     if (available !== null && available < needed) {
       throw new BusinessException(
         ErrorCodes.VALIDATION_FAILED,
-        `Ví nguồn chi hộ không đủ số dư: còn ${available.toLocaleString('vi-VN')} ₫, cần ${needed.toLocaleString('vi-VN')} ₫. Hãy nạp thêm vào ví Bảo Kim rồi duyệt lại.`,
+        `Ví nguồn chi hộ không đủ số dư: còn ${available.toLocaleString('vi-VN')} ₫, cần ${needed.toLocaleString('vi-VN')} ₫. Hãy nạp thêm vào Ví payOS rồi duyệt lại.`,
       );
     }
   }
