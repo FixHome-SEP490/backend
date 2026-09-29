@@ -253,7 +253,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
         .headers['access-control-allow-origin'],
     ).toBe('http://localhost:5173');
   });
-  it.each(['customer'])(
+  it.each(['customer', 'technician'])(
     'registers %s with hash and safe profile',
     async (role) => {
       const session = await register(role);
@@ -275,7 +275,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
       );
     },
   );
-  it.each(['admin', 'service_manager', 'technician'])(
+  it.each(['admin', 'service_manager'])(
     'blocks public registration of %s',
     async (role) => {
       await http()
