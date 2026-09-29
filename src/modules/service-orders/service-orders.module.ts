@@ -5,6 +5,17 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ServiceOrdersController } from './service-orders.controller';
 import { ServiceOrdersService } from './service-orders.service';
+import { WarrantyClaimsController } from './warranty-claims.controller';
+import { WarrantyClaimsService } from './warranty-claims.service';
+import { WarrantyClaimsTechnicianController } from './warranty-claims-technician.controller';
+import { WarrantyClaimsTechnicianService } from './warranty-claims-technician.service';
+import { WarrantyClaimReadService } from './warranty-claim-read.service';
+import { WarrantyClaimsManagerController } from './warranty-claims-manager.controller';
+import { WarrantyClaimsManagerService } from './warranty-claims-manager.service';
+import { WarrantyNotifier } from './warranty-notifier.service';
+import { WarrantyVisit } from './entities/warranty-visit.entity';
+import { Booking } from '../bookings/entities/booking.entity';
+import { SupportCasesModule } from '../support-cases/support-cases.module';
 import { ServiceOrder } from './entities/service-order.entity';
 import { TechnicianAssignment } from './entities/technician-assignment.entity';
 import { OrderStatusHistory } from './entities/order-status-history.entity';
@@ -32,6 +43,7 @@ import { WalletModule } from '../wallet/wallet.module';
     FinanceModule,
     WalletModule,
     NotificationsModule,
+    SupportCasesModule,
     TypeOrmModule.forFeature([
       ServiceOrder,
       TechnicianAssignment,
@@ -46,6 +58,8 @@ import { WalletModule } from '../wallet/wallet.module';
       AdditionalCostRequest,
       AdditionalCostItem,
       WarrantyClaim,
+      WarrantyVisit,
+      Booking,
       Quotation,
       QuotationItem,
       User,
@@ -53,8 +67,20 @@ import { WalletModule } from '../wallet/wallet.module';
       CustomerServiceConfirmation,
     ]),
   ],
-  controllers: [ServiceOrdersController],
-  providers: [ServiceOrdersService],
+  controllers: [
+    ServiceOrdersController,
+    WarrantyClaimsController,
+    WarrantyClaimsTechnicianController,
+    WarrantyClaimsManagerController,
+  ],
+  providers: [
+    ServiceOrdersService,
+    WarrantyClaimsService,
+    WarrantyClaimsTechnicianService,
+    WarrantyClaimsManagerService,
+    WarrantyClaimReadService,
+    WarrantyNotifier,
+  ],
   exports: [ServiceOrdersService],
 })
 export class ServiceOrdersModule {}

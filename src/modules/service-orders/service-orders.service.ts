@@ -4,7 +4,7 @@ import { Injectable, Logger, ForbiddenException, Optional } from '@nestjs/common
 import { NotificationsService } from '../notifications/notifications.service';
 import { randomUUID } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository, In, LessThanOrEqual } from 'typeorm';
+import { DataSource, Repository, LessThanOrEqual } from 'typeorm';
 import { ServiceOrder } from './entities/service-order.entity';
 import { TechnicianAssignment } from './entities/technician-assignment.entity';
 import { OrderStatusHistory } from './entities/order-status-history.entity';
@@ -18,7 +18,6 @@ import { WarrantyCoverage } from './entities/warranty-coverage.entity';
 import { AdditionalCostRequest } from './entities/additional-cost-request.entity';
 import { Quotation } from '../quotations/entities/quotation.entity';
 import { AdditionalCostItem } from './entities/additional-cost-item.entity';
-import { WarrantyClaim } from './entities/warranty-claim.entity';
 import { CustomerServiceConfirmation } from './entities/customer-service-confirmation.entity';
 import { BookingInvitation } from '../bookings/entities/booking-invitation.entity';
 import { BookingInvitationGroup } from '../bookings/entities/booking-invitation-group.entity';
@@ -47,7 +46,6 @@ import {
   CostItemType,
   WarrantyStatus,
   ServicePricingMode,
-  WarrantyClaimStatus,
   PartSource,
   PartWarrantyOption,
 } from '../../shared/enums';
@@ -98,8 +96,6 @@ export class ServiceOrdersService {
     private readonly warrantyRepo: Repository<WarrantyCoverage>,
     @InjectRepository(AdditionalCostRequest)
     private readonly additionalCostRepo: Repository<AdditionalCostRequest>,
-    @InjectRepository(WarrantyClaim)
-    private readonly warrantyClaimRepo: Repository<WarrantyClaim>,
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
     @InjectRepository(TechnicianProfile)
@@ -683,87 +679,6 @@ export class ServiceOrdersService {
     return this.financeService.initiateCommissionDuePayment(dueId, actor, dto);
   }
 
-
-  async createWarrantyClaim(
-    orderId: string,
-    dto: { description: string },
-    customer: { id: string },
-  ): Promise<WarrantyClaim> {
-    if (!dto.description?.trim()) {
-      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Vui lòng cung cấp mô tả chi tiết sự cố bảo hành');
-    }
-    const order = await this.orderRepo.findOneBy({ id: orderId });
-    if (!order) {
-      throw new BusinessException(ErrorCodes.NOT_FOUND, 'Service order not found');
-    }
-    if (order.status !== ServiceOrderStatus.COMPLETED) {
-      throw new BusinessException(
-        ErrorCodes.ORDER_INVALID_TRANSITION,
-        'Chỉ đơn hàng đã hoàn tất (COMPLETED) mới được yêu cầu bảo hành',
-      );
-    }
-    const booking = await this.dataSource
-      .getRepository(Booking)
-      .findOneBy({ id: order.bookingId });
-    if (booking?.customerId !== customer.id) {
-      throw new BusinessException(
-        ErrorCodes.OWNERSHIP_DENIED,
-        'Only customer can submit warranty claim',
-      );
-    }
-
-    // Validate that order has active and non-expired warranty coverage
-    const coverages = await this.warrantyRepo.find({
-      where: { serviceOrderId: orderId, status: WarrantyStatus.ACTIVE },
-    });
-    const validCoverages = coverages.filter((c) => new Date(c.expiresAt) > new Date());
-    if (validCoverages.length === 0) {
-      throw new BusinessException(
-        ErrorCodes.VALIDATION_FAILED,
-        'Đơn hàng không có gói bảo hành nào còn hiệu lực hoặc thời hạn bảo hành đã kết thúc',
-      );
-    }
-
-    // Check for duplicate active claim
-    const existingActiveClaim = await this.warrantyClaimRepo.findOne({
-      where: {
-        serviceOrderId: orderId,
-        status: In([
-          WarrantyClaimStatus.SUBMITTED,
-          WarrantyClaimStatus.ACCEPTED,
-          WarrantyClaimStatus.IN_PROGRESS,
-        ]),
-      },
-    });
-    if (existingActiveClaim) {
-      throw new BusinessException(
-        ErrorCodes.CONFLICT,
-        'Đơn hàng này đang có một yêu cầu bảo hành đang được xử lý',
-      );
-    }
-
-    const assignment = await this.assignmentRepo.findOne({
-      where: { serviceOrderId: orderId, isActive: true },
-    });
-
-    const claim = this.warrantyClaimRepo.create({
-      serviceOrderId: orderId,
-      customerId: customer.id,
-      technicianId: assignment?.technicianId || '',
-      description: dto.description.trim(),
-      status: WarrantyClaimStatus.SUBMITTED,
-    });
-    return this.warrantyClaimRepo.save(claim);
-  }
-
-  async getWarrantyClaims(orderId: string, actor: { id: string; role: string }): Promise<WarrantyClaim[]> {
-    await authorizeOrder(this.dataSource.manager, orderId, actor);
-    return this.warrantyClaimRepo.find({
-      where: { serviceOrderId: orderId },
-      relations: ['customer', 'technician'],
-      order: { submittedAt: 'DESC' },
-    });
-  }
 
   /**
    * Get cancellations for SM/Admin board.
