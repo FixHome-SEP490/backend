@@ -204,15 +204,13 @@ describe('Hợp đồng nhập liệu của auth', () => {
   });
 
   describe('vai trò khi tự đăng ký', () => {
-    // AuthService.register luôn từ chối mọi role khác CUSTOMER, nhưng DTO từng
-    // khai là nhận cả TECHNICIAN nên Swagger mô tả sai hành vi thật.
-    it('chặn tự đăng ký vai trò TECHNICIAN', () => {
+    it('cho phép tự đăng ký vai trò TECHNICIAN', () => {
       expect(
         invalidProps(RegisterDto, {
           ...VALID_REGISTER,
           role: Role.TECHNICIAN,
         }),
-      ).toContain('role');
+      ).toHaveLength(0);
     });
 
     it('chặn tự đăng ký vai trò ADMIN', () => {
