@@ -17,6 +17,14 @@ import { Server, Socket } from 'socket.io';
 import { User } from '../users/entities/user.entity';
 import { AccountStatus, Role } from '../../shared/enums';
 import { ChatActor, MessageView, MessagingService } from './messaging.service';
+import { CallRegistryService } from './call-registry.service';
+import {
+  CALL_CLIENT_EVENTS,
+  CALL_SERVER_EVENTS,
+  CallEndReason,
+  CallSession,
+  CallSignalPayload,
+} from './call.types';
 
 interface ChatSocket extends Socket {
   data: { user?: ChatActor };
@@ -30,8 +38,13 @@ export const CHAT_EVENTS = {
   TYPING: 'typing',
 } as const;
 
+const DEFAULT_ICE_URLS = 'stun:stun.l.google.com:19302';
+
 const conversationRoom = (conversationId: string) => `conversation:${conversationId}`;
 const userRoom = (userId: string) => `user:${userId}`;
+
+/** Which side of a call is allowed to send a given signal. */
+type SignalSender = 'caller' | 'callee' | 'either';
 
 /**
  * Realtime transport for booking-scoped chat (spec 8.23: WebSocket is the
@@ -40,6 +53,10 @@ const userRoom = (userId: string) => `user:${userId}`;
  * Every socket is authenticated from its own JWT before it joins anything, and
  * room membership is resolved from the database. The client never tells the
  * server who it is, so a message cannot be delivered to the wrong person.
+ *
+ * The same socket also carries voice-call signalling. Only the handshake
+ * messages travel through here; the audio itself goes peer-to-peer and never
+ * reaches this server.
  */
 @WebSocketGateway({
   namespace: '/chat',
@@ -55,6 +72,7 @@ export class MessagingGateway
 
   constructor(
     private readonly messagingService: MessagingService,
+    private readonly callRegistry: CallRegistryService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     @InjectRepository(User)
@@ -80,13 +98,43 @@ export class MessagingGateway
       await client.join(conversationRoom(id));
     }
 
-    client.emit('connect:ready', { userId: actor.id, conversationIds });
+    // The ICE configuration rides along so the client needs no extra request
+    // before it can place a call.
+    client.emit('connect:ready', {
+      userId: actor.id,
+      conversationIds,
+      iceServers: this.iceServers(),
+    });
   }
 
-  handleDisconnect(client: ChatSocket): void {
+  async handleDisconnect(client: ChatSocket): Promise<void> {
     const userId = client.data?.user?.id;
-    if (userId) {
-      this.logger.debug(`Chat socket disconnected for user ${userId}`);
+    if (!userId) return;
+
+    this.logger.debug(`Chat socket disconnected for user ${userId}`);
+
+    const call = this.callRegistry.findByUser(userId);
+    if (!call) return;
+
+    // One person may have several sockets open (a second tab, or the phone as
+    // well as the laptop). Losing one of them is not losing the call, so only
+    // hang up once nothing of theirs is left connected.
+    if (await this.hasLiveSocket(userId)) return;
+
+    this.callRegistry.remove(call.id);
+    this.notifyCallEnded(call, 'disconnected', [
+      this.callRegistry.peerOf(call, userId),
+    ]);
+  }
+
+  private async hasLiveSocket(userId: string): Promise<boolean> {
+    try {
+      const sockets = await this.server?.in(userRoom(userId)).fetchSockets();
+      return (sockets?.length ?? 0) > 0;
+    } catch {
+      // If we cannot tell, assume they are gone rather than leave the other
+      // side listening to a call that no longer has two ends.
+      return false;
     }
   }
 
@@ -124,6 +172,22 @@ export class MessagingGateway
   private bearerFrom(header?: string): string | undefined {
     if (!header?.startsWith('Bearer ')) return undefined;
     return header.slice('Bearer '.length).trim() || undefined;
+  }
+
+  /**
+   * STUN only, and optional at that. On a single Wi-Fi network both peers
+   * already know an address the other can reach, so an empty list still
+   * connects. Set WEBRTC_ICE_URLS to an empty string to switch STUN off
+   * entirely, or to a TURN url list if the deployment ever leaves the LAN.
+   */
+  private iceServers(): { urls: string[] }[] {
+    const raw =
+      this.configService.get<string>('WEBRTC_ICE_URLS') ?? DEFAULT_ICE_URLS;
+    const urls = raw
+      .split(',')
+      .map((url) => url.trim())
+      .filter(Boolean);
+    return urls.length > 0 ? [{ urls }] : [];
   }
 
   // ------------------------------------------------------------ client events
@@ -177,6 +241,204 @@ export class MessagingGateway
       isTyping: body.isTyping !== false,
     });
     return { ok: true };
+  }
+
+  // -------------------------------------------------------- voice call events
+
+  /**
+   * Ring the other participant.
+   *
+   * The client sends only a conversation id. Who gets rung is resolved from the
+   * database, which is what makes it impossible to call someone you are not in
+   * a booking with, or to be rung by a stranger.
+   */
+  @SubscribeMessage(CALL_CLIENT_EVENTS.INVITE)
+  async onCallInvite(
+    @ConnectedSocket() client: ChatSocket,
+    @MessageBody() body: { conversationId?: string },
+  ): Promise<{ ok: boolean; callId?: string; reason?: string }> {
+    const actor = client.data?.user;
+    const conversationId = body?.conversationId;
+    if (!actor || !conversationId) return { ok: false, reason: 'invalid' };
+
+    const peerId = await this.messagingService.resolveCallPeer(
+      conversationId,
+      actor.id,
+    );
+    if (!peerId) return { ok: false, reason: 'forbidden' };
+
+    const created = this.callRegistry.create(
+      conversationId,
+      actor.id,
+      peerId,
+      (expired) =>
+        this.notifyCallEnded(expired, 'timeout', [
+          expired.callerId,
+          expired.calleeId,
+        ]),
+    );
+    if ('busyUserId' in created) return { ok: false, reason: 'busy' };
+
+    const { call } = created;
+    // Sent to the personal room, not the conversation room, so it reaches the
+    // callee on every device even when they have no thread open.
+    this.server?.to(userRoom(peerId)).emit(CALL_SERVER_EVENTS.INCOMING, {
+      callId: call.id,
+      conversationId,
+      fromUserId: actor.id,
+    });
+    return { ok: true, callId: call.id };
+  }
+
+  /** Pick up. Only the person being rung can do this. */
+  @SubscribeMessage(CALL_CLIENT_EVENTS.ACCEPT)
+  onCallAccept(
+    @ConnectedSocket() client: ChatSocket,
+    @MessageBody() body: { callId?: string },
+  ): { ok: boolean } {
+    const actor = client.data?.user;
+    const call = body?.callId ? this.callRegistry.get(body.callId) : undefined;
+    if (!actor || !call || call.calleeId !== actor.id) return { ok: false };
+
+    if (!this.callRegistry.markConnected(call.id)) return { ok: false };
+
+    // The caller creates the offer, so it is told the moment someone picks up.
+    this.server?.to(userRoom(call.callerId)).emit(CALL_SERVER_EVENTS.ACCEPTED, {
+      callId: call.id,
+      conversationId: call.conversationId,
+    });
+    return { ok: true };
+  }
+
+  /** Decline a call that is still ringing. */
+  @SubscribeMessage(CALL_CLIENT_EVENTS.REJECT)
+  onCallReject(
+    @ConnectedSocket() client: ChatSocket,
+    @MessageBody() body: { callId?: string },
+  ): { ok: boolean } {
+    return this.hangUp(
+      client,
+      body?.callId,
+      'rejected',
+      (call, userId) => call.calleeId === userId && call.state === 'ringing',
+    );
+  }
+
+  /** Give up before the other side picked up. */
+  @SubscribeMessage(CALL_CLIENT_EVENTS.CANCEL)
+  onCallCancel(
+    @ConnectedSocket() client: ChatSocket,
+    @MessageBody() body: { callId?: string },
+  ): { ok: boolean } {
+    return this.hangUp(
+      client,
+      body?.callId,
+      'cancelled',
+      (call, userId) => call.callerId === userId && call.state === 'ringing',
+    );
+  }
+
+  /** Hang up an answered call. Either side may. */
+  @SubscribeMessage(CALL_CLIENT_EVENTS.END)
+  onCallEnd(
+    @ConnectedSocket() client: ChatSocket,
+    @MessageBody() body: { callId?: string },
+  ): { ok: boolean } {
+    return this.hangUp(client, body?.callId, 'ended', (call, userId) =>
+      this.callRegistry.isParticipant(call, userId),
+    );
+  }
+
+  /** The caller's session description, forwarded untouched. */
+  @SubscribeMessage(CALL_CLIENT_EVENTS.OFFER)
+  onCallOffer(
+    @ConnectedSocket() client: ChatSocket,
+    @MessageBody() body: CallSignalPayload,
+  ): { ok: boolean } {
+    return this.relaySignal(client, body, CALL_SERVER_EVENTS.OFFER, 'caller');
+  }
+
+  /** The callee's answer. */
+  @SubscribeMessage(CALL_CLIENT_EVENTS.ANSWER)
+  onCallAnswer(
+    @ConnectedSocket() client: ChatSocket,
+    @MessageBody() body: CallSignalPayload,
+  ): { ok: boolean } {
+    return this.relaySignal(client, body, CALL_SERVER_EVENTS.ANSWER, 'callee');
+  }
+
+  /** A trickled ICE candidate; both sides send these throughout the call. */
+  @SubscribeMessage(CALL_CLIENT_EVENTS.ICE)
+  onCallIce(
+    @ConnectedSocket() client: ChatSocket,
+    @MessageBody() body: CallSignalPayload,
+  ): { ok: boolean } {
+    return this.relaySignal(client, body, CALL_SERVER_EVENTS.ICE, 'either');
+  }
+
+  // ----------------------------------------------------------- call plumbing
+
+  /**
+   * Shared hang-up path. Both parties are told, including the one who hung up,
+   * so neither client has to guess whether its own request landed.
+   */
+  private hangUp(
+    client: ChatSocket,
+    callId: string | undefined,
+    reason: CallEndReason,
+    allowed: (call: CallSession, userId: string) => boolean,
+  ): { ok: boolean } {
+    const actor = client.data?.user;
+    const call = callId ? this.callRegistry.get(callId) : undefined;
+    if (!actor || !call || !allowed(call, actor.id)) return { ok: false };
+
+    this.callRegistry.remove(call.id);
+    this.notifyCallEnded(call, reason, [call.callerId, call.calleeId]);
+    return { ok: true };
+  }
+
+  /**
+   * Forward one WebRTC handshake message to the other end of the call.
+   *
+   * The payload is never parsed - it is opaque browser data. What is checked is
+   * everything around it: the call exists, it has been answered, the sender is
+   * on it, and the sender is on the side that is supposed to send this kind of
+   * message. The destination is derived from the stored session, so a client
+   * cannot aim a signal at anyone else.
+   */
+  private relaySignal(
+    client: ChatSocket,
+    body: CallSignalPayload,
+    event: string,
+    expected: SignalSender,
+  ): { ok: boolean } {
+    const actor = client.data?.user;
+    const call = body?.callId ? this.callRegistry.get(body.callId) : undefined;
+    if (!actor || !call) return { ok: false };
+    if (call.state !== 'connected') return { ok: false };
+    if (!this.callRegistry.isParticipant(call, actor.id)) return { ok: false };
+
+    if (expected === 'caller' && call.callerId !== actor.id) return { ok: false };
+    if (expected === 'callee' && call.calleeId !== actor.id) return { ok: false };
+
+    this.server
+      ?.to(userRoom(this.callRegistry.peerOf(call, actor.id)))
+      .emit(event, { callId: call.id, data: body.data });
+    return { ok: true };
+  }
+
+  private notifyCallEnded(
+    call: CallSession,
+    reason: CallEndReason,
+    userIds: string[],
+  ): void {
+    for (const userId of userIds) {
+      this.server?.to(userRoom(userId)).emit(CALL_SERVER_EVENTS.ENDED, {
+        callId: call.id,
+        conversationId: call.conversationId,
+        reason,
+      });
+    }
   }
 
   // --------------------------------------------------------- server broadcast
