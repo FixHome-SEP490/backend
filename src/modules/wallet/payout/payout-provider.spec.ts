@@ -254,7 +254,7 @@ describe('PayosPayoutProvider', () => {
   });
 
   describe('source balance', () => {
-    it('reads the Bảo Kim balance as a number', async () => {
+    it('reads the Ví payOS balance as a number', async () => {
       const provider = withClient({
         payoutsAccount: { balance: vi.fn(async () => ({ balance: '1500000' })) },
       });
