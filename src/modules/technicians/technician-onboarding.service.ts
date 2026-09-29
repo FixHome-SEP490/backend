@@ -14,6 +14,7 @@ import { User } from '../users/entities/user.entity';
 import { Service } from '../services/entities/service.entity';
 import { TechnicianVerification } from '../technician-verifications/entities/technician-verification.entity';
 import {
+  Gender,
   OnboardingStatus,
   Role,
   VerificationStatus,
@@ -132,6 +133,18 @@ export class TechnicianOnboardingService {
       await this.profileRepo.save(profile);
     }
 
+    const skills = await this.skillRepo.find({
+      where: { technicianId: profile.id },
+    });
+
+    let formattedDob: string | undefined;
+    if (user.dateOfBirth) {
+      formattedDob =
+        user.dateOfBirth instanceof Date
+          ? user.dateOfBirth.toISOString().slice(0, 10)
+          : String(user.dateOfBirth).slice(0, 10);
+    }
+
     return {
       onboardingStatus: profile.onboardingStatus,
       verificationStatus: profile.verificationStatus,
@@ -149,6 +162,14 @@ export class TechnicianOnboardingService {
         provinceCode: a.provinceCode,
         districtCode: a.districtCode,
       })),
+      fullName: user.fullName || undefined,
+      dateOfBirth: formattedDob,
+      gender: (user.gender as Gender) || undefined,
+      citizenIdNumber: user.citizenIdNumber || undefined,
+      phoneNumber: user.phoneNumber || undefined,
+      yearsExperience: profile.yearsExperience,
+      bio: profile.bio || undefined,
+      selectedServiceIds: skills.map((s) => s.serviceId),
     };
   }
 
