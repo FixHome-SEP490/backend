@@ -56,7 +56,11 @@ export class WarrantyClaimReconcile1790000000014 implements MigrationInterface {
     `);
   }
 
-  public async down(_queryRunner: QueryRunner): Promise<void> {
-    // Not reversible: status labels were remapped and the old enum dropped.
+  public async down(queryRunner: QueryRunner): Promise<void> {
+    // The status remap is not reversible (labels remapped, old enum dropped), but the
+    // support_cases foreign key must go or SupportCases.down cannot drop its table.
+    await queryRunner.query(`
+      ALTER TABLE "warranty_claims" DROP COLUMN IF EXISTS "escalated_support_case_id";
+    `);
   }
 }
