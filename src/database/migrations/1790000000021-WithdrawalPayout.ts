@@ -5,8 +5,15 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  *
  * Purely additive, so code that predates it keeps running against the shared
  * database: a new table, nullable columns, and the one-open-withdrawal index
- * widened to cover payouts still in flight. The enum values it relies on were
- * committed by WithdrawalPayoutEnums1790000000020.
+ * widened to cover payouts still in flight.
+ *
+ * The index names only the statuses that close a withdrawal, never PROCESSING.
+ * WithdrawalPayoutEnums1790000000020 adds PROCESSING, and whether its commit
+ * lands before this migration depends on the runner: the CLI runs one
+ * transaction per migration, DataSource.runMigrations() defaults to a single
+ * transaction for all of them, and PostgreSQL refuses a new enum value inside
+ * the transaction that added it. "Not closed" means the same thing as
+ * "PENDING or PROCESSING" and works under both.
  */
 export class WithdrawalPayout1790000000021 implements MigrationInterface {
   name = 'WithdrawalPayout1790000000021';
@@ -44,7 +51,7 @@ export class WithdrawalPayout1790000000021 implements MigrationInterface {
     await queryRunner.query(`
       CREATE UNIQUE INDEX "uq_pending_withdrawal_per_wallet"
         ON "withdrawal_requests"("wallet_id")
-        WHERE "status" IN ('PENDING', 'PROCESSING');
+        WHERE "status" NOT IN ('SUCCESS', 'REJECTED', 'FAILED');
     `);
 
     await queryRunner.query(`

@@ -10,9 +10,10 @@ import { WalletTransaction } from './wallet-transaction.entity';
 @Index('idx_withdrawal_status', ['status'])
 // One open withdrawal per wallet, where "open" includes a payout still in
 // flight: a second request must wait until the first has fully settled.
+// Written as "not closed" so it never names PROCESSING; see migration 0021.
 @Index('uq_pending_withdrawal_per_wallet', ['walletId'], {
   unique: true,
-  where: `"status" IN ('PENDING', 'PROCESSING')`,
+  where: `"status" NOT IN ('SUCCESS', 'REJECTED', 'FAILED')`,
 })
 export class WithdrawalRequest extends BaseEntity {
   @Column({ name: 'wallet_id', type: 'uuid' })
