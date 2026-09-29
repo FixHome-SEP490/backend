@@ -196,6 +196,32 @@ export class MessagingService {
     return count > 0;
   }
 
+  /**
+   * Authorisation and routing for a call invite, resolved in one query: it
+   * returns the other participant, or null when this person may not start a
+   * call in this thread.
+   *
+   * A call obeys the same rule as a message (CHAT-BR-01): it lives inside a
+   * booking-scoped conversation and only while that conversation is ACTIVE.
+   * Once the order closes and the thread turns read-only, neither side can
+   * call any more. Returning the peer id from the same lookup means the
+   * gateway never has to take a user id from the client.
+   */
+  async resolveCallPeer(
+    conversationId: string,
+    userId: string,
+  ): Promise<string | null> {
+    const conversation = await this.conversationRepo.findOne({
+      where: { id: conversationId },
+      select: { id: true, customerId: true, technicianId: true, status: true },
+    });
+    if (!conversation) return null;
+    if (conversation.status !== ConversationStatus.ACTIVE) return null;
+    if (conversation.customerId === userId) return conversation.technicianId;
+    if (conversation.technicianId === userId) return conversation.customerId;
+    return null;
+  }
+
   // ------------------------------------------------------------------ queries
 
   async listMyConversations(actor: ChatActor): Promise<ConversationView[]> {
