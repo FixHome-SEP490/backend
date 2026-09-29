@@ -70,18 +70,17 @@ export class RegisterDto {
   phoneNumber?: string;
 
   /**
-   * Chỉ CUSTOMER được tự đăng ký; tài khoản TECHNICIAN do Service Manager hoặc
-   * Admin tạo. `AuthService.register` vẫn luôn từ chối mọi role khác, nhưng
-   * trước đây DTO lại khai là nhận cả TECHNICIAN nên Swagger mô tả một đằng mà
-   * hệ thống xử một nẻo. Thu hẹp lại cho khớp đúng hành vi thật.
+   * CUSTOMER và TECHNICIAN đều có thể tự đăng ký. Tài khoản TECHNICIAN sau khi
+   * verify OTP sẽ phải hoàn tất Onboarding Wizard (5 bước) trước khi nhận việc.
+   * SERVICE_MANAGER và ADMIN chỉ được tạo bởi Admin.
    */
   @ApiPropertyOptional({
-    enum: [Role.CUSTOMER],
+    enum: [Role.CUSTOMER, Role.TECHNICIAN],
     default: Role.CUSTOMER,
-    description: 'Registration role (CUSTOMER only)',
+    description: 'Registration role (CUSTOMER or TECHNICIAN)',
   })
   @ValidateIf((_dto, value) => value !== undefined)
   @IsEnum(Role, { message: 'role must be a valid role' })
-  @IsIn([Role.CUSTOMER])
+  @IsIn([Role.CUSTOMER, Role.TECHNICIAN])
   role?: Role = Role.CUSTOMER;
 }

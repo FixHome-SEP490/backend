@@ -36,3 +36,4 @@ export * from './part-usage-status.enum';
 export * from './auth-provider.enum';
 export * from './wallet-transaction-type.enum';
 export * from './withdrawal-status.enum';
+export * from './onboarding-status.enum';

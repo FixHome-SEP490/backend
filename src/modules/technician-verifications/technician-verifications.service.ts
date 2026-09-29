@@ -15,6 +15,7 @@ import {
   DocumentType,
   AccountStatus,
   Role,
+  OnboardingStatus,
 } from '../../shared/enums';
 import { User } from '../users/entities/user.entity';
 import { PaginationMeta } from '../../shared/dto';
@@ -292,11 +293,20 @@ export class TechnicianVerificationsService {
           'Verification request is already processed',
         );
 
+      const profileUpdate: Partial<TechnicianProfile> = {
+        verificationStatus: status,
+      };
+      if (status === VerificationStatus.VERIFIED) {
+        profileUpdate.onboardingStatus = OnboardingStatus.APPROVED;
+      } else if (status === VerificationStatus.REJECTED) {
+        profileUpdate.onboardingStatus = OnboardingStatus.REJECTED;
+      }
+
       const profileResult = await manager
         .getRepository(TechnicianProfile)
         .update(
           { userId: verification.technicianId },
-          { verificationStatus: status },
+          profileUpdate,
         );
       if (profileResult.affected !== 1)
         throw new NotFoundException('Technician profile not found');

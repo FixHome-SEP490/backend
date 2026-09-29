@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { TechnicianVerificationsService } from './technician-verifications.service';
 import { TechnicianVerification } from './entities/technician-verification.entity';
-import { VerificationStatus, DocumentType } from '../../shared/enums';
+import { VerificationStatus, DocumentType, OnboardingStatus } from '../../shared/enums';
 import { Role, AccountStatus } from '../../shared/enums';
 import { User } from '../users/entities/user.entity';
 import { VerificationDocument } from './entities/verification-document.entity';
@@ -356,7 +356,10 @@ describe('TechnicianVerificationsService', () => {
       expect(result.rejectionReason).toBeNull();
       expect(profileRepository.update).toHaveBeenCalledWith(
         { userId: 'tech-uuid-1' },
-        { verificationStatus: VerificationStatus.VERIFIED },
+        {
+          verificationStatus: VerificationStatus.VERIFIED,
+          onboardingStatus: OnboardingStatus.APPROVED,
+        },
       );
       expect(auditLogService.logWithManagerStrict).toHaveBeenCalledWith(
         manager,
@@ -409,7 +412,10 @@ describe('TechnicianVerificationsService', () => {
       expect(result.reviewedById).toBe('admin-uuid-1');
       expect(profileRepository.update).toHaveBeenCalledWith(
         { userId: 'tech-uuid-1' },
-        { verificationStatus: VerificationStatus.REJECTED },
+        {
+          verificationStatus: VerificationStatus.REJECTED,
+          onboardingStatus: OnboardingStatus.REJECTED,
+        },
       );
       expect(auditLogService.logWithManagerStrict).toHaveBeenCalledWith(
         manager,

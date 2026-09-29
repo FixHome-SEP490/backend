@@ -148,15 +148,16 @@ describe('AuthService', () => {
       );
     });
 
-    it('rejects public registration for TECHNICIAN role', async () => {
-      await expect(
-        authService.register({
-          email: 'tech@fixhome.vn',
-          password: 'SecurePassword123!',
-          fullName: 'Tran Van Tech',
-          role: Role.TECHNICIAN,
-        }),
-      ).rejects.toThrow(BadRequestException);
+    it('registers a new Technician successfully and creates technician profile', async () => {
+      const result = await authService.register({
+        email: 'tech@fixhome.vn',
+        password: 'SecurePassword123!',
+        fullName: 'Tran Van Tech',
+        role: Role.TECHNICIAN,
+      });
+
+      expect(result).toHaveProperty('email', 'tech@fixhome.vn');
+      expect(result).toHaveProperty('expiresInMinutes');
     });
 
     it('rejects registration with duplicate email when already active', async () => {

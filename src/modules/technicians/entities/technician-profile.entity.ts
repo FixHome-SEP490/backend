@@ -9,7 +9,7 @@ import {
 } from 'typeorm';
 import { BaseEntity } from '../../../database/base.entity';
 import { User } from '../../users/entities/user.entity';
-import { VerificationStatus } from '../../../shared/enums';
+import { VerificationStatus, OnboardingStatus } from '../../../shared/enums';
 import { TechnicianSkill } from './technician-skill.entity';
 import { TechnicianServiceArea } from './technician-service-area.entity';
 import { TechnicianSchedule } from './technician-schedule.entity';
@@ -73,6 +73,31 @@ export class TechnicianProfile extends BaseEntity {
 
   @Column({ name: 'service_radius_km', type: 'decimal', precision: 5, scale: 1, default: 10 })
   serviceRadiusKm: number;
+
+  // ── Onboarding tracking ──────────────────────────────────────────────
+
+  @Column({
+    name: 'onboarding_status',
+    type: 'varchar',
+    length: 20,
+    default: OnboardingStatus.NOT_STARTED,
+  })
+  onboardingStatus: OnboardingStatus;
+
+  /** 1-5 representing the current wizard step. */
+  @Column({ name: 'onboarding_step', type: 'int', default: 1 })
+  onboardingStep: number;
+
+  @Column({ name: 'full_address', type: 'text', nullable: true })
+  fullAddress?: string | null;
+
+  @Column({ name: 'latitude', type: 'decimal', precision: 10, scale: 7, nullable: true })
+  latitude?: number | null;
+
+  @Column({ name: 'longitude', type: 'decimal', precision: 10, scale: 7, nullable: true })
+  longitude?: number | null;
+
+  // ── Relations ────────────────────────────────────────────────────────
 
   @OneToMany(() => TechnicianSkill, (skill) => skill.technician)
   skills: TechnicianSkill[];
