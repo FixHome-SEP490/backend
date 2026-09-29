@@ -127,9 +127,9 @@ export class AuthService {
 
   async register(dto: RegisterDto): Promise<RegisterResponseDto> {
     const role = dto.role ?? Role.CUSTOMER;
-    if (role !== Role.CUSTOMER)
+    if (role !== Role.CUSTOMER && role !== Role.TECHNICIAN)
       throw new BadRequestException(
-        'Only Customer accounts can self-register. Technician accounts are created by Service Managers or Admin.',
+        'Only Customer and Technician accounts can self-register.',
       );
     const email = dto.email.toLowerCase().trim();
     const phoneNumber = dto.phoneNumber
@@ -181,6 +181,21 @@ export class AuthService {
           isEmailVerified: false,
         }),
       );
+
+      // Auto-create TechnicianProfile for TECHNICIAN registrations
+      if (role === Role.TECHNICIAN) {
+        const { TechnicianProfile } = await import(
+          '../technicians/entities/technician-profile.entity'
+        );
+        const profileRepo = manager.getRepository(TechnicianProfile);
+        await profileRepo.save(
+          profileRepo.create({
+            userId: user.id,
+            isAvailable: false, // not available until onboarding completes
+          }),
+        );
+      }
+
       await this.generateAndSendOtp(
         email,
         OtpPurpose.REGISTER,

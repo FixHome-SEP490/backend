@@ -75,6 +75,20 @@ export class User extends BaseEntity {
   })
   bookingSuspendedUntil?: Date | null;
 
+  @Column({ name: 'date_of_birth', type: 'date', nullable: true })
+  dateOfBirth?: Date | null;
+
+  @Column({ name: 'gender', type: 'varchar', length: 10, nullable: true })
+  gender?: string | null;
+
+  /**
+   * Số CCCD 12 chữ số. Lưu dạng plain text vì đồ án không yêu cầu mã hóa
+   * cấp DB (Overview §33 — giữ phù hợp đồ án). Trong production sẽ mã hóa
+   * AES-256.
+   */
+  @Column({ name: 'citizen_id_number', type: 'varchar', length: 20, nullable: true })
+  citizenIdNumber?: string | null;
+
   @OneToMany(() => RefreshToken, (token) => token.user)
   refreshTokens: RefreshToken[];
 }

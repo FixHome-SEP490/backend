@@ -24,4 +24,11 @@ export class GeoController {
     const data = await this.geoService.reverseGeocode(query.lat, query.lng);
     return { data };
   }
+
+  @Get('provinces')
+  @ApiOperation({ summary: 'List all Vietnam provinces and districts (provinces.open-api.vn proxy)' })
+  async getProvinces(@Query('depth') depth?: number) {
+    const data = await this.geoService.getProvinces(depth ? Number(depth) : 2);
+    return { data };
+  }
 }

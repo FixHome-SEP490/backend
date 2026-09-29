@@ -121,4 +121,25 @@ export class GeoService {
       throw new ServiceUnavailableException('Address lookup is temporarily unavailable');
     }
   }
+
+  private provincesCache: any = null;
+
+  async getProvinces(depth = 2): Promise<any[]> {
+    if (this.provincesCache && Array.isArray(this.provincesCache) && this.provincesCache.length > 0) {
+      return this.provincesCache;
+    }
+    try {
+      const response = await firstValueFrom(
+        this.httpService.get(`https://provinces.open-api.vn/api/v1/?depth=${depth}`, {
+          timeout: 10000,
+        }),
+      );
+      this.provincesCache = response.data;
+      return response.data;
+    } catch (error) {
+      this.logger.warn(`Failed to fetch provinces from open-api.vn: ${(error as Error)?.message}`);
+      return [];
+    }
+  }
 }
+
