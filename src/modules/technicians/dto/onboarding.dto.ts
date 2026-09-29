@@ -168,4 +168,28 @@ export class OnboardingStatusResponseDto {
 
   @ApiPropertyOptional({ description: 'Service areas' })
   serviceAreas?: { provinceCode: string; districtCode: string }[];
+
+  @ApiPropertyOptional({ example: 'Nguyễn Văn A' })
+  fullName?: string;
+
+  @ApiPropertyOptional({ example: '1995-05-15' })
+  dateOfBirth?: string;
+
+  @ApiPropertyOptional({ enum: Gender })
+  gender?: Gender;
+
+  @ApiPropertyOptional({ example: '012345678901' })
+  citizenIdNumber?: string;
+
+  @ApiPropertyOptional({ example: '0987654321' })
+  phoneNumber?: string;
+
+  @ApiPropertyOptional({ example: 3 })
+  yearsExperience?: number;
+
+  @ApiPropertyOptional({ example: 'Thợ sửa điện nước chuyên nghiệp' })
+  bio?: string;
+
+  @ApiPropertyOptional({ isArray: true, type: String })
+  selectedServiceIds?: string[];
 }
