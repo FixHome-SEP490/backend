@@ -68,6 +68,7 @@ import type { EntityManager } from 'typeorm';
 import { OrderEvidenceStorage, EvidenceFile } from '../media/order-evidence-storage.service';
 import { expireAdditionalCosts } from './expire-additional-costs';
 import { authorizeOrder } from './order-access';
+import { isCompletionHeld } from '../support-cases/completion-hold';
 import { historicalOrderSummary, type HistoricalOrderSummary } from './historical-order-summary';
 
 @Injectable()
@@ -441,8 +442,20 @@ export class ServiceOrdersService {
     return this.dataSource.transaction(async manager => {
       const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
       if (order.status === ServiceOrderStatus.COMPLETED) return order;
+      if (await isCompletionHeld(manager, order.id)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Đơn đang được quản lý dịch vụ xem xét khiếu nại nên chưa thể hoàn tất.');
       if (!await this.finalizeIfSatisfied(manager, order, actor)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Customer confirmation and verified payment are required');
       return manager.findOneByOrFail(ServiceOrder, { id: orderId });
+    });
+  }
+
+  /** Manager re-checks completion after releasing a hold; completes the order only if every gate is met. */
+  async retryCompletion(orderId: string, actor: { id: string; role: string }): Promise<{ completed: boolean; order: ServiceOrder }> {
+    return this.dataSource.transaction(async manager => {
+      const order = await authorizeOrder(manager, orderId, actor, 'read', true);
+      if (order.status === ServiceOrderStatus.COMPLETED) return { completed: true, order };
+      if (await isCompletionHeld(manager, order.id)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Đơn vẫn đang bị giữ hoàn tất bởi một khiếu nại chưa xử lý.');
+      const completed = await this.finalizeIfSatisfied(manager, order, actor);
+      return { completed, order: await manager.findOneByOrFail(ServiceOrder, { id: orderId }) };
     });
   }
 
@@ -992,6 +1005,7 @@ export class ServiceOrdersService {
 
   private async finalizeIfSatisfied(manager: EntityManager, order: ServiceOrder, actor: { id: string; role: string }): Promise<boolean> {
     if (order.status !== ServiceOrderStatus.UNDER_REPAIR || !order.completionRequestedAt) return false;
+    if (await isCompletionHeld(manager, order.id)) return false;
     await this.assertCompletionReady(manager, order);
     if (!await manager.findOneBy(CustomerServiceConfirmation, { serviceOrderId: order.id })) return false;
     const invoice = await manager.findOneBy(Invoice, { serviceOrderId: order.id, paymentStatus: PaymentStatus.PAID });

@@ -4,9 +4,13 @@ import {
   IsArray,
   IsEnum,
   IsIn,
+  IsInt,
   IsNotEmpty,
+  IsOptional,
   IsString,
+  Max,
   MaxLength,
+  Min,
   MinLength,
   ValidateIf,
 } from 'class-validator';
@@ -22,6 +26,7 @@ import {
   SUPPORT_CASE_MAX_RESOLUTION_CODE_LENGTH,
   SUPPORT_CASE_MAX_RESOLUTION_REASON_LENGTH,
 } from '../support-case.constants';
+import { LIABLE_PARTIES } from '../support-case-policy';
 
 const trimString = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim() : value;
@@ -72,4 +77,16 @@ export class ResolveSupportCaseDto {
   @MaxLength(SUPPORT_CASE_MAX_EVIDENCE_REF_LENGTH, { each: true })
   @Transform(trimEvidenceRefs)
   evidenceRefs?: string[];
+
+  @ApiPropertyOptional({ enum: LIABLE_PARTIES, description: 'Recorded for reporting; it triggers no money movement' })
+  @IsOptional()
+  @IsIn(LIABLE_PARTIES)
+  liableParty?: (typeof LIABLE_PARTIES)[number];
+
+  @ApiPropertyOptional({ description: 'Whole VND recorded with the decision; informational only' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(2_000_000_000)
+  amount?: number;
 }

@@ -3,7 +3,9 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, In, Repository } from 'typeorm';
@@ -13,8 +15,12 @@ import { Invoice } from '../service-orders/entities/invoice.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { User } from '../users/entities/user.entity';
 import {
   CreateSupportCaseDto,
+  MySupportCaseDto,
+  QueryMySupportCasesDto,
   SupportCaseBookingContextDto,
   SupportCaseCashSettlementContextDto,
   SupportCaseDetailDto,
@@ -25,6 +31,13 @@ import {
   ResolveSupportCaseDto,
 } from './dto';
 import { SupportCase } from './entities';
+import {
+  COMPLAINT_RESOLUTION_CODES,
+  SUPPORT_CASE_MAX_OPEN_PER_ORDER,
+  allowedCaseTypes,
+  isCompletionWindowOpen,
+  respondByFor,
+} from './support-case-policy';
 import {
   SUPPORT_CASE_MAX_DESCRIPTION_LENGTH,
   SUPPORT_CASE_MAX_EVIDENCE_REF_LENGTH,
@@ -51,6 +64,7 @@ import {
   PaymentStatus,
   PlatformDueStatus,
   Role,
+  ServiceOrderStatus,
   SUPPORT_CASE_FINAL_STATUSES,
   SupportCaseFinalStatus,
   SupportCaseStatus,
@@ -73,10 +87,14 @@ export interface OpenSupportCaseInput {
   technicianId?: string | null;
   createdByUserId?: string | null;
   assignedManagerId?: string | null;
+  isUrgent?: boolean;
+  respondBy?: Date | null;
 }
 
 @Injectable()
 export class SupportCasesService {
+  private readonly logger = new Logger(SupportCasesService.name);
+
   constructor(
     @InjectRepository(SupportCase)
     private readonly supportCaseRepository: Repository<SupportCase>,
@@ -91,6 +109,7 @@ export class SupportCasesService {
     @InjectRepository(TechnicianAssignment)
     private readonly assignmentRepository: Repository<TechnicianAssignment>,
     private readonly auditLogService: AuditLogService,
+    @Optional() private readonly notificationsService?: NotificationsService,
   ) {}
 
   /**
@@ -131,6 +150,8 @@ export class SupportCasesService {
       resolutionReason: null,
       evidenceRefs: this.normalizeEvidenceRefs(input.evidenceRefs),
       resolvedAt: null,
+      isUrgent: input.isUrgent ?? false,
+      respondBy: input.respondBy ?? null,
     });
 
     return repository.save(supportCase);
@@ -196,6 +217,14 @@ export class SupportCasesService {
           })
         : null);
 
+    const contextOrder =
+      serviceOrder ??
+      (booking
+        ? await this.serviceOrderRepository.findOne({
+            where: { bookingId: booking.id },
+          })
+        : null);
+
     let customerId: string | null = null;
     let technicianId: string | null = null;
 
@@ -216,21 +245,14 @@ export class SupportCasesService {
         technicianId = assignment?.technicianId ?? null;
       }
     } else {
-      const assignedOrder = serviceOrder
-        ? serviceOrder
-        : booking
-          ? await this.serviceOrderRepository.findOne({
-              where: { bookingId: booking.id },
-            })
-          : null;
-      if (!assignedOrder) {
+      if (!contextOrder) {
         throw new ForbiddenException(
           'Technicians can only open cases for an assigned service order context',
         );
       }
       const assignment = await this.assignmentRepository.findOne({
         where: {
-          serviceOrderId: assignedOrder.id,
+          serviceOrderId: contextOrder.id,
           technicianId: actor.id,
           isActive: true,
         },
@@ -244,18 +266,134 @@ export class SupportCasesService {
       customerId = effectiveBooking?.customerId ?? null;
     }
 
-    return this.openCase({
+    const orderStatus = contextOrder?.status ?? null;
+    if (!allowedCaseTypes({
+        role: actor.role as Role.CUSTOMER | Role.TECHNICIAN,
+        orderStatus,
+      }).includes(dto.caseType)) {
+      throw new BadRequestException(
+        'Loại khiếu nại này không áp dụng ở trạng thái hiện tại của đơn.',
+      );
+    }
+    if (
+      orderStatus === ServiceOrderStatus.COMPLETED &&
+      !isCompletionWindowOpen(contextOrder?.completedAt)
+    ) {
+      throw new BadRequestException(
+        'Đơn đã hoàn thành quá lâu, không còn nhận khiếu nại. Nếu còn hạn bảo hành, hãy gửi yêu cầu bảo hành.',
+      );
+    }
+    if (contextOrder) {
+      const openCount = await this.supportCaseRepository.count({
+        where: {
+          serviceOrderId: contextOrder.id,
+          createdByUserId: actor.id,
+          status: In([SupportCaseStatus.OPEN, SupportCaseStatus.IN_REVIEW]),
+        },
+      });
+      if (openCount >= SUPPORT_CASE_MAX_OPEN_PER_ORDER) {
+        throw new ConflictException(
+          'Bạn đang có quá nhiều khiếu nại chưa xử lý cho đơn này. Vui lòng chờ quản lý dịch vụ phản hồi.',
+        );
+      }
+    }
+
+    const isUrgent = dto.isUrgent ?? false;
+    const created = await this.openCase({
       caseType: dto.caseType,
       reason: dto.reason,
       description: dto.description ?? null,
       evidenceRefs: dto.evidenceRefs ?? null,
       bookingId,
-      serviceOrderId,
+      serviceOrderId: serviceOrderId ?? contextOrder?.id ?? null,
       customerId,
       technicianId,
       createdByUserId: actor.id,
       assignedManagerId: null,
+      isUrgent,
+      respondBy: respondByFor(orderStatus, isUrgent),
     });
+    await this.notifyManagers(
+      isUrgent ? 'Khiếu nại cần xử lý ngay' : 'Có khiếu nại mới',
+      isUrgent
+        ? 'Có khiếu nại được đánh dấu cần hỗ trợ ngay. Vui lòng xem xét.'
+        : 'Có khiếu nại mới đang chờ tiếp nhận.',
+      isUrgent ? 'SUPPORT_CASE_URGENT' : 'SUPPORT_CASE_OPENED',
+      created.id,
+    );
+    return created;
+  }
+
+  async findMine(
+    actor: SupportCaseActor,
+    query: QueryMySupportCasesDto,
+  ): Promise<{ data: MySupportCaseDto[]; total: number }> {
+    const ownerColumn = this.ownerColumnFor(actor);
+    const page = query.page ?? 1;
+    const limit = Math.min(query.limit ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
+    const qb = this.supportCaseRepository
+      .createQueryBuilder('supportCase')
+      .where(`supportCase.${ownerColumn} = :actorId`, { actorId: actor.id });
+
+    if (query.status !== undefined) {
+      qb.andWhere('supportCase.status = :status', { status: query.status });
+    }
+    if (query.serviceOrderId) {
+      qb.andWhere('supportCase.serviceOrderId = :serviceOrderId', {
+        serviceOrderId: query.serviceOrderId,
+      });
+    }
+    qb.orderBy('supportCase.createdAt', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit);
+
+    const [cases, total] = await qb.getManyAndCount();
+    return { data: cases.map((c) => this.toMineDto(c, actor)), total };
+  }
+
+  async findMineById(
+    id: string,
+    actor: SupportCaseActor,
+  ): Promise<MySupportCaseDto> {
+    const ownerColumn = this.ownerColumnFor(actor);
+    const supportCase = await this.supportCaseRepository.findOneBy({ id });
+    // Same 404 for missing and foreign cases so ids cannot be probed.
+    if (!supportCase || supportCase[ownerColumn] !== actor.id) {
+      throw new NotFoundException(`Support case ${id} not found`);
+    }
+    return this.toMineDto(supportCase, actor);
+  }
+
+  private ownerColumnFor(actor: SupportCaseActor): 'customerId' | 'technicianId' {
+    if (actor.role === Role.CUSTOMER) return 'customerId';
+    if (actor.role === Role.TECHNICIAN) return 'technicianId';
+    throw new ForbiddenException(
+      'Only customers and technicians can read their own support cases',
+    );
+  }
+
+  /** An actor reads the text of what they wrote; the other party's complaint shows only that it exists and its outcome. */
+  private toMineDto(supportCase: SupportCase, actor: SupportCaseActor): MySupportCaseDto {
+    const writtenByOther =
+      !!supportCase.createdByUserId && supportCase.createdByUserId !== actor.id;
+    return {
+      id: supportCase.id,
+      caseType: supportCase.caseType,
+      status: supportCase.status,
+      bookingId: supportCase.bookingId,
+      serviceOrderId: supportCase.serviceOrderId,
+      reason: writtenByOther
+        ? 'Nội dung chỉ hiển thị cho người gửi và quản lý dịch vụ.'
+        : supportCase.reason,
+      description: writtenByOther ? null : supportCase.description,
+      resolutionReason: supportCase.resolutionReason,
+      evidenceRefs: writtenByOther ? null : supportCase.evidenceRefs,
+      isUrgent: supportCase.isUrgent,
+      respondBy: supportCase.respondBy,
+      resolvedAt: supportCase.resolvedAt,
+      createdAt: supportCase.createdAt,
+      updatedAt: supportCase.updatedAt,
+    };
   }
 
   async findAll(
@@ -296,9 +434,16 @@ export class SupportCasesService {
       );
     }
 
-    qb.orderBy('supportCase.createdAt', 'DESC')
-      .skip((page - 1) * limit)
-      .take(limit);
+    if (query?.sort === 'priority') {
+      // enum order puts open/in_review before the final statuses
+      qb.orderBy('supportCase.status', 'ASC')
+        .addOrderBy('supportCase.isUrgent', 'DESC')
+        .addOrderBy('supportCase.respondBy', 'ASC', 'NULLS LAST')
+        .addOrderBy('supportCase.createdAt', 'DESC');
+    } else {
+      qb.orderBy('supportCase.createdAt', 'DESC');
+    }
+    qb.skip((page - 1) * limit).take(limit);
 
     const [cases, total] = await qb.getManyAndCount();
     return {
@@ -363,6 +508,18 @@ export class SupportCasesService {
           throw new ConflictException('Support case is already terminal');
         }
 
+        const isCashCase =
+          supportCase.caseType === SupportCaseType.CASH_MISMATCH ||
+          supportCase.caseType === SupportCaseType.CASH_NON_RESPONSE;
+        if (
+          !isCashCase &&
+          !(COMPLAINT_RESOLUTION_CODES as readonly string[]).includes(resolutionCode)
+        ) {
+          throw new BadRequestException(
+            `resolutionCode must be one of: ${COMPLAINT_RESOLUTION_CODES.join(', ')}`,
+          );
+        }
+
         const beforeStatus = supportCase.status;
         const updates: Partial<SupportCase> = {
           status: finalStatus,
@@ -371,6 +528,9 @@ export class SupportCasesService {
           resolutionReason: reason,
           evidenceRefs: evidenceRefs ?? supportCase.evidenceRefs ?? null,
           resolvedAt: new Date(),
+          holdCompletion: false,
+          liableParty: dto.liableParty ?? supportCase.liableParty ?? null,
+          amount: dto.amount ?? supportCase.amount ?? null,
         };
 
         const updateResult = await repository.update(
@@ -405,6 +565,8 @@ export class SupportCasesService {
             finalStatus,
             resolutionCode,
             reason,
+            liableParty: updates.liableParty ?? null,
+            amount: updates.amount ?? null,
           },
         });
 
@@ -413,7 +575,110 @@ export class SupportCasesService {
       },
     );
 
+    await this.notifyParties(
+      resolvedCase,
+      'Khiếu nại đã được xử lý',
+      'Quản lý dịch vụ đã xử lý khiếu nại liên quan đến đơn của bạn. Vui lòng xem kết quả.',
+      'SUPPORT_CASE_RESOLVED',
+    );
     return this.toDetailDto(resolvedCase);
+  }
+
+  /** Manager takes the case: OPEN becomes IN_REVIEW and the manager is recorded. */
+  async startReview(id: string, actor: SupportCaseActor): Promise<SupportCaseDetailDto> {
+    this.requireManager(actor);
+    const updated = await this.supportCaseRepository.update(
+      { id, status: SupportCaseStatus.OPEN },
+      { status: SupportCaseStatus.IN_REVIEW, assignedManagerId: actor.id },
+    );
+    if (updated.affected !== 1) {
+      await this.findById(id); // 404 when missing
+      throw new ConflictException('Support case is no longer waiting for review');
+    }
+    await this.auditLogService.log({
+      actorUserId: actor.id,
+      actorRole: actor.role,
+      action: 'SUPPORT_CASE_REVIEW_STARTED',
+      resourceType: 'support_case',
+      resourceId: id,
+      before: { status: SupportCaseStatus.OPEN },
+      after: { status: SupportCaseStatus.IN_REVIEW },
+    });
+    return this.findById(id);
+  }
+
+  /** Hold (or release) automatic completion of the order while the case is unresolved. */
+  async setHold(id: string, hold: boolean, actor: SupportCaseActor): Promise<SupportCaseDetailDto> {
+    this.requireManager(actor);
+    const supportCase = await this.supportCaseRepository.findOneBy({ id });
+    if (!supportCase) throw new NotFoundException(`Support case ${id} not found`);
+    if (!supportCase.serviceOrderId) {
+      throw new BadRequestException('Only a case linked to a service order can hold its completion');
+    }
+    if (
+      supportCase.status !== SupportCaseStatus.OPEN &&
+      supportCase.status !== SupportCaseStatus.IN_REVIEW
+    ) {
+      throw new ConflictException('Support case is already terminal');
+    }
+    await this.supportCaseRepository.update({ id }, { holdCompletion: hold });
+    await this.auditLogService.log({
+      actorUserId: actor.id,
+      actorRole: actor.role,
+      action: hold ? 'SUPPORT_CASE_HOLD_COMPLETION' : 'SUPPORT_CASE_RELEASE_COMPLETION',
+      resourceType: 'support_case',
+      resourceId: id,
+      before: { holdCompletion: supportCase.holdCompletion },
+      after: { holdCompletion: hold },
+    });
+    return this.findById(id);
+  }
+
+  private requireManager(actor: SupportCaseActor): void {
+    if (actor.role !== Role.SERVICE_MANAGER) {
+      throw new ForbiddenException('Only a service manager can review support cases');
+    }
+  }
+
+  private async notifyManagers(title: string, message: string, type: string, caseId: string): Promise<void> {
+    if (!this.notificationsService) return;
+    try {
+      const managers = await this.supportCaseRepository.manager.find(User, {
+        where: { role: Role.SERVICE_MANAGER },
+        select: ['id'],
+      });
+      await this.notificationsService.createManyNotifications(
+        managers.map((manager) => ({
+          userId: manager.id,
+          title,
+          message,
+          type,
+          referenceId: caseId,
+          referenceType: 'SUPPORT_CASE',
+        })),
+      );
+    } catch (error) {
+      this.logger.warn(`Support case notification failed: ${(error as Error).message}`);
+    }
+  }
+
+  private async notifyParties(supportCase: SupportCase, title: string, message: string, type: string): Promise<void> {
+    if (!this.notificationsService) return;
+    const userIds = [supportCase.customerId, supportCase.technicianId].filter((id): id is string => !!id);
+    try {
+      await this.notificationsService.createManyNotifications(
+        userIds.map((userId) => ({
+          userId,
+          title,
+          message,
+          type,
+          referenceId: supportCase.id,
+          referenceType: 'SUPPORT_CASE',
+        })),
+      );
+    } catch (error) {
+      this.logger.warn(`Support case notification failed: ${(error as Error).message}`);
+    }
   }
 
   private async toDetailDto(
@@ -475,6 +740,11 @@ export class SupportCasesService {
         ? [...supportCase.evidenceRefs]
         : null,
       resolvedAt: supportCase.resolvedAt ?? null,
+      isUrgent: supportCase.isUrgent ?? false,
+      respondBy: supportCase.respondBy ?? null,
+      holdCompletion: supportCase.holdCompletion ?? false,
+      liableParty: supportCase.liableParty ?? null,
+      amount: supportCase.amount ?? null,
       createdAt: supportCase.createdAt,
       updatedAt: supportCase.updatedAt,
     };

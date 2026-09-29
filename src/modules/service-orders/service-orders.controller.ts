@@ -520,6 +520,18 @@ export class ServiceOrdersController {
     return { data: claims };
   }
 
+  @Post('service-orders/:id/retry-completion')
+  @Roles(Role.SERVICE_MANAGER, Role.ADMIN)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionGuard)
+  @RequirePermission('order:read_related')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Manager: re-check completion after a hold was released' })
+  async retryCompletion(@Param('id', ParseUUIDPipe) id: string, @Req() req: { user: { id: string; role: string } }) {
+    const result = await this.serviceOrdersService.retryCompletion(id, req.user);
+    return { data: { completed: result.completed, status: result.order.status } };
+  }
+
   // ── 4. Repair History (D-20 Read Model) ──
 
   @Get('repair-history')

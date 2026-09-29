@@ -7,5 +7,9 @@ export enum SupportCaseType {
   PARTS_DISPUTE = 'parts_dispute',
   WARRANTY_DISPUTE = 'warranty_dispute',
   MID_JOB_INTERRUPTION = 'mid_job_interruption',
+  PROPERTY_DAMAGE = 'property_damage',
+  QUALITY = 'quality',
+  PRICING_DISPUTE = 'pricing_dispute',
+  CONDUCT = 'conduct',
   OTHER = 'other',
 }

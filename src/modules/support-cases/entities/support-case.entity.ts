@@ -83,4 +83,19 @@ export class SupportCase extends BaseEntity {
 
   @Column({ name: 'resolved_at', type: 'timestamptz', nullable: true })
   resolvedAt: Date | null;
+
+  @Column({ name: 'is_urgent', type: 'boolean', default: false })
+  isUrgent: boolean;
+
+  @Column({ name: 'respond_by', type: 'timestamptz', nullable: true })
+  respondBy: Date | null;
+
+  @Column({ name: 'hold_completion', type: 'boolean', default: false })
+  holdCompletion: boolean;
+
+  @Column({ name: 'liable_party', type: 'varchar', length: 16, nullable: true })
+  liableParty: string | null;
+
+  @Column({ name: 'amount', type: 'bigint', nullable: true, transformer: { to: (v?: number | null) => v, from: (v?: string | null) => (v == null ? null : Number(v)) } })
+  amount: number | null;
 }

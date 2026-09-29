@@ -29,8 +29,11 @@ import { PaginationMeta } from '../../shared/dto';
 import { Role } from '../../shared/enums';
 import {
   CreateSupportCaseDto,
+  MySupportCaseDto,
+  QueryMySupportCasesDto,
   QuerySupportCasesDto,
   ResolveSupportCaseDto,
+  SetSupportCaseHoldDto,
   SupportCaseDetailDto,
   SupportCaseSummaryDto,
 } from './dto';
@@ -70,6 +73,53 @@ export class SupportCasesController {
   ): Promise<SupportCaseDetailDto> {
     const created = await this.supportCasesService.openCaseForActor(dto, actor);
     return this.supportCasesService.findById(created.id);
+  }
+
+  @Get('mine')
+  @Roles(Role.CUSTOMER, Role.TECHNICIAN)
+  @RequirePermission('order:read_related')
+  @ApiOperation({
+    summary: 'Customer/Technician: list support cases opened about my orders',
+  })
+  @ApiOkResponse({
+    description: 'Own support cases with pagination metadata',
+    type: MySupportCaseDto,
+    isArray: true,
+  })
+  @ApiBadRequestResponse({ description: 'Invalid filters or pagination' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Customer/Technician role required' })
+  async findMine(
+    @Query() query: QueryMySupportCasesDto,
+    @CurrentUser() actor: SupportCaseActor,
+  ): Promise<{ data: MySupportCaseDto[]; meta: PaginationMeta }> {
+    const result = await this.supportCasesService.findMine(actor, query);
+    return {
+      data: result.data,
+      meta: {
+        page: query.page,
+        limit: query.limit,
+        total: result.total,
+        totalPages: Math.ceil(result.total / query.limit),
+      },
+    };
+  }
+
+  @Get('mine/:id')
+  @Roles(Role.CUSTOMER, Role.TECHNICIAN)
+  @RequirePermission('order:read_related')
+  @ApiOperation({ summary: 'Customer/Technician: get one of my support cases' })
+  @ApiParam({ name: 'id', format: 'uuid', description: 'Support case UUID' })
+  @ApiOkResponse({ description: 'Own support case', type: MySupportCaseDto })
+  @ApiBadRequestResponse({ description: 'Invalid support case UUID' })
+  @ApiUnauthorizedResponse({ description: 'Authentication required' })
+  @ApiForbiddenResponse({ description: 'Customer/Technician role required' })
+  @ApiNotFoundResponse({ description: 'Support case not found' })
+  async findMineOne(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() actor: SupportCaseActor,
+  ): Promise<MySupportCaseDto> {
+    return this.supportCasesService.findMineById(id, actor);
   }
 
   @Get()
@@ -122,6 +172,39 @@ export class SupportCasesController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<SupportCaseDetailDto> {
     return this.supportCasesService.findById(id);
+  }
+
+  @Post(':id/review')
+  @HttpCode(HttpStatus.OK)
+  @Roles(Role.SERVICE_MANAGER)
+  @RequirePermission('support:resolve')
+  @ApiOperation({ summary: 'Take a support case: OPEN becomes IN_REVIEW' })
+  @ApiParam({ name: 'id', format: 'uuid', description: 'Support case UUID' })
+  @ApiOkResponse({ type: SupportCaseDetailDto })
+  @ApiNotFoundResponse({ description: 'Support case not found' })
+  @ApiConflictResponse({ description: 'Support case is no longer waiting for review' })
+  async startReview(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() actor: SupportCaseActor,
+  ): Promise<SupportCaseDetailDto> {
+    return this.supportCasesService.startReview(id, actor);
+  }
+
+  @Post(':id/hold')
+  @HttpCode(HttpStatus.OK)
+  @Roles(Role.SERVICE_MANAGER)
+  @RequirePermission('support:resolve')
+  @ApiOperation({ summary: 'Hold or release automatic completion of the linked order' })
+  @ApiParam({ name: 'id', format: 'uuid', description: 'Support case UUID' })
+  @ApiOkResponse({ type: SupportCaseDetailDto })
+  @ApiNotFoundResponse({ description: 'Support case not found' })
+  @ApiConflictResponse({ description: 'Support case is already terminal' })
+  async setHold(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SetSupportCaseHoldDto,
+    @CurrentUser() actor: SupportCaseActor,
+  ): Promise<SupportCaseDetailDto> {
+    return this.supportCasesService.setHold(id, dto.hold, actor);
   }
 
   @Post(':id/resolve')

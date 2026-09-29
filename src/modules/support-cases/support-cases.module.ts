@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuditLogModule } from '../audit-log/audit-log.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { Booking } from '../bookings/entities/booking.entity';
 import { CashSettlement } from '../service-orders/entities/cash-settlement.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
@@ -13,6 +14,7 @@ import { SupportCase } from './entities';
 @Module({
   imports: [
     AuditLogModule,
+    NotificationsModule,
     TypeOrmModule.forFeature([
       SupportCase,
       Booking,
