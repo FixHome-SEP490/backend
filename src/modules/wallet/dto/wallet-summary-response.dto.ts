@@ -13,6 +13,16 @@ export class WalletSummaryResponseDto {
   @ApiProperty({ description: 'Số tiền đang chờ duyệt rút (VND)', example: 0 })
   pendingWithdrawal: number;
 
+  @ApiProperty({
+    description:
+      'Số tiền đã duyệt và đang chuyển về ngân hàng (VND). Đã trừ khỏi balance, nên không trừ lần nữa khi tính số dư khả dụng.',
+    example: 0,
+  })
+  processingWithdrawal: number;
+
+  @ApiProperty({ description: 'Số tiền rút tối thiểu mỗi lần (VND)', example: 10000 })
+  minimumWithdrawal: number;
+
   @ApiProperty({ description: 'Hạn mức số dư tối thiểu yêu cầu (VND)', example: 200000 })
   minimumBalance: number;
 

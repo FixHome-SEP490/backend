@@ -6,7 +6,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import {
@@ -25,9 +25,15 @@ import {
   QueryWalletsDto,
   QueryWalletTransactionsDto,
   QueryWithdrawalsDto,
+  MIN_WITHDRAWAL_AMOUNT,
   WalletSummaryResponseDto,
 } from './dto';
-import { Wallet, WalletTransaction, WithdrawalRequest } from './entities';
+import {
+  TechnicianBankAccount,
+  Wallet,
+  WalletTransaction,
+  WithdrawalRequest,
+} from './entities';
 
 @Injectable()
 export class WalletService {
@@ -86,16 +92,16 @@ export class WalletService {
     const wallet = await this.getOrCreateWallet(technicianId);
     const minimumBalance = await this.getMinimumBalance();
 
-    const pendingResult = await this.withdrawalRepo
-      .createQueryBuilder('w')
-      .select('COALESCE(SUM(w.amount), 0)', 'total')
-      .where('w.technician_id = :technicianId AND w.status = :status', {
-        technicianId,
-        status: WithdrawalStatus.PENDING,
-      })
-      .getRawOne<{ total: string }>();
-
-    const pendingWithdrawal = Number(pendingResult?.total || 0);
+    const pendingWithdrawal = await this.sumWithdrawals(
+      technicianId,
+      WithdrawalStatus.PENDING,
+    );
+    // Already debited from balance when approved, so it is shown but never
+    // subtracted a second time below.
+    const processingWithdrawal = await this.sumWithdrawals(
+      technicianId,
+      WithdrawalStatus.PROCESSING,
+    );
     const balance = Number(wallet.balance);
     const availableBalance = balance - pendingWithdrawal;
     const withdrawableBalance = Math.max(availableBalance - minimumBalance, 0);
@@ -106,11 +112,32 @@ export class WalletService {
       technicianId,
       balance,
       pendingWithdrawal,
+      processingWithdrawal,
       minimumBalance,
+      minimumWithdrawal: MIN_WITHDRAWAL_AMOUNT,
       availableBalance,
       withdrawableBalance,
       eligibleForJobs,
     };
+  }
+
+  private async sumWithdrawals(
+    technicianId: string,
+    status: WithdrawalStatus,
+    manager?: EntityManager,
+  ): Promise<number> {
+    const repo = manager
+      ? manager.getRepository(WithdrawalRequest)
+      : this.withdrawalRepo;
+    const row = await repo
+      .createQueryBuilder('w')
+      .select('COALESCE(SUM(w.amount), 0)', 'total')
+      .where('w.technician_id = :technicianId AND w.status = :status', {
+        technicianId,
+        status,
+      })
+      .getRawOne<{ total: string }>();
+    return Number(row?.total || 0);
   }
 
   /**
@@ -195,6 +222,7 @@ export class WalletService {
       switch (type) {
         case WalletTransactionType.TOP_UP:
         case WalletTransactionType.ONLINE_EARNING:
+        case WalletTransactionType.WITHDRAW_REFUND:
           balanceAfter = balanceBefore + amount;
           break;
         case WalletTransactionType.WITHDRAW:
@@ -307,131 +335,87 @@ export class WalletService {
   }
 
   /**
-   * Request withdrawal.
+   * Technician asks to withdraw to their saved bank account.
+   *
+   * Decided inside one transaction that holds the wallet row lock, so a
+   * platform fee posted at the same instant cannot slip between the balance
+   * check and the insert. Nothing leaves the wallet here: the amount is only
+   * reserved (it shows as pendingWithdrawal) until a Service Manager approves
+   * it and the payout is sent. The receiving account is copied onto the
+   * request, so a later edit of the saved account never redirects it.
    */
   async requestWithdrawal(
     technicianId: string,
     dto: CreateWithdrawalDto,
   ): Promise<WithdrawalRequest> {
-    const summary = await this.getWalletSummary(technicianId);
-
-    // Check existing pending request
-    const existingPending = await this.withdrawalRepo.findOne({
-      where: { technicianId, status: WithdrawalStatus.PENDING },
-    });
-    if (existingPending) {
-      throw new ConflictException(
-        'Bạn đang có một yêu cầu rút tiền đang chờ xử lý. Vui lòng đợi hoàn tất trước khi tạo yêu cầu mới.',
-      );
-    }
-
-    if (dto.amount > summary.withdrawableBalance) {
+    const amount = dto.amount;
+    if (!Number.isSafeInteger(amount) || amount < MIN_WITHDRAWAL_AMOUNT) {
       throw new BusinessException(
         ErrorCodes.VALIDATION_FAILED,
-        `Số tiền rút tối đa hiện tại là ${summary.withdrawableBalance.toLocaleString('vi-VN')} ₫ (phải giữ lại tối thiểu ${summary.minimumBalance.toLocaleString('vi-VN')} ₫ trong ví)`,
+        `Số tiền rút tối thiểu là ${MIN_WITHDRAWAL_AMOUNT.toLocaleString('vi-VN')} ₫`,
       );
     }
 
-    const request = this.withdrawalRepo.create({
-      walletId: summary.id,
-      technicianId,
-      amount: dto.amount,
-      bankName: dto.bankName || null,
-      bankAccountNumber: dto.bankAccountNumber || null,
-      bankAccountName: dto.bankAccountName || null,
-      status: WithdrawalStatus.PENDING,
-      requestedAt: new Date(),
-    });
+    const wallet = await this.getOrCreateWallet(technicianId);
+    const minimumBalance = await this.getMinimumBalance();
 
-    return this.withdrawalRepo.save(request);
-  }
-
-  /**
-   * Service Manager / Admin: Approve withdrawal request.
-   */
-  async approveWithdrawal(
-    withdrawalId: string,
-    actor: { id: string; role: string },
-  ): Promise<WithdrawalRequest> {
     return this.dataSource.transaction(async (manager) => {
-      const withdrawalRepo = manager.getRepository(WithdrawalRequest);
-      const withdrawal = await withdrawalRepo.findOne({
-        where: { id: withdrawalId },
-        lock: { mode: 'pessimistic_write' },
-      });
-      if (!withdrawal) {
-        throw new NotFoundException('Yêu cầu rút tiền không tồn tại');
-      }
-      if (withdrawal.status !== WithdrawalStatus.PENDING) {
-        throw new ConflictException(
-          'Yêu cầu rút tiền đã được xử lý trước đó',
+      const bankAccount = await manager
+        .getRepository(TechnicianBankAccount)
+        .findOne({ where: { technicianId } });
+      if (!bankAccount) {
+        throw new BusinessException(
+          ErrorCodes.VALIDATION_FAILED,
+          'Bạn cần khai báo tài khoản ngân hàng nhận tiền trước khi rút tiền',
         );
       }
 
-      const wallet = await manager.getRepository(Wallet).findOne({
-        where: { id: withdrawal.walletId },
+      const locked = await manager.getRepository(Wallet).findOne({
+        where: { id: wallet.id },
         lock: { mode: 'pessimistic_write' },
       });
-      if (!wallet) {
+      if (!locked) {
         throw new NotFoundException('Ví không tồn tại');
       }
 
-      const minimumBalance = await this.getMinimumBalance();
-      const currentBalance = Number(wallet.balance);
-      const amount = Number(withdrawal.amount);
-
-      if (currentBalance - amount < minimumBalance) {
-        throw new BusinessException(
-          ErrorCodes.VALIDATION_FAILED,
-          `Không thể phê duyệt vì số dư còn lại sau khi rút (${(currentBalance - amount).toLocaleString('vi-VN')} ₫) sẽ thấp hơn mức tối thiểu (${minimumBalance.toLocaleString('vi-VN')} ₫)`,
+      const withdrawalRepo = manager.getRepository(WithdrawalRequest);
+      const open = await withdrawalRepo.findOne({
+        where: {
+          walletId: locked.id,
+          status: In([WithdrawalStatus.PENDING, WithdrawalStatus.PROCESSING]),
+        },
+      });
+      if (open) {
+        throw new ConflictException(
+          open.status === WithdrawalStatus.PROCESSING
+            ? 'Bạn đang có một lệnh rút đang được chuyển về ngân hàng. Vui lòng đợi hoàn tất trước khi tạo yêu cầu mới.'
+            : 'Bạn đang có một yêu cầu rút tiền đang chờ xử lý. Vui lòng đợi hoàn tất trước khi tạo yêu cầu mới.',
         );
       }
 
-      // Deduct wallet balance
-      const idempotencyKey = `WITHDRAW:${withdrawal.id}`;
-      const { transaction } = await this.mutateBalance({
-        walletId: wallet.id,
-        type: WalletTransactionType.WITHDRAW,
-        amount,
-        referenceType: 'WITHDRAWAL_REQUEST',
-        referenceId: withdrawal.id,
-        idempotencyKey,
-        description: `Rút tiền về tài khoản ngân hàng ${withdrawal.bankName || ''} - STK: ${withdrawal.bankAccountNumber || ''}`,
-        allowNegative: false,
-        manager,
-      });
-
-      withdrawal.status = WithdrawalStatus.SUCCESS;
-      withdrawal.processedAt = new Date();
-      withdrawal.processedByUserId = actor.id;
-      withdrawal.transactionId = transaction.id;
-      const saved = await withdrawalRepo.save(withdrawal);
-
-      await this.auditLogService.logWithManager(manager, {
-        actorUserId: actor.id,
-        actorRole: actor.role,
-        action: 'WITHDRAWAL_APPROVED',
-        resourceType: 'withdrawal_request',
-        resourceId: withdrawal.id,
-        after: {
-          amount,
-          technicianId: withdrawal.technicianId,
-          balanceAfter: transaction.balanceAfter,
-        },
-      });
-
-      if (this.notificationsService) {
-        void this.notificationsService.createNotification({
-          userId: withdrawal.technicianId,
-          title: 'Yêu cầu rút tiền đã được duyệt',
-          message: `Yêu cầu rút ${amount.toLocaleString('vi-VN')} ₫ của bạn đã được phê duyệt thành công. Tiền sẽ được chuyển về tài khoản ngân hàng của bạn.`,
-          type: 'WITHDRAWAL_APPROVED',
-          referenceId: saved.id,
-          referenceType: 'WITHDRAWAL_REQUEST',
-        });
+      const withdrawable = Math.max(
+        Number(locked.balance) - minimumBalance,
+        0,
+      );
+      if (amount > withdrawable) {
+        throw new BusinessException(
+          ErrorCodes.VALIDATION_FAILED,
+          `Số tiền rút tối đa hiện tại là ${withdrawable.toLocaleString('vi-VN')} ₫ (phải giữ lại tối thiểu ${minimumBalance.toLocaleString('vi-VN')} ₫ trong ví)`,
+        );
       }
 
-      return saved;
+      const request = withdrawalRepo.create({
+        walletId: locked.id,
+        technicianId,
+        amount,
+        bankBin: bankAccount.bankBin,
+        bankName: bankAccount.bankName,
+        bankAccountNumber: bankAccount.accountNumber,
+        bankAccountName: bankAccount.accountName,
+        status: WithdrawalStatus.PENDING,
+        requestedAt: new Date(),
+      });
+      return withdrawalRepo.save(request);
     });
   }
 

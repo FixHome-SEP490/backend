@@ -4,3 +4,4 @@ export * from './query-wallet-transactions.dto';
 export * from './top-up.dto';
 export * from './withdrawal.dto';
 export * from './admin-wallet.dto';
+export * from './bank-account.dto';

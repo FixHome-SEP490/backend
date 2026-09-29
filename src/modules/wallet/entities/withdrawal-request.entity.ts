@@ -8,9 +8,12 @@ import { WalletTransaction } from './wallet-transaction.entity';
 @Entity('withdrawal_requests')
 @Index('idx_withdrawal_technician', ['technicianId', 'createdAt'])
 @Index('idx_withdrawal_status', ['status'])
+// One open withdrawal per wallet, where "open" includes a payout still in
+// flight: a second request must wait until the first has fully settled.
+// Written as "not closed" so it never names PROCESSING; see migration 0021.
 @Index('uq_pending_withdrawal_per_wallet', ['walletId'], {
   unique: true,
-  where: `"status" = 'PENDING'`,
+  where: `"status" NOT IN ('SUCCESS', 'REJECTED', 'FAILED')`,
 })
 export class WithdrawalRequest extends BaseEntity {
   @Column({ name: 'wallet_id', type: 'uuid' })
@@ -32,6 +35,14 @@ export class WithdrawalRequest extends BaseEntity {
     transformer: bigintTransformer,
   })
   amount: number;
+
+  /**
+   * Receiving bank, copied from the technician's saved account when the
+   * request is created. Null only on requests made before automatic payouts,
+   * which cannot be paid out automatically and must be rejected.
+   */
+  @Column({ name: 'bank_bin', type: 'varchar', length: 8, nullable: true })
+  bankBin?: string | null;
 
   @Column({ name: 'bank_name', type: 'varchar', length: 128, nullable: true })
   bankName?: string | null;
@@ -72,4 +83,29 @@ export class WithdrawalRequest extends BaseEntity {
   @ManyToOne(() => WalletTransaction, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn({ name: 'transaction_id' })
   transaction?: WalletTransaction | null;
+
+  // ------------------------------------------------------------ payout trail
+
+  /** payOS payout id, once payOS has accepted the request. */
+  @Column({ name: 'payout_id', type: 'varchar', length: 64, nullable: true })
+  payoutId?: string | null;
+
+  /** The provider's own state, verbatim, for support and reconciliation. */
+  @Column({ name: 'payout_state', type: 'varchar', length: 32, nullable: true })
+  payoutState?: string | null;
+
+  /** Reference the bank printed on the transfer; the proof that money moved. */
+  @Column({ name: 'payout_bank_reference', type: 'varchar', length: 128, nullable: true })
+  payoutBankReference?: string | null;
+
+  /** When the payout was handed to the provider. Drives the reconciler. */
+  @Column({ name: 'payout_attempted_at', type: 'timestamptz', nullable: true })
+  payoutAttemptedAt?: Date | null;
+
+  @Column({ name: 'failure_reason', type: 'text', nullable: true })
+  failureReason?: string | null;
+
+  /** The WITHDRAW_REFUND transaction that returned the money, if it failed. */
+  @Column({ name: 'refund_transaction_id', type: 'uuid', nullable: true })
+  refundTransactionId?: string | null;
 }
