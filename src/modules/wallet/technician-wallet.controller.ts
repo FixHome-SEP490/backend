@@ -8,6 +8,7 @@ import {
   Inject,
   Optional,
   Post,
+  Put,
   Query,
   Req,
   UseGuards,
@@ -26,7 +27,10 @@ import { PaymentMode, Role } from '../../shared/enums';
 import { User } from '../users/entities/user.entity';
 import { FinanceService } from '../finance/finance.service';
 import {
+  BankAccountResponseDto,
+  BankOptionDto,
   CreateWithdrawalDto,
+  SaveBankAccountDto,
   QueryWalletTransactionsDto,
   QueryWithdrawalsDto,
   TopUpRequestDto,
@@ -35,7 +39,9 @@ import {
   WalletTransactionResponseDto,
   WithdrawalResponseDto,
 } from './dto';
+import { BankAccountService } from './bank-account.service';
 import { WalletService } from './wallet.service';
+import { toWithdrawalResponse } from './withdrawal.mapper';
 
 @ApiTags('Technician / Wallet')
 @Controller('technician/wallet')
@@ -45,6 +51,7 @@ import { WalletService } from './wallet.service';
 export class TechnicianWalletController {
   constructor(
     private readonly walletService: WalletService,
+    private readonly bankAccountService: BankAccountService,
     @Optional()
     @Inject(forwardRef(() => FinanceService))
     private readonly financeService?: FinanceService,
@@ -139,6 +146,45 @@ export class TechnicianWalletController {
     };
   }
 
+  // ------------------------------------------------------------ bank account
+
+  @Get('banks')
+  @ApiOperation({
+    summary: 'Kỹ thuật viên: Danh sách ngân hàng nhận được tiền rút',
+  })
+  @ApiOkResponse({ type: BankOptionDto, isArray: true })
+  listBanks(): readonly BankOptionDto[] {
+    return this.bankAccountService.listBanks();
+  }
+
+  @Get('bank-account')
+  @ApiOperation({
+    summary: 'Kỹ thuật viên: Xem tài khoản ngân hàng nhận tiền rút',
+    description: 'Trả về null nếu chưa khai báo.',
+  })
+  @ApiOkResponse({ type: BankAccountResponseDto })
+  getBankAccount(
+    @CurrentUser() user: User,
+  ): Promise<BankAccountResponseDto | null> {
+    return this.bankAccountService.getMine(user.id);
+  }
+
+  @Put('bank-account')
+  @ApiOperation({
+    summary: 'Kỹ thuật viên: Khai báo hoặc cập nhật tài khoản ngân hàng nhận tiền rút',
+    description:
+      'Chỉ lưu được khi đã duyệt KYC và tên chủ tài khoản trùng tên đã xác minh (so không dấu, không phân biệt hoa thường).',
+  })
+  @ApiOkResponse({ type: BankAccountResponseDto })
+  saveBankAccount(
+    @CurrentUser() user: User,
+    @Body() dto: SaveBankAccountDto,
+  ): Promise<BankAccountResponseDto> {
+    return this.bankAccountService.save(user.id, dto);
+  }
+
+  // -------------------------------------------------------------- withdrawal
+
   @Post('withdrawals')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
@@ -150,17 +196,7 @@ export class TechnicianWalletController {
     @Body() dto: CreateWithdrawalDto,
   ): Promise<WithdrawalResponseDto> {
     const req = await this.walletService.requestWithdrawal(user.id, dto);
-    return {
-      id: req.id,
-      walletId: req.walletId,
-      technicianId: req.technicianId,
-      amount: Number(req.amount),
-      bankName: req.bankName,
-      bankAccountNumber: req.bankAccountNumber,
-      bankAccountName: req.bankAccountName,
-      status: req.status,
-      requestedAt: req.requestedAt,
-    };
+    return toWithdrawalResponse(req);
   }
 
   @Get('withdrawals')
@@ -173,19 +209,7 @@ export class TechnicianWalletController {
   ) {
     const result = await this.walletService.listMyWithdrawals(user.id, query);
     return {
-      data: result.data.map((r) => ({
-        id: r.id,
-        walletId: r.walletId,
-        technicianId: r.technicianId,
-        amount: Number(r.amount),
-        bankName: r.bankName,
-        bankAccountNumber: r.bankAccountNumber,
-        bankAccountName: r.bankAccountName,
-        status: r.status,
-        requestedAt: r.requestedAt,
-        processedAt: r.processedAt,
-        rejectReason: r.rejectReason,
-      })),
+      data: result.data.map((r) => toWithdrawalResponse(r)),
       meta: {
         page: query.page || 1,
         limit: query.limit || 20,

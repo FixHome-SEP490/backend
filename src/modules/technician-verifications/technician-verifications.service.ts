@@ -286,6 +286,11 @@ export class TechnicianVerificationsService {
           reviewedById: reviewerId,
           reviewedAt: new Date(),
           rejectionReason,
+          // Frozen at approval: the profile name can be edited later, the
+          // identity that was checked against the ID card cannot.
+          ...(status === VerificationStatus.VERIFIED
+            ? { verifiedFullName: technician.fullName }
+            : {}),
         },
       );
       if (result.affected !== 1)

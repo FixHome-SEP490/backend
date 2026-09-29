@@ -55,6 +55,14 @@ export class TechnicianVerification extends BaseEntity {
   @Column({ name: 'rejection_reason', type: 'text', nullable: true })
   rejectionReason: string | null;
 
+  /**
+   * The technician's name exactly as it stood when this KYC was approved.
+   * users.full_name stays editable afterwards, so anything that must match the
+   * verified identity — the withdrawal bank account — checks this instead.
+   */
+  @Column({ name: 'verified_full_name', type: 'varchar', length: 255, nullable: true })
+  verifiedFullName: string | null;
+
   @OneToMany(() => VerificationDocument, (doc) => doc.verification, {
     cascade: true,
   })
