@@ -56,6 +56,9 @@ export interface TechnicianCandidate {
   typicalWarrantyDays?: number;
   hasPriorityBoost?: boolean;
   distanceKm?: number | null;
+  bio?: string | null;
+  completedOrdersCount?: number;
+  completionRate?: number;
 }
 
 @Injectable()
@@ -565,8 +568,41 @@ export class BookingsService {
       if (profiles.length === 20) break;
     }
 
+    const profileUserIds = profiles.map((p) => p.userId);
+    const orderCountsByTech = new Map<string, { total: number; completed: number }>();
+    if (profileUserIds.length > 0) {
+      try {
+        const orderRows = await this.dataSource
+          .getRepository(TechnicianAssignment)
+          .createQueryBuilder('ta')
+          .innerJoin('service_orders', 'so', 'so.id = ta.service_order_id')
+          .select('ta.technician_id', 'userId')
+          .addSelect('COUNT(*)', 'total')
+          .addSelect(`COUNT(CASE WHEN so.status = '${ServiceOrderStatus.COMPLETED}' THEN 1 END)`, 'completed')
+          .where('ta.technician_id IN (:...profileUserIds)', { profileUserIds })
+          .groupBy('ta.technician_id')
+          .getRawMany();
+
+        for (const row of orderRows) {
+          orderCountsByTech.set(row.userId, {
+            total: parseInt(row.total, 10) || 0,
+            completed: parseInt(row.completed, 10) || 0,
+          });
+        }
+      } catch {
+        // fail-safe
+      }
+    }
+
     return profiles.map((tp) => {
       const matchedSkill = tp.skills?.find((s) => s.serviceId === booking.serviceId);
+      const counts = orderCountsByTech.get(tp.userId);
+      const completedOrdersCount = counts ? counts.completed : 0;
+      const totalOrdersCount = counts ? counts.total : 0;
+      const completionRate = totalOrdersCount > 0
+        ? Math.round((completedOrdersCount / totalOrdersCount) * 1000) / 10
+        : tp.reliabilityScore ?? 100;
+
       return {
         technicianId: tp.id,
         userId: tp.userId,
@@ -583,6 +619,9 @@ export class BookingsService {
         listedLaborPrice: matchedSkill?.listedLaborPrice != null ? Number(matchedSkill.listedLaborPrice) : null,
         typicalWarrantyDays: matchedSkill?.typicalWarrantyDays ?? 30,
         distanceKm: distanceByProfileId.get(tp.id) ?? null,
+        bio: tp.bio || null,
+        completedOrdersCount,
+        completionRate,
       };
     });
   }
