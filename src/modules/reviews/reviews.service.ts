@@ -1,12 +1,13 @@
 // src/modules/reviews/reviews.service.ts
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, Repository, In } from 'typeorm';
 import { Review } from './entities/review.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { Booking } from '../bookings/entities/booking.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
+import { User } from '../users/entities/user.entity';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import { ServiceOrderStatus, Role } from '../../shared/enums';
@@ -152,7 +153,7 @@ export class ReviewsService {
   async findByTechnicianId(
     technicianId: string,
     options: { page?: number; limit?: number },
-  ): Promise<{ data: Review[]; total: number }> {
+  ): Promise<{ data: Array<Review & { customerName?: string }>; total: number }> {
     const page = options.page || 1;
     const limit = Math.min(options.limit || 20, 100);
 
@@ -163,6 +164,17 @@ export class ReviewsService {
       take: limit,
     });
 
-    return { data, total };
+    const customerIds = [...new Set(data.map((r) => r.customerId).filter(Boolean))];
+    const customers = customerIds.length
+      ? await this.dataSource.getRepository(User).findBy({ id: In(customerIds) })
+      : [];
+    const customerMap = new Map(customers.map((c) => [c.id, c.fullName]));
+
+    const enriched = data.map((r) => ({
+      ...r,
+      customerName: customerMap.get(r.customerId) || 'Khách hàng FixHome',
+    }));
+
+    return { data: enriched, total };
   }
 }
