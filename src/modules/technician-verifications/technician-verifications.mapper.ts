@@ -1,4 +1,5 @@
 import { TechnicianVerification } from './entities/technician-verification.entity';
+import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { VerificationDocument } from './entities/verification-document.entity';
 import {
   TechnicianVerificationResponseDto,
@@ -33,11 +34,16 @@ function toVerificationUserSummary(
     status: user.status,
     isActive: user.isActive,
     avatarUrl: user.avatarUrl ?? null,
+    phoneNumber: user.phoneNumber ?? null,
+    dateOfBirth: user.dateOfBirth ?? null,
+    gender: user.gender ?? null,
+    citizenIdNumber: user.citizenIdNumber ?? null,
   };
 }
 
 export function toTechnicianVerificationResponse(
   verification: TechnicianVerification,
+  profile?: TechnicianProfile,
 ): TechnicianVerificationResponseDto {
   const response: TechnicianVerificationResponseDto = {
     id: verification.id,
@@ -59,11 +65,27 @@ export function toTechnicianVerificationResponse(
     response.technician = toVerificationUserSummary(verification.technician);
   }
 
+  if (profile) {
+    response.technicianProfile = {
+      yearsExperience: profile.yearsExperience,
+      bio: profile.bio,
+      serviceRadiusKm: profile.serviceRadiusKm,
+      fullAddress: profile.fullAddress,
+      skills: (profile.skills || []).map((sk: any) => ({
+        name: sk.service?.name || 'Unknown',
+        level: sk.level,
+      })),
+      serviceAreas: (profile.serviceAreas || []).map(
+        (area: any) => `${area.districtCode}, ${area.provinceCode}`
+      ),
+    };
+  }
+
   return response;
 }
 
 export function toTechnicianVerificationResponseList(
   verifications: TechnicianVerification[],
 ): TechnicianVerificationResponseDto[] {
-  return verifications.map(toTechnicianVerificationResponse);
+  return verifications.map((v) => toTechnicianVerificationResponse(v));
 }
