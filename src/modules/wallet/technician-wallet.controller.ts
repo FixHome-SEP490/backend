@@ -41,7 +41,8 @@ import {
 } from './dto';
 import { BankAccountService } from './bank-account.service';
 import { WalletService } from './wallet.service';
-import { toWithdrawalResponse } from './withdrawal.mapper';
+import { payoutMessage, toWithdrawalResponse } from './withdrawal.mapper';
+import { WithdrawalPayoutService } from './withdrawal-payout.service';
 
 @ApiTags('Technician / Wallet')
 @Controller('technician/wallet')
@@ -52,6 +53,7 @@ export class TechnicianWalletController {
   constructor(
     private readonly walletService: WalletService,
     private readonly bankAccountService: BankAccountService,
+    private readonly payoutService: WithdrawalPayoutService,
     @Optional()
     @Inject(forwardRef(() => FinanceService))
     private readonly financeService?: FinanceService,
@@ -188,15 +190,20 @@ export class TechnicianWalletController {
   @Post('withdrawals')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
-    summary: 'Kỹ thuật viên: Tạo yêu cầu rút tiền',
+    summary: 'Kỹ thuật viên: Rút tiền, chuyển ngay qua payOS',
+    description:
+      'Không qua bước duyệt. Trừ ví rồi chuyển về tài khoản ngân hàng đã lưu ngay trong lần gọi. Kết quả: SUCCESS, PROCESSING (ngân hàng đang xử lý) hoặc FAILED (đã hoàn tiền về ví).',
   })
   @ApiOkResponse({ type: WithdrawalResponseDto })
   async requestWithdrawal(
     @CurrentUser() user: User,
     @Body() dto: CreateWithdrawalDto,
-  ): Promise<WithdrawalResponseDto> {
-    const req = await this.walletService.requestWithdrawal(user.id, dto);
-    return toWithdrawalResponse(req);
+  ): Promise<WithdrawalResponseDto & { message: string }> {
+    const withdrawal = await this.payoutService.withdraw(user.id, dto.amount);
+    return {
+      ...toWithdrawalResponse(withdrawal),
+      message: payoutMessage(withdrawal.status, 'technician'),
+    };
   }
 
   @Get('withdrawals')

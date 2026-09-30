@@ -1,12 +1,10 @@
 import {
-  Body,
   Controller,
   Get,
   HttpCode,
   HttpStatus,
   Param,
   ParseUUIDPipe,
-  Patch,
   Post,
   Query,
   UseGuards,
@@ -16,20 +14,25 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
-import { CurrentUser, Roles } from '../../common/decorators';
+import { Roles } from '../../common/decorators';
 import { JwtAuthGuard, RolesGuard } from '../../common/guards';
-import { Role, WithdrawalStatus } from '../../shared/enums';
-import { User } from '../users/entities/user.entity';
+import { Role } from '../../shared/enums';
 import {
   QueryWalletsDto,
   QueryWalletTransactionsDto,
   QueryWithdrawalsDto,
-  RejectWithdrawalDto,
 } from './dto';
 import { WalletService } from './wallet.service';
-import { toWithdrawalResponse } from './withdrawal.mapper';
+import { payoutMessage, toWithdrawalResponse } from './withdrawal.mapper';
 import { WithdrawalPayoutService } from './withdrawal-payout.service';
 
+/**
+ * What Service Managers and Admins see of wallets and withdrawals.
+ *
+ * Tracking only (PO decision 30/09/2026): withdrawals are paid out the moment
+ * the technician asks, so there is nothing to approve or reject here. The one
+ * action left is asking payOS again about a payout still in flight.
+ */
 @ApiTags('Service Manager / Wallets')
 @Controller('service-manager')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -89,7 +92,7 @@ export class ServiceManagerWalletController {
 
   @Get('withdrawals')
   @ApiOperation({
-    summary: 'SM/Admin: Danh sách các yêu cầu rút tiền',
+    summary: 'SM/Admin: Theo dõi các lệnh rút tiền của Kỹ thuật viên',
   })
   async listWithdrawals(@Query() query: QueryWithdrawalsDto) {
     const result = await this.walletService.listWithdrawals(query);
@@ -112,26 +115,6 @@ export class ServiceManagerWalletController {
     return this.payoutService.overview();
   }
 
-  @Patch('withdrawals/:id/approve')
-  @ApiOperation({
-    summary: 'SM/Admin: Duyệt yêu cầu rút tiền và chi tự động qua payOS',
-    description:
-      'Kiểm tra ví nguồn đủ tiền, trừ ví kỹ thuật viên rồi gửi lệnh chi. Kết quả trả về là SUCCESS, PROCESSING (payOS đang xử lý) hoặc FAILED (đã hoàn tiền về ví).',
-  })
-  async approveWithdrawal(
-    @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser() user: User,
-  ) {
-    const result = await this.payoutService.approve(id, {
-      id: user.id,
-      role: user.role,
-    });
-    return {
-      ...toWithdrawalResponse(result),
-      message: approvalMessage(result.status),
-    };
-  }
-
   @Post('withdrawals/:id/reconcile')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -141,43 +124,7 @@ export class ServiceManagerWalletController {
     const result = await this.payoutService.reconcile(id);
     return {
       ...toWithdrawalResponse(result),
-      message: approvalMessage(result.status),
+      message: payoutMessage(result.status, 'manager'),
     };
-  }
-
-  @Patch('withdrawals/:id/reject')
-  @ApiOperation({
-    summary: 'SM/Admin: Từ chối yêu cầu rút tiền của Kỹ thuật viên',
-  })
-  async rejectWithdrawal(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: RejectWithdrawalDto,
-    @CurrentUser() user: User,
-  ) {
-    const result = await this.walletService.rejectWithdrawal(id, dto.reason, {
-      id: user.id,
-      role: user.role,
-    });
-    return {
-      success: true,
-      id: result.id,
-      status: result.status,
-      rejectReason: result.rejectReason,
-      processedAt: result.processedAt,
-      message: 'Từ chối yêu cầu rút tiền thành công',
-    };
-  }
-}
-
-function approvalMessage(status: WithdrawalStatus): string {
-  switch (status) {
-    case WithdrawalStatus.SUCCESS:
-      return 'Đã chi tiền về tài khoản ngân hàng của kỹ thuật viên';
-    case WithdrawalStatus.PROCESSING:
-      return 'Đã gửi lệnh chi, payOS đang xử lý. Hệ thống sẽ tự cập nhật kết quả.';
-    case WithdrawalStatus.FAILED:
-      return 'Chi tiền không thành công, số tiền đã được hoàn lại vào ví kỹ thuật viên';
-    default:
-      return 'Đã cập nhật yêu cầu rút tiền';
   }
 }

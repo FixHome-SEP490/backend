@@ -1,12 +1,11 @@
 import {
-  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
   Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, In, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import {
@@ -21,7 +20,6 @@ import { User } from '../users/entities/user.entity';
 import {
   AdminWalletAdjustmentDto,
   AdjustmentType,
-  CreateWithdrawalDto,
   QueryWalletsDto,
   QueryWalletTransactionsDto,
   QueryWithdrawalsDto,
@@ -29,7 +27,6 @@ import {
   WalletSummaryResponseDto,
 } from './dto';
 import {
-  TechnicianBankAccount,
   Wallet,
   WalletTransaction,
   WithdrawalRequest,
@@ -332,154 +329,6 @@ export class WalletService {
     }
 
     return result;
-  }
-
-  /**
-   * Technician asks to withdraw to their saved bank account.
-   *
-   * Decided inside one transaction that holds the wallet row lock, so a
-   * platform fee posted at the same instant cannot slip between the balance
-   * check and the insert. Nothing leaves the wallet here: the amount is only
-   * reserved (it shows as pendingWithdrawal) until a Service Manager approves
-   * it and the payout is sent. The receiving account is copied onto the
-   * request, so a later edit of the saved account never redirects it.
-   */
-  async requestWithdrawal(
-    technicianId: string,
-    dto: CreateWithdrawalDto,
-  ): Promise<WithdrawalRequest> {
-    const amount = dto.amount;
-    if (!Number.isSafeInteger(amount) || amount < MIN_WITHDRAWAL_AMOUNT) {
-      throw new BusinessException(
-        ErrorCodes.VALIDATION_FAILED,
-        `Số tiền rút tối thiểu là ${MIN_WITHDRAWAL_AMOUNT.toLocaleString('vi-VN')} ₫`,
-      );
-    }
-
-    const wallet = await this.getOrCreateWallet(technicianId);
-    const minimumBalance = await this.getMinimumBalance();
-
-    return this.dataSource.transaction(async (manager) => {
-      const bankAccount = await manager
-        .getRepository(TechnicianBankAccount)
-        .findOne({ where: { technicianId } });
-      if (!bankAccount) {
-        throw new BusinessException(
-          ErrorCodes.VALIDATION_FAILED,
-          'Bạn cần khai báo tài khoản ngân hàng nhận tiền trước khi rút tiền',
-        );
-      }
-
-      const locked = await manager.getRepository(Wallet).findOne({
-        where: { id: wallet.id },
-        lock: { mode: 'pessimistic_write' },
-      });
-      if (!locked) {
-        throw new NotFoundException('Ví không tồn tại');
-      }
-
-      const withdrawalRepo = manager.getRepository(WithdrawalRequest);
-      const open = await withdrawalRepo.findOne({
-        where: {
-          walletId: locked.id,
-          status: In([WithdrawalStatus.PENDING, WithdrawalStatus.PROCESSING]),
-        },
-      });
-      if (open) {
-        throw new ConflictException(
-          open.status === WithdrawalStatus.PROCESSING
-            ? 'Bạn đang có một lệnh rút đang được chuyển về ngân hàng. Vui lòng đợi hoàn tất trước khi tạo yêu cầu mới.'
-            : 'Bạn đang có một yêu cầu rút tiền đang chờ xử lý. Vui lòng đợi hoàn tất trước khi tạo yêu cầu mới.',
-        );
-      }
-
-      const withdrawable = Math.max(
-        Number(locked.balance) - minimumBalance,
-        0,
-      );
-      if (amount > withdrawable) {
-        throw new BusinessException(
-          ErrorCodes.VALIDATION_FAILED,
-          `Số tiền rút tối đa hiện tại là ${withdrawable.toLocaleString('vi-VN')} ₫ (phải giữ lại tối thiểu ${minimumBalance.toLocaleString('vi-VN')} ₫ trong ví)`,
-        );
-      }
-
-      const request = withdrawalRepo.create({
-        walletId: locked.id,
-        technicianId,
-        amount,
-        bankBin: bankAccount.bankBin,
-        bankName: bankAccount.bankName,
-        bankAccountNumber: bankAccount.accountNumber,
-        bankAccountName: bankAccount.accountName,
-        status: WithdrawalStatus.PENDING,
-        requestedAt: new Date(),
-      });
-      return withdrawalRepo.save(request);
-    });
-  }
-
-  /**
-   * Service Manager / Admin: Reject withdrawal request.
-   */
-  async rejectWithdrawal(
-    withdrawalId: string,
-    reason: string,
-    actor: { id: string; role: string },
-  ): Promise<WithdrawalRequest> {
-    if (!reason?.trim()) {
-      throw new BusinessException(
-        ErrorCodes.VALIDATION_FAILED,
-        'Lý do từ chối rút tiền là bắt buộc',
-      );
-    }
-
-    return this.dataSource.transaction(async (manager) => {
-      const withdrawalRepo = manager.getRepository(WithdrawalRequest);
-      const withdrawal = await withdrawalRepo.findOne({
-        where: { id: withdrawalId },
-        lock: { mode: 'pessimistic_write' },
-      });
-      if (!withdrawal) {
-        throw new NotFoundException('Yêu cầu rút tiền không tồn tại');
-      }
-      if (withdrawal.status !== WithdrawalStatus.PENDING) {
-        throw new ConflictException(
-          'Yêu cầu rút tiền đã được xử lý trước đó',
-        );
-      }
-
-      withdrawal.status = WithdrawalStatus.REJECTED;
-      withdrawal.processedAt = new Date();
-      withdrawal.processedByUserId = actor.id;
-      withdrawal.rejectReason = reason.trim();
-      const saved = await withdrawalRepo.save(withdrawal);
-
-      await this.auditLogService.logWithManager(manager, {
-        actorUserId: actor.id,
-        actorRole: actor.role,
-        action: 'WITHDRAWAL_REJECTED',
-        resourceType: 'withdrawal_request',
-        resourceId: withdrawal.id,
-        after: {
-          reason: withdrawal.rejectReason,
-          technicianId: withdrawal.technicianId,
-        },
-      });
-
-      if (this.notificationsService) {
-        void this.notificationsService.createNotification({
-          userId: withdrawal.technicianId,
-          title: 'Yêu cầu rút tiền đã bị từ chối',
-          message: `Yêu cầu rút ${Number(withdrawal.amount).toLocaleString('vi-VN')} ₫ của bạn đã bị từ chối. Lý do: "${withdrawal.rejectReason}". Số dư khả dụng của bạn đã được giải phóng.`,
-          type: 'WALLET_WITHDRAWAL_REJECTED',
-          referenceId: saved.id,
-          referenceType: 'WITHDRAWAL_REQUEST',
-        });
-      }
-
-      return saved;
-    });
   }
 
   /**

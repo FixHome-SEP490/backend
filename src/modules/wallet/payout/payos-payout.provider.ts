@@ -152,6 +152,20 @@ export class PayosPayoutProvider implements PayoutProvider {
   private classify(error: unknown): Error {
     if (
       error instanceof APIError &&
+      (error.status === 401 || error.status === 403)
+    ) {
+      // Our own setup is wrong (keys, or this server's IP not whitelisted).
+      // Nothing the technician can act on, and they read failureReason in
+      // their history, so they get a plain sentence; the detail is logged.
+      this.logger.error(
+        `payOS refused our credentials or IP (${error.status}): ${this.describe(error)}`,
+      );
+      return new PayoutRejectedError(
+        'Kênh chi hộ đang tạm ngưng, vui lòng thử lại sau',
+      );
+    }
+    if (
+      error instanceof APIError &&
       typeof error.status === 'number' &&
       error.status < 500
     ) {

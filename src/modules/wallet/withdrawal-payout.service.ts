@@ -9,14 +9,16 @@ import {
   Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { DataSource, Repository } from 'typeorm';
+import { randomUUID } from 'node:crypto';
+import { DataSource, In, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
-import { WalletTransactionType, WithdrawalStatus } from '../../shared/enums';
+import { Role, WalletTransactionType, WithdrawalStatus } from '../../shared/enums';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { Wallet, WithdrawalRequest } from './entities';
+import { MIN_WITHDRAWAL_AMOUNT } from './dto';
+import { TechnicianBankAccount, Wallet, WithdrawalRequest } from './entities';
 import {
   PAYOUT_PROVIDER,
   PayoutInstruction,
@@ -34,12 +36,7 @@ const DEFAULT_RECONCILE_INTERVAL_MS = 60_000;
 const RECONCILE_BATCH_SIZE = 20;
 
 /** Bank transfer descriptions are short and accent-free on many banks. */
-const PAYOUT_DESCRIPTION = 'FixHome rut tien';
-
-interface Actor {
-  id: string | null;
-  role: string | null;
-}
+const PAYOUT_DESCRIPTION = 'FixHome Cashout';
 
 type Notice = { userId: string; title: string; message: string; type: string; referenceId: string };
 
@@ -53,15 +50,16 @@ export interface PayoutOverview {
 }
 
 /**
- * Approval and payout of withdrawals.
+ * Withdrawals, paid out the moment the technician asks. No approval step.
  *
  * The rule every path here keeps: the technician's wallet is debited if and
  * only if money is on its way to their bank. Concretely —
  *
- *  1. Approval checks the payout source can cover it *before* touching the
- *     wallet, so a short source never debits anyone.
- *  2. The debit and the move to PROCESSING commit together, before payOS is
- *     called. A payout is therefore never sent for money still in the wallet.
+ *  1. The payout source is checked *before* the wallet is touched, so a short
+ *     source never debits anyone.
+ *  2. The withdrawal is created PROCESSING and the wallet debited in one
+ *     transaction, before payOS is called. A payout is therefore never sent
+ *     for money still in the wallet.
  *  3. After the call:
  *       payOS paid           -> SUCCESS
  *       payOS refused        -> FAILED, amount returned to the wallet
@@ -69,8 +67,8 @@ export interface PayoutOverview {
  *                               later and only then settles. Refunding on a
  *                               timeout could pay the technician twice.
  *  4. Settling locks the row and only acts on PROCESSING, and the refund has
- *     its own idempotency key, so approval and the reconciler racing to settle
- *     the same withdrawal still refund at most once.
+ *     its own idempotency key, so the request and the reconciler racing to
+ *     settle the same withdrawal still refund at most once.
  */
 @Injectable()
 export class WithdrawalPayoutService implements OnModuleInit, OnModuleDestroy {
@@ -81,6 +79,8 @@ export class WithdrawalPayoutService implements OnModuleInit, OnModuleDestroy {
   constructor(
     @InjectRepository(WithdrawalRequest)
     private readonly withdrawalRepo: Repository<WithdrawalRequest>,
+    @InjectRepository(TechnicianBankAccount)
+    private readonly bankAccountRepo: Repository<TechnicianBankAccount>,
     private readonly dataSource: DataSource,
     private readonly walletService: WalletService,
     private readonly auditLogService: AuditLogService,
@@ -110,38 +110,66 @@ export class WithdrawalPayoutService implements OnModuleInit, OnModuleDestroy {
     this.timer = null;
   }
 
-  // ------------------------------------------------------------------ approve
+  // ----------------------------------------------------------------- withdraw
 
   /**
-   * A Service Manager approves: debit the wallet, then pay out automatically.
+   * A technician withdraws: checked, debited and paid out in the same request.
+   *
+   * PO decision (30/09/2026): there is no approval step. Service Managers and
+   * Admins track the money leaving; they do not approve it. What keeps this
+   * safe without a human in the loop is that the money can only ever go to the
+   * technician's saved account, whose holder name had to match the KYC name.
+   *
    * Returns the withdrawal in whatever state the payout reached — SUCCESS,
-   * PROCESSING or FAILED — so the caller can say exactly what happened.
+   * PROCESSING (payOS has not confirmed yet) or FAILED (money refunded) — so
+   * the technician is told at once what happened.
    */
-  async approve(withdrawalId: string, actor: Actor): Promise<WithdrawalRequest> {
-    const withdrawal = await this.withdrawalRepo.findOne({
-      where: { id: withdrawalId },
-    });
-    if (!withdrawal) {
-      throw new NotFoundException('Yêu cầu rút tiền không tồn tại');
-    }
-    if (withdrawal.status !== WithdrawalStatus.PENDING) {
-      throw new ConflictException('Yêu cầu rút tiền đã được xử lý trước đó');
-    }
-    if (!withdrawal.bankBin || !withdrawal.bankAccountNumber) {
+  async withdraw(technicianId: string, amount: number): Promise<WithdrawalRequest> {
+    if (!Number.isSafeInteger(amount) || amount < MIN_WITHDRAWAL_AMOUNT) {
       throw new BusinessException(
         ErrorCodes.VALIDATION_FAILED,
-        'Yêu cầu này được tạo trước khi có chi tiền tự động nên thiếu mã ngân hàng. Hãy từ chối để kỹ thuật viên tạo lại yêu cầu mới.',
+        `Số tiền rút tối thiểu là ${MIN_WITHDRAWAL_AMOUNT.toLocaleString('vi-VN')} ₫`,
       );
     }
 
-    const instruction = this.instructionFor(withdrawal);
-    await this.assertSourceCanPay(instruction);
-    await this.debitAndMarkProcessing(withdrawalId, actor);
+    const bankAccount = await this.bankAccountRepo.findOne({
+      where: { technicianId },
+    });
+    if (!bankAccount) {
+      throw new BusinessException(
+        ErrorCodes.VALIDATION_FAILED,
+        'Bạn cần khai báo tài khoản ngân hàng nhận tiền trước khi rút tiền',
+      );
+    }
 
+    // The id is chosen here so the payout reference exists before anything is
+    // written, and a lost payOS response can always be looked up by it.
+    const withdrawalId = randomUUID();
+    const instruction: PayoutInstruction = {
+      referenceId: withdrawalId.replace(/-/g, ''),
+      amount,
+      description: PAYOUT_DESCRIPTION,
+      toBin: bankAccount.bankBin,
+      toAccountNumber: bankAccount.accountNumber,
+    };
+
+    await this.assertSourceCanPay(instruction);
+    await this.openAndDebit(withdrawalId, technicianId, amount, bankAccount);
+    return this.sendPayout(withdrawalId, instruction);
+  }
+
+  /**
+   * Hand a PROCESSING withdrawal to the provider and settle on its answer.
+   * The money is already out of the wallet when this runs.
+   */
+  private async sendPayout(
+    withdrawalId: string,
+    instruction: PayoutInstruction,
+  ): Promise<WithdrawalRequest> {
     try {
       const result = await this.provider.createPayout(
         instruction,
-        withdrawal.id,
+        withdrawalId,
       );
       return await this.settle(withdrawalId, result.outcome, result);
     } catch (error) {
@@ -166,77 +194,108 @@ export class WithdrawalPayoutService implements OnModuleInit, OnModuleDestroy {
     // An unreadable balance is not a reason to block: payOS itself will refuse
     // an unaffordable payout, and that path refunds cleanly.
     if (available !== null && available < needed) {
+      // The platform's own balance is not the technician's business; they get
+      // a plain "try later", the figures go to the log for whoever tops it up.
+      this.logger.warn(
+        `Payout source short: has ${available}, needs ${needed}. Top up the payOS wallet.`,
+      );
       throw new BusinessException(
         ErrorCodes.VALIDATION_FAILED,
-        `Ví nguồn chi hộ không đủ số dư: còn ${available.toLocaleString('vi-VN')} ₫, cần ${needed.toLocaleString('vi-VN')} ₫. Hãy nạp thêm vào Ví payOS rồi duyệt lại.`,
+        'Hệ thống chi hộ tạm thời chưa đủ tiền để chi lệnh này. Số dư ví của bạn không bị trừ, vui lòng thử lại sau.',
       );
     }
   }
 
-  private async debitAndMarkProcessing(
+  /**
+   * Create the withdrawal already PROCESSING and debit the wallet, as one
+   * transaction under the wallet row lock: the balance cannot move between the
+   * check and the debit, and a payout is never sent for money still in the
+   * wallet.
+   */
+  private async openAndDebit(
     withdrawalId: string,
-    actor: Actor,
+    technicianId: string,
+    amount: number,
+    bankAccount: TechnicianBankAccount,
   ): Promise<void> {
-    await this.dataSource.transaction(async (manager) => {
-      const withdrawalRepo = manager.getRepository(WithdrawalRequest);
-      const withdrawal = await withdrawalRepo.findOne({
-        where: { id: withdrawalId },
-        lock: { mode: 'pessimistic_write' },
-      });
-      // Re-checked under the lock: two managers pressing approve at once.
-      if (!withdrawal || withdrawal.status !== WithdrawalStatus.PENDING) {
-        throw new ConflictException('Yêu cầu rút tiền đã được xử lý trước đó');
-      }
+    const wallet = await this.walletService.getOrCreateWallet(technicianId);
+    const minimumBalance = await this.walletService.getMinimumBalance();
 
-      const wallet = await manager.getRepository(Wallet).findOne({
-        where: { id: withdrawal.walletId },
+    await this.dataSource.transaction(async (manager) => {
+      const locked = await manager.getRepository(Wallet).findOne({
+        where: { id: wallet.id },
         lock: { mode: 'pessimistic_write' },
       });
-      if (!wallet) {
+      if (!locked) {
         throw new NotFoundException('Ví không tồn tại');
       }
 
-      // The balance may have moved since the request (platform fees), so the
-      // minimum is checked again against what is in the wallet right now.
-      const minimumBalance = await this.walletService.getMinimumBalance();
-      const amount = Number(withdrawal.amount);
-      const remaining = Number(wallet.balance) - amount;
-      if (remaining < minimumBalance) {
-        throw new BusinessException(
-          ErrorCodes.VALIDATION_FAILED,
-          `Không thể phê duyệt vì số dư còn lại sau khi rút (${remaining.toLocaleString('vi-VN')} ₫) sẽ thấp hơn mức tối thiểu (${minimumBalance.toLocaleString('vi-VN')} ₫)`,
+      const withdrawalRepo = manager.getRepository(WithdrawalRequest);
+      // One open withdrawal per wallet. The unique index enforces the same,
+      // this only turns it into a readable message.
+      const open = await withdrawalRepo.findOne({
+        where: {
+          walletId: locked.id,
+          status: In([WithdrawalStatus.PENDING, WithdrawalStatus.PROCESSING]),
+        },
+      });
+      if (open) {
+        throw new ConflictException(
+          'Bạn đang có một lệnh rút đang được chuyển về ngân hàng. Vui lòng đợi hoàn tất trước khi rút tiếp.',
         );
       }
 
+      const withdrawable = Math.max(Number(locked.balance) - minimumBalance, 0);
+      if (amount > withdrawable) {
+        throw new BusinessException(
+          ErrorCodes.VALIDATION_FAILED,
+          `Số tiền rút tối đa hiện tại là ${withdrawable.toLocaleString('vi-VN')} ₫ (phải giữ lại tối thiểu ${minimumBalance.toLocaleString('vi-VN')} ₫ trong ví)`,
+        );
+      }
+
+      const now = new Date();
+      await withdrawalRepo.save(
+        withdrawalRepo.create({
+          id: withdrawalId,
+          walletId: locked.id,
+          technicianId,
+          amount,
+          bankBin: bankAccount.bankBin,
+          bankName: bankAccount.bankName,
+          bankAccountNumber: bankAccount.accountNumber,
+          bankAccountName: bankAccount.accountName,
+          status: WithdrawalStatus.PROCESSING,
+          requestedAt: now,
+          processedAt: now,
+          processedByUserId: null,
+          payoutAttemptedAt: now,
+        }),
+      );
+
       const { transaction } = await this.walletService.mutateBalance({
-        walletId: wallet.id,
+        walletId: locked.id,
         type: WalletTransactionType.WITHDRAW,
         amount,
         referenceType: 'WITHDRAWAL_REQUEST',
-        referenceId: withdrawal.id,
-        idempotencyKey: `WITHDRAW:${withdrawal.id}`,
-        description: `Rút tiền về ${withdrawal.bankName ?? 'ngân hàng'} - STK ${withdrawal.bankAccountNumber ?? ''}`,
+        referenceId: withdrawalId,
+        idempotencyKey: `WITHDRAW:${withdrawalId}`,
+        description: `Rút tiền về ${bankAccount.bankName} - STK ${bankAccount.accountNumber}`,
         allowNegative: false,
         manager,
       });
-
-      withdrawal.status = WithdrawalStatus.PROCESSING;
-      withdrawal.processedAt = new Date();
-      withdrawal.processedByUserId = actor.id;
-      withdrawal.transactionId = transaction.id;
-      withdrawal.payoutAttemptedAt = new Date();
-      await withdrawalRepo.save(withdrawal);
+      await withdrawalRepo.update({ id: withdrawalId }, { transactionId: transaction.id });
 
       await this.auditLogService.logWithManager(manager, {
-        actorUserId: actor.id,
-        actorRole: actor.role,
-        action: 'WITHDRAWAL_APPROVED',
+        actorUserId: technicianId,
+        actorRole: Role.TECHNICIAN,
+        action: 'WITHDRAWAL_REQUESTED',
         resourceType: 'withdrawal_request',
-        resourceId: withdrawal.id,
+        resourceId: withdrawalId,
         after: {
           amount,
-          technicianId: withdrawal.technicianId,
           balanceAfter: transaction.balanceAfter,
+          bankCode: bankAccount.bankCode,
+          accountNumberTail: bankAccount.accountNumber.slice(-4),
           payoutProvider: this.provider.name,
         },
       });
@@ -476,20 +535,11 @@ export class WithdrawalPayoutService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Derived from the withdrawal id, never random, so a payout whose response
-   * was lost can always be found again by the same reference.
+   * was lost can always be found again by the same reference. Must match the
+   * referenceId withdraw() sends.
    */
   private referenceIdFor(withdrawal: WithdrawalRequest): string {
     return withdrawal.id.replace(/-/g, '');
-  }
-
-  private instructionFor(withdrawal: WithdrawalRequest): PayoutInstruction {
-    return {
-      referenceId: this.referenceIdFor(withdrawal),
-      amount: Number(withdrawal.amount),
-      description: PAYOUT_DESCRIPTION,
-      toBin: withdrawal.bankBin ?? '',
-      toAccountNumber: withdrawal.bankAccountNumber ?? '',
-    };
   }
 
   private notify(notice: Notice | null): void {
