@@ -1,7 +1,7 @@
 # FixHome — Quy chuẩn UI/UX và ngôn ngữ chung cho Web & Mobile
 
-> Version: 1.0.1 · Ngày cập nhật: 28/09/2026 · Phạm vi: tổ chức `FixHome-SEP490`.
-> Trạng thái áp dụng vào sản phẩm: **PLANNED**. Đây là quy chuẩn đích được soạn theo yêu cầu đồng bộ web/mobile; việc tạo file chưa thay đổi giao diện hay repository GitHub.
+> Version: 1.1.0 · Ngày cập nhật: 30/09/2026 · Phạm vi: tổ chức `FixHome-SEP490`.
+> Trạng thái áp dụng vào sản phẩm: **một phần**. Mục 17 ghi các quyết định PO ngày 30/09/2026 đã triển khai trên web khu vực khách hàng và kỹ thuật viên; các mục khác vẫn là quy chuẩn đích.
 > AI phải đọc toàn bộ file này trước khi sửa UI, nội dung hiển thị, điều hướng, theme, component hoặc dữ liệu ảnh hưởng đến cách hiển thị của FixHome.
 
 ## 1. Chỉ thị bắt buộc đối với AI
@@ -575,3 +575,17 @@ Các đường dẫn sau đã tồn tại tại snapshot, tính từ root repo t
 Repository nguồn: [Web](https://github.com/FixHome-SEP490/web), [Mobile](https://github.com/FixHome-SEP490/mobile), [Backend](https://github.com/FixHome-SEP490/backend), [AI service](https://github.com/FixHome-SEP490/ai-service), [Docs](https://github.com/FixHome-SEP490/docs).
 
 Lưu ý khi dùng tài liệu cũ: phần màu cam trong build brief, `PENDING_CONFIRMATION` trong một số guide và bảng Booking legacy là các điểm phải đối chiếu lại với code hiện hành. Không sao chép chúng vào tính năng mới như những contract đã được xác minh.
+
+## 17. Quyết định PO ngày 30/09/2026 (đã áp dụng)
+
+Các quyết định dưới đây thay thế phần mâu thuẫn ở mục 5 và 11 cho khu vực khách hàng (`/app/*`) và kỹ thuật viên (`/tech/*`) trên web. Console và landing page giữ nguyên.
+
+- **Tông trung tính theo mobile.** Web khách hàng và kỹ thuật viên dùng thang xám lạnh của `mobile/src/constants/theme.ts` (nền `#F8FAFC`, chữ `#0F172A`, viền `#E2E8F0`). Web cài bằng lớp `.fh-app` trên `<html>` đổi giá trị token `ink-*`, nên code vẫn dùng tên token cũ. Màu chủ đạo `#2563EB` giữ nguyên.
+- **Bốn sắc thái có nghĩa.** Xanh dương cho hành động và thông tin, xanh lá cho thành công, **vàng cho ghi chú**, **đỏ cho cảnh báo và lỗi**. Tím và các màu khác gộp về xanh dương trong khu vực này. Không dùng gradient trang trí; mỗi trang tối đa một khối nhấn xanh dương.
+- **Không mã lỗi, không thuật ngữ kỹ thuật** trước khách hàng và kỹ thuật viên. Web đưa mọi lỗi qua `src/utils/user-facing-error.ts`: giữ câu tiếng Việt của server, bỏ tiền tố mã (`607: `), đổi câu tiếng Anh hoặc câu kỹ thuật thành câu dự phòng của màn. API client tự áp dụng cho mọi request lỗi.
+- **Giờ Việt Nam ở mọi tầng.** Web `src/utils/vn-time.ts`, mobile `src/utils/vn-time.ts`, backend `src/shared/utils/vn-time.ts` tính theo UTC+7 cố định; không phụ thuộc múi giờ máy. Ngày hiển thị `dd/MM/yyyy`, giờ `HH:mm`. Database Supabase đặt `timezone = Asia/Ho_Chi_Minh` (migration 1790000000022); dữ liệu vẫn là `timestamptz`.
+- **Một khung nổi mỗi lúc.** Chat với người và trợ lý AI dùng chung trạng thái trong chat store; mở cái này thì cái kia đóng. Trang Tin nhắn không có nút chat nổi.
+- **Không xuống dòng tùy tiện.** Nút, chip, badge, mục điều hướng, số tiền, ngày giờ không gãy dòng; tiêu đề cân dòng (`text-wrap: balance`), đoạn văn tránh chữ mồ côi. Chỉ dùng weight 400–700 vì Be Vietnam Pro chỉ nạp 300–700.
+- **Khung trang.** Kỹ thuật viên: sidebar có nhóm từ 1024px, thanh tab đáy dưới 1024px. Khách hàng: thanh điều hướng trên từ 1024px, thanh tab đáy dưới 1024px.
+- **Giữ nội dung quảng cáo hiện có** (số thợ, ưu đãi, hotline) theo quyết định PO; chỉ làm dịu hình thức.
+- **Giao diện mobile không đổi** trong đợt này; mobile chỉ sửa helper thời gian.
