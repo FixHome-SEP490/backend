@@ -288,6 +288,8 @@ describe('WithdrawalPayoutService', () => {
         toBin: '970422',
         toAccountNumber: '0123456789012',
         referenceId: row.id.replace(/-/g, ''),
+        // What the technician reads on their bank statement (PO wording).
+        description: 'FixHome Cashout',
       });
       // Retrying the same withdrawal must reuse the key so payOS cannot pay twice.
       expect(idempotencyKey).toBe(row.id);

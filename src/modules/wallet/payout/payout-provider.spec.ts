@@ -19,7 +19,7 @@ import {
 const instruction = (toAccountNumber: string, amount = 100_000): PayoutInstruction => ({
   referenceId: `ref-${toAccountNumber}`,
   amount,
-  description: 'FixHome rut tien',
+  description: 'FixHome Cashout',
   toBin: '970436',
   toAccountNumber,
 });

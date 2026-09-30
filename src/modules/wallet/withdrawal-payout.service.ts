@@ -36,7 +36,7 @@ const DEFAULT_RECONCILE_INTERVAL_MS = 60_000;
 const RECONCILE_BATCH_SIZE = 20;
 
 /** Bank transfer descriptions are short and accent-free on many banks. */
-const PAYOUT_DESCRIPTION = 'FixHome rut tien';
+const PAYOUT_DESCRIPTION = 'FixHome Cashout';
 
 type Notice = { userId: string; title: string; message: string; type: string; referenceId: string };
 
