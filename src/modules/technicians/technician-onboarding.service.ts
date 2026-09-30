@@ -25,6 +25,7 @@ import {
   SaveAddressDto,
   OnboardingStatusResponseDto,
 } from './dto';
+import { ageInYearsOnVnToday } from '../../shared/utils/vn-time';
 
 @Injectable()
 export class TechnicianOnboardingService {
@@ -189,14 +190,9 @@ export class TechnicianOnboardingService {
 
     // Validate age >= 18
     const dob = new Date(dto.dateOfBirth);
-    const today = new Date();
-    const age = today.getFullYear() - dob.getFullYear();
-    const monthDiff = today.getMonth() - dob.getMonth();
-    const effectiveAge =
-      monthDiff < 0 || (monthDiff === 0 && today.getDate() < dob.getDate())
-        ? age - 1
-        : age;
-    if (effectiveAge < 18) {
+    // Birth date is a calendar date; "today" is today in Vietnam, not on the server.
+    const effectiveAge = ageInYearsOnVnToday(dto.dateOfBirth);
+    if (!(effectiveAge >= 18)) {
       throw new BadRequestException('Phải đủ 18 tuổi trở lên để đăng ký làm thợ.');
     }
 

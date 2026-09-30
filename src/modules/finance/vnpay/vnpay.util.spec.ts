@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { buildPaymentUrl, verifySignature } from './vnpay.util';
+import { buildPaymentUrl, formatVnpayDate, verifySignature } from './vnpay.util';
 
 describe('vnpay.util', () => {
   const hashSecret = 'TESTSECRET123';
+
+  it('stamps dates in Vietnam time whatever zone the server runs in', () => {
+    // A Docker image runs in UTC; VNPay reads these fields as GMT+7.
+    expect(formatVnpayDate(new Date('2026-01-01T03:00:00Z'))).toBe('20260101100000');
+    expect(formatVnpayDate(new Date('2026-12-31T17:05:09Z'))).toBe('20270101000509');
+  });
 
   it('builds a URL whose query verifies against the same secret', () => {
     const url = buildPaymentUrl({

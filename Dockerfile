@@ -13,6 +13,9 @@ FROM node:20-alpine AS dev
 
 WORKDIR /app
 
+# Giờ Việt Nam cho mọi thứ còn dùng giờ máy (log, thư viện ngoài); image gốc để UTC.
+ENV TZ=Asia/Ho_Chi_Minh
+
 # bcrypt là thư viện biên dịch ra mã máy. Bản dựng sẵn của nó làm cho glibc,
 # trong khi Alpine dùng musl, nên phải tự biên dịch lại — và muốn biên dịch thì
 # cần ba gói này. Thiếu chúng thì `npm ci` chết ngay ở bước cài bcrypt.
@@ -53,6 +56,8 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
+# Giờ Việt Nam cho mọi thứ còn dùng giờ máy (log, thư viện ngoài); image gốc để UTC.
+ENV TZ=Asia/Ho_Chi_Minh
 
 COPY package*.json ./
 
