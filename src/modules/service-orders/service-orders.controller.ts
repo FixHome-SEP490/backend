@@ -516,6 +516,7 @@ export class ServiceOrdersController {
     @Req() req: { user: { id: string; role: string } },
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
+    @Query('status') status?: ServiceOrderStatus,
   ) {
     const result = await this.serviceOrdersService.getRepairHistory(
       req.user.id,
@@ -523,6 +524,7 @@ export class ServiceOrdersController {
       {
         page: page ? parseInt(page, 10) : 1,
         limit: pageSize ? parseInt(pageSize, 10) : 20,
+        status,
       },
     );
     return { data: result.data, meta: { total: result.total } };
