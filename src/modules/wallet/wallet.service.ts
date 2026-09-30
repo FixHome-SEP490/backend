@@ -74,7 +74,7 @@ export class WalletService {
     if (!wallet) {
       wallet = repo.create({
         technicianId,
-        balance: 200000, // Initial default balance for convenience/compatibility
+        balance: 0, // Initial balance is 0 VND for newly registered technician
       });
       wallet = await repo.save(wallet);
       this.logger.log(`Initialized new wallet for technician ${technicianId}`);

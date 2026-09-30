@@ -8,6 +8,8 @@ import { TechnicianVerification } from './entities/technician-verification.entit
 import { VerificationDocument } from './entities/verification-document.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { KycStorageService } from './kyc-storage.service';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { Wallet } from '../wallet/entities/wallet.entity';
 
 @Module({
   imports: [
@@ -15,7 +17,9 @@ import { KycStorageService } from './kyc-storage.service';
       TechnicianVerification,
       VerificationDocument,
       TechnicianProfile,
+      Wallet,
     ]),
+    NotificationsModule,
   ],
   controllers: [
     TechnicianVerificationsController,
