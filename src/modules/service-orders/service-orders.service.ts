@@ -68,6 +68,7 @@ import { expireAdditionalCosts } from './expire-additional-costs';
 import { authorizeOrder } from './order-access';
 import { isCompletionHeld } from '../support-cases/completion-hold';
 import { historicalOrderSummary, type HistoricalOrderSummary } from './historical-order-summary';
+import { repairHistoryStatuses } from './repair-history-filter';
 
 @Injectable()
 export class ServiceOrdersService {
@@ -831,7 +832,7 @@ export class ServiceOrdersService {
   async getRepairHistory(
     userId: string,
     role: string,
-    options: { page?: number; limit?: number },
+    options: { page?: number; limit?: number; status?: ServiceOrderStatus },
   ): Promise<{ data: Record<string, unknown>[]; total: number }> {
     const page = options.page || 1;
     const limit = Math.min(options.limit || 20, 100);
@@ -840,7 +841,7 @@ export class ServiceOrdersService {
       .createQueryBuilder('o')
       .leftJoinAndSelect('bookings', 'b', 'b.id = o.booking_id')
       .leftJoinAndSelect('services', 's', 's.id = b.service_id')
-      .where('o.status IN (:...terminal)', { terminal: [ServiceOrderStatus.COMPLETED, ServiceOrderStatus.CANCELLED] });
+      .where('o.status IN (:...terminal)', { terminal: repairHistoryStatuses(options.status) });
 
     if (role === Role.CUSTOMER) {
       qb.andWhere('b.customer_id = :userId', { userId });
