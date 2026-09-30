@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsEnum, IsInt, IsOptional, Max, Min } from 'class-validator';
 import { WithdrawalStatus } from '../../../shared/enums';
 
 /** PO decision (29/09/2026): the smallest withdrawal is 10.000 ₫. */
@@ -23,13 +23,6 @@ export class CreateWithdrawalDto {
   @Min(MIN_WITHDRAWAL_AMOUNT)
   @Max(MAX_WITHDRAWAL_AMOUNT)
   amount: number;
-}
-
-export class RejectWithdrawalDto {
-  @ApiProperty({ description: 'Lý do từ chối yêu cầu rút tiền (bắt buộc)', example: 'Thông tin tài khoản ngân hàng không hợp lệ' })
-  @IsString()
-  @IsNotEmpty()
-  reason: string;
 }
 
 export class QueryWithdrawalsDto {

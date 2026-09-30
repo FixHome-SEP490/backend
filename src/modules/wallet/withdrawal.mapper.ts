@@ -1,3 +1,4 @@
+import { WithdrawalStatus } from '../../shared/enums';
 import { WithdrawalResponseDto } from './dto';
 import { WithdrawalRequest } from './entities';
 
@@ -40,4 +41,31 @@ export function toWithdrawalResponse(
         }
       : undefined,
   };
+}
+
+/**
+ * One sentence saying where a payout ended up, worded for whoever reads it:
+ * the technician who asked, or the manager tracking the money.
+ */
+export function payoutMessage(
+  status: WithdrawalStatus,
+  audience: 'technician' | 'manager',
+): string {
+  const forTechnician = audience === 'technician';
+  switch (status) {
+    case WithdrawalStatus.SUCCESS:
+      return forTechnician
+        ? 'Đã chuyển tiền về tài khoản ngân hàng của bạn'
+        : 'Đã chi tiền về tài khoản ngân hàng của kỹ thuật viên';
+    case WithdrawalStatus.PROCESSING:
+      return forTechnician
+        ? 'Lệnh rút đã gửi, ngân hàng đang xử lý. Bạn sẽ nhận thông báo khi tiền về.'
+        : 'payOS đang xử lý lệnh chi, hệ thống sẽ tự cập nhật kết quả.';
+    case WithdrawalStatus.FAILED:
+      return forTechnician
+        ? 'Chuyển tiền không thành công, số tiền đã được hoàn lại vào ví của bạn'
+        : 'Chi tiền không thành công, số tiền đã được hoàn lại vào ví kỹ thuật viên';
+    default:
+      return 'Đã cập nhật lệnh rút tiền';
+  }
 }

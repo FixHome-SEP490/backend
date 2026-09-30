@@ -3,6 +3,7 @@ import {
   BadRequestError,
   ConnectionError,
   ConnectionTimeoutError,
+  ForbiddenError,
   InternalServerError,
   UnauthorizedError,
 } from '@payos/node';
@@ -217,6 +218,22 @@ describe('PayosPayoutProvider', () => {
       await expect(
         provider.createPayout(instruction('0123456789'), 'k'),
       ).rejects.toBeInstanceOf(PayoutRejectedError);
+    });
+
+    it('hides our own setup errors from the technician behind a plain sentence', async () => {
+      const provider = withClient({
+        payouts: {
+          create: vi.fn(async () => {
+            throw new ForbiddenError(403, { code: '403' }, 'Địa chỉ IP không được phép truy cập hệ thống', undefined as never);
+          }),
+        },
+      });
+
+      const error = await provider.createPayout(instruction('0123456789'), 'k').catch((e) => e);
+
+      expect(error).toBeInstanceOf(PayoutRejectedError);
+      expect(error.message).toBe('Kênh chi hộ đang tạm ngưng, vui lòng thử lại sau');
+      expect(error.message).not.toContain('IP');
     });
 
     it.each([
