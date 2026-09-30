@@ -129,6 +129,14 @@ export class TechnicianVerificationsService {
       );
 
       savedVerification.documents = await documentRepository.save(documents);
+
+      await manager.getRepository(TechnicianProfile).update(
+        { userId: technicianId },
+        {
+          verificationStatus: VerificationStatus.PENDING,
+        },
+      );
+
       return savedVerification;
     });
 
