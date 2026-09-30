@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsEnum, IsOptional, IsUUID, MaxLength } from 'class-validator';
+import { IsEnum, IsIn, IsOptional, IsUUID, MaxLength } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { PaginationDto } from '../../../shared/dto';
 import { SupportCaseStatus, SupportCaseType } from '../../../shared/enums';
@@ -33,6 +33,11 @@ export class QuerySupportCasesDto extends PaginationDto {
   @IsOptional()
   @IsUUID('4')
   assignedManagerId?: string;
+
+  @ApiPropertyOptional({ enum: ['newest', 'priority'], default: 'newest' })
+  @IsOptional()
+  @IsIn(['newest', 'priority'])
+  sort?: 'newest' | 'priority';
 
   @ApiPropertyOptional({ maxLength: SUPPORT_CASE_MAX_SEARCH_LENGTH })
   @IsOptional()

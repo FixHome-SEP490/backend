@@ -34,6 +34,7 @@ import { ServiceOrderStateMachine } from '../service-orders/service-order-state-
 import { CustomerServiceConfirmation } from '../service-orders/entities/customer-service-confirmation.entity';
 import { OrderStatusHistory } from '../service-orders/entities/order-status-history.entity';
 import { WarrantyCoverage } from '../service-orders/entities/warranty-coverage.entity';
+import { isCompletionHeld } from '../support-cases/completion-hold';
 import { InvoiceItem } from '../service-orders/entities/invoice-item.entity';
 import { Payment } from './entities/payment.entity';
 import { PlatformDue } from './entities/platform-due.entity';
@@ -796,7 +797,11 @@ export class FinanceService {
       const confirmation = await manager.findOne(CustomerServiceConfirmation, {
         where: { serviceOrderId: orderId },
       });
-      if (confirmation && order.status === ServiceOrderStatus.UNDER_REPAIR) {
+      if (
+        confirmation &&
+        order.status === ServiceOrderStatus.UNDER_REPAIR &&
+        !(await isCompletionHeld(manager, orderId))
+      ) {
         if (!ServiceOrderStateMachine.canTransition(order.status, ServiceOrderStatus.COMPLETED)) {
           throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Illegal order transition');
         }
@@ -1206,7 +1211,11 @@ export class FinanceService {
           const confirmation = await manager.findOne(CustomerServiceConfirmation, {
             where: { serviceOrderId: invoice.serviceOrderId },
           });
-          if (confirmation && order.status === ServiceOrderStatus.UNDER_REPAIR) {
+          if (
+            confirmation &&
+            order.status === ServiceOrderStatus.UNDER_REPAIR &&
+            !(await isCompletionHeld(manager, order.id))
+          ) {
             if (ServiceOrderStateMachine.canTransition(order.status, ServiceOrderStatus.COMPLETED)) {
               order.status = ServiceOrderStatus.COMPLETED;
               order.completedAt = now;

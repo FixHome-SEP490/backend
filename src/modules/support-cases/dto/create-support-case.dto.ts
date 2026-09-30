@@ -2,6 +2,7 @@ import { Transform } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
+  IsBoolean,
   IsEnum,
   IsNotEmpty,
   IsOptional,
@@ -96,4 +97,11 @@ export class CreateSupportCaseDto {
   @IsOptional()
   @IsUUID('4')
   serviceOrderId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Ask the service manager to intervene immediately',
+  })
+  @IsOptional()
+  @IsBoolean()
+  isUrgent?: boolean;
 }

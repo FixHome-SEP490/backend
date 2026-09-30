@@ -158,6 +158,21 @@ export class SupportCaseSummaryDto {
   @ApiPropertyOptional({ format: 'date-time', nullable: true })
   resolvedAt: Date | null;
 
+  @ApiProperty()
+  isUrgent: boolean;
+
+  @ApiPropertyOptional({ format: 'date-time', nullable: true })
+  respondBy: Date | null;
+
+  @ApiProperty()
+  holdCompletion: boolean;
+
+  @ApiPropertyOptional({ nullable: true })
+  liableParty: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  amount: number | null;
+
   @ApiProperty({ format: 'date-time' })
   createdAt: Date;
 

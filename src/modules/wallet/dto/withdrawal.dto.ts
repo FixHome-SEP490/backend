@@ -3,26 +3,26 @@ import { Type } from 'class-transformer';
 import { IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from 'class-validator';
 import { WithdrawalStatus } from '../../../shared/enums';
 
+/** PO decision (29/09/2026): the smallest withdrawal is 10.000 ₫. */
+export const MIN_WITHDRAWAL_AMOUNT = 10_000;
+
+/** Guards against a typo of extra zeros; far above any real wallet. */
+export const MAX_WITHDRAWAL_AMOUNT = 500_000_000;
+
+/**
+ * Only the amount. Where the money goes is the technician's saved bank
+ * account, never something typed per request — that is what lets the account
+ * be checked against KYC once instead of trusted on every withdrawal.
+ */
 export class CreateWithdrawalDto {
-  @ApiProperty({ description: 'Số tiền muốn rút (VND, tối thiểu 50.000 ₫)', example: 300000 })
+  @ApiProperty({
+    description: `Số tiền muốn rút (VND, tối thiểu ${MIN_WITHDRAWAL_AMOUNT.toLocaleString('vi-VN')} ₫)`,
+    example: 300000,
+  })
   @IsInt()
-  @Min(50000)
+  @Min(MIN_WITHDRAWAL_AMOUNT)
+  @Max(MAX_WITHDRAWAL_AMOUNT)
   amount: number;
-
-  @ApiPropertyOptional({ description: 'Tên ngân hàng thụ hưởng', example: 'Vietcombank' })
-  @IsOptional()
-  @IsString()
-  bankName?: string;
-
-  @ApiPropertyOptional({ description: 'Số tài khoản ngân hàng thụ hưởng', example: '0123456789' })
-  @IsOptional()
-  @IsString()
-  bankAccountNumber?: string;
-
-  @ApiPropertyOptional({ description: 'Tên chủ tài khoản thụ hưởng', example: 'NGUYEN VAN THO' })
-  @IsOptional()
-  @IsString()
-  bankAccountName?: string;
 }
 
 export class RejectWithdrawalDto {
@@ -97,11 +97,33 @@ export class WithdrawalResponseDto {
   @ApiPropertyOptional({ description: 'ID giao dịch ví đối ứng (nếu đã duyệt)' })
   transactionId?: string | null;
 
+  @ApiPropertyOptional({ description: 'Mã BIN ngân hàng nhận' })
+  bankBin?: string | null;
+
+  @ApiPropertyOptional({ description: 'Mã lệnh chi phía payOS' })
+  payoutId?: string | null;
+
+  @ApiPropertyOptional({ description: 'Trạng thái lệnh chi phía payOS, giữ nguyên văn' })
+  payoutState?: string | null;
+
+  @ApiPropertyOptional({ description: 'Mã tham chiếu ngân hàng của lệnh chuyển, bằng chứng tiền đã đi' })
+  payoutBankReference?: string | null;
+
+  @ApiPropertyOptional({ description: 'Thời điểm gửi lệnh chi sang payOS' })
+  payoutAttemptedAt?: Date | null;
+
+  @ApiPropertyOptional({ description: 'Lý do chi thất bại (nếu FAILED)' })
+  failureReason?: string | null;
+
+  @ApiPropertyOptional({ description: 'ID giao dịch hoàn tiền về ví (nếu chi thất bại)' })
+  refundTransactionId?: string | null;
+
   @ApiPropertyOptional({ description: 'Thông tin kỹ thuật viên' })
   technician?: {
     id: string;
     fullName?: string;
     phoneNumber?: string;
+    email?: string | null;
     avatarUrl?: string | null;
   };
 }

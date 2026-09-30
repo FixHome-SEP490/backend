@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TechnicianWalletController } from './technician-wallet.controller';
 import { WalletService } from './wallet.service';
+import { BankAccountService } from './bank-account.service';
 import { User } from '../users/entities/user.entity';
 
 describe('TechnicianWalletController', () => {
@@ -12,7 +13,10 @@ describe('TechnicianWalletController', () => {
     listMyWithdrawals: vi.fn(),
   } as unknown as WalletService;
 
-  const controller = new TechnicianWalletController(mockWalletService);
+  const controller = new TechnicianWalletController(
+    mockWalletService,
+    {} as BankAccountService,
+  );
   const mockUser = { id: 'tech-user-123' } as User;
 
   it('topUp generates fallback idempotencyKey if omitted and returns formatted payload', async () => {
@@ -65,7 +69,11 @@ describe('TechnicianWalletController', () => {
       }),
     } as any;
 
-    const liveController = new TechnicianWalletController(mockWalletService, mockFinanceService);
+    const liveController = new TechnicianWalletController(
+      mockWalletService,
+      {} as BankAccountService,
+      mockFinanceService,
+    );
     const res = await liveController.topUp(
       mockUser,
       { amount: 500000, idempotencyKey: 'IDEMP_VNP_99' },

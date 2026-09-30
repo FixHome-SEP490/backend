@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
@@ -8,6 +9,7 @@ import { SupportCase } from './entities/support-case.entity';
 import { SupportCasesService } from './support-cases.service';
 import {
   Role,
+  ServiceOrderStatus,
   SupportCaseStatus,
   SupportCaseType,
 } from '../../shared/enums';
@@ -18,20 +20,28 @@ const BOOKING_ID = 'booking-1';
 const ORDER_ID = 'order-1';
 
 const booking = { id: BOOKING_ID, customerId: CUSTOMER_ID };
-const order = { id: ORDER_ID, bookingId: BOOKING_ID };
+const makeOrder = (
+  status: ServiceOrderStatus = ServiceOrderStatus.COMPLETED,
+  completedAt: Date | null = new Date(),
+) => ({ id: ORDER_ID, bookingId: BOOKING_ID, status, completedAt });
 
 const makeEscalationService = (options: {
   bookingResult?: unknown;
   orderResult?: unknown;
   orderByBookingResult?: unknown;
   assignmentResult?: unknown;
+  orderStatus?: ServiceOrderStatus;
+  completedAt?: Date | null;
+  openCount?: number;
 } = {}) => {
+  const order = makeOrder(options.orderStatus, options.completedAt);
   const supportRepository = {
     create: vi.fn((value: unknown) => value),
     save: vi.fn(async (value: unknown) => ({
       ...(value as Record<string, unknown>),
       id: 'case-1',
     })),
+    count: vi.fn().mockResolvedValue(options.openCount ?? 0),
   };
   const bookingRepository = {
     findOne: vi.fn(async ({ where }: { where: { id: string } }) => {
@@ -140,6 +150,7 @@ describe('SupportCasesService.openCaseForActor', () => {
   it('lets an assigned technician open a case and derives authoritative ids', async () => {
     const { service } = makeEscalationService({
       assignmentResult: { technicianId: TECHNICIAN_ID },
+      orderStatus: ServiceOrderStatus.UNDER_REPAIR,
     });
 
     const result = (await service.openCaseForActor(
@@ -163,6 +174,7 @@ describe('SupportCasesService.openCaseForActor', () => {
   it('lets a technician escalate from a booking-only context they are assigned to', async () => {
     const { service } = makeEscalationService({
       assignmentResult: { technicianId: TECHNICIAN_ID },
+      orderStatus: ServiceOrderStatus.EN_ROUTE,
     });
 
     const result = (await service.openCaseForActor(
@@ -255,5 +267,107 @@ describe('SupportCasesService.openCaseForActor', () => {
       expect(repository.save).not.toHaveBeenCalled();
       expect(repository.update).not.toHaveBeenCalled();
     }
+  });
+
+  it('rejects a case type that does not apply to the current order status', async () => {
+    const { service, supportRepository } = makeEscalationService({
+      orderStatus: ServiceOrderStatus.ACCEPTED,
+    });
+
+    await expect(
+      service.openCaseForActor(
+        customerDto({ caseType: SupportCaseType.PROPERTY_DAMAGE }),
+        { id: CUSTOMER_ID, role: Role.CUSTOMER },
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(supportRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('never lets an actor open a system-only warranty dispute case', async () => {
+    const { service } = makeEscalationService({
+      orderStatus: ServiceOrderStatus.COMPLETED,
+    });
+
+    await expect(
+      service.openCaseForActor(
+        customerDto({ caseType: SupportCaseType.WARRANTY_DISPUTE }),
+        { id: CUSTOMER_ID, role: Role.CUSTOMER },
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('closes the complaint window after the completion grace period', async () => {
+    const { service, supportRepository } = makeEscalationService({
+      orderStatus: ServiceOrderStatus.COMPLETED,
+      completedAt: new Date(Date.now() - 8 * 86_400_000),
+    });
+
+    await expect(
+      service.openCaseForActor(customerDto(), {
+        id: CUSTOMER_ID,
+        role: Role.CUSTOMER,
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(supportRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('limits the number of unresolved cases one actor keeps on an order', async () => {
+    const { service, supportRepository } = makeEscalationService({ openCount: 3 });
+
+    await expect(
+      service.openCaseForActor(customerDto(), {
+        id: CUSTOMER_ID,
+        role: Role.CUSTOMER,
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(supportRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('sets a response deadline for an active order and for urgent requests', async () => {
+    const active = makeEscalationService({
+      orderStatus: ServiceOrderStatus.UNDER_REPAIR,
+    });
+    const activeCase = (await active.service.openCaseForActor(
+      customerDto({ caseType: SupportCaseType.QUALITY }),
+      { id: CUSTOMER_ID, role: Role.CUSTOMER },
+    )) as SupportCase;
+    expect(activeCase.isUrgent).toBe(false);
+    expect(activeCase.respondBy).toBeInstanceOf(Date);
+
+    const urgent = makeEscalationService({
+      orderStatus: ServiceOrderStatus.COMPLETED,
+    });
+    const urgentCase = (await urgent.service.openCaseForActor(
+      customerDto({ isUrgent: true }),
+      { id: CUSTOMER_ID, role: Role.CUSTOMER },
+    )) as SupportCase;
+    expect(urgentCase.isUrgent).toBe(true);
+    expect(urgentCase.respondBy).toBeInstanceOf(Date);
+
+    const calm = makeEscalationService({
+      orderStatus: ServiceOrderStatus.COMPLETED,
+    });
+    const calmCase = (await calm.service.openCaseForActor(customerDto(), {
+      id: CUSTOMER_ID,
+      role: Role.CUSTOMER,
+    })) as SupportCase;
+    expect(calmCase.respondBy).toBeNull();
+  });
+
+  it('attaches the order found through the booking so the manager sees full context', async () => {
+    const { service } = makeEscalationService({
+      orderStatus: ServiceOrderStatus.COMPLETED,
+    });
+
+    const result = (await service.openCaseForActor(
+      {
+        caseType: SupportCaseType.QUALITY,
+        reason: 'The repaired unit failed again',
+        bookingId: BOOKING_ID,
+      } as any,
+      { id: CUSTOMER_ID, role: Role.CUSTOMER },
+    )) as SupportCase;
+
+    expect(result.serviceOrderId).toBe(ORDER_ID);
   });
 });

@@ -23,6 +23,8 @@ describe('WalletService', () => {
   let storedWallet: any;
   let storedTransactions: any[];
   let storedWithdrawals: any[];
+  let storedBankAccount: any;
+  let mockBankAccountRepo: any;
 
   beforeEach(() => {
     storedWallet = {
@@ -32,6 +34,21 @@ describe('WalletService', () => {
     };
     storedTransactions = [];
     storedWithdrawals = [];
+    storedBankAccount = {
+      technicianId: 'tech-uuid-1',
+      bankBin: '970436',
+      bankCode: 'VCB',
+      bankName: 'Vietcombank',
+      accountNumber: '0123456789',
+      accountName: 'NGUYEN VAN THO',
+    };
+    mockBankAccountRepo = {
+      findOne: vi.fn().mockImplementation(async ({ where }) =>
+        storedBankAccount && where?.technicianId === storedBankAccount.technicianId
+          ? { ...storedBankAccount }
+          : null,
+      ),
+    };
 
     mockWalletRepo = {
       findOne: vi.fn().mockImplementation(async ({ where }) => {
@@ -70,6 +87,16 @@ describe('WalletService', () => {
 
     mockWithdrawalRepo = {
       findOne: vi.fn().mockImplementation(async ({ where }) => {
+        if (where?.walletId && where?.status) {
+          const wanted: string[] = Array.isArray(where.status?.value)
+            ? where.status.value
+            : [where.status];
+          return (
+            storedWithdrawals.find(
+              (w) => w.walletId === where.walletId && wanted.includes(w.status),
+            ) || null
+          );
+        }
         if (where?.technicianId && where?.status) {
           return storedWithdrawals.find(
             (w) => w.technicianId === where.technicianId && w.status === where.status,
@@ -122,6 +149,7 @@ describe('WalletService', () => {
             if (entityClass?.name === 'Wallet') return mockWalletRepo;
             if (entityClass?.name === 'WalletTransaction') return mockTxRepo;
             if (entityClass?.name === 'WithdrawalRequest') return mockWithdrawalRepo;
+            if (entityClass?.name === 'TechnicianBankAccount') return mockBankAccountRepo;
             return mockWalletRepo;
           },
         };
@@ -237,60 +265,96 @@ describe('WalletService', () => {
     });
   });
 
-  describe('Withdrawal Flow & SM Approval', () => {
-    it('creates a withdrawal request when requested amount is within withdrawableBalance', async () => {
+  describe('Withdrawal request', () => {
+    it('reserves the amount against the saved bank account, without debiting', async () => {
       const request = await service.requestWithdrawal('tech-uuid-1', {
         amount: 300000,
-        bankName: 'Vietcombank',
-        bankAccountNumber: '999888777',
       });
 
       expect(request.amount).toBe(300000);
       expect(request.status).toBe(WithdrawalStatus.PENDING);
+      // Copied from the saved account, never taken from the request body.
+      expect(request.bankBin).toBe('970436');
+      expect(request.bankAccountNumber).toBe('0123456789');
+      expect(request.bankAccountName).toBe('NGUYEN VAN THO');
+      expect(storedWallet.balance).toBe(850000);
     });
 
-    it('rejects withdrawal request if amount exceeds withdrawable balance', async () => {
-      // Current balance = 850k, min = 200k -> max withdrawable = 650k
+    it('accepts exactly the 10.000 ₫ minimum', async () => {
+      const request = await service.requestWithdrawal('tech-uuid-1', {
+        amount: 10000,
+      });
+      expect(request.status).toBe(WithdrawalStatus.PENDING);
+    });
+
+    it('refuses anything below 10.000 ₫', async () => {
       await expect(
-        service.requestWithdrawal('tech-uuid-1', {
-          amount: 700000,
-        }),
+        service.requestWithdrawal('tech-uuid-1', { amount: 9999 }),
+      ).rejects.toThrow(BusinessException);
+      expect(storedWithdrawals).toHaveLength(0);
+    });
+
+    it('refuses a fractional amount even when the DTO is bypassed', async () => {
+      await expect(
+        service.requestWithdrawal('tech-uuid-1', { amount: 10000.5 }),
       ).rejects.toThrow(BusinessException);
     });
 
-    it('rejects creating second withdrawal request when one is already PENDING', async () => {
+    it('refuses to withdraw without a saved bank account', async () => {
+      storedBankAccount = null;
+
+      await expect(
+        service.requestWithdrawal('tech-uuid-1', { amount: 300000 }),
+      ).rejects.toThrow('tài khoản ngân hàng');
+      expect(storedWithdrawals).toHaveLength(0);
+    });
+
+    it('keeps the minimum balance in the wallet', async () => {
+      // 850k in the wallet, 200k must stay: 650k is the ceiling.
+      await expect(
+        service.requestWithdrawal('tech-uuid-1', { amount: 650001 }),
+      ).rejects.toThrow(BusinessException);
+
+      const request = await service.requestWithdrawal('tech-uuid-1', {
+        amount: 650000,
+      });
+      expect(request.status).toBe(WithdrawalStatus.PENDING);
+    });
+
+    it('locks the wallet row before deciding', async () => {
+      await service.requestWithdrawal('tech-uuid-1', { amount: 300000 });
+
+      expect(mockWalletRepo.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({ lock: { mode: 'pessimistic_write' } }),
+      );
+    });
+
+    it('refuses a second request while one is waiting for approval', async () => {
       storedWithdrawals.push({
         id: 'existing-w',
+        walletId: storedWallet.id,
         technicianId: 'tech-uuid-1',
         amount: 100000,
         status: WithdrawalStatus.PENDING,
       });
 
       await expect(
-        service.requestWithdrawal('tech-uuid-1', {
-          amount: 50000,
-        }),
+        service.requestWithdrawal('tech-uuid-1', { amount: 50000 }),
       ).rejects.toThrow(ConflictException);
     });
 
-    it('Service Manager approves withdrawal: deducts wallet and transitions to SUCCESS', async () => {
+    it('refuses a second request while a payout is still in flight', async () => {
       storedWithdrawals.push({
-        id: 'w-to-approve',
+        id: 'moving-w',
         walletId: storedWallet.id,
         technicianId: 'tech-uuid-1',
-        amount: 300000,
-        status: WithdrawalStatus.PENDING,
+        amount: 100000,
+        status: WithdrawalStatus.PROCESSING,
       });
 
-      const approved = await service.approveWithdrawal('w-to-approve', {
-        id: 'sm-uuid-1',
-        role: 'service_manager',
-      });
-
-      expect(approved.status).toBe(WithdrawalStatus.SUCCESS);
-      expect(storedWallet.balance).toBe(550000); // 850k - 300k
-      expect(mockAuditLogService.logWithManager).toHaveBeenCalled();
-      expect(mockNotificationsService.createNotification).toHaveBeenCalled();
+      await expect(
+        service.requestWithdrawal('tech-uuid-1', { amount: 50000 }),
+      ).rejects.toThrow('đang được chuyển');
     });
 
     it('Service Manager rejects withdrawal: requires reason and transitions to REJECTED without deducting balance', async () => {
@@ -311,6 +375,21 @@ describe('WalletService', () => {
       expect(rejected.status).toBe(WithdrawalStatus.REJECTED);
       expect(rejected.rejectReason).toBe('Sai so tai khoan ngan hang');
       expect(storedWallet.balance).toBe(850000); // Balance untouched
+    });
+  });
+
+  describe('Withdrawal refund transaction type', () => {
+    it('credits the wallet for WITHDRAW_REFUND', async () => {
+      const { wallet, transaction } = await service.mutateBalance({
+        walletId: storedWallet.id,
+        type: WalletTransactionType.WITHDRAW_REFUND,
+        amount: 120000,
+        idempotencyKey: 'WITHDRAW_REFUND:w-1',
+      });
+
+      expect(transaction.balanceBefore).toBe(850000);
+      expect(transaction.balanceAfter).toBe(970000);
+      expect(Number(wallet.balance)).toBe(970000);
     });
   });
 

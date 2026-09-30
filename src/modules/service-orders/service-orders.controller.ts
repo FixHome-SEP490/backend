@@ -493,31 +493,16 @@ export class ServiceOrdersController {
     return { data: payment };
   }
 
-  // ── Spec v1.2: Warranty Claims ──
-
-  @Post('service-orders/:id/warranty-claims')
-  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @Post('service-orders/:id/retry-completion')
+  @Roles(Role.SERVICE_MANAGER, Role.ADMIN)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionGuard)
   @RequirePermission('order:read_related')
-  @HttpCode(HttpStatus.CREATED)
+  @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Submit warranty claim for order' })
-  async createWarrantyClaim(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() body: { description: string },
-    @Req() req: { user: { id: string } },
-  ) {
-    const claim = await this.serviceOrdersService.createWarrantyClaim(id, body, req.user);
-    return { data: claim };
-  }
-
-  @Get('service-orders/:id/warranty-claims')
-  @UseGuards(JwtAuthGuard, PermissionGuard)
-  @RequirePermission('order:read_related')
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get warranty claims for order' })
-  async getWarrantyClaims(@Param('id', ParseUUIDPipe) id: string, @Req() req: { user: { id: string; role: string } }) {
-    const claims = await this.serviceOrdersService.getWarrantyClaims(id, req.user);
-    return { data: claims };
+  @ApiOperation({ summary: 'Manager: re-check completion after a hold was released' })
+  async retryCompletion(@Param('id', ParseUUIDPipe) id: string, @Req() req: { user: { id: string; role: string } }) {
+    const result = await this.serviceOrdersService.retryCompletion(id, req.user);
+    return { data: { completed: result.completed, status: result.order.status } };
   }
 
   // ── 4. Repair History (D-20 Read Model) ──
