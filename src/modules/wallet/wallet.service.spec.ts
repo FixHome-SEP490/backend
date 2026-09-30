@@ -167,6 +167,17 @@ describe('WalletService', () => {
     );
   });
 
+  describe('getOrCreateWallet', () => {
+    it('creates a new wallet with initial balance 0 VND if not exists', async () => {
+      const wallet = await service.getOrCreateWallet('new-tech-uuid');
+      expect(wallet.balance).toBe(0);
+      expect(mockWalletRepo.create).toHaveBeenCalledWith({
+        technicianId: 'new-tech-uuid',
+        balance: 0,
+      });
+    });
+  });
+
   describe('getWalletSummary', () => {
     it('correctly derives availableBalance, withdrawableBalance, and eligibleForJobs', async () => {
       const summary = await service.getWalletSummary('tech-uuid-1');
