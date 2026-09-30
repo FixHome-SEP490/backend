@@ -57,7 +57,7 @@ describe('Technician verification safe response projection', () => {
     expect(serialized).not.toContain('legacyFileUrl');
     expect(serialized).not.toContain('passwordHash');
     expect(serialized).not.toContain('refreshTokens');
-    expect(serialized).not.toContain('phoneNumber');
+    expect(serialized).toContain('phoneNumber');
     expect(response.documents[0]).toEqual(
       expect.objectContaining({
         id: 'document-1',

@@ -222,7 +222,14 @@ export class TechnicianVerificationsService {
       );
     }
 
-    return toTechnicianVerificationResponse(verification);
+    const profile = await this.verificationRepository.manager
+      .getRepository(TechnicianProfile)
+      .findOne({
+        where: { userId: verification.technicianId },
+        relations: ['skills', 'skills.service', 'serviceAreas'],
+      });
+
+    return toTechnicianVerificationResponse(verification, profile ?? undefined);
   }
 
   async approveVerification(
