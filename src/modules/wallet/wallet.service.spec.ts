@@ -1,10 +1,8 @@
 import 'reflect-metadata';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ConflictException } from '@nestjs/common';
 import { WalletService } from './wallet.service';
 import {
   WalletTransactionType,
-  WithdrawalStatus,
 } from '../../shared/enums';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { AdjustmentType } from './dto';
@@ -265,118 +263,8 @@ describe('WalletService', () => {
     });
   });
 
-  describe('Withdrawal request', () => {
-    it('reserves the amount against the saved bank account, without debiting', async () => {
-      const request = await service.requestWithdrawal('tech-uuid-1', {
-        amount: 300000,
-      });
-
-      expect(request.amount).toBe(300000);
-      expect(request.status).toBe(WithdrawalStatus.PENDING);
-      // Copied from the saved account, never taken from the request body.
-      expect(request.bankBin).toBe('970436');
-      expect(request.bankAccountNumber).toBe('0123456789');
-      expect(request.bankAccountName).toBe('NGUYEN VAN THO');
-      expect(storedWallet.balance).toBe(850000);
-    });
-
-    it('accepts exactly the 10.000 ₫ minimum', async () => {
-      const request = await service.requestWithdrawal('tech-uuid-1', {
-        amount: 10000,
-      });
-      expect(request.status).toBe(WithdrawalStatus.PENDING);
-    });
-
-    it('refuses anything below 10.000 ₫', async () => {
-      await expect(
-        service.requestWithdrawal('tech-uuid-1', { amount: 9999 }),
-      ).rejects.toThrow(BusinessException);
-      expect(storedWithdrawals).toHaveLength(0);
-    });
-
-    it('refuses a fractional amount even when the DTO is bypassed', async () => {
-      await expect(
-        service.requestWithdrawal('tech-uuid-1', { amount: 10000.5 }),
-      ).rejects.toThrow(BusinessException);
-    });
-
-    it('refuses to withdraw without a saved bank account', async () => {
-      storedBankAccount = null;
-
-      await expect(
-        service.requestWithdrawal('tech-uuid-1', { amount: 300000 }),
-      ).rejects.toThrow('tài khoản ngân hàng');
-      expect(storedWithdrawals).toHaveLength(0);
-    });
-
-    it('keeps the minimum balance in the wallet', async () => {
-      // 850k in the wallet, 200k must stay: 650k is the ceiling.
-      await expect(
-        service.requestWithdrawal('tech-uuid-1', { amount: 650001 }),
-      ).rejects.toThrow(BusinessException);
-
-      const request = await service.requestWithdrawal('tech-uuid-1', {
-        amount: 650000,
-      });
-      expect(request.status).toBe(WithdrawalStatus.PENDING);
-    });
-
-    it('locks the wallet row before deciding', async () => {
-      await service.requestWithdrawal('tech-uuid-1', { amount: 300000 });
-
-      expect(mockWalletRepo.findOne).toHaveBeenCalledWith(
-        expect.objectContaining({ lock: { mode: 'pessimistic_write' } }),
-      );
-    });
-
-    it('refuses a second request while one is waiting for approval', async () => {
-      storedWithdrawals.push({
-        id: 'existing-w',
-        walletId: storedWallet.id,
-        technicianId: 'tech-uuid-1',
-        amount: 100000,
-        status: WithdrawalStatus.PENDING,
-      });
-
-      await expect(
-        service.requestWithdrawal('tech-uuid-1', { amount: 50000 }),
-      ).rejects.toThrow(ConflictException);
-    });
-
-    it('refuses a second request while a payout is still in flight', async () => {
-      storedWithdrawals.push({
-        id: 'moving-w',
-        walletId: storedWallet.id,
-        technicianId: 'tech-uuid-1',
-        amount: 100000,
-        status: WithdrawalStatus.PROCESSING,
-      });
-
-      await expect(
-        service.requestWithdrawal('tech-uuid-1', { amount: 50000 }),
-      ).rejects.toThrow('đang được chuyển');
-    });
-
-    it('Service Manager rejects withdrawal: requires reason and transitions to REJECTED without deducting balance', async () => {
-      storedWithdrawals.push({
-        id: 'w-to-reject',
-        walletId: storedWallet.id,
-        technicianId: 'tech-uuid-1',
-        amount: 200000,
-        status: WithdrawalStatus.PENDING,
-      });
-
-      const rejected = await service.rejectWithdrawal(
-        'w-to-reject',
-        'Sai so tai khoan ngan hang',
-        { id: 'sm-uuid-1', role: 'service_manager' },
-      );
-
-      expect(rejected.status).toBe(WithdrawalStatus.REJECTED);
-      expect(rejected.rejectReason).toBe('Sai so tai khoan ngan hang');
-      expect(storedWallet.balance).toBe(850000); // Balance untouched
-    });
-  });
+  // Asking to withdraw now lives in WithdrawalPayoutService.withdraw(), which
+  // pays out immediately with no approval step; its tests are there.
 
   describe('Withdrawal refund transaction type', () => {
     it('credits the wallet for WITHDRAW_REFUND', async () => {

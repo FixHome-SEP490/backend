@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { TechnicianWalletController } from './technician-wallet.controller';
 import { WalletService } from './wallet.service';
 import { BankAccountService } from './bank-account.service';
+import { WithdrawalPayoutService } from './withdrawal-payout.service';
 import { User } from '../users/entities/user.entity';
 
 describe('TechnicianWalletController', () => {
@@ -16,6 +17,7 @@ describe('TechnicianWalletController', () => {
   const controller = new TechnicianWalletController(
     mockWalletService,
     {} as BankAccountService,
+    {} as WithdrawalPayoutService,
   );
   const mockUser = { id: 'tech-user-123' } as User;
 
@@ -72,6 +74,7 @@ describe('TechnicianWalletController', () => {
     const liveController = new TechnicianWalletController(
       mockWalletService,
       {} as BankAccountService,
+    {} as WithdrawalPayoutService,
       mockFinanceService,
     );
     const res = await liveController.topUp(
