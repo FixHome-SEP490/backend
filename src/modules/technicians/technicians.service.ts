@@ -28,6 +28,7 @@ import {
   TechnicianServiceOfferingResponseDto,
   UpdateSkillPricingDto,
 } from './dto';
+import { formatVnDate } from '../../shared/utils/vn-time';
 
 export interface ScheduleItemDto {
   dayOfWeek: number;
@@ -426,9 +427,7 @@ export class TechniciansService {
       return {
         orderId: row.so_id,
         orderCode: row.so_code || `#ORD-${String(row.so_id).slice(0, 8)}`,
-        date: row.so_completed_at
-          ? new Date(row.so_completed_at).toLocaleDateString('vi-VN')
-          : new Date(row.ta_created_at).toLocaleDateString('vi-VN'),
+        date: formatVnDate(row.so_completed_at ?? row.ta_created_at),
         customer: row.u_full_name || 'Khách hàng FixHome',
         gross,
         platformFee: fee,

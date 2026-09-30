@@ -1,4 +1,5 @@
 import { createHmac, randomUUID } from 'crypto';
+import { vnParts } from '../../../shared/utils/vn-time';
 
 export interface VnpayBuildUrlInput {
   paymentUrl: string;
@@ -25,9 +26,11 @@ function sign(query: Record<string, string>, hashSecret: string): string {
     .digest('hex');
 }
 
-function formatVnpayDate(date: Date): string {
+/** yyyyMMddHHmmss in Vietnam time, which VNPay requires whatever the server zone. */
+export function formatVnpayDate(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
-  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+  const p = vnParts(date);
+  return `${p.year}${pad(p.month)}${pad(p.day)}${pad(p.hour)}${pad(p.minute)}${pad(p.second)}`;
 }
 
 export function buildPaymentUrl(input: VnpayBuildUrlInput): string {
