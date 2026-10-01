@@ -475,6 +475,30 @@ export async function seedCatalog(dataSource: DataSource): Promise<void> {
           },
         ],
       },
+      {
+        code: 'KHAC',
+        name: 'Khác',
+        slug: 'khac',
+        iconKey: 'Ellipsis',
+        sortOrder: 99,
+        description: 'Yêu cầu sửa chữa hoặc lắp đặt chưa có trong danh mục FixHome',
+        services: [
+          {
+            code: 'DICH_VU_KHAC',
+            name: 'Khác',
+            slug: 'dich-vu-khac',
+            pricingMode: 'inspection_required',
+            unit: 'Yêu cầu',
+            fixedPrice: null,
+            basePrice: 0,
+            minPrice: null,
+            maxPrice: null,
+            estimatedMinutes: 60,
+            description: 'Dành cho công việc chưa có trong danh sách dịch vụ. Khách hàng mô tả rõ nhu cầu khi đặt lịch.',
+            scopeDescription: 'Kỹ thuật viên đọc mô tả, khảo sát phạm vi công việc và báo giá trước khi thực hiện.',
+          },
+        ],
+      },
     ];
 
     const allInsertedServiceIds: { id: string; code: string; pricingMode: string; basePrice: number }[] = [];
