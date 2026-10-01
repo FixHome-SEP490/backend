@@ -1,11 +1,13 @@
 // src/modules/ai-diagnosis/ai-diagnosis.service.ts
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom, timeout } from 'rxjs';
 import { AiDiagnosis } from './entities/ai-diagnosis.entity';
+import { AiChatSession } from './entities/ai-chat-session.entity';
+import { AiTurnInput, emptySummary, mergeTurn } from './ai-chat-summary';
 import { Service } from '../services/entities/service.entity';
 import { Booking } from '../bookings/entities/booking.entity';
 import { BookingInvitation } from '../bookings/entities/booking-invitation.entity';
@@ -63,6 +65,8 @@ export class AiDiagnosisService {
     private readonly serviceRepo: Repository<Service>,
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
+    @Optional() @InjectRepository(AiChatSession)
+    private readonly sessionRepo?: Repository<AiChatSession>,
   ) {
     const configured =
       this.configService.get<string>('AI_SERVICE_URL') || 'http://localhost:8000';
@@ -145,13 +149,14 @@ export class AiDiagnosisService {
     const latencyMs = Date.now() - startedAt;
     const enriched = await this.attachServiceIds(payload);
     await this.persistIfBooked(dto, enriched, latencyMs);
+    await this.recordTurn(actor, { text: dto.description, photoCount: images.length }, enriched);
     return { ...enriched, aiAvailable: true, latencyMs };
   }
 
   // ------------------------------------------------------------------- ask
 
   /** A question with no photo. Answers are prose; `answerVi` is always filled. */
-  async ask(dto: AskDto): Promise<Record<string, unknown>> {
+  async ask(dto: AskDto, actor?: { id: string; role: string }): Promise<Record<string, unknown>> {
     try {
       const response = await firstValueFrom(
         this.httpService
@@ -163,10 +168,42 @@ export class AiDiagnosisService {
           .pipe(timeout(this.requestTimeoutMs)),
       );
       const enriched = await this.attachServiceIds(response.data || {});
+      await this.recordTurn(actor, { text: dto.question }, enriched);
       return { ...enriched, aiAvailable: true };
     } catch (error) {
       this.logger.warn(`AI ask unavailable: ${this.reason(error)}`);
       return this.unavailable(dto.sessionId);
+    }
+  }
+
+  // ------------------------------------------------------- session summary
+
+  /**
+   * Fold this reply into the conversation's running summary so a booking made
+   * from it can tell the technician what was already established. Best effort:
+   * the reply has been produced and must reach the customer whatever happens
+   * here. A session first held by one signed-in customer is not written by
+   * another.
+   */
+  private async recordTurn(
+    actor: { id: string; role: string } | undefined,
+    input: AiTurnInput,
+    reply: Record<string, unknown>,
+  ): Promise<void> {
+    const sessionId = typeof reply.sessionId === 'string' ? reply.sessionId.trim() : '';
+    if (!this.sessionRepo || !sessionId || sessionId.length > 128) return;
+    const customerId = actor?.role === Role.CUSTOMER ? actor.id : null;
+    try {
+      const existing = await this.sessionRepo.findOneBy({ sessionId });
+      if (existing?.customerId && existing.customerId !== customerId) return;
+      const summary = mergeTurn(existing?.summary ?? emptySummary(), input, reply);
+      if (existing) {
+        await this.sessionRepo.update(existing.id, { summary, customerId: existing.customerId ?? customerId });
+      } else {
+        await this.sessionRepo.insert({ sessionId, customerId, summary });
+      }
+    } catch (error) {
+      this.logger.warn(`AI session summary not recorded: ${this.reason(error)}`);
     }
   }
 
