@@ -14,6 +14,7 @@ import { Address } from '../../users/entities/address.entity';
 import { BookingStatus, ServicePricingMode, UrgencyLevel } from '../../../shared/enums';
 import { BookingMedia } from './booking-media.entity';
 import { BookingInvitation } from './booking-invitation.entity';
+import type { AiBookingSummary } from '../../ai-diagnosis/ai-chat-summary';
 
 @Entity('bookings')
 @Index('ix_bookings_customer', ['customerId', 'createdAt'])
@@ -111,6 +112,14 @@ export class Booking extends BaseEntity {
     default: BookingStatus.SUBMITTED,
   })
   status: BookingStatus;
+
+  /**
+   * Frozen copy of the customer's conversation with the assistant when the
+   * booking was made from one. Advisory only; the technician reads it in the
+   * first chat message after accepting.
+   */
+  @Column({ name: 'ai_summary', type: 'jsonb', nullable: true })
+  aiSummary?: AiBookingSummary | null;
 
   @OneToMany(() => BookingMedia, (m) => m.booking)
   media: BookingMedia[];

@@ -7,7 +7,7 @@ import { technicianEligibility } from './technician-eligibility';
 
 vi.mock('./technician-eligibility', () => ({ technicianEligibility: vi.fn() }));
 
-function scenario(count: number) {
+function scenario(count: number, greeting?: { send: ReturnType<typeof vi.fn> }) {
   const booking = { id: 'booking-1', status: BookingStatus.MATCHING, preferredStartAt: new Date(Date.now() + 3600000) };
   const invitations = Array.from({ length: count }, (_, i) => ({
     id: `invitation-${i + 1}`, bookingId: booking.id, technicianId: `tech-${i + 1}`,
@@ -86,6 +86,7 @@ function scenario(count: number) {
     repo as never, {} as never,
     { transaction: async (fn: (m: typeof manager) => unknown) => fn(manager) } as never,
     { getInt: vi.fn(async () => 30) } as never, audit as never, messaging as never,
+    undefined, greeting as never,
   );
   vi.mocked(technicianEligibility).mockResolvedValue({ eligible: true });
   const actor = (n: number) => ({ id: `tech-${n}`, role: Role.TECHNICIAN });
@@ -222,5 +223,28 @@ describe('BE-MATCH first valid Accept is the only winner', () => {
       expect.anything(), 'tech-2', expect.anything(), undefined,
       { allowPausedExistingInvitation: true },
     );
+  });
+});
+
+describe('Technician greeting after Accept', () => {
+  it('sends the greeting once, after the accept commits, and not on decline or replay', async () => {
+    const greeting = { send: vi.fn(async () => undefined) };
+    const s = scenario(2, greeting);
+    s.invitations[1].status = InvitationStatus.STANDBY;
+    s.invitations[1].expiresAt = null;
+    await s.service.respond('invitation-1', 'DECLINE', s.actor(1));
+    expect(greeting.send).not.toHaveBeenCalled();
+    await s.service.respond('invitation-2', 'ACCEPT', s.actor(2));
+    expect(greeting.send).toHaveBeenCalledTimes(1);
+    expect(greeting.send).toHaveBeenCalledWith(expect.objectContaining({
+      bookingId: s.booking.id, technicianId: 'tech-2', serviceOrderId: 'service-order-1', orderCode: expect.stringMatching(/^FH-\d{8}-/),
+    }));
+    await s.service.respond('invitation-2', 'ACCEPT', s.actor(2));
+    expect(greeting.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('still accepts when no greeting publisher is wired', async () => {
+    const s = scenario(1);
+    await expect(s.service.respond('invitation-1', 'ACCEPT', s.actor(1))).resolves.toMatchObject({ serviceOrder: { id: 'service-order-1' } });
   });
 });

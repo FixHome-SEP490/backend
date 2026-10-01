@@ -10,6 +10,8 @@ import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import { ConversationStatus, Role } from '../../shared/enums';
 import { EditMessageDto, ListMessagesQueryDto, SendMessageDto } from './messaging.dto';
+import { Service } from '../services/entities/service.entity';
+import { buildAcceptGreeting } from './accept-greeting';
 
 export interface ChatActor {
   id: string;
@@ -46,6 +48,8 @@ export interface MessageView {
   editedAt: string | null;
   isDeleted: boolean;
   clientMessageId: string | null;
+  /** Sent by the system on the sender's behalf; clients show a small label. */
+  isAutomated: boolean;
 }
 
 const DEFAULT_PAGE_SIZE = 30;
@@ -304,6 +308,67 @@ export class MessagingService {
 
   // ------------------------------------------------------------------ commands
 
+  /**
+   * The technician's first message on an accepted job, written for them: a
+   * greeting with the order and the appointment, plus what the customer
+   * already worked out with the assistant when the booking came from that
+   * conversation. Called after the accept has committed; one per order and
+   * technician, so a replayed accept does not send it twice. Returns null when
+   * nothing was sent.
+   */
+  async postAcceptGreeting(params: {
+    bookingId: string;
+    technicianId: string;
+    serviceOrderId: string;
+    orderCode: string;
+  }): Promise<MessageView | null> {
+    const manager = this.conversationRepo.manager;
+    const conversation = await manager.findOneBy(Conversation, {
+      bookingId: params.bookingId,
+      technicianId: params.technicianId,
+    });
+    if (!conversation || conversation.status !== ConversationStatus.ACTIVE) return null;
+
+    const clientMessageId = `auto-accept:${params.serviceOrderId}`;
+    const already = await this.messageRepo.findOneBy({
+      conversationId: conversation.id,
+      senderId: params.technicianId,
+      clientMessageId,
+    });
+    if (already) return null;
+
+    const booking = await manager.findOneBy(Booking, { id: params.bookingId });
+    if (!booking) return null;
+    const [technician, service] = await Promise.all([
+      manager.findOne(User, { where: { id: params.technicianId }, select: { id: true, fullName: true } }),
+      booking.serviceId
+        ? manager.findOne(Service, { where: { id: booking.serviceId }, relations: { category: true } })
+        : Promise.resolve(null),
+    ]);
+
+    const content = buildAcceptGreeting({
+      technicianName: technician?.fullName ?? null,
+      categoryName: service?.category?.name ?? null,
+      serviceName: booking.serviceNameSnapshot ?? service?.name ?? null,
+      orderCode: params.orderCode,
+      preferredStartAt: booking.preferredStartAt ?? null,
+      preferredEndAt: booking.preferredEndAt ?? null,
+      aiSummary: booking.aiSummary ?? null,
+    });
+
+    const saved = await this.messageRepo.save(
+      this.messageRepo.create({
+        conversationId: conversation.id,
+        senderId: params.technicianId,
+        content,
+        clientMessageId,
+        isAutomated: true,
+      }),
+    );
+    await this.touchConversation(conversation, saved.createdAt, content);
+    return this.toMessageView(saved);
+  }
+
   async sendMessage(
     conversationId: string,
     actor: ChatActor,
@@ -514,6 +579,7 @@ export class MessagingService {
       editedAt: message.editedAt?.toISOString() ?? null,
       isDeleted: !!message.deletedAt,
       clientMessageId: message.clientMessageId ?? null,
+      isAutomated: message.isAutomated === true,
     };
   }
 

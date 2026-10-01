@@ -41,6 +41,8 @@ import {
   toTechnicianBookingPreview,
 } from './booking-privacy.dto';
 import { PrivateBookingPhotoClaimService } from '../media/private-booking-photo-claim.service';
+import { AiChatSession } from '../ai-diagnosis/entities/ai-chat-session.entity';
+import { AiBookingSummary, hasAdvice, toBookingSummary } from '../ai-diagnosis/ai-chat-summary';
 
 export interface TechnicianCandidate {
   technicianId: string;
@@ -85,6 +87,22 @@ export class BookingsService {
     private readonly privateBookingPhotoClaimService: PrivateBookingPhotoClaimService,
     private readonly configService: BusinessConfigService,
   ) {}
+
+  /**
+   * Summary of the assistant conversation this booking comes from. A session
+   * held by another customer, or one that found nothing, gives none. Never
+   * fails the booking: the assistant is advisory and its absence is normal.
+   */
+  private async aiSummaryFor(sessionId: string, customerId: string): Promise<AiBookingSummary | null> {
+    try {
+      const session = await this.dataSource.getRepository(AiChatSession).findOneBy({ sessionId });
+      if (!session || (session.customerId && session.customerId !== customerId)) return null;
+      return hasAdvice(session.summary) ? toBookingSummary(session.summary) : null;
+    } catch (err) {
+      this.logger.warn(`AI session summary unavailable for booking: ${(err as Error).message}`);
+      return null;
+    }
+  }
 
   /**
    * Create a new booking. Validates service, address ownership, and suspension.
@@ -172,6 +190,8 @@ export class BookingsService {
     if (latitudeSnapshot == null || longitudeSnapshot == null) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Repair address coordinates are required');
     if (isFixed && (service.fixedPrice == null || Number(service.fixedPrice) < 0)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Service fixed price is not configured');
 
+    const aiSummary = dto.aiSessionId ? await this.aiSummaryFor(dto.aiSessionId, customer.id) : null;
+
     const saved = await this.dataSource.transaction(async (manager) => {
       const bookingRepository = manager.getRepository(Booking);
       const mediaRepository = manager.getRepository(BookingMedia);
@@ -196,6 +216,7 @@ export class BookingsService {
         scopeSnapshot: isFixed ? (service.scopeDescription || service.description || null) : null,
         urgency: dto.urgency || UrgencyLevel.MEDIUM,
         status: BookingStatus.SUBMITTED,
+        aiSummary,
       });
       const created = await bookingRepository.save(booking);
       let media: BookingMedia[] = [];

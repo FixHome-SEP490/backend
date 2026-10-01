@@ -50,4 +50,11 @@ export class Message extends BaseEntity {
     nullable: true,
   })
   clientMessageId?: string | null;
+
+  /**
+   * Written by the system on the sender's behalf (the greeting a technician
+   * sends on accepting a job), not typed by them. Clients label it.
+   */
+  @Column({ name: 'is_automated', type: 'boolean', default: false })
+  isAutomated: boolean;
 }

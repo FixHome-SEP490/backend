@@ -9,6 +9,7 @@ import { User } from '../users/entities/user.entity';
 import { MessagingService } from './messaging.service';
 import { MessagingGateway } from './messaging.gateway';
 import { CallRegistryService } from './call-registry.service';
+import { AcceptGreetingPublisher } from './accept-greeting.publisher';
 import {
   ConversationsController,
   MessagesController,
@@ -27,7 +28,7 @@ import {
     }),
   ],
   controllers: [ConversationsController, MessagesController],
-  providers: [MessagingService, CallRegistryService, MessagingGateway],
-  exports: [MessagingService, MessagingGateway],
+  providers: [MessagingService, CallRegistryService, MessagingGateway, AcceptGreetingPublisher],
+  exports: [MessagingService, MessagingGateway, AcceptGreetingPublisher],
 })
 export class MessagingModule {}
