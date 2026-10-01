@@ -232,7 +232,9 @@ export class MessagingService {
     const conversations = await this.conversationRepo.find({
       where: [{ customerId: actor.id }, { technicianId: actor.id }],
       relations: ['customer', 'technician'],
-      order: { lastMessageAt: 'DESC', createdAt: 'DESC' },
+      // Threads with recent messages first. PostgreSQL sorts NULL first under
+      // DESC, which put every never-used thread above the live ones.
+      order: { lastMessageAt: { direction: 'DESC', nulls: 'LAST' }, createdAt: 'DESC' },
     });
     if (conversations.length === 0) return [];
 
