@@ -31,9 +31,12 @@ function clip(text: string, max: number): string {
   return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat;
 }
 
-/** 1210000 -> "1.210.000 ₫", grouping by hand so the server locale does not matter. */
+/**
+ * 1210000 -> "1.210.000 ₫", grouping by hand so the server locale does not
+ * matter. A no-break space keeps the amount and its symbol on one line.
+ */
 export function formatVnd(amount: number): string {
-  return `${Math.round(amount).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.')} ₫`;
+  return `${Math.round(amount).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.')} ₫`;
 }
 
 /** "09:00–11:00 ngày 02/10/2026" in Vietnam time, or null without a start. */

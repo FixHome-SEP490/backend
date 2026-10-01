@@ -42,7 +42,7 @@ describe('accept greeting', () => {
     expect(text).toContain('• Thiết bị: Máy lạnh');
     expect(text).toContain('• Tình trạng anh/chị mô tả: Máy lạnh không ra hơi lạnh, kêu lạch cạch');
     expect(text).toContain('• Nhận định sơ bộ của trợ lý: Máy chạy ồn, rung lắc; Hỏng mô tơ quạt dàn lạnh');
-    expect(text).toContain('• Chi phí ước tính: 100.000 ₫ – 1.210.000 ₫ (giá chính xác sau khi tôi kiểm tra)');
+    expect(text).toContain('• Chi phí ước tính: 100.000 ₫ – 1.210.000 ₫ (giá chính xác sau khi tôi kiểm tra)');
     expect(text).toContain('• Anh/chị đã gửi 2 ảnh cho trợ lý.');
     expect(text).toContain('Đây là nhận định sơ bộ, chưa phải kết luận.');
     expect(text.length).toBeGreaterThan(buildAcceptGreeting(base).length);
@@ -51,7 +51,7 @@ describe('accept greeting', () => {
   it('falls back to the assistant remark when no fault was named, and to a lower bound without max', () => {
     const text = buildAcceptGreeting({ ...base, aiSummary: { ...summary, suspectedFaults: [], priceMax: null, photoCount: 0 } });
     expect(text).toContain('• Trợ lý nhận xét: Có thể quạt dàn lạnh bị kẹt.');
-    expect(text).toContain('Chi phí ước tính: từ 100.000 ₫');
+    expect(text).toContain('Chi phí ước tính: từ 100.000 ₫');
     expect(text).not.toContain('ảnh');
   });
 
@@ -78,11 +78,18 @@ describe('accept greeting', () => {
   });
 
   it('formats money and appointments the Vietnamese way', () => {
-    expect(formatVnd(0)).toBe('0 ₫');
-    expect(formatVnd(1210000)).toBe('1.210.000 ₫');
+    expect(formatVnd(0)).toBe('0 ₫');
+    expect(formatVnd(1210000)).toBe('1.210.000 ₫');
     // 16:30Z is 23:30 in Vietnam; the end crosses midnight
     expect(formatAppointment('2026-10-02T16:30:00Z', '2026-10-02T18:00:00Z')).toBe('23:30 ngày 02/10/2026 đến 01:00 ngày 03/10/2026');
     expect(formatAppointment('2026-10-02T02:00:00Z', null)).toBe('09:00 ngày 02/10/2026');
     expect(formatAppointment(null, null)).toBeNull();
+  });
+});
+
+describe('accept greeting line breaks', () => {
+  it('never splits an amount from its currency symbol', () => {
+    expect(formatVnd(1210000)).not.toMatch(/ ₫/);
+    expect(formatVnd(1210000)).toBe('1.210.000\u00A0₫');
   });
 });

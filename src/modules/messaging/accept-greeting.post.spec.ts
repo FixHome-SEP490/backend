@@ -55,7 +55,7 @@ describe('Technician greeting on accept', () => {
     const view = await s.service.postAcceptGreeting(PARAMS);
     expect(view!.content).toContain('trợ lý AI');
     expect(view!.content).toContain('Hỏng mô tơ quạt');
-    expect(view!.content).toContain('100.000 ₫ – 300.000 ₫');
+    expect(view!.content).toContain('100.000 ₫ – 300.000 ₫');
   });
 
   it('does not send twice for the same order', async () => {
