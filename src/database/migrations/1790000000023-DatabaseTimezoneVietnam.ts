@@ -8,8 +8,8 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * SQL editor display in, and what `::date` or `date_trunc('day', ...)` use to
  * decide where a day starts. It takes effect on new connections.
  */
-export class DatabaseTimezoneVietnam1790000000022 implements MigrationInterface {
-  name = 'DatabaseTimezoneVietnam1790000000022';
+export class DatabaseTimezoneVietnam1790000000023 implements MigrationInterface {
+  name = 'DatabaseTimezoneVietnam1790000000023';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
