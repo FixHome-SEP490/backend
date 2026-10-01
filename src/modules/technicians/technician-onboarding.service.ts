@@ -83,7 +83,7 @@ export class TechnicianOnboardingService {
       where: { technicianId: userId },
       order: { submittedAt: 'DESC' },
     });
-    const kycSubmitted = !!latestKyc && latestKyc.status !== VerificationStatus.REJECTED;
+    const kycSubmitted = !!latestKyc;
 
     const skillCount = await this.skillRepo.count({
       where: { technicianId: profile.id },
@@ -112,17 +112,25 @@ export class TechnicianOnboardingService {
         profile.onboardingStatus = OnboardingStatus.APPROVED;
         shouldSave = true;
       }
+    } else if (latestKyc?.status === VerificationStatus.PENDING) {
+      if (profile.verificationStatus !== VerificationStatus.PENDING) {
+        profile.verificationStatus = VerificationStatus.PENDING;
+        shouldSave = true;
+      }
+      rejectionReason = null;
     } else if (
       profile.verificationStatus === VerificationStatus.REJECTED ||
       latestKyc?.status === VerificationStatus.REJECTED
     ) {
-      rejectionReason = latestKyc?.rejectionReason || null;
-      if (
-        profile.onboardingStatus !== OnboardingStatus.REJECTED &&
-        profile.onboardingStatus === OnboardingStatus.SUBMITTED
-      ) {
-        profile.onboardingStatus = OnboardingStatus.REJECTED;
-        shouldSave = true;
+      if (profile.onboardingStatus !== OnboardingStatus.SUBMITTED) {
+        rejectionReason = latestKyc?.rejectionReason || null;
+        if (
+          profile.onboardingStatus !== OnboardingStatus.REJECTED &&
+          profile.onboardingStatus !== OnboardingStatus.IN_PROGRESS
+        ) {
+          profile.onboardingStatus = OnboardingStatus.REJECTED;
+          shouldSave = true;
+        }
       }
     }
 
@@ -330,7 +338,21 @@ export class TechnicianOnboardingService {
       throw new BadRequestException('Vui lòng cập nhật địa chỉ và khu vực phục vụ (Bước 4).');
     }
 
+    const latestKyc = await this.verificationRepo.findOne({
+      where: { technicianId: userId },
+      order: { submittedAt: 'DESC' },
+    });
+    if (latestKyc && latestKyc.status === VerificationStatus.REJECTED) {
+      latestKyc.status = VerificationStatus.PENDING;
+      latestKyc.submittedAt = new Date();
+      latestKyc.rejectionReason = null;
+      latestKyc.reviewedAt = null;
+      latestKyc.reviewedById = null;
+      await this.verificationRepo.save(latestKyc);
+    }
+
     profile.onboardingStatus = OnboardingStatus.SUBMITTED;
+    profile.verificationStatus = VerificationStatus.PENDING;
     profile.onboardingStep = 5;
     await this.profileRepo.save(profile);
 
