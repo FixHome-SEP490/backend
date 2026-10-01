@@ -5,6 +5,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -21,6 +22,8 @@ import { User } from '../users/entities/user.entity';
 import { PaginationMeta } from '../../shared/dto';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { Wallet } from '../wallet/entities/wallet.entity';
 import {
   KycStorageService,
   KycSignedAccess,
@@ -47,6 +50,7 @@ export class TechnicianVerificationsService {
     private readonly documentRepository: Repository<VerificationDocument>,
     private readonly auditLogService: AuditLogService,
     private readonly storageService: KycStorageService,
+    @Optional() private readonly notificationsService?: NotificationsService,
   ) {}
 
   async submitVerification(
@@ -129,6 +133,14 @@ export class TechnicianVerificationsService {
       );
 
       savedVerification.documents = await documentRepository.save(documents);
+
+      await manager.getRepository(TechnicianProfile).update(
+        { userId: technicianId },
+        {
+          verificationStatus: VerificationStatus.PENDING,
+        },
+      );
+
       return savedVerification;
     });
 
@@ -210,7 +222,14 @@ export class TechnicianVerificationsService {
       );
     }
 
-    return toTechnicianVerificationResponse(verification);
+    const profile = await this.verificationRepository.manager
+      .getRepository(TechnicianProfile)
+      .findOne({
+        where: { userId: verification.technicianId },
+        relations: ['skills', 'skills.service', 'serviceAreas'],
+      });
+
+    return toTechnicianVerificationResponse(verification, profile ?? undefined);
   }
 
   async approveVerification(
@@ -303,6 +322,19 @@ export class TechnicianVerificationsService {
       };
       if (status === VerificationStatus.VERIFIED) {
         profileUpdate.onboardingStatus = OnboardingStatus.APPROVED;
+
+        // Ensure wallet exists with initial 0 VND balance
+        const walletRepo = manager.getRepository(Wallet);
+        const existingWallet = await walletRepo.findOne({
+          where: { technicianId: verification.technicianId },
+        });
+        if (!existingWallet) {
+          const newWallet = walletRepo.create({
+            technicianId: verification.technicianId,
+            balance: 0,
+          });
+          await walletRepo.save(newWallet);
+        }
       } else if (status === VerificationStatus.REJECTED) {
         profileUpdate.onboardingStatus = OnboardingStatus.REJECTED;
       }
@@ -333,6 +365,29 @@ export class TechnicianVerificationsService {
           rejectionReason,
         },
       });
+
+      if (this.notificationsService) {
+        if (status === VerificationStatus.VERIFIED) {
+          void this.notificationsService.createNotification({
+            userId: verification.technicianId,
+            title: 'Hồ sơ đã được duyệt - Nạp tiền ví để nhận việc',
+            message:
+              'Chúc mừng bạn đã trở thành Đối tác Kỹ thuật viên FixHome! Số dư ví ban đầu là 0 ₫. Vui lòng nạp tối thiểu 200.000 ₫ vào ví để bắt đầu tiếp nhận các đơn sửa chữa từ khách hàng.',
+            type: 'WALLET_TOPUP_REQUIRED',
+            referenceType: 'wallet',
+            referenceId: verification.technicianId,
+          });
+        } else if (status === VerificationStatus.REJECTED) {
+          void this.notificationsService.createNotification({
+            userId: verification.technicianId,
+            title: 'Hồ sơ xác thực KYC cần bổ sung',
+            message: `Hồ sơ xác thực của bạn chưa đạt yêu cầu. Lý do: ${rejectionReason || 'Vui lòng kiểm tra lại thông tin và giấy tờ'}.`,
+            type: 'KYC_REJECTED',
+            referenceType: 'technician_verification',
+            referenceId: id,
+          });
+        }
+      }
 
       const updated = await verifications.findOne({
         where: { id },

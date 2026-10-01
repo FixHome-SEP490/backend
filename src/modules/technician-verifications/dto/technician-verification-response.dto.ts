@@ -22,6 +22,46 @@ export class VerificationUserSummaryDto {
 
   @ApiPropertyOptional({ type: String, nullable: true })
   avatarUrl?: string | null;
+
+  @ApiPropertyOptional({ type: String, nullable: true })
+  phoneNumber?: string | null;
+
+  @ApiPropertyOptional({ type: String, nullable: true })
+  dateOfBirth?: string | Date | null;
+
+  @ApiPropertyOptional({ type: String, nullable: true })
+  gender?: string | null;
+
+  @ApiPropertyOptional({ type: String, nullable: true })
+  citizenIdNumber?: string | null;
+}
+
+export class VerificationProfileSkillDto {
+  @ApiProperty()
+  name: string;
+
+  @ApiProperty()
+  level: string;
+}
+
+export class VerificationProfileDto {
+  @ApiProperty({ example: 5 })
+  yearsExperience: number;
+
+  @ApiPropertyOptional({ type: String, nullable: true })
+  bio?: string | null;
+
+  @ApiProperty({ example: 15 })
+  serviceRadiusKm: number;
+
+  @ApiPropertyOptional({ type: String, nullable: true })
+  fullAddress?: string | null;
+
+  @ApiProperty({ type: [VerificationProfileSkillDto] })
+  skills: VerificationProfileSkillDto[];
+
+  @ApiProperty({ type: [String] })
+  serviceAreas: string[];
 }
 
 export class VerificationDocumentResponseDto {
@@ -80,6 +120,9 @@ export class TechnicianVerificationResponseDto {
 
   @ApiPropertyOptional({ type: VerificationUserSummaryDto, nullable: true })
   reviewedBy?: VerificationUserSummaryDto | null;
+
+  @ApiPropertyOptional({ type: VerificationProfileDto })
+  technicianProfile?: VerificationProfileDto;
 
   @ApiProperty({ type: String, format: 'date-time' })
   createdAt: Date;
