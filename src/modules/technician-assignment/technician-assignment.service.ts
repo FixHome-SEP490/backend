@@ -1,5 +1,5 @@
 // src/modules/technician-assignment/technician-assignment.service.ts
-import { Injectable, Logger, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ForbiddenException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { randomUUID } from 'crypto';
@@ -16,6 +16,7 @@ import { BookingInvitation } from '../bookings/entities/booking-invitation.entit
 import { technicianEligibility } from '../bookings/technician-eligibility';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { MessagingService } from '../messaging/messaging.service';
+import { AcceptGreetingPublisher } from '../messaging/accept-greeting.publisher';
 
 @Injectable()
 export class TechnicianAssignmentService {
@@ -33,6 +34,7 @@ export class TechnicianAssignmentService {
     private readonly dataSource: DataSource,
     private readonly auditLogService: AuditLogService,
     private readonly messagingService: MessagingService,
+    @Optional() private readonly acceptGreeting?: AcceptGreetingPublisher,
   ) {}
 
   /**
@@ -50,7 +52,7 @@ export class TechnicianAssignmentService {
   ): Promise<{ booking: Booking; serviceOrder: ServiceOrder; assignment: TechnicianAssignment }> {
     if (![Role.ADMIN, Role.SERVICE_MANAGER].includes(actorUser.role as Role)) throw new ForbiddenException('Staff assignment permission required');
     if (!reason?.trim()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Assignment reason is required');
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       const booking = await manager.findOne(Booking, { where: { id: bookingId }, lock: { mode: 'pessimistic_write' } });
       if (!booking) throw new NotFoundException('Booking not found');
       if (![BookingStatus.SUBMITTED, BookingStatus.MATCHING, BookingStatus.CLOSED].includes(booking.status)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Booking is not open for manual assignment');
@@ -84,6 +86,9 @@ export class TechnicianAssignmentService {
 
       return { booking, serviceOrder, assignment };
     });
+    // After commit, as on a technician's own accept.
+    await this.acceptGreeting?.send({ bookingId, technicianId, serviceOrderId: result.serviceOrder.id, orderCode: result.serviceOrder.code });
+    return result;
   }
 
   /**

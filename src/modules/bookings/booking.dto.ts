@@ -53,6 +53,10 @@ export class CreateBookingDto extends ScheduleBookingDto {
   @ApiPropertyOptional({ format: 'uuid', description: 'Optional linked AI diagnosis ID.' })
   @IsOptional() @Matches(UUID_REGEX, { message: 'aiDiagnosisId must be a valid UUID' })
   aiDiagnosisId?: string;
+
+  @ApiPropertyOptional({ maxLength: 128, description: 'Session id returned by POST /ai/chat/ask or /ai/diagnoses. The booking keeps a summary of that conversation for the technician; an unknown or foreign session is ignored.' })
+  @IsOptional() @IsString() @Matches(/^[A-Za-z0-9_-]{1,128}$/, { message: 'aiSessionId must be the session id returned by the assistant' })
+  aiSessionId?: string;
 }
 
 export class AttachBookingMediaDto {

@@ -53,14 +53,15 @@ export class AiDiagnosisController {
   }
 
   @Post('ai/chat/ask')
+  @UseGuards(AiDiagnosisBookingAuthGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Ask the assistant a question with no photo',
     description:
       'Use this for questions about prices, warranty, coverage and general appliance advice. answerVi always carries prose. status may be ok, out_of_scope, general_knowledge, no_grounding, or unavailable.',
   })
-  async ask(@Body() dto: AskDto) {
-    return this.aiDiagnosisService.ask(dto);
+  async ask(@Body() dto: AskDto, @Req() req: { user?: { id: string; role: string } }) {
+    return this.aiDiagnosisService.ask(dto, req?.user);
   }
 
   @Get('ai/chat/acknowledgements')

@@ -15,6 +15,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../shared/enums';
+import { PaginationMeta } from '../../shared/dto/api-response.dto';
 import { NotificationsService } from './notifications.service';
 import { CreateNotificationDto } from './dto/create-notification.dto';
 
@@ -31,10 +32,22 @@ export class NotificationsController {
     @Req() req: { user: { id: string } },
     @Query('page') page?: string,
     @Query('limit') limit?: string,
-  ) {
+  ): Promise<{
+    data: Awaited<ReturnType<NotificationsService['getMyNotifications']>>['data'];
+    meta: PaginationMeta;
+  }> {
     const p = Math.max(1, parseInt(page || '1', 10) || 1);
     const l = Math.min(100, Math.max(1, parseInt(limit || '20', 10) || 20));
-    return this.notificationsService.getMyNotifications(req.user.id, p, l);
+    const result = await this.notificationsService.getMyNotifications(req.user.id, p, l);
+    return {
+      data: result.data,
+      meta: {
+        page: p,
+        limit: l,
+        total: result.total,
+        totalPages: Math.ceil(result.total / l),
+      },
+    };
   }
 
   @Get('unread-count')
@@ -68,4 +81,3 @@ export class NotificationsController {
     return this.notificationsService.markAllAsRead(req.user.id);
   }
 }
-

@@ -63,19 +63,32 @@ describe('PRIVACY-B POST persisted AI diagnosis', () => {
     expect(f.manager.findOneBy).not.toHaveBeenCalled();
     expect(f.diagnosisRepo.save).not.toHaveBeenCalled();
   });
-  it('conditional guard leaves anonymous advice open but requires JWT for bookingId', () => {
+  it('conditional guard leaves anonymous advice open but requires JWT for bookingId', async () => {
     const guard = new AiDiagnosisBookingAuthGuard();
-    const context = (body: Record<string, unknown>) => ({
-      switchToHttp: () => ({ getRequest: () => ({ body }) }),
+    const context = (body: Record<string, unknown>, headers: Record<string, unknown> = {}) => ({
+      switchToHttp: () => ({ getRequest: () => ({ body, headers }) }),
     }) as unknown as ExecutionContext;
-    const parent = vi.spyOn(JwtAuthGuard.prototype, 'canActivate').mockReturnValue(false);
+    const parent = vi.spyOn(JwtAuthGuard.prototype, 'canActivate').mockResolvedValue(false);
     try {
-      expect(guard.canActivate(context({ description: 'public question' }))).toBe(true);
+      await expect(guard.canActivate(context({ description: 'public question' }))).resolves.toBe(true);
       expect(parent).not.toHaveBeenCalled();
-      expect(guard.canActivate(context({ bookingId: BOOKING_ID }))).toBe(false);
-      expect(guard.canActivate(context({ bookingId: null }))).toBe(false);
-      expect(guard.canActivate(context({ bookingId: '' }))).toBe(false);
+      await expect(guard.canActivate(context({ bookingId: BOOKING_ID }))).resolves.toBe(false);
+      await expect(guard.canActivate(context({ bookingId: null }))).resolves.toBe(false);
+      await expect(guard.canActivate(context({ bookingId: '' }))).resolves.toBe(false);
       expect(parent).toHaveBeenCalledTimes(3);
+    } finally {
+      parent.mockRestore();
+    }
+  });
+
+  it('reads a token on public advice when one is sent, and never blocks on a bad one', async () => {
+    const guard = new AiDiagnosisBookingAuthGuard();
+    const context = { switchToHttp: () => ({ getRequest: () => ({ body: { question: 'hỏi' }, headers: { authorization: 'Bearer x' } }) }) } as unknown as ExecutionContext;
+    const parent = vi.spyOn(JwtAuthGuard.prototype, 'canActivate').mockRejectedValueOnce(new Error('expired')).mockResolvedValueOnce(true);
+    try {
+      await expect(guard.canActivate(context)).resolves.toBe(true);
+      await expect(guard.canActivate(context)).resolves.toBe(true);
+      expect(parent).toHaveBeenCalledTimes(2);
     } finally {
       parent.mockRestore();
     }

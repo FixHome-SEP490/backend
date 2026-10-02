@@ -21,6 +21,7 @@ import { Optional } from '@nestjs/common';
 import { activateNextInvitation } from './activate-next-invitation';
 import { technicianEligibility } from './technician-eligibility';
 import { TechnicianInvitationPreviewDto, toTechnicianInvitationPreview } from './booking-privacy.dto';
+import { AcceptGreetingPublisher } from '../messaging/accept-greeting.publisher';
 
 @Injectable()
 export class InvitationsService {
@@ -32,6 +33,7 @@ export class InvitationsService {
     private readonly auditLogService: AuditLogService,
     private readonly messagingService: MessagingService,
     @Optional() private readonly notificationsService?: NotificationsService,
+    @Optional() private readonly acceptGreeting?: AcceptGreetingPublisher,
   ) {}
 
   async createShortlist(bookingId: string, technicianIds: string[], customer: { id: string; role: string }): Promise<BookingInvitation[]> {
@@ -107,6 +109,7 @@ export class InvitationsService {
     if (!['ACCEPT', 'DECLINE'].includes(action)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid invitation action');
     const ref = await this.invitationRepo.findOneBy({ id: invitationId, technicianId: technician.id });
     if (!ref) throw new ForbiddenException('Invitation not found');
+    let accepted: { bookingId: string; serviceOrderId: string; orderCode: string } | null = null;
     const outcome = await this.dataSource.transaction(async manager => {
       // All matching commands lock Booking first; User lock serializes Accept across bookings.
       const booking = await manager.findOne(Booking, { where: { id: ref.bookingId }, lock: { mode: 'pessimistic_write' } });
@@ -177,9 +180,12 @@ export class InvitationsService {
           referenceType: 'SERVICE_ORDER',
         });
       }
+      accepted = { bookingId: booking.id, serviceOrderId: serviceOrder.id, orderCode: code };
       return { invitation, serviceOrder };
     });
     if ('expired' in outcome) throw new BusinessException(ErrorCodes.INVITATION_EXPIRED, 'Invitation expired');
+    // After commit: the customer hears from the technician who took the job.
+    if (accepted) await this.acceptGreeting?.send({ ...(accepted as { bookingId: string; serviceOrderId: string; orderCode: string }), technicianId: technician.id });
     return outcome;
   }
 
