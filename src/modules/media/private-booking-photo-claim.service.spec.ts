@@ -156,6 +156,27 @@ describe('PrivateBookingPhotoClaimService', () => {
     expect(db.rows.every((row) => row.claimedBookingId === BOOKING_ID)).toBe(true);
   });
 
+  it('accepts the seeded accounts, whose ids are database uuids but not RFC 4122 versions', async () => {
+    const seededOwner = 'd0000000-0000-0000-0000-000000000001';
+    const db = createMockManager([uploadRow(UPLOAD_IDS[0], { ownerUserId: seededOwner })]);
+    const result = await service.claim(db.manager, seededOwner, BOOKING_ID, [UPLOAD_IDS[0]]);
+    expect(result).toHaveLength(1);
+    expect(db.update).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['owner', 'not-a-uuid', BOOKING_ID],
+    ['owner with emoji', 'd0000000-0000-0000-0000-00000000000😀', BOOKING_ID],
+    ['booking', OWNER_ID, "x'; drop table bookings;--"],
+  ])('still rejects a malformed %s id before querying', async (_label, owner, booking) => {
+    const db = createMockManager([uploadRow(UPLOAD_IDS[0])]);
+    await expectBusinessError(
+      runMockTransaction(db, (manager) => service.claim(manager, owner as string, booking as string, [UPLOAD_IDS[0]])),
+      ErrorCodes.VALIDATION_FAILED,
+    );
+    expect(db.findOne).not.toHaveBeenCalled();
+  });
+
   it('accepts the maximum of five distinct uploads', async () => {
     const ids = UPLOAD_IDS.slice(0, 5);
     const db = createMockManager(ids.map((id) => uploadRow(id)));

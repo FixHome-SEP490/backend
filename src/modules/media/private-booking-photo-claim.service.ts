@@ -7,6 +7,15 @@ import { PrivateBookingPhotoUpload } from './entities/private-booking-photo-uplo
 
 const MAX_BOOKING_PHOTO_UPLOADS = 5;
 
+/**
+ * The shape PostgreSQL stores for a uuid column. The owner and the booking are
+ * the server's own ids (the signed-in user, the booking just created), and the
+ * seeded accounts carry ids such as d0000000-0000-0000-0000-000000000001 that
+ * are valid uuids to the database but not RFC 4122 versions, so isUUID()
+ * rejected every photo booking those accounts made.
+ */
+const DB_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export type PrivateBookingPhotoClaimMetadata = {
   uploadId: string;
   mimeType: string;
@@ -33,8 +42,10 @@ export class PrivateBookingPhotoClaimService {
     }
 
     if (
-      !isUUID(ownerUserId) ||
-      !isUUID(bookingId) ||
+      typeof ownerUserId !== 'string' ||
+      !DB_UUID.test(ownerUserId) ||
+      typeof bookingId !== 'string' ||
+      !DB_UUID.test(bookingId) ||
       !Array.isArray(uploadIds) ||
       uploadIds.length > MAX_BOOKING_PHOTO_UPLOADS ||
       uploadIds.some((uploadId) => typeof uploadId !== 'string' || !isUUID(uploadId))
