@@ -10,8 +10,6 @@ import { ErrorCodes } from '../../shared/constants';
 import {
   CashSettlementStatus,
   CommissionDueStatus,
-  PartSource,
-  PartWarrantyOption,
   PaymentAttemptStatus,
   PaymentMode,
   PaymentPurpose,
@@ -20,7 +18,6 @@ import {
   Role,
   ServiceOrderStatus,
   SupportCaseType,
-  WarrantyStatus,
 } from '../../shared/enums';
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
@@ -33,9 +30,8 @@ import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { ServiceOrderStateMachine } from '../service-orders/service-order-state-machine';
 import { CustomerServiceConfirmation } from '../service-orders/entities/customer-service-confirmation.entity';
 import { OrderStatusHistory } from '../service-orders/entities/order-status-history.entity';
-import { WarrantyCoverage } from '../service-orders/entities/warranty-coverage.entity';
 import { isCompletionHeld } from '../support-cases/completion-hold';
-import { InvoiceItem } from '../service-orders/entities/invoice-item.entity';
+import { applyOrderCompletionEffects } from '../service-orders/order-completion-effects';
 import { Payment } from './entities/payment.entity';
 import { PlatformDue } from './entities/platform-due.entity';
 import {
@@ -1179,24 +1175,7 @@ export class FinanceService {
                 actorRole: Role.CUSTOMER,
                 reason: 'Work, customer confirmation and payment satisfied',
               });
-              const items = await manager.find(InvoiceItem, { where: { invoiceId: invoice.id } });
-              for (const item of items) {
-                if (
-                  item.warrantyDaysSnapshot <= 0 ||
-                  (item.partSource === PartSource.TECHNICIAN &&
-                    item.partWarrantyOption !== PartWarrantyOption.PAID_WARRANTY)
-                ) {
-                  continue;
-                }
-                await manager.insert(WarrantyCoverage, {
-                  serviceOrderId: order.id,
-                  invoiceItemId: item.id,
-                  warrantyDaysSnapshot: item.warrantyDaysSnapshot,
-                  startsAt: now,
-                  expiresAt: new Date(now.getTime() + item.warrantyDaysSnapshot * 86400000),
-                  status: WarrantyStatus.ACTIVE,
-                });
-              }
+              await applyOrderCompletionEffects(manager, order, invoice.id, now);
             }
           }
           if (this.settlementService && order.status === ServiceOrderStatus.COMPLETED) {
@@ -1293,24 +1272,7 @@ export class FinanceService {
           actorRole: actor.role,
           reason: 'Work, customer confirmation and payment satisfied',
         });
-        const items = await manager.find(InvoiceItem, { where: { invoiceId: invoice.id } });
-        for (const item of items) {
-          if (
-            item.warrantyDaysSnapshot <= 0 ||
-            (item.partSource === PartSource.TECHNICIAN &&
-              item.partWarrantyOption !== PartWarrantyOption.PAID_WARRANTY)
-          ) {
-            continue;
-          }
-          await manager.insert(WarrantyCoverage, {
-            serviceOrderId: order.id,
-            invoiceItemId: item.id,
-            warrantyDaysSnapshot: item.warrantyDaysSnapshot,
-            startsAt: now,
-            expiresAt: new Date(now.getTime() + item.warrantyDaysSnapshot * 86400000),
-            status: WarrantyStatus.ACTIVE,
-          });
-        }
+        await applyOrderCompletionEffects(manager, order, invoice.id, now);
       }
 
       await this.ensureCashPayment(manager, invoice, savedSettlement, actor.id, now);
