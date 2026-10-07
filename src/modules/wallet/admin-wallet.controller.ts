@@ -6,8 +6,7 @@ import {
   Patch,
   Post,
   Query,
-  UseGuards,
-} from '@nestjs/common';
+  UseGuards, ParseUUIDPipe } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -56,8 +55,8 @@ export class AdminWalletController {
 
   @Get('wallets/:technicianId')
   @ApiOperation({ summary: 'Admin: Xem chi tiết ví một kỹ thuật viên' })
-  async getWalletDetail(@Param('technicianId') technicianId: string) {
-    return this.walletService.getWalletSummary(technicianId);
+  async getWalletDetail(@Param('technicianId', ParseUUIDPipe) technicianId: string) {
+    return this.walletService.getTechnicianWalletSummary(technicianId);
   }
 
   @Post('wallets/:technicianId/adjustments')
@@ -65,7 +64,7 @@ export class AdminWalletController {
     summary: 'Admin: Điều chỉnh số dư ví (CREDIT / DEBIT) với lý do bắt buộc và audit trail',
   })
   async adjustWallet(
-    @Param('technicianId') technicianId: string,
+    @Param('technicianId', ParseUUIDPipe) technicianId: string,
     @Body() dto: AdminWalletAdjustmentDto,
     @CurrentUser() user: User,
   ) {

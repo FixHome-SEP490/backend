@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { MAX_PAGE } from '../../../shared/dto/page-size-query.dto';
 import { Type } from 'class-transformer';
 import { IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from 'class-validator';
 
@@ -57,6 +58,7 @@ export class QueryWalletsDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(MAX_PAGE)
   page?: number = 1;
 
   @ApiPropertyOptional({ description: 'Số lượng bản ghi mỗi trang', default: 20, minimum: 1, maximum: 100 })

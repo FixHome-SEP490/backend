@@ -46,6 +46,9 @@ describe('TechniciansService', () => {
       create: vi.fn((data) => data),
       save: vi.fn((data) => Promise.resolve(data)),
     };
+    mockScheduleRepo.manager = {
+      transaction: vi.fn(async (work: (m: unknown) => unknown) => work({ getRepository: () => mockScheduleRepo })),
+    };
 
     mockTimeOffRepo = {
       find: vi.fn().mockResolvedValue([]),
@@ -107,6 +110,13 @@ describe('TechniciansService', () => {
   });
 
   describe('updateMySchedule', () => {
+    it('refuses a window that ends before it starts, without touching the saved schedule', async () => {
+      await expect(
+        service.updateMySchedule('tech-user-uuid', [{ dayOfWeek: 1, startTime: '18:00', endTime: '08:00' }]),
+      ).rejects.toThrow('Giờ bắt đầu phải trước giờ kết thúc');
+      expect(mockScheduleRepo.delete).not.toHaveBeenCalled();
+    });
+
     it('should save valid schedules', async () => {
       const schedules = [
         { dayOfWeek: 1, startTime: '08:00', endTime: '18:00' },
