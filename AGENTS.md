@@ -3,6 +3,19 @@
 This repository is an independent Git repository. Preserve its NestJS modular architecture and do
 not move code to another FixHome repository.
 
+## Repository context (read first, keep current)
+
+`docs/CONTEXT.md` is the living context of this repository: what it owns, how it links to the other
+FixHome repositories, the current state, contracts, settled PO decisions and open risks. Read it
+before `docs/AI-TECHNICAL-GUIDE.md` and before touching code.
+
+Any change that alters behaviour, an API or event contract, an enum, an environment variable, a
+migration, how the project runs or is verified, or a PO decision must update `docs/CONTEXT.md` in
+the same pull request, following its section 0 exactly: real Vietnam time (UTC+7), the exact
+`git config user.name`, the branch, and a new top line in section 9. `test/context-doc.spec.ts` enforces the
+format in the normal test run and in CI; never weaken that test to make a change pass. The
+repository is public: never write secrets, credentials, IP addresses or customer data into it.
+
 ## Mandatory pre-implementation gate
 
 Before every task, read FIXHOME-DESIGN-SYSTEM.md completely together with
@@ -14,6 +27,7 @@ If cross-repository verification is unavailable, explicitly report NOT VERIFIED.
 
 Before doing any task:
 
+0. Read `docs/CONTEXT.md` completely.
 1. Read `docs/AI-TECHNICAL-GUIDE.md` and `FIXHOME-DESIGN-SYSTEM.md` completely.
 2. Inspect the existing project structure and the affected feature module.
 3. Understand the current controller → service → repository/entity architecture.
@@ -35,7 +49,7 @@ If the technical guide has not been read, implementation must not begin.
 - Use DTO validation and the existing global response/error behavior.
 - Use TypeORM migrations for schema changes. Never enable synchronization outside development.
 - Coordinate API, enum, AI schema, environment, or database contract changes with every consumer
-  and `Docs-FixHome`.
+  and the `docs` repository, and update `docs/CONTEXT.md` in every affected repository.
 - Never commit `.env`, credentials, access tokens, customer data, or provider keys.
 
 ## Keep Docker working
