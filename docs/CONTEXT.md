@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-07 21:03 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/order-completed-notices
+> Cập nhật lần cuối: 2026-10-07 21:17 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/time-off-and-review-guards
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -199,6 +199,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-07 21:17 (UTC+7) | ToanAltF4 | fix/time-off-and-review-guards | Chặn khai báo ngày nghỉ đã qua; đánh giá trùng trả CONFLICT với câu tiếng Việt.
 - 2026-10-07 21:03 (UTC+7) | ToanAltF4 | fix/order-completed-notices | Hoàn tất đơn qua tiền mặt hoặc VNPay giờ cũng gửi thông báo ORDER_COMPLETED; gom bảo hành và thông báo về applyOrderCompletionEffects.
 - 2026-10-07 19:15 (UTC+7) | ToanAltF4 | fix/remaining-bugs-and-fake-data | Ghi các lỗi còn lại đã sửa, quy định không dữ liệu giả, vi phạm do quản lý xác nhận, thu nhập theo hoá đơn và migration 027
 - 2026-10-07 18:53 (UTC+7) | ToanAltF4 | fix/order-timing-and-matching | Thêm luật quá giờ hẹn BRX-063, tác vụ nền, mã lỗi mới, quyết định PO ngày 07/10 và cập nhật việc đang dở
