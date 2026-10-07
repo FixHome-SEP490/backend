@@ -3,17 +3,44 @@ import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import { PartRequestStatus, PartRequestType, PartSource, PartUsageStatus } from '../../shared/enums';
 import { PartRequest } from './entities/part-request.entity';
+import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 
 /** Caller holds the Service Order write lock, also acquired by every parts mutation. */
 export async function closeOrderPartRequests(manager: EntityManager, orderId: string, cancelled: boolean): Promise<void> {
+  // On completion only the finishing technician's received parts are settled.
+  // Parts a replaced technician picked up stay RECEIVED, so the warehouse still
+  // sees them as not returned.
+  const holder = cancelled ? null : await manager.findOneBy(TechnicianAssignment, { serviceOrderId: orderId, isActive: true });
   await manager.update(PartRequest, {
     serviceOrderId: orderId,
+    ...(holder ? { technicianId: holder.technicianId } : {}),
     status: In(cancelled
       ? [PartRequestStatus.REQUESTED, PartRequestStatus.READY, PartRequestStatus.DELIVERING, PartRequestStatus.RECEIVED]
       : [PartRequestStatus.RECEIVED]),
   }, cancelled
     ? { status: PartRequestStatus.CANCELLED, cancelledAt: new Date(), qrToken: null }
     : { status: PartRequestStatus.COMPLETED, completedAt: new Date(), qrToken: null });
+}
+
+/**
+ * A technician leaving an order before arrival (withdrawal, staff override,
+ * reschedule) gives up the part requests nobody has picked up yet, so the
+ * replacement can file their own. Parts already received stay with the
+ * request for the warehouse to recover.
+ */
+export async function releaseOutgoingTechnicianPartRequests(manager: EntityManager, orderId: string, technicianId: string): Promise<void> {
+  await manager.update(PartRequest, {
+    serviceOrderId: orderId,
+    technicianId,
+    status: In([PartRequestStatus.REQUESTED, PartRequestStatus.READY, PartRequestStatus.DELIVERING]),
+  }, { status: PartRequestStatus.CANCELLED, cancelledAt: new Date(), qrToken: null });
+}
+
+/** The requests that gate completion: those of the technician holding the order. */
+export async function holderPartRequests(manager: EntityManager, orderId: string, requests?: PartRequest[]): Promise<PartRequest[]> {
+  const all = requests ?? await manager.find(PartRequest, { where: { serviceOrderId: orderId }, relations: ['items'] });
+  const holder = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: orderId, isActive: true });
+  return holder ? all.filter(request => request.technicianId === holder.technicianId) : all;
 }
 
 export function assertPartsResolved(requests: PartRequest[]): void {

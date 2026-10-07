@@ -17,18 +17,28 @@ import { SystemConfig } from '../system-config/entities/system-config.entity';
 export async function technicianEligibility(
   manager: EntityManager, technicianId: string, booking: Booking,
   excludeOrderId?: string,
-  options?: { allowPausedExistingInvitation?: boolean },
+  options?: {
+    allowPausedExistingInvitation?: boolean;
+    /**
+     * The technician already holds this booking's order and the customer is
+     * moving the window. Only "free at the new time" is asked: pausing new
+     * jobs, the wallet minimum and an unpaid PlatformDue gate taking new work,
+     * not keeping work already accepted; skill and distance did not change.
+     */
+    keepingExistingOrder?: boolean;
+  },
 ): Promise<{ eligible: boolean; reason?: string }> {
+  const keeping = options?.keepingExistingOrder === true;
   const fail = (reason: string) => ({ eligible: false, reason });
   const user = await manager.findOneBy(User, { id: technicianId });
   if (!user || user.role !== Role.TECHNICIAN || user.status !== AccountStatus.ACTIVE) return fail('Technician account is not active');
   const profile = await manager.findOneBy(TechnicianProfile, { userId: technicianId });
   if (!profile || profile.verificationStatus !== VerificationStatus.VERIFIED) return fail('Technician is not verified');
   if (profile.workSuspendedUntil && profile.workSuspendedUntil > new Date()) return fail('Technician is unavailable or suspended');
-  if (!profile.isAvailable && !options?.allowPausedExistingInvitation) return fail('Technician is unavailable or paused');
-  if (!await manager.findOneBy(TechnicianSkill, { technicianId: profile.id, serviceId: booking.serviceId, isActive: true, verificationStatus: VerificationStatus.VERIFIED })) return fail('Service is not offered or not yet verified');
-  if (await manager.count(CommissionDue, { where: { technicianId, status: CommissionDueStatus.PENDING } })) return fail('Active unpaid PlatformDue');
-  const wallet = await manager.findOneBy(Wallet, { technicianId });
+  if (!profile.isAvailable && !options?.allowPausedExistingInvitation && !keeping) return fail('Technician is unavailable or paused');
+  if (!keeping && !await manager.findOneBy(TechnicianSkill, { technicianId: profile.id, serviceId: booking.serviceId, isActive: true, verificationStatus: VerificationStatus.VERIFIED })) return fail('Service is not offered or not yet verified');
+  if (!keeping && await manager.count(CommissionDue, { where: { technicianId, status: CommissionDueStatus.PENDING } })) return fail('Active unpaid PlatformDue');
+  const wallet = keeping ? null : await manager.findOneBy(Wallet, { technicianId });
   if (wallet) {
     const minConfig = await manager.findOneBy(SystemConfig, { key: 'wallet.minimum_balance' });
     const minimumBalance = minConfig ? Number(minConfig.value) : 200000;
@@ -83,6 +93,7 @@ export async function technicianEligibility(
     }
     return fail('No available arrival interval');
   }
+  if (keeping) return { eligible: true };
   if (booking.latitudeSnapshot == null || booking.longitudeSnapshot == null) return fail('Booking location is missing');
   const address = await manager.findOneBy(Address, { userId: technicianId, isDefault: true });
   if (!address || address.lat == null || address.lng == null) return fail('Technician location is missing');

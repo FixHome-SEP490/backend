@@ -10,10 +10,9 @@ import { AiChatSession } from './entities/ai-chat-session.entity';
 import { AiTurnInput, emptySummary, mergeTurn } from './ai-chat-summary';
 import { Service } from '../services/entities/service.entity';
 import { Booking } from '../bookings/entities/booking.entity';
-import { BookingInvitation } from '../bookings/entities/booking-invitation.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
-import { BookingStatus, InvitationStatus, Role, ServiceOrderStatus } from '../../shared/enums';
+import { BookingStatus, Role, ServiceOrderStatus } from '../../shared/enums';
 import {
   AnalyzeDto,
   AskDto,
@@ -279,8 +278,6 @@ export class AiDiagnosisService {
       if (!order || order.status === ServiceOrderStatus.CANCELLED ||
           !await manager.findOneBy(TechnicianAssignment, {
             serviceOrderId: order.id, technicianId: actor.id, isActive: true,
-          }) || !await manager.findOneBy(BookingInvitation, {
-            bookingId: booking.id, technicianId: actor.id, status: InvitationStatus.ACCEPTED,
           })) throw denied();
       return diagnosis;
     });
