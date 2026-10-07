@@ -12,12 +12,8 @@ import { PlatformDue } from '../finance/entities/platform-due.entity';
 import { CASH_SETTLEMENT_MANAGER_CONFIRMATION_CODE } from '../../shared/constants';
 import {
   CashSettlementStatus,
-  CommissionDueStatus,
-  PaymentAttemptStatus,
-  PaymentMode,
-  PaymentPurpose,
   PaymentStatus,
-  PlatformDueStatus,
+  ServiceOrderStatus,
   SupportCaseStatus,
   SupportCaseType,
 } from '../../shared/enums';
@@ -96,8 +92,10 @@ const makeService = (
   const auditLogService = {
     logWithManagerStrict: vi.fn().mockResolvedValue(undefined),
   };
+  const finance = { applyConfirmedCash: vi.fn().mockResolvedValue(undefined) };
 
   return {
+    finance,
     service: new SupportCasesService(
       supportRepository as any,
       bookingRepository as any,
@@ -106,6 +104,7 @@ const makeService = (
       cashSettlementRepository as any,
       assignmentRepository as any,
       auditLogService as any,
+      { get: vi.fn(() => finance) } as any,
     ),
     supportRepository,
     transactionSupportRepository,
@@ -403,7 +402,8 @@ describe('SupportCasesService', () => {
       findOne: vi.fn().mockResolvedValue(invoice),
       save: vi.fn(async (value) => value),
     };
-    const orderRepository = { update: vi.fn().mockResolvedValue(undefined) };
+    const order = { id: 'order-1', bookingId: 'booking-1', status: ServiceOrderStatus.UNDER_REPAIR } as ServiceOrder;
+    const orderRepository = { update: vi.fn().mockResolvedValue(undefined), findOne: vi.fn().mockResolvedValue(order) };
     const paymentRepository = {
       findOne: vi.fn().mockResolvedValue(null),
       create: vi.fn((value) => ({ id: 'payment-1', ...value })),
@@ -427,7 +427,7 @@ describe('SupportCasesService', () => {
         [CommissionDue, commissionDueRepository],
         [PlatformDue, platformDueRepository],
       ]);
-    const { service, auditLogService } = makeService(
+    const { service, auditLogService, finance } = makeService(
       supportCase,
       transactionRepositories,
     );
@@ -445,27 +445,18 @@ describe('SupportCasesService', () => {
     expect(settlement.status).toBe(CashSettlementStatus.CONFIRMED);
     expect(settlement.confirmedByCustomerId).toBeNull();
     expect(settlement.resolvedByManagerId).toBe('manager-1');
-    expect(invoice.paymentStatus).toBe(PaymentStatus.PAID);
-    expect(paymentRepository.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        purpose: PaymentPurpose.INVOICE,
-        mode: PaymentMode.DEMO,
-        status: PaymentAttemptStatus.VERIFIED,
-      }),
-    );
-    expect(commissionDueRepository.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        status: CommissionDueStatus.PENDING,
-        commissionRateSnapshot: 0.1,
-        dueAmount: 10000,
-      }),
-    );
-    expect(platformDueRepository.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        status: PlatformDueStatus.PENDING,
-        dueAmount: 30000,
-      }),
-    );
+    expect(settlement.confirmedAmount).toBe(120000);
+    // invoice, payment record, dues and wallet settlement come from the one
+    // shared cash path, exactly as when the customer confirms
+    expect(finance.applyConfirmedCash).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      order,
+      invoice,
+      settlement,
+      actor: { id: 'manager-1', role: 'service_manager' },
+    }));
+    expect(paymentRepository.create).not.toHaveBeenCalled();
+    expect(commissionDueRepository.create).not.toHaveBeenCalled();
+    expect(platformDueRepository.create).not.toHaveBeenCalled();
     expect(auditLogService.logWithManagerStrict).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -473,5 +464,83 @@ describe('SupportCasesService', () => {
         resourceId: supportCase.id,
       }),
     );
+  });
+
+  it('refuses to confirm cash for an invoice already paid online', async () => {
+    const supportCase = makeCase({
+      caseType: SupportCaseType.CASH_MISMATCH,
+      bookingId: 'booking-1',
+      serviceOrderId: 'order-1',
+      customerId: 'customer-1',
+      technicianId: 'technician-1',
+    });
+    const settlement = {
+      id: 'cash-1',
+      serviceOrderId: 'order-1',
+      declaredByTechnicianId: 'technician-1',
+      declaredAmount: 119000,
+      declaredAt: new Date('2026-09-01T03:00:00.000Z'),
+      status: CashSettlementStatus.DISPUTED,
+      confirmedByCustomerId: 'customer-1',
+    } as CashSettlement;
+    const invoice = {
+      id: 'invoice-1',
+      serviceOrderId: 'order-1',
+      laborTotal: 100000,
+      partsTotal: 20000,
+      grandTotal: 120000,
+      commissionAmount: 10000,
+      paymentStatus: PaymentStatus.PAID,
+    } as Invoice;
+    const settlementRepository = {
+      findOne: vi.fn().mockResolvedValue(settlement),
+      save: vi.fn(async (value) => value),
+    };
+    const invoiceRepository = {
+      findOne: vi.fn().mockResolvedValue(invoice),
+      save: vi.fn(async (value) => value),
+    };
+    const order = { id: 'order-1', bookingId: 'booking-1', status: ServiceOrderStatus.UNDER_REPAIR } as ServiceOrder;
+    const orderRepository = { update: vi.fn().mockResolvedValue(undefined), findOne: vi.fn().mockResolvedValue(order) };
+    const paymentRepository = {
+      findOne: vi.fn().mockResolvedValue(null),
+      create: vi.fn((value) => ({ id: 'payment-1', ...value })),
+      save: vi.fn(async (value) => value),
+    };
+    const commissionDueRepository = {
+      findOne: vi.fn().mockResolvedValue(null),
+      create: vi.fn((value) => ({ id: 'due-1', ...value })),
+      save: vi.fn(async (value) => value),
+    };
+    const platformDueRepository = {
+      findOne: vi.fn().mockResolvedValue(null),
+      create: vi.fn((value) => ({ id: 'platform-1', ...value })),
+      save: vi.fn(async (value) => value),
+    };
+    const transactionRepositories = new Map<unknown, any>([
+        [CashSettlement, settlementRepository],
+        [Invoice, invoiceRepository],
+        [ServiceOrder, orderRepository],
+        [Payment, paymentRepository],
+        [CommissionDue, commissionDueRepository],
+        [PlatformDue, platformDueRepository],
+      ]);
+    const { service, auditLogService, finance } = makeService(
+      supportCase,
+      transactionRepositories,
+    );
+
+    await expect(service.resolveCase(
+      supportCase.id,
+      {
+        finalStatus: SupportCaseStatus.RESOLVED,
+        resolutionCode: CASH_SETTLEMENT_MANAGER_CONFIRMATION_CODE,
+        reason: 'Manager reviewed the evidence and confirmed the cash exception.',
+      },
+      { id: 'manager-1', role: 'service_manager' },
+    )).rejects.toThrow('đã được thanh toán online');
+    expect(settlement.status).toBe(CashSettlementStatus.DISPUTED);
+    expect(finance.applyConfirmedCash).not.toHaveBeenCalled();
+    void auditLogService;
   });
 });

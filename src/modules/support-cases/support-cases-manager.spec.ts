@@ -86,6 +86,7 @@ const makeService = (supportCase = makeCase(), withNotifications = true) => {
     { findOne: vi.fn() } as any,
     assignmentRepository as any,
     auditLogService as any,
+    { get: vi.fn() } as any,
     (withNotifications ? notifications : undefined) as any,
   );
   return { service, supportRepository, txRepo, queryBuilder, auditLogService, notifications };

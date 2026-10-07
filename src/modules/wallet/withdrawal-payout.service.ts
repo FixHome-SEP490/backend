@@ -8,6 +8,7 @@ import {
   OnModuleInit,
   Optional,
 } from '@nestjs/common';
+import { maskAccountNumber } from '../../shared/utils/bank-account-mask';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { DataSource, In, Repository } from 'typeorm';
@@ -279,7 +280,7 @@ export class WithdrawalPayoutService implements OnModuleInit, OnModuleDestroy {
         referenceType: 'WITHDRAWAL_REQUEST',
         referenceId: withdrawalId,
         idempotencyKey: `WITHDRAW:${withdrawalId}`,
-        description: `Rút tiền về ${bankAccount.bankName} - STK ${bankAccount.accountNumber}`,
+        description: `Rút tiền về ${bankAccount.bankName} - STK ${maskAccountNumber(bankAccount.accountNumber)}`,
         allowNegative: false,
         manager,
       });
@@ -357,7 +358,7 @@ export class WithdrawalPayoutService implements OnModuleInit, OnModuleDestroy {
         notice = {
           userId: withdrawal.technicianId,
           title: 'Đã chuyển tiền về tài khoản ngân hàng',
-          message: `${amount.toLocaleString('vi-VN')} ₫ đã được chuyển về ${withdrawal.bankName ?? 'ngân hàng'} - STK ${withdrawal.bankAccountNumber ?? ''}.`,
+          message: `${amount.toLocaleString('vi-VN')} ₫ đã được chuyển về ${withdrawal.bankName ?? 'ngân hàng'} - STK ${maskAccountNumber(withdrawal.bankAccountNumber) ?? ''}.`,
           type: 'WALLET_WITHDRAWAL_PAID',
           referenceId: withdrawal.id,
         };

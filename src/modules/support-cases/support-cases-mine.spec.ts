@@ -63,6 +63,7 @@ const makeService = (supportCase = makeCase()) => {
     {} as any,
     {} as any,
     {} as any,
+    { get: vi.fn() } as any,
   );
   return { service, supportRepository, queryBuilder };
 };

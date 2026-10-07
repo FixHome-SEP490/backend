@@ -134,10 +134,12 @@ export class TechnicianWalletController {
       };
     }
 
+    // Scoped to the technician: another technician's key can neither swallow
+    // this top-up nor return its transaction.
     const result = await this.walletService.topUp(
       user.id,
       dto.amount,
-      idempotencyKey,
+      `TOPUP:${user.id}:${idempotencyKey}`,
     );
     return {
       success: true,

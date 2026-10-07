@@ -7,6 +7,8 @@ import {
   NotFoundException,
   Optional,
 } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
+import { FinanceService } from '../finance/finance.service';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, In, Repository } from 'typeorm';
 import { Booking } from '../bookings/entities/booking.entity';
@@ -49,20 +51,11 @@ import {
 import {
   CASH_SETTLEMENT_MANAGER_CONFIRMATION_CODE,
   DEFAULT_PAGE_SIZE,
-  FINANCE_COMMISSION_RATE,
   MAX_PAGE_SIZE,
 } from '../../shared/constants';
-import { CommissionDue } from '../service-orders/entities/commission-due.entity';
-import { PlatformDue } from '../finance/entities/platform-due.entity';
-import { Payment } from '../finance/entities/payment.entity';
 import {
   CashSettlementStatus,
-  CommissionDueStatus,
-  PaymentAttemptStatus,
-  PaymentMode,
-  PaymentPurpose,
   PaymentStatus,
-  PlatformDueStatus,
   Role,
   ServiceOrderStatus,
   SUPPORT_CASE_FINAL_STATUSES,
@@ -109,6 +102,7 @@ export class SupportCasesService {
     @InjectRepository(TechnicianAssignment)
     private readonly assignmentRepository: Repository<TechnicianAssignment>,
     private readonly auditLogService: AuditLogService,
+    private readonly moduleRef: ModuleRef,
     @Optional() private readonly notificationsService?: NotificationsService,
   ) {}
 
@@ -831,10 +825,6 @@ export class SupportCasesService {
 
     const settlementRepository = manager.getRepository(CashSettlement);
     const invoiceRepository = manager.getRepository(Invoice);
-    const orderRepository = manager.getRepository(ServiceOrder);
-    const commissionDueRepository = manager.getRepository(CommissionDue);
-    const platformDueRepository = manager.getRepository(PlatformDue);
-    const paymentRepository = manager.getRepository(Payment);
     const settlement = await settlementRepository.findOne({
       where: { serviceOrderId: supportCase.serviceOrderId },
       lock: { mode: 'pessimistic_write' },
@@ -852,138 +842,31 @@ export class SupportCasesService {
       throw new ConflictException('Cash settlement is already confirmed');
     }
 
-    const now = new Date();
-    const invoiceAmount = this.requireWholeVnd(invoice.grandTotal, 'Invoice amount');
-    const laborTotal = this.requireWholeVnd(invoice.laborTotal, 'Labor total');
-    const partsTotal = this.requireWholeVnd(invoice.partsTotal, 'Parts total');
-    const commissionAmount = this.requireWholeVnd(
-      invoice.commissionAmount,
-      'Commission amount',
-    );
-    if (invoiceAmount !== laborTotal + partsTotal) {
-      throw new ConflictException('Invoice total snapshot is inconsistent');
+    // #23: an invoice already paid online has nothing left to settle in
+    // cash; confirming cash here charged the technician a platform fee on
+    // money FixHome already held.
+    if (invoice.paymentStatus === PaymentStatus.PAID) {
+      throw new ConflictException('Hoá đơn này đã được thanh toán online, không xác nhận tiền mặt được nữa.');
     }
-    if (commissionAmount !== Math.round(laborTotal * FINANCE_COMMISSION_RATE)) {
-      throw new ConflictException('Invoice commission snapshot is inconsistent');
-    }
-    const commissionRate = FINANCE_COMMISSION_RATE;
+    const order = await manager.getRepository(ServiceOrder).findOne({
+      where: { id: supportCase.serviceOrderId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!order) throw new NotFoundException('Service order not found');
 
+    const now = new Date();
     settlement.status = CashSettlementStatus.CONFIRMED;
     settlement.confirmedByCustomerId = null;
-    settlement.confirmedAmount = invoiceAmount;
+    settlement.confirmedAmount = this.requireWholeVnd(invoice.grandTotal, 'Invoice amount');
     settlement.confirmedAt = now;
     settlement.resolvedByManagerId = actor.id;
     settlement.managerResolutionReason = reason;
     settlement.resolvedAt = now;
-    await settlementRepository.save(settlement);
-
-    if (invoice.paymentStatus !== PaymentStatus.PAID) {
-      invoice.paymentStatus = PaymentStatus.PAID;
-      invoice.paidAt = now;
-      await invoiceRepository.save(invoice);
-      await orderRepository.update(
-        { id: supportCase.serviceOrderId },
-        { paymentStatus: PaymentStatus.PAID },
-      );
-    }
-
-    const cashPaymentKey = `cash-settlement:${settlement.id}`;
-    const existingCashPayment = await paymentRepository.findOne({
-      where: { idempotencyKey: cashPaymentKey },
-      lock: { mode: 'pessimistic_write' },
-    });
-    if (existingCashPayment) {
-      if (
-        existingCashPayment.invoiceId !== invoice.id ||
-        existingCashPayment.purpose !== PaymentPurpose.INVOICE
-      ) {
-        throw new ConflictException(
-          'Cash settlement payment reference is already bound to another payment',
-        );
-      }
-    } else {
-      await paymentRepository.save(
-        paymentRepository.create({
-          invoiceId: invoice.id,
-          commissionDueId: null,
-          purpose: PaymentPurpose.INVOICE,
-          amount: invoiceAmount,
-          currency: 'VND',
-          mode: PaymentMode.DEMO,
-          provider: null,
-          status: PaymentAttemptStatus.VERIFIED,
-          idempotencyKey: cashPaymentKey,
-          providerReference: null,
-          requestedByUserId: actor.id,
-          failureCode: null,
-          requestedAt: settlement.declaredAt ?? now,
-          verifiedAt: now,
-        }),
-      );
-    }
-
-    if (supportCase.technicianId && commissionAmount > 0) {
-      const existingDue = await commissionDueRepository.findOne({
-        where: { serviceOrderId: supportCase.serviceOrderId },
-      });
-      if (existingDue) {
-        if (
-          Number(existingDue.laborTotalSnapshot) !== laborTotal ||
-          Number(existingDue.commissionRateSnapshot) !== commissionRate ||
-          Number(existingDue.dueAmount) !== commissionAmount
-        ) {
-          throw new ConflictException(
-            'Historical commission snapshot cannot be changed',
-          );
-        }
-      } else {
-        const dueDate = new Date(now);
-        dueDate.setDate(dueDate.getDate() + 7);
-        await commissionDueRepository.save(
-          commissionDueRepository.create({
-            technicianId: supportCase.technicianId,
-            serviceOrderId: supportCase.serviceOrderId,
-            cashSettlementId: settlement.id,
-            laborTotalSnapshot: laborTotal,
-            commissionRateSnapshot: commissionRate,
-            dueAmount: commissionAmount,
-            status: CommissionDueStatus.PENDING,
-            dueDate,
-          }),
-        );
-      }
-    }
-
-    const existingPlatformDue = await platformDueRepository.findOne({
-      where: { serviceOrderId: supportCase.serviceOrderId },
-    });
-    if (existingPlatformDue) {
-      if (
-        existingPlatformDue.invoiceId !== invoice.id ||
-        Number(existingPlatformDue.laborTotalSnapshot) !== laborTotal ||
-        Number(existingPlatformDue.fixHomePartsTotalSnapshot) !== partsTotal ||
-        Number(existingPlatformDue.commissionRateSnapshot) !== commissionRate ||
-        Number(existingPlatformDue.commissionAmountSnapshot) !== commissionAmount ||
-        Number(existingPlatformDue.dueAmount) !== commissionAmount + partsTotal
-      ) {
-        throw new ConflictException(
-          'Historical platform due snapshot cannot be changed',
-        );
-      }
-    } else {
-      await platformDueRepository.save(
-        platformDueRepository.create({
-          invoiceId: invoice.id,
-          serviceOrderId: supportCase.serviceOrderId,
-          laborTotalSnapshot: laborTotal,
-          fixHomePartsTotalSnapshot: partsTotal,
-          commissionRateSnapshot: commissionRate,
-          commissionAmountSnapshot: commissionAmount,
-          dueAmount: commissionAmount + partsTotal,
-          status: PlatformDueStatus.PENDING,
-        }),
-      );
-    }
+    const saved = await settlementRepository.save(settlement);
+    // Same consequences as a customer confirmation (#9): the invoice formula,
+    // dues and wallet settlement live in one place.
+    const finance = this.moduleRef.get(FinanceService, { strict: false });
+    await finance.applyConfirmedCash(manager, { order, invoice, settlement: saved, actor, now });
   }
 
   private validateFinalStatus(

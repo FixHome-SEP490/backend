@@ -4,6 +4,7 @@ import {
   NotFoundException,
   Optional,
 } from '@nestjs/common';
+import { maskAccountNumbersInText } from '../../shared/utils/bank-account-mask';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
@@ -167,6 +168,8 @@ export class WalletService {
     idempotencyKey: string;
     description?: string | null;
     allowNegative?: boolean;
+    /** ADJUSTMENT only: take the amount off instead of adding it. */
+    debit?: boolean;
     manager?: EntityManager;
   }): Promise<{ wallet: Wallet; transaction: WalletTransaction }> {
     const {
@@ -178,6 +181,7 @@ export class WalletService {
       idempotencyKey,
       description,
       allowNegative = false,
+      debit = false,
       manager: externalManager,
     } = params;
 
@@ -227,8 +231,8 @@ export class WalletService {
           balanceAfter = balanceBefore - amount;
           break;
         case WalletTransactionType.ADJUSTMENT:
-          // Controlled by caller amount sign if needed, but here positive = add, caller can differentiate
-          balanceAfter = balanceBefore + amount;
+          // The amount is always positive; the direction shows in balanceBefore/After.
+          balanceAfter = debit ? balanceBefore - amount : balanceBefore + amount;
           break;
         default:
           throw new BusinessException(
@@ -347,10 +351,7 @@ export class WalletService {
     }
 
     const wallet = await this.getOrCreateWallet(technicianId);
-    const amount =
-      dto.type === AdjustmentType.CREDIT
-        ? Math.abs(dto.amount)
-        : -Math.abs(dto.amount);
+    const amount = Math.abs(dto.amount);
     const idempotencyKey = `ADJUSTMENT:${technicianId}:${Date.now()}`;
 
     return this.dataSource.transaction(async (manager) => {
@@ -361,6 +362,7 @@ export class WalletService {
         referenceType: 'ADMIN_ADJUSTMENT',
         referenceId: actor.id,
         idempotencyKey,
+        debit: dto.type !== AdjustmentType.CREDIT,
         description: `Admin điều chỉnh (${dto.type === AdjustmentType.CREDIT ? '+' : '-'}${Math.abs(dto.amount).toLocaleString('vi-VN')} ₫): ${dto.reason.trim()}`,
         allowNegative: false,
         manager,
@@ -418,7 +420,10 @@ export class WalletService {
       .skip((page - 1) * limit)
       .take(limit);
 
-    const [data, total] = await qb.getManyAndCount();
+    const [rows, total] = await qb.getManyAndCount();
+    const data = rows.map((row) => Object.assign(Object.create(Object.getPrototypeOf(row) as object) as WalletTransaction, row, {
+      description: maskAccountNumbersInText(row.description),
+    }));
     return { data, total };
   }
 

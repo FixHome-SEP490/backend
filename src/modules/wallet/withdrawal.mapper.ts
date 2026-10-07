@@ -1,4 +1,5 @@
 import { WithdrawalStatus } from '../../shared/enums';
+import { maskAccountNumber } from '../../shared/utils/bank-account-mask';
 import { WithdrawalResponseDto } from './dto';
 import { WithdrawalRequest } from './entities';
 
@@ -17,7 +18,7 @@ export function toWithdrawalResponse(
     amount: Number(withdrawal.amount),
     bankBin: withdrawal.bankBin ?? null,
     bankName: withdrawal.bankName ?? null,
-    bankAccountNumber: withdrawal.bankAccountNumber ?? null,
+    bankAccountNumber: maskAccountNumber(withdrawal.bankAccountNumber),
     bankAccountName: withdrawal.bankAccountName ?? null,
     status: withdrawal.status,
     requestedAt: withdrawal.requestedAt,
