@@ -9,7 +9,7 @@
  */
 export const PAYOUT_PROVIDER = Symbol('PAYOUT_PROVIDER');
 
-export type PayoutProviderName = 'payos' | 'mock';
+export type PayoutProviderName = 'payos' | 'disabled';
 
 /** The three outcomes the withdrawal flow acts on. */
 export type PayoutOutcome = 'SUCCEEDED' | 'PROCESSING' | 'FAILED';

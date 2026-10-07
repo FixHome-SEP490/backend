@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-07 18:53 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/order-timing-and-matching
+> Cập nhật lần cuối: 2026-10-07 19:15 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/remaining-bugs-and-fake-data
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -134,6 +134,8 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 - REST `/api/v1`, JWT Bearer; refresh qua `POST /auth/refresh`. Role trong token viết thường (`customer`, `technician`, `service_manager`, `admin`).
 - Danh sách nhận `page` (1 đến 1.000.000) và `pageSize` hoặc `limit` (1 đến 100); `status` phải đúng enum. Sai trả 400.
+- Thu nhập kỹ thuật viên (`/technicians/me/earnings`, dashboard) lấy tiền công và hoa hồng từ hoá đơn, chỉ tính đơn kỹ thuật viên giữ tới lúc hoàn tất; "thu nhập tháng" tính từ đầu tháng theo giờ Việt Nam.
+- Chẩn đoán AI (`POST /ai/diagnoses`) bắt buộc `description` có chữ (BRX-064), sai trả 400.
 - Lỗi nghiệp vụ trả `error.code`: kỹ thuật viên không đủ điều kiện nhận việc là `TECHNICIAN_NOT_ELIGIBLE` (409) kèm lý do; chỉ tài khoản bị khoá hay tạm ngưng mới là `WORK_SUSPENDED` (403).
 - Thông báo mới: `ORDER_DEPARTURE_WARNING` (đến giờ hẹn mà kỹ thuật viên chưa xuất phát), `BOOKING_MATCHING_EXHAUSTED` (hết kỹ thuật viên trong danh sách).
 - Socket.IO namespace `/chat`, xác thực bằng `auth: { token }`. Server phát `connect:ready`, `message:new`, `message:updated`, `message:deleted`, `conversation:updated`, `typing`, và các sự kiện gọi thoại `call:*`. Client gửi `conversation:join`, `conversation:leave`, `typing`, `call:*`.
@@ -149,7 +151,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ### Biến môi trường (chỉ tên, xem `.env.example`)
 
-`PORT`, `CORS_ORIGIN`, `FRONTEND_URL`; `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_NAME`, `DATABASE_USER`, `DATABASE_PASSWORD`, `DATABASE_SSL`; `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `JWT_ACCESS_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN`; `AI_SERVICE_URL`, `AI_SERVICE_URL_DOCKER`; `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_KYC_BUCKET`, `SUPABASE_KYC_SIGNED_URL_TTL_SECONDS`; `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`; `MAPTILER_API_KEY`; `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_CALLBACK_URL`, `GOOGLE_ALLOWED_APP_REDIRECTS`; `VNPAY_TMN_CODE`, `VNPAY_HASH_SECRET`, `VNPAY_PAYMENT_URL`, `VNPAY_RETURN_URL`, `VNPAY_QUERYDR_URL`; `PAYOUT_PROVIDER`, `PAYOS_PAYOUT_CLIENT_ID`, `PAYOS_PAYOUT_API_KEY`, `PAYOS_PAYOUT_CHECKSUM_KEY`, `PAYOUT_RECONCILE_INTERVAL_MS`, `MOCK_PAYOUT_BALANCE`; `WEBRTC_ICE_URLS`; `BACKGROUND_JOBS_INTERVAL_MS`; `MAIL_HOST`, `MAIL_PORT`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `MAIL_FROM` (đang thiếu trong `.env.example`).
+`PORT`, `CORS_ORIGIN`, `FRONTEND_URL`; `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_NAME`, `DATABASE_USER`, `DATABASE_PASSWORD`, `DATABASE_SSL`; `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `JWT_ACCESS_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN`; `AI_SERVICE_URL`, `AI_SERVICE_URL_DOCKER`; `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_KYC_BUCKET`, `SUPABASE_KYC_SIGNED_URL_TTL_SECONDS`; `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`; `MAPTILER_API_KEY`; `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_CALLBACK_URL`, `GOOGLE_ALLOWED_APP_REDIRECTS`; `VNPAY_TMN_CODE`, `VNPAY_HASH_SECRET`, `VNPAY_PAYMENT_URL`, `VNPAY_RETURN_URL`, `VNPAY_QUERYDR_URL`; `PAYOUT_PROVIDER`, `PAYOS_PAYOUT_CLIENT_ID`, `PAYOS_PAYOUT_API_KEY`, `PAYOS_PAYOUT_CHECKSUM_KEY`, `PAYOUT_RECONCILE_INTERVAL_MS`; `WEBRTC_ICE_URLS`; `BACKGROUND_JOBS_INTERVAL_MS`; `MAIL_HOST`, `MAIL_PORT`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `MAIL_FROM` (đang thiếu trong `.env.example`).
 
 ## 6. Chạy, kiểm thử và cổng chất lượng
 
@@ -177,12 +179,15 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - BRX-064 (PO 07/10/2026): chẩn đoán AI bắt buộc có mô tả, ảnh không bắt buộc.
 - Khi tài liệu chính thức lệch với code thì code là chuẩn; tài liệu chính thức đã được sửa khớp ngày 07/10/2026 (shortlist 1 đến 2, có ví và mức tối thiểu, AI tự host, PlatformDue trừ qua ví).
 - Không có xác thực giữa `backend` và `ai-service`; PO xác định đây không phải phạm vi cần làm.
+- Không có dữ liệu hay luồng giả lập (PO 07/10/2026): không mã QR thử khi nhận linh kiện; nạp ví chỉ qua VNPay khi `payment.mode` là `LIVE` (mặc định `LIVE`); rút tiền chỉ qua payOS, chưa cấu hình thì từ chối trước khi trừ ví; chưa cấu hình SMTP thì báo lỗi chứ không giả vờ đã gửi email; kỹ thuật viên chưa có đánh giá thì API trả `rating: null`.
+- Vi phạm huỷ đơn chỉ tạo khi quản lý bấm xác nhận (`confirmViolation` trong `POST cancellations/:id/review`); đủ ngưỡng thì tạm khoá theo `strike.*.threshold` và `*.suspension.hours`, sau đó số vi phạm đang tính được đặt lại, lịch sử giữ nguyên (BRX-033).
+- Đơn đã huỷ thì không thanh toán hoá đơn được nữa; các lần thanh toán đang chờ bị đóng với mã `ORDER_CANCELLED`. Không hoàn tiền.
 
 ## 8. Việc đang dở và rủi ro đã biết
 
-- Còn các lỗi mức trung bình và thấp của đợt rà soát 07/10/2026 đang sửa tiếp (số liệu thu nhập, KYC gửi lại, lịch sử của thợ cũ, xoá ảnh bằng chứng, huỷ đơn còn hoá đơn, vi phạm, khiếu nại theo booking, danh mục, cache tỉnh). Bảo hành do dev khác phụ trách.
-- Dữ liệu giả đang được gỡ theo yêu cầu PO 07/10/2026: mã QR thử của linh kiện, nạp ví chế độ DEMO, nhà cung cấp chi tiền giả, điểm đánh giá mặc định 5.0 cho kỹ thuật viên chưa có đánh giá.
-- Migration `1790000000026-DepartureWarning` thêm cột `service_orders.departure_warned_at` và hai khoá cấu hình; phải chạy `npm run migration:run` trên database dùng chung sau khi merge.
+- Lỗi của đợt rà soát 07/10/2026 đã sửa hết phần backend, trừ phần bảo hành (dev khác phụ trách).
+- Migration `1790000000027-HonestTechnicianRatings` đưa điểm của kỹ thuật viên chưa có đánh giá về 0 và mặc định cột là 0; phải chạy `npm run migration:run` trên database dùng chung sau khi merge.
+- `web` và `mobile` cần xử lý `rating: null` (chưa có đánh giá), nút "xác nhận vi phạm" ở trang huỷ đơn, và báo "chưa mở" khi nạp hay rút tiền bị từ chối.
 - `matching.max_shortlist` chỉ để hiển thị (đặt 2); API shortlist cố định 1 đến 2. Các khoá `ai.timeout_ms`, `ai.rate_limit_per_user_per_hour`, `ai.provider`, `matching.mode` được seed nhưng code không đọc.
 - Thông báo chỉ có REST, chưa có đẩy realtime hay push.
 - `POST invoices/:id/pay` ở chế độ `LIVE` dùng cổng xác minh chưa cấu hình (từ chối an toàn); thanh toán online thật đi qua VNPay URL và IPN.
@@ -190,5 +195,6 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-07 19:15 (UTC+7) | ToanAltF4 | fix/remaining-bugs-and-fake-data | Ghi các lỗi còn lại đã sửa, quy định không dữ liệu giả, vi phạm do quản lý xác nhận, thu nhập theo hoá đơn và migration 027
 - 2026-10-07 18:53 (UTC+7) | ToanAltF4 | fix/order-timing-and-matching | Thêm luật quá giờ hẹn BRX-063, tác vụ nền, mã lỗi mới, quyết định PO ngày 07/10 và cập nhật việc đang dở
 - 2026-10-07 14:43 (UTC+7) | ToanAltF4 | docs/repo-context | Tạo file context theo bộ quy tắc chung của bốn repo, ghi hiện trạng sau đợt sửa lỗi ngày 07/10/2026

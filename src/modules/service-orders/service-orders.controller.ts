@@ -1,4 +1,5 @@
 // src/modules/service-orders/service-orders.controller.ts
+import { ReviewCancellationDto } from './dto/review-cancellation.dto';
 import { OrderBoardQueryDto, OrderListQueryDto, StrikeListQueryDto } from './dto/order-list-query.dto';
 import { PageSizeQueryDto } from '../../shared/dto/page-size-query.dto';
 import {
@@ -538,13 +539,7 @@ export class ServiceOrdersController {
   @ApiOperation({ summary: 'Review cancellation: waive strike, decide compensation' })
   async reviewCancellation(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body()
-    body: {
-      waiveStrike?: boolean;
-      waiveReason?: string;
-      compensationDecision?: 'GRANTED' | 'REJECTED';
-      grantPriorityBoost?: boolean;
-    },
+    @Body() body: ReviewCancellationDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
     const cancellation = await this.serviceOrdersService.reviewCancellation(

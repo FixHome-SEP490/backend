@@ -18,6 +18,10 @@ function setup(order: { departureWarnedAt: Date | null; status?: ServiceOrderSta
       return { affected: 1 };
     }),
     insert: vi.fn(async () => ({})),
+    createQueryBuilder: vi.fn(() => {
+      const qb = { update: vi.fn(() => qb), set: vi.fn(() => qb), where: vi.fn(() => qb), execute: vi.fn(async () => ({ affected: 0 })) };
+      return qb;
+    }),
     create: vi.fn((_e: unknown, v: object) => v),
     save: vi.fn(async (_e: unknown, v: object) => v),
   };

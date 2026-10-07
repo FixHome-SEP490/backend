@@ -380,7 +380,7 @@ describe('PartRequestsService', () => {
       ).rejects.toThrow('Invalid QR token for this part request');
     });
 
-    it('should accept TEST_SCAN token for dev testing and transition to RECEIVED', async () => {
+    it.each(['TEST_SCAN', 'TEST_RECEIVED', 'TEST'])('rejects the removed test token %s; parts are only received with the issued QR', async (qrToken) => {
       const request = {
         id: 'pr-1',
         technicianId: 'tech-1',
@@ -391,14 +391,10 @@ describe('PartRequestsService', () => {
 
       mockMutation(request);
 
-      const result = await service.receiveByQr(
-        'pr-1',
-        { qrToken: 'TEST_SCAN' },
-        { id: 'tech-1', role: Role.TECHNICIAN },
-      );
-
-      expect(result.status).toBe(PartRequestStatus.RECEIVED);
-      expect(result.receivedAt).toBeDefined();
+      await expect(
+        service.receiveByQr('pr-1', { qrToken }, { id: 'tech-1', role: Role.TECHNICIAN }),
+      ).rejects.toThrow(BusinessException);
+      expect(request.status).toBe(PartRequestStatus.REQUESTED);
     });
   });
 

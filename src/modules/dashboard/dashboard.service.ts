@@ -1,7 +1,8 @@
 // src/modules/dashboard/dashboard.service.ts
+import { completedOrderEarnings, displayRating, startOfVietnamMonth } from '../technicians/technician-earnings';
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { Booking } from '../bookings/entities/booking.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { BookingInvitation } from '../bookings/entities/booking-invitation.entity';
@@ -120,19 +121,14 @@ export class DashboardService {
       relations: ['serviceAreas'],
     });
 
-    const completedOrders = await this.assignmentRepo
-      .createQueryBuilder('ta')
-      .innerJoinAndSelect('service_orders', 'so', 'so.id = ta.service_order_id')
-      .where('ta.technician_id = :userId', { userId })
-      .andWhere('so.status = :status', { status: ServiceOrderStatus.COMPLETED })
-      .getRawMany();
-
+    // #21: completed orders the technician held, and this month's labour after
+    // the snapshotted commission (it used to be all time at a hard-coded 90%).
+    const completedOrders = await completedOrderEarnings(this.assignmentRepo.manager, userId);
     const completedOrdersCount = completedOrders.length;
-    let monthlyEarnings = 0;
-    for (const row of completedOrders) {
-      const gross = Number(row.so_labor_total || row.so_grand_total || 0);
-      monthlyEarnings += Math.round(gross * 0.9);
-    }
+    const monthStart = startOfVietnamMonth();
+    const monthlyEarnings = completedOrders
+      .filter((row) => row.completedAt && row.completedAt >= monthStart)
+      .reduce((sum, row) => sum + row.laborTotal - row.commission, 0);
 
     const latestInvitation = await this.invitationRepo.findOne({
       where: {
@@ -165,7 +161,7 @@ export class DashboardService {
         id: latestInvitation.id,
         bookingId: b.id,
         serviceTitle: b.serviceNameSnapshot || b.description || 'Yêu cầu sửa chữa',
-        address: b.addressTextSnapshot || 'TP. Hồ Chí Minh',
+        address: b.addressTextSnapshot || null,
         preferredStartAt: b.preferredStartAt,
         preferredEndAt: b.preferredEndAt,
         expiresAt: latestInvitation.expiresAt,
@@ -177,9 +173,9 @@ export class DashboardService {
       pendingInvitations,
       activeOrdersCount: activeAssignments.length,
       completedOrdersCount,
-      rating: Number(profile?.averageRating) || 5.0,
+      rating: displayRating(profile?.averageRating, profile?.ratingCount),
       ratingCount: profile?.ratingCount || 0,
-      reliabilityScore: profile?.reliabilityScore || 100,
+      reliabilityScore: profile?.reliabilityScore ?? null,
       monthlyEarnings,
       activeJob,
       latestInvitation: invitationDetail,
@@ -200,8 +196,9 @@ export class DashboardService {
       .groupBy('o.status')
       .getRawMany();
 
+    // IsNull(): a plain null in a TypeORM where is dropped, which counted every cancellation.
     const pendingCancellations = await this.cancellationRepo.count({
-      where: { reviewedByUserId: null as any },
+      where: { reviewedByUserId: IsNull() },
     });
 
     const activeOrders = await this.orderRepo.count({

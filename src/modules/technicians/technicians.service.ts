@@ -1,4 +1,5 @@
 // src/modules/technicians/technicians.service.ts
+import { completedOrderEarnings, displayRating } from './technician-earnings';
 import {
   BadRequestException,
   Injectable,
@@ -17,7 +18,6 @@ import { TechnicianAssignment } from '../service-orders/entities/technician-assi
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { CommissionDue } from '../service-orders/entities/commission-due.entity';
 import {
-  ServiceOrderStatus,
   CommissionDueStatus,
   ServicePricingMode,
   VerificationStatus,
@@ -398,19 +398,19 @@ export class TechniciansService {
     });
   }
 
+  /** Current commission rate in basis points, as invoices snapshot it. */
+  private async commissionRateBps(): Promise<number> {
+    const rows: Array<{ value: string }> = await this.assignmentRepo.manager.query(`SELECT value FROM system_configs WHERE key = 'commission.rate_bps'`);
+    const value = Number(rows[0]?.value);
+    return Number.isFinite(value) ? value : 1000;
+  }
+
   async getMyEarnings(userId: string) {
     const profile = await this.getMyProfile(userId);
 
-    const completedAssignments = await this.assignmentRepo
-      .createQueryBuilder('ta')
-      .innerJoinAndSelect('service_orders', 'so', 'so.id = ta.service_order_id')
-      .leftJoinAndSelect('bookings', 'b', 'b.id = so.booking_id')
-      .leftJoinAndSelect('users', 'u', 'u.id = b.customer_id')
-      .where('ta.technician_id = :userId', { userId })
-      .andWhere('so.status = :status', { status: ServiceOrderStatus.COMPLETED })
-      .orderBy('so.completed_at', 'DESC')
-      .getRawMany();
-
+    // #21: amounts come from the invoice snapshot, only for orders this
+    // technician held to completion; parts never count as labour.
+    const earnings = await completedOrderEarnings(this.assignmentRepo.manager, userId);
     const commissionDues = await this.commissionDueRepo.find({
       where: { technicianId: userId },
     });
@@ -418,25 +418,21 @@ export class TechniciansService {
     let totalGrossLabor = 0;
     let totalCommission = 0;
 
-    const payouts = completedAssignments.map((row) => {
-      const gross = Number(row.so_labor_total || row.so_grand_total || 0);
-      const fee = Math.round(gross * 0.1);
-      const net = gross - fee;
-
-      totalGrossLabor += gross;
-      totalCommission += fee;
-
+    const payouts = earnings.map((row) => {
+      totalGrossLabor += row.laborTotal;
+      totalCommission += row.commission;
       return {
-        orderId: row.so_id,
-        orderCode: row.so_code || `#ORD-${String(row.so_id).slice(0, 8)}`,
-        date: formatVnDate(row.so_completed_at ?? row.ta_created_at),
-        customer: row.u_full_name || 'Khách hàng FixHome',
-        gross,
-        platformFee: fee,
-        net,
+        orderId: row.orderId,
+        orderCode: row.code ?? `#ORD-${row.orderId.slice(0, 8)}`,
+        date: row.completedAt ? formatVnDate(row.completedAt) : null,
+        customer: row.customerName ?? '',
+        gross: row.laborTotal,
+        platformFee: row.commission,
+        net: row.laborTotal - row.commission,
         status: 'COMPLETED',
       };
     });
+    const commissionRateBps = await this.commissionRateBps();
 
     const pendingDues = commissionDues.filter((d) => d.status === CommissionDueStatus.PENDING);
     const pendingDueTotal = pendingDues.reduce((acc, cur) => acc + Number(cur.dueAmount || 0), 0);
@@ -448,10 +444,10 @@ export class TechniciansService {
       totalNet: totalGrossLabor - totalCommission,
       pendingDueCount: pendingDues.length,
       pendingDueAmount: pendingDueTotal,
-      rating: Number(profile.averageRating) || 5.0,
+      rating: displayRating(profile.averageRating, profile.ratingCount),
       ratingCount: profile.ratingCount || 0,
-      reliability: profile.reliabilityScore || 100,
-      commissionRatePercent: 10,
+      reliability: profile.reliabilityScore ?? null,
+      commissionRatePercent: commissionRateBps / 100,
       payouts,
     };
   }

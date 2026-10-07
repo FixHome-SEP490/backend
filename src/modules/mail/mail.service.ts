@@ -1,5 +1,5 @@
 // src/modules/mail/mail.service.ts
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
@@ -21,7 +21,7 @@ export class MailService {
 
     if (!user || !pass) {
       this.logger.warn(
-        'Mail credentials (MAIL_USERNAME/MAIL_PASSWORD) are not fully configured. Email sending will be mocked in logs.',
+        'Mail credentials (MAIL_USERNAME/MAIL_PASSWORD) are not fully configured. Emails (OTP) cannot be sent until they are.',
       );
       return;
     }
@@ -143,10 +143,9 @@ export class MailService {
 
   private async sendMail(to: string, subject: string, html: string): Promise<void> {
     if (!this.transporter) {
-      this.logger.log(
-        `[MOCK_MAIL] To: ${to} | Subject: ${subject} | (Transporter not configured, skipping actual SMTP send)`,
-      );
-      return;
+      // No pretend sends (PO 07/10/2026): the user would wait for an OTP that never comes.
+      this.logger.error(`Mail is not configured (MAIL_USERNAME/MAIL_PASSWORD); could not send "${subject}"`);
+      throw new ServiceUnavailableException('Hệ thống chưa gửi được email lúc này. Vui lòng thử lại sau hoặc liên hệ FixHome.');
     }
 
     try {

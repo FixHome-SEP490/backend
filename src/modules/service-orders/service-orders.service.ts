@@ -1,4 +1,5 @@
 import { closeOrderPartRequests, assertPartsResolved, usedPartQuantities, holderPartRequests, releaseOutgoingTechnicianPartRequests } from '../part-requests/part-request-lifecycle';
+import { Payment } from '../finance/entities/payment.entity';
 import { PartRequest } from '../part-requests/entities/part-request.entity';
 import { Injectable, Logger, ForbiddenException, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -50,6 +51,7 @@ import {
   ServicePricingMode,
   PartSource,
   PartWarrantyOption,
+  PaymentAttemptStatus,
 } from '../../shared/enums';
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
@@ -374,8 +376,19 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   private async presentOrder(order: ServiceOrder): Promise<ServiceOrder> {
     const manager = this.dataSource.manager;
     const booking = await manager.findOneByOrFail(Booking, { id: order.bookingId });
-    const assignment = await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: order.id }, order: { assignedAt: 'DESC' } });
+    // The technician holding the order now. A technician who withdrew or was
+    // replaced is not shown (name, phone, last GPS); a completed order keeps
+    // its finishing technician because that assignment stays active.
+    const assignment = await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: order.id, isActive: true } })
+      ?? (order.status === ServiceOrderStatus.COMPLETED
+        ? await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: order.id }, order: { assignedAt: 'DESC' } })
+        : null);
     const technician = assignment ? await manager.findOneBy(User, { id: assignment.technicianId }) : null;
+    if (!assignment) {
+      order.technicianLastLat = null;
+      order.technicianLastLng = null;
+      order.technicianLocationUpdatedAt = null;
+    }
     const customer = await manager.findOneBy(User, { id: booking.customerId });
     const quotation = await manager.findOne(Quotation, { where: { serviceOrderId: order.id }, relations: ['items'], order: { version: 'DESC' } });
     const history = await this.historyRepo.find({ where: { serviceOrderId: order.id }, order: { createdAt: 'ASC' } });
@@ -666,18 +679,22 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     evidenceId: string,
     actor: { id: string; role: string },
   ): Promise<void> {
-    await authorizeOrder(this.dataSource.manager, orderId, actor);
-    const evidence = await this.evidenceRepo.findOne({
-      where: { id: evidenceId, serviceOrderId: orderId },
+    // BRX-037: evidence that let the order move on stays. Only the technician
+    // holding the order deletes, under the order lock, and every deletion is audited.
+    const evidence = await this.dataSource.transaction(async manager => {
+      const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
+      const found = await manager.findOne(RepairEvidence, { where: { id: evidenceId, serviceOrderId: orderId } });
+      if (!found) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Evidence not found');
+      if (order.completionRequestedAt || [ServiceOrderStatus.COMPLETED, ServiceOrderStatus.CANCELLED].includes(order.status)) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Cannot delete evidence after completion requested');
+      }
+      if (found.type === EvidenceType.BEFORE && order.status !== ServiceOrderStatus.EN_ROUTE) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Ảnh trước khi sửa đã dùng để bắt đầu sửa, không xoá được');
+      }
+      await manager.delete(RepairEvidence, { id: evidenceId, serviceOrderId: orderId });
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'EVIDENCE_DELETE', resourceType: 'service_order', resourceId: orderId, before: { evidenceId, type: found.type, mediaUrl: found.mediaUrl } });
+      return found;
     });
-    if (!evidence) {
-      throw new BusinessException(ErrorCodes.NOT_FOUND, 'Evidence not found');
-    }
-    const order = await this.dataSource.manager.findOneBy(ServiceOrder, { id: orderId });
-    if (order?.completionRequestedAt || order?.status === ServiceOrderStatus.COMPLETED) {
-      throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Cannot delete evidence after completion requested');
-    }
-    await this.evidenceRepo.delete({ id: evidenceId, serviceOrderId: orderId });
     try {
       await this.evidenceStorage.delete(evidence.mediaUrl);
     } catch {
@@ -835,6 +852,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   async reviewCancellation(
     cancellationId: string,
     body: {
+      confirmViolation?: boolean;
       waiveStrike?: boolean;
       waiveReason?: string;
       compensationDecision?: 'GRANTED' | 'REJECTED';
@@ -871,6 +889,26 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
           { priorityBoostUntil: boostUntil },
         );
       }
+    }
+
+    // BRX-032/033: a cancellation becomes a strike only when staff confirm it
+    // was a violation. Customer and technician cancellations can carry one;
+    // staff cancellations cannot. Reaching the threshold suspends the account.
+    if (body.confirmViolation && !cancellation.strikeApplied) {
+      const role = cancellation.actor === CancelActor.CUSTOMER ? Role.CUSTOMER : cancellation.actor === CancelActor.TECHNICIAN ? Role.TECHNICIAN : null;
+      if (!role) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Only customer or technician cancellations can be a violation');
+      await this.dataSource.transaction(async manager => {
+        const windowDays = await this.configService.getInt('strike.window.days', 30);
+        await manager.save(CancellationStrike, manager.create(CancellationStrike, {
+          userId: cancellation.actorUserId,
+          cancellationId: cancellation.id,
+          status: StrikeStatus.ACTIVE,
+          expiresAt: new Date(Date.now() + windowDays * 86_400_000),
+        }));
+        await manager.update(Cancellation, cancellation.id, { strikeApplied: true });
+        await this.checkStrikeThreshold(cancellation.actorUserId, role, manager);
+      });
+      cancellation.strikeApplied = true;
     }
 
     if (body.waiveStrike && cancellation.strikeApplied) {
@@ -1002,7 +1040,9 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         'technician_assignments',
         'ta',
         'ta.service_order_id = o.id',
-      ).andWhere('ta.technician_id = :userId', { userId });
+      ).andWhere('ta.technician_id = :userId', { userId })
+        // The last assignment is the technician who held the order at the end.
+        .andWhere('ta.assigned_at = (SELECT MAX(x.assigned_at) FROM technician_assignments x WHERE x.service_order_id = o.id)');
     }
 
     qb.orderBy('o.completedAt', 'DESC')
@@ -1058,6 +1098,13 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     await manager.insert(OrderStatusHistory, { serviceOrderId: order.id, fromStatus: previous, toStatus: next, actorUserId: actor.id, actorRole: actor.role, reason });
     await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'ORDER_TRANSITION', resourceType: 'service_order', resourceId: order.id, before: { status: previous }, after: { status: next, reason } });
     if ([ServiceOrderStatus.CANCELLED, ServiceOrderStatus.COMPLETED].includes(next)) await closeOrderPartRequests(manager, order.id, next === ServiceOrderStatus.CANCELLED);
+    if (next === ServiceOrderStatus.CANCELLED) {
+      // #27: nothing is paid on a cancelled order; open attempts on its invoice are closed.
+      await manager.createQueryBuilder().update(Payment)
+        .set({ status: PaymentAttemptStatus.CANCELLED, failureCode: 'ORDER_CANCELLED' })
+        .where('status = :pending AND invoice_id IN (SELECT id FROM invoices WHERE service_order_id = :orderId)', { pending: PaymentAttemptStatus.PENDING, orderId: order.id })
+        .execute();
+    }
     order.status = next;
   }
 
@@ -1352,6 +1399,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         );
       }
 
+      await manager.update(CancellationStrike, { userId, status: StrikeStatus.ACTIVE }, { status: StrikeStatus.EXPIRED });
       this.logger.warn(
         `User ${userId} suspended until ${suspendedUntil.toISOString()} (${activeStrikes} active strikes)`,
       );
