@@ -14,6 +14,7 @@ import { ServiceOrderStatus, BookingStatus, InvitationStatus, Role } from '../..
 import { Booking } from '../bookings/entities/booking.entity';
 import { BookingInvitation } from '../bookings/entities/booking-invitation.entity';
 import { technicianEligibility } from '../bookings/technician-eligibility';
+import { releaseOutgoingTechnicianPartRequests } from '../part-requests/part-request-lifecycle';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { MessagingService } from '../messaging/messaging.service';
 import { AcceptGreetingPublisher } from '../messaging/accept-greeting.publisher';
@@ -58,6 +59,8 @@ export class TechnicianAssignmentService {
       if (![BookingStatus.SUBMITTED, BookingStatus.MATCHING, BookingStatus.CLOSED].includes(booking.status)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Booking is not open for manual assignment');
       const existingOrder = await manager.findOneBy(ServiceOrder, { bookingId });
       if (existingOrder && (![ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(existingOrder.status) || await manager.count(TechnicianAssignment, { where: { serviceOrderId: existingOrder.id, isActive: true } }))) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Booking already has an active technician');
+      // Serialises with the technician's own Accept, so two bookings cannot both take the same slot.
+      await manager.findOne(User, { where: { id: technicianId }, lock: { mode: 'pessimistic_write' } });
       const eligibility = await technicianEligibility(manager, technicianId, booking);
       if (!eligibility.eligible) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, eligibility.reason!);
 
@@ -92,7 +95,11 @@ export class TechnicianAssignmentService {
   }
 
   /**
-   * Override / manual assignment of technician to a service order by SM or Admin.
+   * SM/Admin replaces the technician of an order before departure. The result
+   * must look like that technician accepted the booking themselves: booking
+   * MATCHED with no invitation left open, the new technician's chat attached to
+   * the order (the previous technician's thread turns read-only), the greeting
+   * sent, and the previous technician's unpicked part requests released.
    * P4.5: POST /technicians/:id/assign
    */
   async overrideAssign(
@@ -103,49 +110,52 @@ export class TechnicianAssignmentService {
   ): Promise<TechnicianAssignment> {
     if (![Role.ADMIN, Role.SERVICE_MANAGER].includes(actorUser.role as Role)) throw new ForbiddenException('Staff assignment permission required');
     if (!reason?.trim()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Assignment reason is required');
-    return this.dataSource.transaction(async (manager) => {
+    const ref = await this.orderRepo.findOneBy({ id: orderId });
+    if (!ref) throw new NotFoundException('Service order not found');
+    const result = await this.dataSource.transaction(async (manager) => {
+      // Booking first, then order, then technician: the order every matching command uses.
+      const booking = await manager.findOne(Booking, { where: { id: ref.bookingId }, lock: { mode: 'pessimistic_write' } });
       const order = await manager.findOne(ServiceOrder, { where: { id: orderId }, lock: { mode: 'pessimistic_write' } });
-      if (!order) throw new NotFoundException('Service order not found');
+      if (!booking || !order) throw new NotFoundException('Service order not found');
       // Mid-job replacement needs the DEV2 financial/manual resolution workflow.
       if (order.status !== ServiceOrderStatus.ACCEPTED) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Only pre-departure reassignment is supported; later replacement requires manual resolution');
       await manager.findOne(User, { where: { id: technicianId }, lock: { mode: 'pessimistic_write' } });
-      const booking = await manager.findOneByOrFail(Booking, { id: order.bookingId });
-      const eligibility = await technicianEligibility(manager, technicianId, booking, orderId);
-      if (!eligibility.eligible) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, eligibility.reason!);
-      // 1. Deactivate existing active assignment if any
       const existingAssignment = await manager.findOne(TechnicianAssignment, {
         where: { serviceOrderId: orderId, isActive: true },
       });
+      if (existingAssignment?.technicianId === technicianId) throw new BusinessException(ErrorCodes.CONFLICT, 'Technician already holds this order');
+      const eligibility = await technicianEligibility(manager, technicianId, booking, orderId);
+      if (!eligibility.eligible) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, eligibility.reason!);
+      const now = new Date();
 
       if (existingAssignment) {
         existingAssignment.isActive = false;
-        existingAssignment.unassignedAt = new Date();
-        existingAssignment.unassignReason =
-          reason || 'Overridden by Staff/Admin';
+        existingAssignment.unassignedAt = now;
+        existingAssignment.unassignReason = reason;
         await manager.save(existingAssignment);
+        await releaseOutgoingTechnicianPartRequests(manager, orderId, existingAssignment.technicianId);
       }
 
-      // 2. Create new active assignment
-      const newAssignment = manager.create(TechnicianAssignment, {
+      const savedAssignment = await manager.save(manager.create(TechnicianAssignment, {
         serviceOrderId: orderId,
         technicianId,
         isActive: true,
-        assignedAt: new Date(),
-      });
-      const savedAssignment = await manager.save(newAssignment);
+        assignedAt: now,
+      }));
 
-      // 3. Record status history for reassignment
-      const history = manager.create(OrderStatusHistory, {
+      await manager.createQueryBuilder().update(BookingInvitation).set({ status: InvitationStatus.CANCELLED, respondedAt: now }).where('booking_id = :bookingId AND status IN (:...statuses)', { bookingId: booking.id, statuses: [InvitationStatus.PENDING, InvitationStatus.STANDBY] }).execute();
+      if (booking.status !== BookingStatus.MATCHED) await manager.update(Booking, booking.id, { status: BookingStatus.MATCHED });
+      await this.messagingService.ensureConversation(manager, booking, technicianId);
+      await this.messagingService.attachToServiceOrder(manager, booking.id, technicianId, orderId);
+
+      await manager.save(manager.create(OrderStatusHistory, {
         serviceOrderId: orderId,
         fromStatus: order.status,
         toStatus: order.status,
         actorUserId: actorUser.id,
         actorRole: actorUser.role,
-        reason: reason || 'Technician manually assigned/reassigned by Staff/Admin',
-      });
-      await manager.save(history);
-
-      // 4. Audit Log
+        reason,
+      }));
       await this.auditLogService.logWithManager(manager, {
         actorUserId: actorUser.id,
         actorRole: actorUser.role,
@@ -159,11 +169,10 @@ export class TechnicianAssignmentService {
         },
       });
 
-      this.logger.log(
-        `Technician ${technicianId} assigned to order ${orderId} by ${actorUser.id}`,
-      );
-
-      return savedAssignment;
+      this.logger.log(`Technician ${technicianId} assigned to order ${orderId} by ${actorUser.id}`);
+      return { assignment: savedAssignment, bookingId: booking.id, orderCode: order.code };
     });
+    await this.acceptGreeting?.send({ bookingId: result.bookingId, technicianId, serviceOrderId: orderId, orderCode: result.orderCode });
+    return result.assignment;
   }
 }

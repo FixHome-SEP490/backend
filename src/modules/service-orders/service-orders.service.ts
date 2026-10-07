@@ -1,10 +1,10 @@
-import { closeOrderPartRequests, assertPartsResolved, usedPartQuantities } from '../part-requests/part-request-lifecycle';
+import { closeOrderPartRequests, assertPartsResolved, usedPartQuantities, holderPartRequests, releaseOutgoingTechnicianPartRequests } from '../part-requests/part-request-lifecycle';
 import { PartRequest } from '../part-requests/entities/part-request.entity';
 import { Injectable, Logger, ForbiddenException, Optional } from '@nestjs/common';
 import { NotificationsService } from '../notifications/notifications.service';
 import { randomUUID } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository, LessThanOrEqual, In } from 'typeorm';
+import { DataSource, Repository, In } from 'typeorm';
 import { ServiceOrder } from './entities/service-order.entity';
 import { TechnicianAssignment } from './entities/technician-assignment.entity';
 import { OrderStatusHistory } from './entities/order-status-history.entity';
@@ -26,6 +26,7 @@ import { Booking } from '../bookings/entities/booking.entity';
 import { User } from '../users/entities/user.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { ServiceOrderStateMachine } from './service-order-state-machine';
+import { closeBookingForCancelledOrder, overdueDeadline } from './close-cancelled-booking';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import { haversineKm } from '../../shared/utils/geo';
@@ -151,19 +152,48 @@ export class ServiceOrdersService {
 
   // ── Queries ──
 
-  /** Lazy expiry (same pattern as expireAdditionalCosts): technician never started past the scheduled time + grace. */
+  /**
+   * Lazy expiry (same pattern as expireAdditionalCosts): the assigned
+   * technician never set out, and the customer's window has passed. The order
+   * goes through the state machine like any cancellation, the booking closes
+   * with it, and the cancellation is recorded against the technician so the
+   * Service Manager sees it in the cancellation review. Orders waiting for a
+   * replacement technician have no active assignment and are left alone.
+   */
   private async cancelOverdueOrders(): Promise<void> {
     const graceMinutes = await this.configService.getInt('order.overdue_grace_minutes', 60);
-    const overdue = await this.orderRepo.find({ where: { status: ServiceOrderStatus.ACCEPTED, scheduledAt: LessThanOrEqual(new Date(Date.now() - graceMinutes * 60000)) } });
-    for (const order of overdue) {
-      await this.dataSource.transaction(async manager => {
-        const fresh = await manager.findOne(ServiceOrder, { where: { id: order.id }, lock: { mode: 'pessimistic_write' } });
-        if (!fresh || fresh.status !== ServiceOrderStatus.ACCEPTED) return;
-        await manager.update(ServiceOrder, fresh.id, { status: ServiceOrderStatus.CANCELLED, cancelledAt: new Date() });
-        await closeOrderPartRequests(manager, fresh.id, true);
-        await manager.update(TechnicianAssignment, { serviceOrderId: fresh.id, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: 'Overdue: technician did not start on schedule' });
-        await manager.insert(OrderStatusHistory, { serviceOrderId: fresh.id, fromStatus: ServiceOrderStatus.ACCEPTED, toStatus: ServiceOrderStatus.CANCELLED, reason: 'Auto-cancelled: overdue past scheduled time' });
+    const cutoff = new Date(Date.now() - graceMinutes * 60000);
+    const candidates: Array<{ id: string }> = await this.orderRepo
+      .createQueryBuilder('o')
+      .innerJoin(Booking, 'b', 'b.id = o.booking_id')
+      .innerJoin(TechnicianAssignment, 'ta', 'ta.service_order_id = o.id AND ta.is_active = true')
+      .select('o.id', 'id')
+      .where('o.status = :status', { status: ServiceOrderStatus.ACCEPTED })
+      .andWhere('GREATEST(COALESCE(b.preferred_end_at, o.scheduled_at), ta.assigned_at) <= :cutoff', { cutoff })
+      .getRawMany();
+    for (const { id } of candidates) {
+      const cancelled = await this.dataSource.transaction(async manager => {
+        const ref = await manager.findOneBy(ServiceOrder, { id });
+        if (!ref) return null;
+        const booking = await manager.findOne(Booking, { where: { id: ref.bookingId }, lock: { mode: 'pessimistic_write' } });
+        const order = await manager.findOne(ServiceOrder, { where: { id }, lock: { mode: 'pessimistic_write' } });
+        const assignment = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: id, isActive: true });
+        if (!booking || !order || order.status !== ServiceOrderStatus.ACCEPTED || !assignment) return null;
+        const deadline = overdueDeadline(booking.preferredEndAt, order.scheduledAt, assignment.assignedAt, graceMinutes);
+        if (!deadline || deadline.getTime() > Date.now()) return null;
+        const reason = 'Tự huỷ: kỹ thuật viên không bắt đầu đi trong khung giờ hẹn';
+        await this.commitTransition(manager, order, ServiceOrderStatus.CANCELLED, { id: null, role: 'system' }, reason);
+        await closeBookingForCancelledOrder(manager, booking.id);
+        await manager.update(TechnicianAssignment, { serviceOrderId: id, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: reason });
+        await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: id, actor: CancelActor.TECHNICIAN, actorUserId: assignment.technicianId, reason, stateAtCancel: ServiceOrderStatus.ACCEPTED, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
+        return { order, customerId: booking.customerId, technicianId: assignment.technicianId };
       });
+      if (cancelled && this.notificationsService) {
+        const { order, customerId, technicianId } = cancelled;
+        const notify = (userId: string, message: string) => this.notificationsService!.createNotification({ userId, title: 'Đơn hàng đã bị huỷ', message, type: 'ORDER_CANCELLED', referenceId: order.id, referenceType: 'SERVICE_ORDER' }).catch(() => undefined);
+        if (customerId) void notify(customerId, `Đơn #${order.code} đã được huỷ vì kỹ thuật viên không đến trong khung giờ hẹn. Bạn có thể đặt lịch mới.`);
+        void notify(technicianId, `Đơn #${order.code} đã bị huỷ vì bạn không bắt đầu đi trong khung giờ hẹn.`);
+      }
     }
   }
 
@@ -487,6 +517,7 @@ export class ServiceOrdersService {
       const from = order.status;
       if (actor.role === Role.TECHNICIAN && !arrived && [ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(from)) {
         await manager.update(TechnicianAssignment, { serviceOrderId: orderId, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: body.reason });
+        await releaseOutgoingTechnicianPartRequests(manager, orderId, actor.id);
         await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: CancelActor.TECHNICIAN, actorUserId: actor.id, reason: body.reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
         if (this.notificationsService && booking.customerId) {
           void this.notificationsService.createNotification({
@@ -516,8 +547,7 @@ export class ServiceOrdersService {
         return order;
       }
       await this.commitTransition(manager, order, ServiceOrderStatus.CANCELLED, actor, body.reason);
-      await manager.update(Booking, booking.id, { status: BookingStatus.CANCELLED });
-      await manager.createQueryBuilder().update(BookingInvitation).set({ status: InvitationStatus.CANCELLED, respondedAt: new Date() }).where('booking_id = :id AND status IN (:...states)', { id: booking.id, states: [InvitationStatus.PENDING, InvitationStatus.STANDBY] }).execute();
+      await closeBookingForCancelledOrder(manager, booking.id);
       await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: actor.role as unknown as CancelActor, actorUserId: actor.id, reason: body.reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
       await manager.update(TechnicianAssignment, { serviceOrderId: orderId, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: body.reason });
       await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: arrived ? 'CANCELLATION_REQUIRES_REVIEW' : 'ORDER_CANCEL', resourceType: 'service_order', resourceId: orderId, after: { reason: body.reason, strikeApplied: false } });
@@ -976,7 +1006,7 @@ export class ServiceOrdersService {
     });
   }
 
-  private async commitTransition(manager: EntityManager, order: ServiceOrder, next: ServiceOrderStatus, actor: { id: string; role: string }, reason: string): Promise<void> {
+  private async commitTransition(manager: EntityManager, order: ServiceOrder, next: ServiceOrderStatus, actor: { id: string | null; role: string }, reason: string): Promise<void> {
     if (!ServiceOrderStateMachine.canTransition(order.status, next)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Illegal order transition');
     const previous = order.status;
     const now = new Date();
@@ -988,7 +1018,7 @@ export class ServiceOrdersService {
   }
 
   private async assertCompletionReady(manager: EntityManager, order: ServiceOrder): Promise<void> {
-    assertPartsResolved(await manager.find(PartRequest, { where: { serviceOrderId: order.id }, relations: ['items'] }));
+    assertPartsResolved(await holderPartRequests(manager, order.id));
     await expireAdditionalCosts(manager, order.id);
     const required = await this.configService.getInt('evidence.after.min_count', 1);
     if (await manager.count(RepairEvidence, { where: { serviceOrderId: order.id, type: EvidenceType.AFTER } }) < required) throw new BusinessException(ErrorCodes.EVIDENCE_REQUIRED_AFTER, 'AFTER evidence required');
@@ -1085,7 +1115,7 @@ export class ServiceOrdersService {
     }
 
     const requests = await manager.find(PartRequest, { where: { serviceOrderId: orderId }, relations: ['items'] });
-    assertPartsResolved(requests);
+    assertPartsResolved(await holderPartRequests(manager, orderId, requests));
     const billableQuantity = usedPartQuantities(requests);
 
     // Calculate totals
