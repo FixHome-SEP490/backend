@@ -58,8 +58,11 @@ export class NotificationsController {
 
   @Post()
   @UseGuards(RolesGuard)
-  @Roles(Role.ADMIN, Role.SERVICE_MANAGER, Role.TECHNICIAN)
-  @ApiOperation({ summary: 'Send notification to a user (Admin, SM, Technician)' })
+  // Technicians used to be allowed here, which let any technician push a
+  // notification with any title to any user id (a phishing channel). The
+  // system notifications technicians cause are created server side.
+  @Roles(Role.ADMIN, Role.SERVICE_MANAGER)
+  @ApiOperation({ summary: 'Send notification to a user (Admin, SM)' })
   async sendNotification(
     @Body() body: CreateNotificationDto,
   ) {

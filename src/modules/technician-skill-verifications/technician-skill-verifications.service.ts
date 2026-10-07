@@ -110,10 +110,12 @@ export class TechnicianSkillVerificationsService {
     });
     if (!skill) return null;
 
+    // The technician sees the outcome, not the reviewing admin's account
+    // (email, status), so the reviewer relation is not loaded here.
     const verification = await this.verificationRepo.findOne({
       where: { technicianSkillId: skill.id },
       order: { submittedAt: 'DESC' },
-      relations: VERIFICATION_RELATIONS,
+      relations: VERIFICATION_RELATIONS.filter((relation) => relation !== 'reviewedBy'),
     });
     return verification ? toSkillVerificationResponse(verification) : null;
   }
