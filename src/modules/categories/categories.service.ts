@@ -23,11 +23,14 @@ export class CategoriesService {
 
   async findAll(onlyActive = true): Promise<ServiceCategory[]> {
     const where = onlyActive ? { isActive: true } : {};
-    return this.categoryRepository.find({
+    const categories = await this.categoryRepository.find({
       where,
       order: { sortOrder: 'ASC', name: 'ASC' },
       relations: ['services'],
     });
+    // A disabled service is not bookable; listing it publicly led customers into a failing booking.
+    if (onlyActive) for (const category of categories) category.services = (category.services ?? []).filter((service) => service.isActive);
+    return categories;
   }
 
   async findById(id: string, onlyActive = false): Promise<ServiceCategory> {

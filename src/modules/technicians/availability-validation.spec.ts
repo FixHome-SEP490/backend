@@ -69,6 +69,17 @@ describe('Names, experience and avatar', () => {
   });
 });
 
+describe('BRX-064: AI diagnosis needs a written description', () => {
+  it.each(['', '   ', '\n'])('rejects %j even with photos attached', async (description) => {
+    expect(await failing(AnalyzeDto, { description, images: ['data:image/jpeg;base64,AAAA'] })).toEqual(['description']);
+  });
+
+  it('accepts a description with or without photos', async () => {
+    expect(await failing(AnalyzeDto, { description: 'Máy giặt không vắt' })).toEqual([]);
+    expect(await failing(AnalyzeDto, { description: 'Máy giặt không vắt', images: ['data:image/jpeg;base64,AAAA'] })).toEqual([]);
+  });
+});
+
 describe('AI limits match the AI Service', () => {
   it('stops a description or question the AI Service would refuse', async () => {
     expect(await failing(AnalyzeDto, { description: 'a'.repeat(2000) })).toEqual([]);

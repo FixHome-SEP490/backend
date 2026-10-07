@@ -14,52 +14,17 @@ describe('TechnicianWalletController', () => {
     listMyWithdrawals: vi.fn(),
   } as unknown as WalletService;
 
-  const controller = new TechnicianWalletController(
-    mockWalletService,
-    {} as BankAccountService,
-    {} as WithdrawalPayoutService,
-  );
   const mockUser = { id: 'tech-user-123' } as User;
 
-  it('topUp generates fallback idempotencyKey if omitted and returns formatted payload', async () => {
-    vi.mocked(mockWalletService.topUp).mockResolvedValue({
-      wallet: { id: 'w-1', balance: 500000 } as any,
-      transaction: { id: 'tx-1', balanceAfter: 500000 } as any,
-    });
-
-    const res = await controller.topUp(mockUser, { amount: 200000 }, {} as any);
-
-    expect(mockWalletService.topUp).toHaveBeenCalledWith(
-      'tech-user-123',
-      200000,
-      expect.stringMatching(/^TOPUP:tech-user-123:TOPUP_tech-use_\d+_[a-z0-9]+$/),
+  it.each([['DEMO'], ['nothing configured']])('refuses a top-up and credits nothing when the payment mode is %s (no simulated money)', async (mode) => {
+    const controllerWithoutGateway = new TechnicianWalletController(
+      mockWalletService,
+      {} as BankAccountService,
+      {} as WithdrawalPayoutService,
+      (mode === 'DEMO' ? { getPaymentMode: vi.fn().mockResolvedValue('DEMO') } : undefined) as never,
     );
-    expect(res).toEqual({
-      success: true,
-      paymentId: 'tx-1',
-      paymentUrl: null,
-      balanceAfter: 500000,
-      message: 'Nạp tiền vào ví thành công',
-    });
-  });
-
-  it('topUp honors provided idempotencyKey', async () => {
-    vi.mocked(mockWalletService.topUp).mockResolvedValue({
-      wallet: { id: 'w-1', balance: 700000 } as any,
-      transaction: { id: 'tx-2', balanceAfter: 700000 } as any,
-    });
-
-    const res = await controller.topUp(mockUser, {
-      amount: 200000,
-      idempotencyKey: 'CUSTOM_KEY_123',
-    }, {} as any);
-
-    expect(mockWalletService.topUp).toHaveBeenCalledWith(
-      'tech-user-123',
-      200000,
-      'TOPUP:tech-user-123:CUSTOM_KEY_123',
-    );
-    expect(res.paymentId).toBe('tx-2');
+    await expect(controllerWithoutGateway.topUp(mockUser, { amount: 200000 }, {} as any)).rejects.toThrow('Nạp tiền chưa mở');
+    expect(mockWalletService.topUp).not.toHaveBeenCalled();
   });
 
   it('topUp initiates VNPay transaction when mode is LIVE', async () => {

@@ -1,4 +1,5 @@
 // src/modules/bookings/bookings.service.ts
+import { displayRating } from '../technicians/technician-earnings';
 import { NotificationsService } from '../notifications/notifications.service';
 import { releaseOutgoingTechnicianPartRequests } from '../part-requests/part-request-lifecycle';
 import {
@@ -50,7 +51,7 @@ export interface TechnicianCandidate {
   userId: string;
   fullName: string;
   avatarUrl?: string | null;
-  averageRating: number;
+  averageRating: number | null;
   ratingCount: number;
   reliabilityScore: number;
   yearsExperience: number;
@@ -578,7 +579,9 @@ export class BookingsService {
         if (distB == null) return -1;
         if (distA !== distB) return distA - distB;
       }
-      if (Number(b.averageRating) !== Number(a.averageRating)) return Number(b.averageRating) - Number(a.averageRating);
+      const ratingA = displayRating(a.averageRating, a.ratingCount) ?? 0;
+      const ratingB = displayRating(b.averageRating, b.ratingCount) ?? 0;
+      if (ratingA !== ratingB) return ratingB - ratingA;
       return b.reliabilityScore - a.reliabilityScore;
     });
 
@@ -630,7 +633,7 @@ export class BookingsService {
         userId: tp.userId,
         fullName: tp.user?.fullName || '',
         avatarUrl: tp.user?.avatarUrl || null,
-        averageRating: Number(tp.averageRating),
+        averageRating: displayRating(tp.averageRating, tp.ratingCount),
         ratingCount: tp.ratingCount,
         reliabilityScore: tp.reliabilityScore,
         yearsExperience: tp.yearsExperience,

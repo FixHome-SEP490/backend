@@ -19,8 +19,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
-  MaxLength,
-} from 'class-validator';
+  MaxLength, Matches } from 'class-validator';
 
 /**
  * Hard ceilings enforced by the AI Service (app/schemas/diagnosis.py and
@@ -37,10 +36,14 @@ export const AI_MAX_HINT = 64;
 export class AnalyzeDto {
   @ApiProperty({
     description:
-      'What the customer typed. May be an empty string when they only sent a photo.',
+      'What the customer typed. Required (BRX-064); photos are optional.',
     example: 'may giat nha em khong vat, keu to luc quay',
   })
+  // BRX-064 (PO 07/10/2026): a diagnosis needs a written description; photos are
+  // optional. Whitespace alone is not a description.
   @IsString()
+  @IsNotEmpty({ message: 'Vui lòng mô tả vấn đề trước khi nhờ trợ lý chẩn đoán' })
+  @Matches(/\S/, { message: 'Vui lòng mô tả vấn đề trước khi nhờ trợ lý chẩn đoán' })
   @MaxLength(AI_MAX_DESCRIPTION)
   description: string;
 

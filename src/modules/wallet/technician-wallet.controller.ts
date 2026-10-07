@@ -13,6 +13,8 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { ErrorCodes } from '../../shared/constants';
+import { BusinessException } from '../../common/exceptions/business.exception';
 import {
   ApiBearerAuth,
   ApiForbiddenResponse,
@@ -109,11 +111,16 @@ export class TechnicianWalletController {
       dto.idempotencyKey?.trim() ||
       `TOPUP_${user.id.substring(0, 8)}_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
-    const paymentMode = this.financeService
-      ? await this.financeService.getPaymentMode().catch(() => PaymentMode.DEMO)
-      : PaymentMode.DEMO;
-
-    if (paymentMode === PaymentMode.LIVE && this.financeService) {
+    // PO 07/10/2026: no simulated money. Top-up goes through VNPay or is
+    // refused; a config read error is an error, never a silent switch to DEMO.
+    const paymentMode = this.financeService ? await this.financeService.getPaymentMode() : null;
+    if (paymentMode !== PaymentMode.LIVE || !this.financeService) {
+      throw new BusinessException(
+        ErrorCodes.PAYMENT_PROVIDER_UNAVAILABLE,
+        'Nạp tiền chưa mở vì cổng thanh toán chưa bật. Vui lòng liên hệ FixHome.',
+      );
+    }
+    {
       const isMobile =
         req.headers?.['x-client-platform'] === 'mobile' ||
         req.headers?.['user-agent']?.toLowerCase().includes('okhttp') ||
@@ -134,20 +141,6 @@ export class TechnicianWalletController {
       };
     }
 
-    // Scoped to the technician: another technician's key can neither swallow
-    // this top-up nor return its transaction.
-    const result = await this.walletService.topUp(
-      user.id,
-      dto.amount,
-      `TOPUP:${user.id}:${idempotencyKey}`,
-    );
-    return {
-      success: true,
-      paymentId: result.transaction.id,
-      paymentUrl: null,
-      balanceAfter: result.transaction.balanceAfter,
-      message: 'Nạp tiền vào ví thành công',
-    };
   }
 
   // ------------------------------------------------------------ bank account
