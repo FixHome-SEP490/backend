@@ -19,6 +19,17 @@ export class MailService {
     const user = this.configService.get<string>('MAIL_USERNAME');
     const pass = this.configService.get<string>('MAIL_PASSWORD');
 
+    // Integration tests opt in explicitly: nodemailer's JSON transport records
+    // the message and delivers nothing. Never available in production.
+    if (this.configService.get<string>('MAIL_TRANSPORT') === 'json') {
+      if (this.configService.get<string>('NODE_ENV') === 'production') {
+        throw new Error('MAIL_TRANSPORT=json is for tests and is not allowed in production');
+      }
+      this.logger.warn('MAIL_TRANSPORT=json: emails are recorded, not delivered (test runs only)');
+      this.transporter = nodemailer.createTransport({ jsonTransport: true });
+      return;
+    }
+
     if (!user || !pass) {
       this.logger.warn(
         'Mail credentials (MAIL_USERNAME/MAIL_PASSWORD) are not fully configured. Emails (OTP) cannot be sent until they are.',
