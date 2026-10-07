@@ -346,7 +346,11 @@ export class TechniciansService {
     const end = new Date(dto.endAt);
 
     if (isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start) {
-      throw new BadRequestException('Invalid date range for time off. endAt must be after startAt.');
+      throw new BadRequestException('Thời gian nghỉ không hợp lệ: giờ kết thúc phải sau giờ bắt đầu.');
+    }
+    // A time off that is already over blocks nothing and only clutters the list.
+    if (end.getTime() <= Date.now()) {
+      throw new BadRequestException('Thời gian nghỉ đã qua, hãy chọn thời gian từ bây giờ trở đi.');
     }
 
     const timeOff = this.timeOffRepo.create({
