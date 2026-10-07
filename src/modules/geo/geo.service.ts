@@ -122,11 +122,13 @@ export class GeoService {
     }
   }
 
-  private provincesCache: any = null;
+  /** Keyed by depth: a depth-1 list (no districts) must never answer a depth-2 request. */
+  private readonly provincesCache = new Map<number, any[]>();
 
   async getProvinces(depth = 2): Promise<any[]> {
-    if (this.provincesCache && Array.isArray(this.provincesCache) && this.provincesCache.length > 0) {
-      return this.provincesCache;
+    const cached = this.provincesCache.get(depth);
+    if (cached && cached.length > 0) {
+      return cached;
     }
     try {
       const response = await firstValueFrom(
@@ -134,7 +136,7 @@ export class GeoService {
           timeout: 10000,
         }),
       );
-      this.provincesCache = response.data;
+      if (Array.isArray(response.data)) this.provincesCache.set(depth, response.data);
       return response.data;
     } catch (error) {
       this.logger.warn(`Failed to fetch provinces from open-api.vn: ${(error as Error)?.message}`);

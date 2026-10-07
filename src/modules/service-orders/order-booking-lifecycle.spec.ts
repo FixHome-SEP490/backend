@@ -1,29 +1,55 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { EntityManager } from 'typeorm';
-import { closeBookingForCancelledOrder, overdueDeadline } from './close-cancelled-booking';
+import { closeBookingForCancelledOrder, departureWarningDue } from './close-cancelled-booking';
+import { newOrderCode } from './order-code';
+import { eligibilityErrorCode } from '../bookings/technician-eligibility';
+import { ServiceOrderStateMachine } from './service-order-state-machine';
 import { holderPartRequests, releaseOutgoingTechnicianPartRequests } from '../part-requests/part-request-lifecycle';
 import { technicianEligibility } from '../bookings/technician-eligibility';
 import type { Booking } from '../bookings/entities/booking.entity';
 import type { PartRequest } from '../part-requests/entities/part-request.entity';
-import { AccountStatus, BookingStatus, InvitationStatus, PartRequestStatus, Role, VerificationStatus } from '../../shared/enums';
+import { AccountStatus, BookingStatus, InvitationStatus, PartRequestStatus, Role, VerificationStatus, ServiceOrderStatus } from '../../shared/enums';
 
 const at = (iso: string) => new Date(iso);
 
-describe('When an accepted order counts as a no-show', () => {
-  it('counts from the end of the window, not its start', () => {
-    const deadline = overdueDeadline(at('2030-01-01T05:00:00Z'), at('2030-01-01T03:00:00Z'), at('2030-01-01T01:00:00Z'), 60);
-    expect(deadline).toEqual(at('2030-01-01T06:00:00Z'));
+describe('BRX-063: when the "not set out" warning is due', () => {
+  it('is the start of the customer window plus the grace minutes', () => {
+    expect(departureWarningDue(at('2030-01-01T03:00:00Z'), at('2030-01-01T03:00:00Z'), at('2030-01-01T01:00:00Z'), 0)).toEqual(at('2030-01-01T03:00:00Z'));
+    expect(departureWarningDue(at('2030-01-01T03:00:00Z'), null, at('2030-01-01T01:00:00Z'), 15)).toEqual(at('2030-01-01T03:15:00Z'));
   });
 
-  it('never before the technician accepted plus the grace period', () => {
-    // a late invitee accepted after the window had already closed
-    const deadline = overdueDeadline(at('2030-01-01T05:00:00Z'), null, at('2030-01-01T07:30:00Z'), 60);
-    expect(deadline).toEqual(at('2030-01-01T08:30:00Z'));
+  it('never comes before the technician accepted', () => {
+    expect(departureWarningDue(at('2030-01-01T03:00:00Z'), null, at('2030-01-01T04:20:00Z'), 0)).toEqual(at('2030-01-01T04:20:00Z'));
   });
 
-  it('falls back to the scheduled time when the booking has no window, and to none at all', () => {
-    expect(overdueDeadline(null, at('2030-01-01T03:00:00Z'), at('2030-01-01T01:00:00Z'), 30)).toEqual(at('2030-01-01T03:30:00Z'));
-    expect(overdueDeadline(null, null, at('2030-01-01T01:00:00Z'), 30)).toBeNull();
+  it('falls back to the scheduled time, and to none at all', () => {
+    expect(departureWarningDue(null, at('2030-01-01T03:00:00Z'), at('2030-01-01T01:00:00Z'), 0)).toEqual(at('2030-01-01T03:00:00Z'));
+    expect(departureWarningDue(null, null, at('2030-01-01T01:00:00Z'), 0)).toBeNull();
+  });
+});
+
+describe('Order codes use the Vietnam date', () => {
+  it('stamps an order made at 06:30 in Vietnam with that day, not the UTC day before', () => {
+    expect(newOrderCode(at('2030-01-01T23:30:00Z'))).toMatch(/^FH-20300102-[0-9A-F]{8}$/);
+    expect(newOrderCode(at('2030-01-02T10:00:00Z'))).toMatch(/^FH-20300102-/);
+  });
+});
+
+describe('Eligibility error codes', () => {
+  it('reserves WORK_SUSPENDED for a locked or suspended technician', () => {
+    expect(eligibilityErrorCode('Technician account is not active')).toBe('WORK_SUSPENDED');
+    expect(eligibilityErrorCode('Technician is unavailable or suspended')).toBe('WORK_SUSPENDED');
+    expect(eligibilityErrorCode('Outside working schedule')).toBe('TECHNICIAN_NOT_ELIGIBLE');
+    expect(eligibilityErrorCode('Minimum wallet balance is required to accept new jobs')).toBe('TECHNICIAN_NOT_ELIGIBLE');
+  });
+});
+
+describe('A replacement technician does not inherit EN_ROUTE', () => {
+  it('allows only EN_ROUTE back to ACCEPTED', () => {
+    expect(ServiceOrderStateMachine.canResetForReplacement(ServiceOrderStatus.EN_ROUTE)).toBe(true);
+    for (const status of [ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.UNDER_REPAIR, ServiceOrderStatus.COMPLETED, ServiceOrderStatus.CANCELLED]) {
+      expect(ServiceOrderStateMachine.canResetForReplacement(status)).toBe(false);
+    }
   });
 });
 

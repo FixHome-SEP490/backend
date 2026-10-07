@@ -502,65 +502,41 @@ export class PartRequestsService {
         );
       }
 
-      const isTestToken =
-        dto.qrToken?.trim() === 'TEST_SCAN' ||
-        dto.qrToken?.trim() === 'TEST_RECEIVED' ||
-        dto.qrToken?.trim() === 'TEST';
+      // Every receipt needs the token the Service Manager issued, within 48 hours,
+      // through the state machine. The TEST / TEST_SCAN / TEST_RECEIVED shortcut
+      // that skipped all three was removed (PO 07/10/2026: no simulated flows).
+      // Check state transition
+      if (
+        !PartRequestStateMachine.canTransitionWithFulfillment(
+          request.status,
+          PartRequestStatus.RECEIVED,
+          request.fulfillmentMethod,
+          Role.TECHNICIAN,
+        )
+      ) {
+        throw new BusinessException(
+          ErrorCodes.ORDER_INVALID_TRANSITION,
+          `Cannot receive parts when request status is ${request.status}`,
+        );
+      }
 
-      if (!isTestToken) {
-        // Check state transition
-        if (
-          !PartRequestStateMachine.canTransitionWithFulfillment(
-            request.status,
-            PartRequestStatus.RECEIVED,
-            request.fulfillmentMethod,
-            Role.TECHNICIAN,
-          )
-        ) {
-          throw new BusinessException(
-            ErrorCodes.ORDER_INVALID_TRANSITION,
-            `Cannot receive parts when request status is ${request.status}`,
-          );
-        }
+      // Validate QR Token
+      if (!request.qrToken || request.qrToken !== dto.qrToken.trim()) {
+        throw new BusinessException(
+          ErrorCodes.VALIDATION_FAILED,
+          'Invalid QR token for this part request',
+        );
+      }
 
-        // Validate QR Token
-        if (!request.qrToken || request.qrToken !== dto.qrToken.trim()) {
+      // Token expiry check: 48 hours
+      if (!request.qrGeneratedAt) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'QR token has no issue date');
+      if (request.qrGeneratedAt) {
+        const expiryMs = 48 * 60 * 60 * 1000;
+        if (Date.now() - new Date(request.qrGeneratedAt).getTime() > expiryMs) {
           throw new BusinessException(
-            ErrorCodes.VALIDATION_FAILED,
-            'Invalid QR token for this part request',
+            ErrorCodes.CONFLICT,
+            'QR token has expired. Please request SM to regenerate.',
           );
-        }
-
-        // Token expiry check: 48 hours
-        if (!request.qrGeneratedAt) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'QR token has no issue date');
-        if (request.qrGeneratedAt) {
-          const expiryMs = 48 * 60 * 60 * 1000;
-          if (Date.now() - new Date(request.qrGeneratedAt).getTime() > expiryMs) {
-            throw new BusinessException(
-              ErrorCodes.CONFLICT,
-              'QR token has expired. Please request SM to regenerate.',
-            );
-          }
-        }
-      } else {
-        // Test mode: allow receiving when request is in REQUESTED, READY, or DELIVERING
-        if (
-          ![
-            PartRequestStatus.REQUESTED,
-            PartRequestStatus.READY,
-            PartRequestStatus.DELIVERING,
-          ].includes(request.status)
-        ) {
-          throw new BusinessException(
-            ErrorCodes.ORDER_INVALID_TRANSITION,
-            `Cannot receive parts when request status is ${request.status}`,
-          );
-        }
-        if (!request.preparedByUserId) {
-          request.preparedByUserId = actor.id;
-        }
-        if (!request.qrGeneratedAt) {
-          request.qrGeneratedAt = new Date();
         }
       }
 

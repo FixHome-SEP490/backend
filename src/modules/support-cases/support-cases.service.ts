@@ -229,10 +229,12 @@ export class SupportCasesService {
         );
       }
       customerId = actor.id;
-      if (serviceOrder) {
+      // contextOrder covers a case opened with only the booking id; using
+      // serviceOrder here lost the technician (not told, not shown the case).
+      if (contextOrder) {
         const assignment = await this.assignmentRepository.findOne({
           where: {
-            serviceOrderId: serviceOrder.id,
+            serviceOrderId: contextOrder.id,
             isActive: true,
           },
         });

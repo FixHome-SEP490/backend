@@ -7,7 +7,7 @@ import {
   InternalServerError,
   UnauthorizedError,
 } from '@payos/node';
-import { MockPayoutProvider } from './mock-payout.provider';
+import { DisabledPayoutProvider } from './disabled-payout.provider';
 import { PayosPayoutProvider } from './payos-payout.provider';
 import { createPayoutProvider } from './payout-provider.factory';
 import {
@@ -28,69 +28,22 @@ function config(values: Record<string, string | undefined>) {
   return { get: (key: string) => values[key] } as never;
 }
 
-describe('MockPayoutProvider', () => {
-  it('pays an ordinary account immediately and takes it from the source', async () => {
-    const provider = new MockPayoutProvider(1_000_000);
-
-    const result = await provider.createPayout(instruction('0123456789'), 'k');
-
-    expect(result.outcome).toBe('SUCCEEDED');
-    expect(result.bankReference).toMatch(/^MOCK/);
-    expect(await provider.getSourceBalance()).toBe(900_000);
-  });
-
-  it('refuses an account ending in 0000, so the refund path can be tried', async () => {
-    const provider = new MockPayoutProvider(1_000_000);
-
-    await expect(
-      provider.createPayout(instruction('1234560000'), 'k'),
-    ).rejects.toBeInstanceOf(PayoutRejectedError);
-    expect(await provider.getSourceBalance()).toBe(1_000_000);
-  });
-
-  it('leaves an account ending in 9999 pending until someone asks', async () => {
-    const provider = new MockPayoutProvider(1_000_000);
-
-    const first = await provider.createPayout(instruction('1234569999'), 'k');
-    const later = await provider.findPayoutByReference('ref-1234569999');
-
-    expect(first.outcome).toBe('PROCESSING');
-    expect(later?.outcome).toBe('SUCCEEDED');
-  });
-
-  it('refuses when the simulated source is short', async () => {
-    const provider = new MockPayoutProvider(50_000);
-
-    await expect(
-      provider.createPayout(instruction('0123456789', 60_000), 'k'),
-    ).rejects.toBeInstanceOf(PayoutRejectedError);
-  });
-
-  it('answers the same reference twice with the same payout, never paying twice', async () => {
-    const provider = new MockPayoutProvider(1_000_000);
-
-    const first = await provider.createPayout(instruction('0123456789'), 'k');
-    const again = await provider.createPayout(instruction('0123456789'), 'k');
-
-    expect(again.payoutId).toBe(first.payoutId);
-    expect(await provider.getSourceBalance()).toBe(900_000);
-  });
-
-  it('has never heard of a reference it was not given', async () => {
-    const provider = new MockPayoutProvider(1_000_000);
-    expect(await provider.findPayoutByReference('nope')).toBeNull();
+describe('DisabledPayoutProvider', () => {
+  it('never pretends a payout happened', async () => {
+    const provider = new DisabledPayoutProvider();
+    await expect(provider.createPayout(instruction('0123456789'), 'key-1')).rejects.toBeInstanceOf(PayoutRejectedError);
+    expect(await provider.findPayoutByReference('ref-1')).toBeNull();
+    expect(await provider.getSourceBalance()).toBeNull();
   });
 });
 
 describe('createPayoutProvider', () => {
-  it('uses the simulator by default outside production', () => {
-    expect(createPayoutProvider(config({ NODE_ENV: 'development' })).name).toBe('mock');
+  it('disables payouts when nothing is configured outside production; there is no simulator', () => {
+    expect(createPayoutProvider(config({ NODE_ENV: 'development' })).name).toBe('disabled');
   });
 
-  it('refuses the simulator in production, where it would fake payments', () => {
-    expect(() =>
-      createPayoutProvider(config({ NODE_ENV: 'production', PAYOUT_PROVIDER: 'mock' })),
-    ).toThrow('not allowed in production');
+  it('refuses the removed simulator by name', () => {
+    expect(() => createPayoutProvider(config({ PAYOUT_PROVIDER: 'mock' }))).toThrow('must be "payos"');
   });
 
   it('refuses to guess in production when nothing is configured', () => {
@@ -119,7 +72,7 @@ describe('createPayoutProvider', () => {
 
   it('rejects an unknown provider name', () => {
     expect(() => createPayoutProvider(config({ PAYOUT_PROVIDER: 'momo' }))).toThrow(
-      'must be "payos" or "mock"',
+      'must be "payos"',
     );
   });
 });

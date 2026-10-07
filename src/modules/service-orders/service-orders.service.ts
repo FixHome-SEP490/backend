@@ -1,6 +1,7 @@
 import { closeOrderPartRequests, assertPartsResolved, usedPartQuantities, holderPartRequests, releaseOutgoingTechnicianPartRequests } from '../part-requests/part-request-lifecycle';
+import { Payment } from '../finance/entities/payment.entity';
 import { PartRequest } from '../part-requests/entities/part-request.entity';
-import { Injectable, Logger, ForbiddenException, Optional } from '@nestjs/common';
+import { Injectable, Logger, ForbiddenException, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { NotificationsService } from '../notifications/notifications.service';
 import { randomUUID } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -21,12 +22,13 @@ import { AdditionalCostItem } from './entities/additional-cost-item.entity';
 import { CustomerServiceConfirmation } from './entities/customer-service-confirmation.entity';
 import { BookingInvitation } from '../bookings/entities/booking-invitation.entity';
 import { BookingInvitationGroup } from '../bookings/entities/booking-invitation-group.entity';
-import { activateNextInvitation } from '../bookings/activate-next-invitation';
+import { activateNextInvitation, invitationActivatedHook } from '../bookings/activate-next-invitation';
 import { Booking } from '../bookings/entities/booking.entity';
 import { User } from '../users/entities/user.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { ServiceOrderStateMachine } from './service-order-state-machine';
-import { closeBookingForCancelledOrder, overdueDeadline } from './close-cancelled-booking';
+import { closeBookingForCancelledOrder, departureWarningDue } from './close-cancelled-booking';
+import { startBackgroundJob } from '../../common/background-job';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import { haversineKm } from '../../shared/utils/geo';
@@ -49,6 +51,7 @@ import {
   ServicePricingMode,
   PartSource,
   PartWarrantyOption,
+  PaymentAttemptStatus,
 } from '../../shared/enums';
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
@@ -89,8 +92,17 @@ export type StrikeListItem = CancellationStrike & {
 };
 
 @Injectable()
-export class ServiceOrdersService {
+export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ServiceOrdersService.name);
+  private departureTimer: NodeJS.Timeout | null = null;
+
+  onModuleInit(): void {
+    this.departureTimer = startBackgroundJob('departure sweep', this.logger, () => this.sweepDepartures());
+  }
+
+  onModuleDestroy(): void {
+    if (this.departureTimer) clearInterval(this.departureTimer);
+  }
 
   constructor(
     @InjectRepository(ServiceOrder)
@@ -152,49 +164,83 @@ export class ServiceOrdersService {
 
   // ── Queries ──
 
-  /**
-   * Lazy expiry (same pattern as expireAdditionalCosts): the assigned
-   * technician never set out, and the customer's window has passed. The order
-   * goes through the state machine like any cancellation, the booking closes
-   * with it, and the cancellation is recorded against the technician so the
-   * Service Manager sees it in the cancellation review. Orders waiting for a
-   * replacement technician have no active assignment and are left alone.
-   */
+  /** Kept for the list endpoints, which still run the sweep lazily on read. */
   private async cancelOverdueOrders(): Promise<void> {
-    const graceMinutes = await this.configService.getInt('order.overdue_grace_minutes', 60);
-    const cutoff = new Date(Date.now() - graceMinutes * 60000);
-    const candidates: Array<{ id: string }> = await this.orderRepo
+    await this.sweepDepartures();
+  }
+
+  /**
+   * BRX-063 (PO 07/10/2026). The appointment time is the start of the
+   * customer's window, or the acceptance if that came later. Once it has
+   * passed (plus `order.departure_grace_minutes`) and the technician has not
+   * set out, the technician and the customer are warned once; when
+   * `order.departure_cancel_minutes` more pass and the technician has still
+   * not set out, the order and the booking are cancelled and the cancellation
+   * is recorded against the technician for the Service Manager's review.
+   * Orders waiting for a replacement have no active assignment and are skipped.
+   */
+  async sweepDepartures(): Promise<void> {
+    const graceMinutes = await this.configService.getInt('order.departure_grace_minutes', 0);
+    const cancelMinutes = await this.configService.getInt('order.departure_cancel_minutes', 10);
+    const now = Date.now();
+    const accepted = () => this.orderRepo
       .createQueryBuilder('o')
       .innerJoin(Booking, 'b', 'b.id = o.booking_id')
       .innerJoin(TechnicianAssignment, 'ta', 'ta.service_order_id = o.id AND ta.is_active = true')
       .select('o.id', 'id')
-      .where('o.status = :status', { status: ServiceOrderStatus.ACCEPTED })
-      .andWhere('GREATEST(COALESCE(b.preferred_end_at, o.scheduled_at), ta.assigned_at) <= :cutoff', { cutoff })
+      .where('o.status = :status', { status: ServiceOrderStatus.ACCEPTED });
+    const toWarn: Array<{ id: string }> = await accepted()
+      .andWhere('o.departure_warned_at IS NULL')
+      .andWhere('GREATEST(COALESCE(b.preferred_start_at, o.scheduled_at), ta.assigned_at) <= :cutoff', { cutoff: new Date(now - graceMinutes * 60000) })
       .getRawMany();
-    for (const { id } of candidates) {
-      const cancelled = await this.dataSource.transaction(async manager => {
-        const ref = await manager.findOneBy(ServiceOrder, { id });
-        if (!ref) return null;
-        const booking = await manager.findOne(Booking, { where: { id: ref.bookingId }, lock: { mode: 'pessimistic_write' } });
-        const order = await manager.findOne(ServiceOrder, { where: { id }, lock: { mode: 'pessimistic_write' } });
-        const assignment = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: id, isActive: true });
-        if (!booking || !order || order.status !== ServiceOrderStatus.ACCEPTED || !assignment) return null;
-        const deadline = overdueDeadline(booking.preferredEndAt, order.scheduledAt, assignment.assignedAt, graceMinutes);
-        if (!deadline || deadline.getTime() > Date.now()) return null;
-        const reason = 'Tự huỷ: kỹ thuật viên không bắt đầu đi trong khung giờ hẹn';
-        await this.commitTransition(manager, order, ServiceOrderStatus.CANCELLED, { id: null, role: 'system' }, reason);
-        await closeBookingForCancelledOrder(manager, booking.id);
-        await manager.update(TechnicianAssignment, { serviceOrderId: id, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: reason });
-        await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: id, actor: CancelActor.TECHNICIAN, actorUserId: assignment.technicianId, reason, stateAtCancel: ServiceOrderStatus.ACCEPTED, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
-        return { order, customerId: booking.customerId, technicianId: assignment.technicianId };
-      });
-      if (cancelled && this.notificationsService) {
-        const { order, customerId, technicianId } = cancelled;
-        const notify = (userId: string, message: string) => this.notificationsService!.createNotification({ userId, title: 'Đơn hàng đã bị huỷ', message, type: 'ORDER_CANCELLED', referenceId: order.id, referenceType: 'SERVICE_ORDER' }).catch(() => undefined);
-        if (customerId) void notify(customerId, `Đơn #${order.code} đã được huỷ vì kỹ thuật viên không đến trong khung giờ hẹn. Bạn có thể đặt lịch mới.`);
-        void notify(technicianId, `Đơn #${order.code} đã bị huỷ vì bạn không bắt đầu đi trong khung giờ hẹn.`);
-      }
-    }
+    for (const { id } of toWarn) await this.warnNoDeparture(id, graceMinutes, cancelMinutes);
+    const toCancel: Array<{ id: string }> = await accepted()
+      .andWhere('o.departure_warned_at <= :cutoff', { cutoff: new Date(now - cancelMinutes * 60000) })
+      .getRawMany();
+    for (const { id } of toCancel) await this.cancelNoDeparture(id, cancelMinutes);
+  }
+
+  private async warnNoDeparture(id: string, graceMinutes: number, cancelMinutes: number): Promise<void> {
+    const warned = await this.dataSource.transaction(async manager => {
+      const ref = await manager.findOneBy(ServiceOrder, { id });
+      if (!ref) return null;
+      const booking = await manager.findOne(Booking, { where: { id: ref.bookingId }, lock: { mode: 'pessimistic_write' } });
+      const order = await manager.findOne(ServiceOrder, { where: { id }, lock: { mode: 'pessimistic_write' } });
+      const assignment = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: id, isActive: true });
+      if (!booking || !order || order.status !== ServiceOrderStatus.ACCEPTED || order.departureWarnedAt || !assignment) return null;
+      const due = departureWarningDue(booking.preferredStartAt, order.scheduledAt, assignment.assignedAt, graceMinutes);
+      if (!due || due.getTime() > Date.now()) return null;
+      await manager.update(ServiceOrder, id, { departureWarnedAt: new Date() });
+      await this.auditLogService.logWithManager(manager, { actorUserId: null, actorRole: 'system', action: 'ORDER_DEPARTURE_WARNING', resourceType: 'service_order', resourceId: id, after: { technicianId: assignment.technicianId, cancelAfterMinutes: cancelMinutes } });
+      return { order, customerId: booking.customerId, technicianId: assignment.technicianId };
+    });
+    if (!warned || !this.notificationsService) return;
+    const notify = (userId: string, title: string, message: string) => this.notificationsService!.createNotification({ userId, title, message, type: 'ORDER_DEPARTURE_WARNING', referenceId: warned.order.id, referenceType: 'SERVICE_ORDER' }).catch(() => undefined);
+    void notify(warned.technicianId, 'Đã đến giờ hẹn', `Đơn #${warned.order.code} đã đến giờ hẹn mà bạn chưa bấm "Đang đến". Nếu sau ${cancelMinutes} phút bạn vẫn chưa xuất phát, đơn sẽ tự huỷ.`);
+    if (warned.customerId) void notify(warned.customerId, 'Kỹ thuật viên chưa xuất phát', `Kỹ thuật viên của đơn #${warned.order.code} chưa xuất phát. Nếu sau ${cancelMinutes} phút vẫn chưa xuất phát, hệ thống sẽ huỷ đơn để bạn đặt lịch mới.`);
+  }
+
+  private async cancelNoDeparture(id: string, cancelMinutes: number): Promise<void> {
+    const cancelled = await this.dataSource.transaction(async manager => {
+      const ref = await manager.findOneBy(ServiceOrder, { id });
+      if (!ref) return null;
+      const booking = await manager.findOne(Booking, { where: { id: ref.bookingId }, lock: { mode: 'pessimistic_write' } });
+      const order = await manager.findOne(ServiceOrder, { where: { id }, lock: { mode: 'pessimistic_write' } });
+      const assignment = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: id, isActive: true });
+      if (!booking || !order || order.status !== ServiceOrderStatus.ACCEPTED || !order.departureWarnedAt || !assignment) return null;
+      if (new Date(order.departureWarnedAt).getTime() + cancelMinutes * 60000 > Date.now()) return null;
+      const reason = 'Tự huỷ: kỹ thuật viên không xuất phát sau khi đã được nhắc';
+      await this.commitTransition(manager, order, ServiceOrderStatus.CANCELLED, { id: null, role: 'system' }, reason);
+      await closeBookingForCancelledOrder(manager, booking.id);
+      await manager.update(TechnicianAssignment, { serviceOrderId: id, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: reason });
+      await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: id, actor: CancelActor.TECHNICIAN, actorUserId: assignment.technicianId, reason, stateAtCancel: ServiceOrderStatus.ACCEPTED, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
+      return { order, customerId: booking.customerId, technicianId: assignment.technicianId };
+    });
+    if (!cancelled || !this.notificationsService) return;
+    const { order, customerId, technicianId } = cancelled;
+    const notify = (userId: string, message: string) => this.notificationsService!.createNotification({ userId, title: 'Đơn hàng đã bị huỷ', message, type: 'ORDER_CANCELLED', referenceId: order.id, referenceType: 'SERVICE_ORDER' }).catch(() => undefined);
+    if (customerId) void notify(customerId, `Đơn #${order.code} đã được huỷ vì kỹ thuật viên không xuất phát dù đã được nhắc. Bạn có thể đặt lịch mới.`);
+    void notify(technicianId, `Đơn #${order.code} đã bị huỷ vì bạn không xuất phát sau khi được nhắc.`);
   }
 
   async findAll(options: {
@@ -330,8 +376,19 @@ export class ServiceOrdersService {
   private async presentOrder(order: ServiceOrder): Promise<ServiceOrder> {
     const manager = this.dataSource.manager;
     const booking = await manager.findOneByOrFail(Booking, { id: order.bookingId });
-    const assignment = await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: order.id }, order: { assignedAt: 'DESC' } });
+    // The technician holding the order now. A technician who withdrew or was
+    // replaced is not shown (name, phone, last GPS); a completed order keeps
+    // its finishing technician because that assignment stays active.
+    const assignment = await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: order.id, isActive: true } })
+      ?? (order.status === ServiceOrderStatus.COMPLETED
+        ? await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: order.id }, order: { assignedAt: 'DESC' } })
+        : null);
     const technician = assignment ? await manager.findOneBy(User, { id: assignment.technicianId }) : null;
+    if (!assignment) {
+      order.technicianLastLat = null;
+      order.technicianLastLng = null;
+      order.technicianLocationUpdatedAt = null;
+    }
     const customer = await manager.findOneBy(User, { id: booking.customerId });
     const quotation = await manager.findOne(Quotation, { where: { serviceOrderId: order.id }, relations: ['items'], order: { version: 'DESC' } });
     const history = await this.historyRepo.find({ where: { serviceOrderId: order.id }, order: { createdAt: 'ASC' } });
@@ -541,7 +598,7 @@ export class ServiceOrdersService {
         for (const [index, candidate] of remaining.entries()) await manager.save(BookingInvitation, manager.create(BookingInvitation, { groupId: group!.id, bookingId: booking.id, technicianId: candidate.technicianId, priorityOrder: offset + index + 1, status: InvitationStatus.STANDBY, invitedAt: new Date(), expiresAt: null }));
         booking.status = BookingStatus.MATCHING;
         await manager.save(booking);
-        await activateNextInvitation(manager, booking, await this.configService.getInt('matching.invitation_ttl_minutes', 30));
+        await activateNextInvitation(manager, booking, await this.configService.getInt('matching.invitation_ttl_minutes', 30), invitationActivatedHook(this.notificationsService));
         await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from, actorUserId: actor.id, actorRole: actor.role, reason: 'Technician withdrew before arrival; awaiting replacement: ' + body.reason });
         await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'TECHNICIAN_WITHDRAWAL_REMATCH', resourceType: 'service_order', resourceId: orderId, after: { reason: body.reason, strikeApplied: false } });
         return order;
@@ -622,18 +679,22 @@ export class ServiceOrdersService {
     evidenceId: string,
     actor: { id: string; role: string },
   ): Promise<void> {
-    await authorizeOrder(this.dataSource.manager, orderId, actor);
-    const evidence = await this.evidenceRepo.findOne({
-      where: { id: evidenceId, serviceOrderId: orderId },
+    // BRX-037: evidence that let the order move on stays. Only the technician
+    // holding the order deletes, under the order lock, and every deletion is audited.
+    const evidence = await this.dataSource.transaction(async manager => {
+      const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
+      const found = await manager.findOne(RepairEvidence, { where: { id: evidenceId, serviceOrderId: orderId } });
+      if (!found) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Evidence not found');
+      if (order.completionRequestedAt || [ServiceOrderStatus.COMPLETED, ServiceOrderStatus.CANCELLED].includes(order.status)) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Cannot delete evidence after completion requested');
+      }
+      if (found.type === EvidenceType.BEFORE && order.status !== ServiceOrderStatus.EN_ROUTE) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Ảnh trước khi sửa đã dùng để bắt đầu sửa, không xoá được');
+      }
+      await manager.delete(RepairEvidence, { id: evidenceId, serviceOrderId: orderId });
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'EVIDENCE_DELETE', resourceType: 'service_order', resourceId: orderId, before: { evidenceId, type: found.type, mediaUrl: found.mediaUrl } });
+      return found;
     });
-    if (!evidence) {
-      throw new BusinessException(ErrorCodes.NOT_FOUND, 'Evidence not found');
-    }
-    const order = await this.dataSource.manager.findOneBy(ServiceOrder, { id: orderId });
-    if (order?.completionRequestedAt || order?.status === ServiceOrderStatus.COMPLETED) {
-      throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Cannot delete evidence after completion requested');
-    }
-    await this.evidenceRepo.delete({ id: evidenceId, serviceOrderId: orderId });
     try {
       await this.evidenceStorage.delete(evidence.mediaUrl);
     } catch {
@@ -791,6 +852,7 @@ export class ServiceOrdersService {
   async reviewCancellation(
     cancellationId: string,
     body: {
+      confirmViolation?: boolean;
       waiveStrike?: boolean;
       waiveReason?: string;
       compensationDecision?: 'GRANTED' | 'REJECTED';
@@ -827,6 +889,26 @@ export class ServiceOrdersService {
           { priorityBoostUntil: boostUntil },
         );
       }
+    }
+
+    // BRX-032/033: a cancellation becomes a strike only when staff confirm it
+    // was a violation. Customer and technician cancellations can carry one;
+    // staff cancellations cannot. Reaching the threshold suspends the account.
+    if (body.confirmViolation && !cancellation.strikeApplied) {
+      const role = cancellation.actor === CancelActor.CUSTOMER ? Role.CUSTOMER : cancellation.actor === CancelActor.TECHNICIAN ? Role.TECHNICIAN : null;
+      if (!role) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Only customer or technician cancellations can be a violation');
+      await this.dataSource.transaction(async manager => {
+        const windowDays = await this.configService.getInt('strike.window.days', 30);
+        await manager.save(CancellationStrike, manager.create(CancellationStrike, {
+          userId: cancellation.actorUserId,
+          cancellationId: cancellation.id,
+          status: StrikeStatus.ACTIVE,
+          expiresAt: new Date(Date.now() + windowDays * 86_400_000),
+        }));
+        await manager.update(Cancellation, cancellation.id, { strikeApplied: true });
+        await this.checkStrikeThreshold(cancellation.actorUserId, role, manager);
+      });
+      cancellation.strikeApplied = true;
     }
 
     if (body.waiveStrike && cancellation.strikeApplied) {
@@ -958,7 +1040,9 @@ export class ServiceOrdersService {
         'technician_assignments',
         'ta',
         'ta.service_order_id = o.id',
-      ).andWhere('ta.technician_id = :userId', { userId });
+      ).andWhere('ta.technician_id = :userId', { userId })
+        // The last assignment is the technician who held the order at the end.
+        .andWhere('ta.assigned_at = (SELECT MAX(x.assigned_at) FROM technician_assignments x WHERE x.service_order_id = o.id)');
     }
 
     qb.orderBy('o.completedAt', 'DESC')
@@ -1014,6 +1098,13 @@ export class ServiceOrdersService {
     await manager.insert(OrderStatusHistory, { serviceOrderId: order.id, fromStatus: previous, toStatus: next, actorUserId: actor.id, actorRole: actor.role, reason });
     await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'ORDER_TRANSITION', resourceType: 'service_order', resourceId: order.id, before: { status: previous }, after: { status: next, reason } });
     if ([ServiceOrderStatus.CANCELLED, ServiceOrderStatus.COMPLETED].includes(next)) await closeOrderPartRequests(manager, order.id, next === ServiceOrderStatus.CANCELLED);
+    if (next === ServiceOrderStatus.CANCELLED) {
+      // #27: nothing is paid on a cancelled order; open attempts on its invoice are closed.
+      await manager.createQueryBuilder().update(Payment)
+        .set({ status: PaymentAttemptStatus.CANCELLED, failureCode: 'ORDER_CANCELLED' })
+        .where('status = :pending AND invoice_id IN (SELECT id FROM invoices WHERE service_order_id = :orderId)', { pending: PaymentAttemptStatus.PENDING, orderId: order.id })
+        .execute();
+    }
     order.status = next;
   }
 
@@ -1308,6 +1399,7 @@ export class ServiceOrdersService {
         );
       }
 
+      await manager.update(CancellationStrike, { userId, status: StrikeStatus.ACTIVE }, { status: StrikeStatus.EXPIRED });
       this.logger.warn(
         `User ${userId} suspended until ${suspendedUntil.toISOString()} (${activeStrikes} active strikes)`,
       );

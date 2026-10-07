@@ -1,23 +1,25 @@
 # Contributing to FixHome
 
+> Ngữ cảnh hiện hành của repo (luồng, hợp đồng, quyết định, việc đang dở) nằm ở [`docs/CONTEXT.md`](docs/CONTEXT.md); khi file này lệch với code hoặc với CONTEXT.md, CONTEXT.md và code là chuẩn.
+
 ## Git Convention
 
 ### Branch Strategy
 
 ```
 main              # Production-ready code
-develop           # Integration branch
+dev               # Integration branch
 feature/<name>    # New features (e.g., feature/auth-login)
 fix/<name>        # Bug fixes (e.g., fix/booking-validation)
 ```
 
 ### Workflow
 
-1. Create branch from `develop`
-2. Implement changes
-3. Create Pull Request to `develop`
+1. Create branch from `dev`
+2. Implement changes and run the local gates (`npm run lint`, `npm test`, `npm run build`)
+3. Create Pull Request to `dev`
 4. Code review by at least 1 team member
-5. Merge after approval
+5. Merge into `dev` only after approval and when the PR's CI run is green
 
 ### Commit Convention (Conventional Commits)
 
@@ -37,7 +39,8 @@ Format: `<type>: <description>`
 
 ### General
 
-- Use **TypeScript** strict mode
+- Use **TypeScript** (not full strict mode: `tsconfig.json` sets `strictNullChecks` and
+  `noImplicitAny` to `false`, so guard against `null`/`undefined` explicitly)
 - Use **OxLint** for linting and **Prettier** for formatting
 - Single quotes, trailing commas, semicolons
 - Tab width: 2 spaces
@@ -99,9 +102,13 @@ DELETE /api/v1/resources/:id       # Delete
 
 ### Response Format
 
+Every response is wrapped by the global `TransformInterceptor` (success) or
+`HttpExceptionFilter` (error) in `src/common`.
+
 **Success:**
 ```json
 {
+  "success": true,
   "statusCode": 200,
   "message": "Success",
   "data": { ... }
@@ -111,6 +118,7 @@ DELETE /api/v1/resources/:id       # Delete
 **Paginated:**
 ```json
 {
+  "success": true,
   "statusCode": 200,
   "message": "Success",
   "data": [ ... ],
@@ -126,13 +134,20 @@ DELETE /api/v1/resources/:id       # Delete
 **Error:**
 ```json
 {
+  "success": false,
   "statusCode": 400,
-  "message": "Validation failed",
-  "errors": [
-    { "field": "email", "message": "email must be a valid email" }
-  ]
+  "error": {
+    "code": "VALIDATION_FAILED",
+    "message": "Validation failed",
+    "details": ["email must be an email"]
+  },
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "path": "/api/v1/auth/register"
 }
 ```
+
+`error.details` is optional (validation messages, or debug info for 5xx outside production).
+Business errors carry their own `error.code` from `BusinessException`.
 
 ### HTTP Status Codes
 
@@ -145,7 +160,9 @@ DELETE /api/v1/resources/:id       # Delete
 | 403 | Forbidden (wrong role) |
 | 404 | Not found |
 | 409 | Conflict (duplicate) |
+| 413 | Request payload too large |
 | 500 | Internal server error |
+| 503 | Service unavailable (e.g. dependency down) |
 
 ## Database Convention
 
@@ -155,7 +172,7 @@ DELETE /api/v1/resources/:id       # Delete
 - All tables have: `id`, `created_at`, `updated_at`
 - Foreign keys: `<entity>_id` format (`user_id`)
 - Use migrations for schema changes
-- Never use `synchronize: true` in production
+- `synchronize` is `false` in every environment; never turn it on
 
 ## Pull Request
 

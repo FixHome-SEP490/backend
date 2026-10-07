@@ -57,3 +57,4 @@ jobs:
           DATABASE_NAME: fixhome
           JWT_ACCESS_SECRET: ci-only-access-secret-at-least-32-characters
           JWT_REFRESH_SECRET: ci-only-refresh-secret-at-least-32-characters
+          MAIL_TRANSPORT: json

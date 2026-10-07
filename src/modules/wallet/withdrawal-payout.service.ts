@@ -126,6 +126,12 @@ export class WithdrawalPayoutService implements OnModuleInit, OnModuleDestroy {
    * the technician is told at once what happened.
    */
   async withdraw(technicianId: string, amount: number): Promise<WithdrawalRequest> {
+    if (this.provider.name === 'disabled') {
+      throw new BusinessException(
+        ErrorCodes.PAYMENT_PROVIDER_UNAVAILABLE,
+        'Rút tiền chưa mở vì hệ thống chưa cấu hình cổng chi tiền. Vui lòng liên hệ FixHome.',
+      );
+    }
     if (!Number.isSafeInteger(amount) || amount < MIN_WITHDRAWAL_AMOUNT) {
       throw new BusinessException(
         ErrorCodes.VALIDATION_FAILED,

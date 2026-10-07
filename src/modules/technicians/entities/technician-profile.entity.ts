@@ -44,7 +44,7 @@ export class TechnicianProfile extends BaseEntity {
     type: 'decimal',
     precision: 3,
     scale: 2,
-    default: 5.0,
+    default: 0,
   })
   averageRating: number;
 

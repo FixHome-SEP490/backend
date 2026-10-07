@@ -3,6 +3,15 @@ import { ServiceOrderStatus, Role } from '../../shared/enums';
 
 export class ServiceOrderStateMachine {
   /**
+   * The one backward move: a technician who withdrew on the way (before a
+   * valid arrival) is replaced, and the replacement has not set out yet, so
+   * EN_ROUTE goes back to ACCEPTED. Used only by the replacement Accept.
+   */
+  static canResetForReplacement(status: ServiceOrderStatus): boolean {
+    return status === ServiceOrderStatus.EN_ROUTE;
+  }
+
+  /**
    * Base lifecycle state transitions allowed by the system:
    * ACCEPTED -> EN_ROUTE, CANCELLED
    * EN_ROUTE -> UNDER_REPAIR, CANCELLED

@@ -1,4 +1,6 @@
-# Backend-FixHome AI Technical Guide
+# FixHome backend AI Technical Guide
+
+> Ngữ cảnh hiện hành của repo (luồng, hợp đồng, quyết định, việc đang dở) nằm ở [`CONTEXT.md`](CONTEXT.md); khi file này lệch với code hoặc với CONTEXT.md, CONTEXT.md và code là chuẩn.
 
 This document is the mandatory technical governance contract for every human or AI change in this
 repository. It describes the repository as it exists; it does not authorize unrequested features
@@ -6,27 +8,34 @@ or large refactors.
 
 ## 1. Repository Purpose
 
-Backend-FixHome owns the authoritative FixHome business API, authentication/authorization,
-validation, Service Order lifecycle, TypeORM persistence, migrations, and the local PostgreSQL
-development container. It integrates with AI-FixHome through the `ai-diagnosis` module.
+The `backend` repository owns the authoritative FixHome business API, authentication/authorization,
+validation, Service Order lifecycle, TypeORM persistence, and migrations against the shared
+Supabase PostgreSQL database (there is no local PostgreSQL container). It integrates with the
+self-hosted FixHome `ai-service` (Qwen2.5-VL + YOLO) through the `ai-diagnosis` module, reached via
+`AI_SERVICE_URL`; there is no Gemini/OpenAI integration.
 
-It does not own Vue or Expo UI behavior, direct Gemini/OpenAI provider logic, or cross-project
-requirements. Those belong to Frontend-FixHome, Mobi-FixHome, AI-FixHome, and Docs-FixHome.
+It does not own Vue or Expo UI behavior, AI model/inference logic, or cross-project requirements.
+Those belong to the `web`, `mobile`, `ai-service`, and `docs` repositories in the FixHome-SEP490
+GitHub organization.
 
 Primary actors are Customer, Technician, Service Manager, and Admin. System/CI is the actor for
 health checks and operational validation.
 
 ## 2. Technology Stack
 
-- Node.js 20.19+ and npm with `package-lock.json`/`npm ci`
+- Node.js version pinned in `.nvmrc` and npm with `package-lock.json`/`npm ci`
 - NestJS 10 and TypeScript 5.7
-- TypeORM 0.3 with PostgreSQL 16
-- JWT/Passport and role guards; bcrypt for password hashing
+- TypeORM 0.3 with Supabase PostgreSQL (CI E2E uses an ephemeral PostgreSQL 16 service)
+- JWT/Passport, Google OAuth, role/permission guards; bcrypt for password hashing
 - `class-validator`/`class-transformer` DTO validation
-- Axios for the FastAPI integration
+- `@nestjs/axios` for the FastAPI `ai-service` integration
+- Socket.IO gateway (`/chat` namespace, voice call signalling)
+- Supabase Storage (KYC and private files), Cloudinary (media), VNPay (payments), payOS
+  (technician payouts), MapTiler (geocoding), SMTP mail via nodemailer
 - Helmet, CORS, Swagger, RxJS
 - OxLint, TypeScript compiler, Vitest, Supertest, and Nest CLI
-- Docker Compose for the development database
+- Docker Compose to run only the backend container against the database in `.env`
+  (see `docs/DOCKER.md`)
 
 Do not upgrade frameworks or replace tooling as part of an unrelated feature or bug fix.
 
@@ -42,31 +51,41 @@ HTTP request
   -> feature controller
   -> feature service
   -> TypeORM repository/entity or an external adapter
-  -> PostgreSQL or AI-FixHome
+  -> Supabase PostgreSQL or an external service (ai-service, storage, payments, maps, mail)
   -> global transform interceptor / exception filter
   -> HTTP response
 ```
 
 `AppModule` composes the database and feature modules. Features remain isolated under
-`src/modules/<feature>`. Cross-cutting filters/interceptors are under `src/common`; shared DTOs,
-enums, and constants are under `src/shared`. `DatabaseModule` owns runtime TypeORM configuration,
-while `src/database/data-source.ts` exists for migration CLI commands.
+`src/modules/<feature>`. Global prefix, pipes, filter, interceptors, and Swagger are configured in
+`src/setup-app.ts`. Cross-cutting guards, decorators, exceptions, filters, and interceptors are
+under `src/common`; shared DTOs, enums, and constants are under `src/shared`. `DatabaseModule` owns
+runtime TypeORM configuration, while `src/database/data-source.ts` exists for migration CLI
+commands.
 
-Most feature modules are currently scaffolded. A controller/service file is not proof that a
-business feature is implemented. Extend the existing module rather than creating a parallel layer.
+The 29 feature modules under `src/modules` are implemented, not scaffolds. Extend the existing
+module rather than creating a parallel layer.
 
 ## 4. Folder Structure
 
 - `.github/workflows/`: this repository's independent CI pipeline.
-- `src/main.ts`: bootstrap, security middleware, validation, Swagger, global behavior.
+- `src/main.ts`: bootstrap; `src/setup-app.ts`: security middleware, validation, Swagger, global
+  behavior.
 - `src/app.module.ts`: root dependency composition.
-- `src/modules/`: domain feature modules such as auth, bookings, service-orders, quotations, media,
-  assignment, reviews, notifications, dashboard, and AI diagnosis.
-- `src/common/`: global HTTP filters and interceptors.
+- `src/modules/`: 29 domain feature modules, including auth, users, bookings (with technician
+  invitations), service-orders, quotations, part-requests, finance (VNPay), wallet (top-up, payOS
+  payouts, settlement), technician-assignment, messaging (Socket.IO `/chat`, voice call
+  signalling), ai-diagnosis, support-cases, notifications, system-config, rbac, audit-log,
+  technician-verifications (KYC on Supabase Storage), media (Cloudinary), geo (MapTiler), reviews,
+  services, categories, parts-catalog, service-areas, technicians, technician-skill-verifications,
+  dashboard, health, and mail.
+- `src/common/`: guards, decorators, business exceptions, global HTTP filter, and interceptors.
+- `src/config/`: environment validation.
 - `src/shared/`: reusable API DTOs, enums, and constants with no feature ownership.
-- `src/database/`: TypeORM configuration, base entity, data source, and migrations.
+- `src/database/`: TypeORM configuration, base entity, data source, migrations, and seeds.
 - `test/`: PostgreSQL-backed end-to-end tests.
-- `docker/` and `docker-compose.yml`: local PostgreSQL setup.
+- `Dockerfile` and `docker-compose.yml`: backend container only, using the database from `.env`; no
+  local PostgreSQL.
 - `docs/`: repository-local technical governance.
 
 ## 5. Coding Rules
@@ -92,14 +111,16 @@ business feature is implemented. Extend the existing module rather than creating
 - Backend is authoritative for all validation, authorization, ownership, and state changes. Client
   checks never replace server enforcement.
 - Booking and Service Order are different lifecycles: Booking represents a request/schedule;
-  Service Order represents execution after confirmation and assignment.
-- Every Service Order transition must use `ServiceOrderStateMachine`:
+  Service Order represents execution. A Service Order is created only when a technician accepts
+  an invitation (`src/modules/bookings/invitations.service.ts`), directly in `ACCEPTED`; it is
+  never created when the customer submits a booking.
+- Every Service Order transition must use `ServiceOrderStateMachine`
+  (`src/modules/service-orders/service-order-state-machine.ts`):
 
 ```text
-PENDING_CONFIRMATION -> ACCEPTED | CANCELLED
 ACCEPTED             -> EN_ROUTE | CANCELLED
-EN_ROUTE             -> UNDER_REPAIR
-UNDER_REPAIR         -> COMPLETED
+EN_ROUTE             -> UNDER_REPAIR | CANCELLED
+UNDER_REPAIR         -> COMPLETED | CANCELLED
 COMPLETED/CANCELLED  -> terminal
 ```
 
@@ -107,9 +128,9 @@ COMPLETED/CANCELLED  -> terminal
 - AI diagnosis is advisory, may be low confidence, and must fail open to manual service selection.
   AI output may not approve quotations, assign technicians, authorize transactions, or change
   order state.
-- Customer approval is required for quotations/additional costs when those features are built.
+- Customer approval is required for quotations/additional costs.
 - A review is valid only after a completed service and must respect resource ownership.
-- Open business decisions in Docs-FixHome must remain unresolved until stakeholders approve them.
+- Open business decisions in the `docs` repository must remain unresolved until stakeholders approve them.
 
 ## 7. Security Rules
 
@@ -121,7 +142,7 @@ COMPLETED/CANCELLED  -> terminal
 - Treat AI responses and remote URLs as untrusted. Apply timeouts and map failures to safe errors.
 - For uploads, enforce MIME allowlists, size/count limits, generated object names, authorization,
   and storage isolation before accepting data.
-- Keep `synchronize` limited to development. Production/staging changes require reviewed TypeORM
+- `synchronize` is disabled in every environment. Schema changes require reviewed TypeORM
   migrations and rollback consideration.
 - Keep secrets in environment/secret stores and use restrictive CORS origins outside development.
 - Review authentication, authorization, RBAC, IDOR, injection, XSS propagation, upload handling,
@@ -141,12 +162,15 @@ COMPLETED/CANCELLED  -> terminal
 ## 9. CI/CD Rules
 
 `.github/workflows/ci.yml` is independent and runs on pushes and pull requests targeting `main`,
-`development`, or the retained `develop` alias. Required gates are:
+`dev`, `development`, `develop`, and `Truonghoang`. The integration branch is `dev`: work on a
+feature branch cut from `dev`, open a PR into `dev`, and merge only when the PR's CI is green.
+Required gates are:
 
 ```text
 npm ci
 npm run lint
 npm run typecheck
+npm audit --omit=dev --audit-level=high
 npm test
 npm run build
 npm run test:e2e
@@ -162,7 +186,7 @@ Do not code immediately. Execute and record this flow:
 
 ```text
 Task
--> read this guide and related canonical Docs-FixHome material
+-> read this guide, `docs/CONTEXT.md`, and related canonical material in the `docs` repository
 -> inspect existing code/tests/config/dependencies
 -> BA analysis (actor, requirement, input/output, rules, validation, permission, API, DB, state,
    edge cases, affected repositories)

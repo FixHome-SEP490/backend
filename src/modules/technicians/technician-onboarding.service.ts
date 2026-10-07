@@ -342,13 +342,14 @@ export class TechnicianOnboardingService {
       where: { technicianId: userId },
       order: { submittedAt: 'DESC' },
     });
+    // A rejected KYC stays on record with who rejected it and why. Resubmitting
+    // needs new documents (step 2 creates a new PENDING verification); flipping
+    // the rejected row back to PENDING sent the same papers to review again and
+    // erased the rejection.
     if (latestKyc && latestKyc.status === VerificationStatus.REJECTED) {
-      latestKyc.status = VerificationStatus.PENDING;
-      latestKyc.submittedAt = new Date();
-      latestKyc.rejectionReason = null;
-      latestKyc.reviewedAt = null;
-      latestKyc.reviewedById = null;
-      await this.verificationRepo.save(latestKyc);
+      throw new BadRequestException(
+        `Hồ sơ xác minh trước đã bị từ chối${latestKyc.rejectionReason ? ` (${latestKyc.rejectionReason})` : ''}. Vui lòng tải lại giấy tờ ở Bước 2 rồi gửi lại.`,
+      );
     }
 
     profile.onboardingStatus = OnboardingStatus.SUBMITTED;

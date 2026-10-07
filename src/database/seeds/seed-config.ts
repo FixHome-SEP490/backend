@@ -17,10 +17,12 @@ export interface ConfigSeedItem {
  * None of these values should be hard-coded anywhere in the application.
  */
 export const CONFIG_SEED: ConfigSeedItem[] = [
-  { key: 'matching.max_shortlist', value: '5', valueType: 'int', description: 'Maximum number of technicians in shortlist' },
+  { key: 'matching.max_shortlist', value: '2', valueType: 'int', description: 'Maximum number of technicians in shortlist (fixed at 1 or 2 by product decision)' },
   // v1.4 §10: Invitation is sequential (not simultaneous). Corrected from legacy SIMULTANEOUS default.
   { key: 'matching.mode', value: 'SEQUENTIAL', valueType: 'enum', description: 'Matching mode: SEQUENTIAL (v1.4 canonical). SIMULTANEOUS is removed.' },
   { key: 'matching.invitation_ttl_minutes', value: '30', valueType: 'int', description: 'Invitation expiration in minutes' },
+  { key: 'order.departure_grace_minutes', value: '0', valueType: 'int', description: 'Minutes after the appointment time before warning a technician who has not set out (BRX-063)' },
+  { key: 'order.departure_cancel_minutes', value: '10', valueType: 'int', description: 'Minutes after that warning before the order and booking are cancelled (BRX-063)' },
   { key: 'geofence.radius_meters', value: '300', valueType: 'int', description: 'Geofence radius for arrival check-in' },
   { key: 'geofence.min_gps_accuracy_meters', value: '100', valueType: 'int', description: 'Minimum GPS accuracy for valid check-in' },
   { key: 'evidence.before.min_count', value: '1', valueType: 'int', description: 'Minimum BEFORE evidence photos required' },

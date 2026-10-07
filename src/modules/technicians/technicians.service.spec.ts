@@ -66,6 +66,12 @@ describe('TechniciansService', () => {
     };
 
     mockAssignmentRepo = {
+      manager: {
+        query: vi.fn(async (sql: string) =>
+          sql.includes('system_configs')
+            ? [{ value: '1000' }]
+            : [{ orderId: 'order-1', code: 'FH-001', completedAt: new Date('2026-09-10'), customerName: 'Nguyen Van A', laborTotal: '300000', commission: '30000' }]),
+      },
       createQueryBuilder: vi.fn(() => ({
         innerJoinAndSelect: vi.fn().mockReturnThis(),
         leftJoinAndSelect: vi.fn().mockReturnThis(),
@@ -186,6 +192,23 @@ describe('TechniciansService', () => {
       expect(earnings.pendingDueAmount).toBe(30000);
       expect(earnings.payouts).toHaveLength(1);
       expect(earnings.payouts[0].customer).toBe('Nguyen Van A');
+      expect(earnings.commissionRatePercent).toBe(10);
+    });
+
+    it('reads labour and commission from the invoice, never a fixed 10% or the parts total', async () => {
+      mockAssignmentRepo.manager.query = vi.fn(async (sql: string) =>
+        sql.includes('system_configs')
+          ? [{ value: '1500' }]
+          : [{ orderId: 'order-2', code: 'FH-002', completedAt: new Date('2026-09-11'), customerName: 'B', laborTotal: '200000', commission: '30000' }]);
+      const earnings = await service.getMyEarnings('user-tech-uuid');
+      expect(earnings.totalGross).toBe(200000);
+      expect(earnings.totalCommission).toBe(30000);
+      expect(earnings.totalNet).toBe(170000);
+      expect(earnings.commissionRatePercent).toBe(15);
+      // the shared query only counts orders this technician still held when completed
+      const sql = (mockAssignmentRepo.manager.query.mock.calls as unknown as Array<[string]>).map(([text]) => text).join(' ');
+      expect(sql).toContain('ta.is_active = true');
+      expect(sql).toContain('LEFT JOIN invoices i');
     });
   });
 });

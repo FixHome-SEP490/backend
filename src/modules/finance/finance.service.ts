@@ -169,6 +169,9 @@ export class FinanceService {
       if (!order) {
         throw new BusinessException(ErrorCodes.NOT_FOUND, 'Service order not found');
       }
+      if (order.status === ServiceOrderStatus.CANCELLED) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Đơn đã huỷ, không thanh toán hoá đơn này được');
+      }
       const booking = await manager.findOne(Booking, {
         where: { id: order.bookingId },
       });
@@ -267,6 +270,9 @@ export class FinanceService {
       });
       if (!order) {
         throw new BusinessException(ErrorCodes.NOT_FOUND, 'Service order not found');
+      }
+      if (order.status === ServiceOrderStatus.CANCELLED) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Đơn đã huỷ, không thanh toán hoá đơn này được');
       }
       const booking = await manager.findOne(Booking, {
         where: { id: order.bookingId },
@@ -1039,7 +1045,7 @@ export class FinanceService {
   }
 
   async getPaymentMode(): Promise<PaymentMode> {
-    const raw = (await this.configService.getString('payment.mode', 'DEMO'))
+    const raw = (await this.configService.getString('payment.mode', 'LIVE'))
       .trim()
       .toUpperCase();
     if (raw === PaymentMode.DEMO) return PaymentMode.DEMO;

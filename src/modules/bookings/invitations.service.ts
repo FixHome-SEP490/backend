@@ -1,7 +1,7 @@
-import { Injectable, ForbiddenException } from '@nestjs/common';
+import { Injectable, ForbiddenException, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { ServiceOrderStateMachine } from '../service-orders/service-order-state-machine';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
-import { randomUUID } from 'crypto';
 import { BookingInvitation } from './entities/booking-invitation.entity';
 import { BookingInvitationGroup } from './entities/booking-invitation-group.entity';
 import { Booking } from './entities/booking.entity';
@@ -18,13 +18,19 @@ import { AuditLogService } from '../audit-log/audit-log.service';
 import { MessagingService } from '../messaging/messaging.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Optional } from '@nestjs/common';
-import { activateNextInvitation } from './activate-next-invitation';
-import { technicianEligibility } from './technician-eligibility';
+import { activateNextInvitation, invitationActivatedHook } from './activate-next-invitation';
+import { eligibilityErrorCode, technicianEligibility } from './technician-eligibility';
+import { newOrderCode } from '../service-orders/order-code';
+import { startBackgroundJob } from '../../common/background-job';
+import { randomUUID } from 'crypto';
 import { TechnicianInvitationPreviewDto, toTechnicianInvitationPreview } from './booking-privacy.dto';
 import { AcceptGreetingPublisher } from '../messaging/accept-greeting.publisher';
 
 @Injectable()
-export class InvitationsService {
+export class InvitationsService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(InvitationsService.name);
+  private sweepTimer: NodeJS.Timeout | null = null;
+
   constructor(
     @InjectRepository(BookingInvitation) private readonly invitationRepo: Repository<BookingInvitation>,
     @InjectRepository(Booking) private readonly bookingRepo: Repository<Booking>,
@@ -35,6 +41,40 @@ export class InvitationsService {
     @Optional() private readonly notificationsService?: NotificationsService,
     @Optional() private readonly acceptGreeting?: AcceptGreetingPublisher,
   ) {}
+
+  onModuleInit(): void {
+    this.sweepTimer = startBackgroundJob('matching sweep', this.logger, () => this.sweepMatching());
+  }
+
+  onModuleDestroy(): void {
+    if (this.sweepTimer) clearInterval(this.sweepTimer);
+  }
+
+  /**
+   * #33: an expired invitation used to move on only when someone opened a
+   * screen, so a booking whose customer left the matching page stood still.
+   * Every minute, each matching booking whose current invitation has expired,
+   * or that has a technician on standby and nobody invited, is advanced.
+   */
+  async sweepMatching(): Promise<void> {
+    const rows: Array<{ bookingId: string }> = await this.dataSource.query(
+      `SELECT DISTINCT i.booking_id AS "bookingId"
+         FROM booking_invitations i
+         JOIN bookings b ON b.id = i.booking_id
+        WHERE b.status = $1
+          AND ((i.status = $2 AND i.expires_at <= now())
+            OR (i.status = $3 AND NOT EXISTS (
+                  SELECT 1 FROM booking_invitations p WHERE p.booking_id = i.booking_id AND p.status = $2)))`,
+      [BookingStatus.MATCHING, InvitationStatus.PENDING, InvitationStatus.STANDBY],
+    );
+    for (const { bookingId } of rows) {
+      try {
+        await this.refreshMatching(bookingId);
+      } catch (error) {
+        this.logger.warn(`matching sweep skipped booking ${bookingId}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
 
   async createShortlist(bookingId: string, technicianIds: string[], customer: { id: string; role: string }): Promise<BookingInvitation[]> {
     if (customer.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
@@ -49,7 +89,7 @@ export class InvitationsService {
       if (previous.some(i => [InvitationStatus.PENDING, InvitationStatus.STANDBY].includes(i.status))) throw new BusinessException(ErrorCodes.CONFLICT, 'Current matching round is still active');
       for (const id of technicianIds) {
         const eligibility = await technicianEligibility(manager, id, booking);
-        if (!eligibility.eligible) throw new BusinessException(ErrorCodes.WORK_SUSPENDED, eligibility.reason!);
+        if (!eligibility.eligible) throw new BusinessException(eligibilityErrorCode(eligibility.reason), eligibility.reason!);
       }
       const offset = Math.max(0, ...previous.map(i => i.priorityOrder));
       const group = manager.create(BookingInvitationGroup, { id: randomUUID(), bookingId });
@@ -150,12 +190,23 @@ export class InvitationsService {
       }
       // Existing, still-valid PENDING invitation may be accepted after pause; all other guards still apply.
       const eligibility = await technicianEligibility(manager, technician.id, booking, undefined, { allowPausedExistingInvitation: true });
-      if (!eligibility.eligible) throw new BusinessException(ErrorCodes.WORK_SUSPENDED, eligibility.reason!);
+      if (!eligibility.eligible) throw new BusinessException(eligibilityErrorCode(eligibility.reason), eligibility.reason!);
       let serviceOrder = await manager.findOneBy(ServiceOrder, { bookingId: booking.id });
       const now = new Date();
-      const code = serviceOrder?.code ?? 'FH-' + now.toISOString().slice(0, 10).replace(/-/g, '') + '-' + randomUUID().slice(0, 8).toUpperCase();
+      const code = serviceOrder?.code ?? newOrderCode(now);
       const replacement = !!serviceOrder;
       if (serviceOrder && (![ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(serviceOrder.status) || await manager.count(TechnicianAssignment, { where: { serviceOrderId: serviceOrder.id, isActive: true } }))) throw new BusinessException(ErrorCodes.INVITATION_ALREADY_TAKEN, 'Booking already assigned');
+      if (serviceOrder && serviceOrder.status === ServiceOrderStatus.EN_ROUTE && ServiceOrderStateMachine.canResetForReplacement(serviceOrder.status)) {
+        // #34: the previous technician withdrew on the way; the replacement has
+        // not set out, so the order goes back to ACCEPTED instead of inheriting EN_ROUTE.
+        await manager.update(ServiceOrder, serviceOrder.id, { status: ServiceOrderStatus.ACCEPTED });
+        await manager.insert(OrderStatusHistory, { serviceOrderId: serviceOrder.id, fromStatus: ServiceOrderStatus.EN_ROUTE, toStatus: ServiceOrderStatus.ACCEPTED, actorUserId: technician.id, actorRole: technician.role, reason: 'Replacement technician has not set out yet' });
+        serviceOrder.status = ServiceOrderStatus.ACCEPTED;
+      }
+      if (serviceOrder) {
+        // A new technician gets their own departure clock (BRX-063).
+        await manager.update(ServiceOrder, serviceOrder.id, { departureWarnedAt: null, scheduledAt: booking.preferredStartAt });
+      }
       serviceOrder ??= await manager.save(ServiceOrder, manager.create(ServiceOrder, { bookingId: booking.id, code, status: ServiceOrderStatus.ACCEPTED, scheduledAt: booking.preferredStartAt }));
       await manager.save(TechnicianAssignment, manager.create(TechnicianAssignment, { serviceOrderId: serviceOrder.id, technicianId: technician.id, isActive: true, assignedAt: now }));
       await manager.insert(OrderStatusHistory, { serviceOrderId: serviceOrder.id, fromStatus: replacement ? serviceOrder.status : null, toStatus: serviceOrder.status, actorUserId: technician.id, actorRole: technician.role, reason: replacement ? 'Replacement technician accepted invitation' : 'Technician accepted invitation' });
@@ -280,24 +331,25 @@ export class InvitationsService {
   }
 
   private async activateNext(manager: EntityManager, booking: Booking): Promise<void> {
+    const wasMatching = booking.status === BookingStatus.MATCHING;
     await activateNextInvitation(
       manager,
       booking,
       await this.configService.getInt('matching.invitation_ttl_minutes', 30),
       // Spec 8.6 / CHAT-BR-01: chat opens with the invitation, not with Accept.
-      async (txManager, txBooking, technicianId) => {
-        await this.messagingService.ensureConversation(txManager, txBooking, technicianId);
-        if (this.notificationsService) {
-          void this.notificationsService.createNotification({
-            userId: technicianId,
-            title: 'Lời mời nhận việc mới!',
-            message: 'Bạn có một lời mời nhận việc mới từ khách hàng. Vui lòng kiểm tra và phản hồi sớm trước khi hết hạn.',
-            type: 'BOOKING_INVITATION',
-            referenceId: txBooking.id,
-            referenceType: 'BOOKING',
-          });
-        }
-      },
+      invitationActivatedHook(this.notificationsService, (m, b, t) => this.messagingService.ensureConversation(m, b, t).then(() => undefined)),
     );
+    // Nobody left to invite: tell the customer instead of leaving the booking silent.
+    const after = await manager.findOneBy(Booking, { id: booking.id });
+    if (wasMatching && after?.status === BookingStatus.CLOSED && this.notificationsService && booking.customerId) {
+      void this.notificationsService.createNotification({
+        userId: booking.customerId,
+        title: 'Chưa có kỹ thuật viên nhận lời mời',
+        message: 'Các kỹ thuật viên bạn chọn đều chưa nhận lời mời. Bạn có thể chọn kỹ thuật viên khác để tiếp tục.',
+        type: 'BOOKING_MATCHING_EXHAUSTED',
+        referenceId: booking.id,
+        referenceType: 'BOOKING',
+      }).catch(() => undefined);
+    }
   }
 }

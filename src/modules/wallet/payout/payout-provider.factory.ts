@@ -1,28 +1,23 @@
 // src/modules/wallet/payout/payout-provider.factory.ts
 import { Logger, Provider } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { MockPayoutProvider } from './mock-payout.provider';
+import { DisabledPayoutProvider } from './disabled-payout.provider';
 import { PayosPayoutProvider } from './payos-payout.provider';
 import { PAYOUT_PROVIDER, PayoutProvider } from './payout-provider';
 
-const DEFAULT_MOCK_BALANCE = 50_000_000;
-
 /**
- * Picks the payout provider once, at boot.
+ * Picks the payout provider once, at boot. There is no simulator (PO
+ * 07/10/2026: no simulated flows); withdrawals go through payOS or not at all.
  *
  * PAYOUT_PROVIDER=payos needs the three payout-channel keys and fails the boot
  * without them, rather than failing on the first withdrawal hours later.
- * PAYOUT_PROVIDER=mock is refused in production: a simulator there would mark
- * withdrawals as paid while nobody was paid.
+ * Unset outside production, the channel is disabled: the app boots and every
+ * withdrawal is refused before the wallet is touched. Production must name it.
  */
 export function createPayoutProvider(config: ConfigService): PayoutProvider {
   const logger = new Logger('PayoutProvider');
   const isProduction = config.get<string>('NODE_ENV') === 'production';
-  const choice = (
-    config.get<string>('PAYOUT_PROVIDER') ?? (isProduction ? '' : 'mock')
-  )
-    .trim()
-    .toLowerCase();
+  const choice = (config.get<string>('PAYOUT_PROVIDER') ?? '').trim().toLowerCase();
 
   if (choice === 'payos') {
     const clientId = config.get<string>('PAYOS_PAYOUT_CLIENT_ID')?.trim();
@@ -37,24 +32,12 @@ export function createPayoutProvider(config: ConfigService): PayoutProvider {
     return new PayosPayoutProvider({ clientId, apiKey, checksumKey });
   }
 
-  if (choice === 'mock') {
-    if (isProduction) {
-      throw new Error('PAYOUT_PROVIDER=mock is not allowed in production');
-    }
-    const balance = Number(
-      config.get<string>('MOCK_PAYOUT_BALANCE') ?? DEFAULT_MOCK_BALANCE,
-    );
-    logger.warn(
-      'Withdrawals use the payout SIMULATOR - no real money moves. Set PAYOUT_PROVIDER=payos for real payouts.',
-    );
-    return new MockPayoutProvider(
-      Number.isFinite(balance) && balance >= 0 ? balance : DEFAULT_MOCK_BALANCE,
-    );
+  if (!choice && !isProduction) {
+    logger.warn('PAYOUT_PROVIDER is not set: withdrawals are disabled. Set PAYOUT_PROVIDER=payos with its keys to pay technicians.');
+    return new DisabledPayoutProvider();
   }
 
-  throw new Error(
-    `PAYOUT_PROVIDER must be "payos" or "mock" (got "${choice || 'nothing'}")`,
-  );
+  throw new Error(`PAYOUT_PROVIDER must be "payos" (got "${choice || 'nothing'}")`);
 }
 
 export const payoutProviderFactory: Provider = {

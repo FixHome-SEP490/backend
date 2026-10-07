@@ -19,19 +19,18 @@ export async function closeBookingForCancelledOrder(manager: EntityManager, book
 }
 
 /**
- * When an accepted order counts as a no-show: the end of the customer's window
- * plus the grace period, but never earlier than the technician's acceptance
- * plus the grace period. Counting from the start of the window cancelled
- * orders the moment a late invitee accepted them.
+ * BRX-063: when the "you have not set out" warning is due. The appointment
+ * time is the start of the customer's window (or the order's scheduled time),
+ * never earlier than the technician's acceptance, plus the grace minutes.
  */
-export function overdueDeadline(
-  windowEnd: Date | null | undefined,
+export function departureWarningDue(
+  windowStart: Date | null | undefined,
   scheduledAt: Date | null | undefined,
   acceptedAt: Date,
   graceMinutes: number,
 ): Date | null {
-  const end = windowEnd ?? scheduledAt;
-  if (!end) return null;
-  const from = Math.max(new Date(end).getTime(), new Date(acceptedAt).getTime());
+  const start = windowStart ?? scheduledAt;
+  if (!start) return null;
+  const from = Math.max(new Date(start).getTime(), new Date(acceptedAt).getTime());
   return new Date(from + graceMinutes * 60_000);
 }

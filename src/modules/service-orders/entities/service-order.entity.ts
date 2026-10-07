@@ -28,6 +28,10 @@ export class ServiceOrder extends BaseEntity {
   @Column({ name: 'scheduled_at', type: 'timestamptz', nullable: true })
   scheduledAt?: Date | null;
 
+  /** BRX-063: when the "you have not set out" warning was sent; null until then. */
+  @Column({ name: 'departure_warned_at', type: 'timestamptz', nullable: true })
+  departureWarnedAt?: Date | null;
+
   @Column({ name: 'started_at', type: 'timestamptz', nullable: true })
   startedAt?: Date | null;
 
