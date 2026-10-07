@@ -6,6 +6,33 @@ import { JwtService } from '@nestjs/jwt';
 const STATE_PURPOSE = 'google_oauth_state';
 
 /**
+ * Whether a redirect falls under an allowed prefix, compared as URLs. A text
+ * prefix check accepted "http://localhost:5173@evil.com/cb", which a browser
+ * sends to evil.com, and "https://fixhome.vn.evil.com". The scheme must match,
+ * the host and port must match when the prefix names one (Expo's "exp://" names
+ * none, since every developer's LAN address differs), credentials are never
+ * allowed, and the path must start with the prefix's path.
+ */
+export function redirectMatches(redirect: string, prefix: string): boolean {
+  let target: URL;
+  let allowed: URL;
+  try {
+    target = new URL(redirect);
+    allowed = new URL(prefix);
+  } catch {
+    return false;
+  }
+  if (target.protocol !== allowed.protocol) return false;
+  if (target.username || target.password) return false;
+  if (allowed.host && target.host !== allowed.host) return false;
+  const basePath = allowed.pathname.replace(/\/+$/, '');
+  if (basePath && basePath !== '/' && !(target.pathname === basePath || target.pathname.startsWith(`${basePath}/`))) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Giữ hai thứ của vòng đi vòng về qua Google: app muốn quay về đâu, và làm sao
  * biết lượt quay về đúng là lượt ta đã gửi đi.
  *
@@ -49,7 +76,7 @@ export class GoogleRedirectService {
     if (!redirect) return this.defaultRedirect;
 
     const allowed = this.allowedPrefixes.some((prefix) =>
-      redirect.startsWith(prefix),
+      redirectMatches(redirect, prefix),
     );
     if (!allowed) {
       throw new BadRequestException(

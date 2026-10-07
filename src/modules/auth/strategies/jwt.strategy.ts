@@ -43,6 +43,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (typeof payload.sub !== 'string' || !uuidRegex.test(payload.sub)) {
       throw new UnauthorizedException('Invalid token payload');
     }
+    // Purpose-bound tokens (Google hand-off code, OAuth state) are never
+    // access tokens, whatever key signed them.
+    if ((payload as { purpose?: unknown }).purpose !== undefined) {
+      throw new UnauthorizedException('Invalid token payload');
+    }
 
     const user = await this.userRepository.findOne({
       where: { id: payload.sub },

@@ -1,7 +1,10 @@
 // src/modules/users/users.service.spec.ts
 import 'reflect-metadata';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
+import { UpdateUserStatusDto } from './dto';
 import { UsersService } from './users.service';
 import { User } from './entities/user.entity';
 import { RefreshToken } from '../auth/entities/refresh-token.entity';
@@ -156,6 +159,56 @@ describe('UsersService', () => {
       expect(updated.status).toBe(AccountStatus.ACTIVE);
       expect(updated.isActive).toBe(true);
       expect(refreshTokenRepository.update).not.toHaveBeenCalled();
+    });
+
+    it('does not let an admin lock their own account', async () => {
+      userRepository.findOne.mockResolvedValue({ ...createMockUser(), id: 'admin-1', role: Role.ADMIN });
+
+      await expect(
+        usersService.updateUserStatus('admin-1', { status: AccountStatus.LOCKED }, { id: 'admin-1', role: Role.ADMIN }),
+      ).rejects.toThrow(BadRequestException);
+      expect(userRepository.save).not.toHaveBeenCalled();
+    });
+
+    const adminCount = (count: number) => {
+      const getCount = vi.fn().mockResolvedValue(count);
+      userRepository.createQueryBuilder.mockReturnValue({
+        where: vi.fn().mockReturnThis(),
+        andWhere: vi.fn().mockReturnThis(),
+        getCount,
+      });
+      return getCount;
+    };
+
+    it('does not lock the last active admin', async () => {
+      userRepository.findOne.mockResolvedValue({ ...createMockUser(), id: 'admin-2', role: Role.ADMIN });
+      adminCount(0);
+
+      await expect(
+        usersService.updateUserStatus('admin-2', { status: AccountStatus.SUSPENDED }, { id: 'admin-1', role: Role.ADMIN }),
+      ).rejects.toThrow(BadRequestException);
+      expect(userRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('locks another admin while one stays active', async () => {
+      userRepository.findOne.mockResolvedValue({ ...createMockUser(), id: 'admin-2', role: Role.ADMIN });
+      adminCount(1);
+
+      const updated = await usersService.updateUserStatus('admin-2', { status: AccountStatus.LOCKED }, { id: 'admin-1', role: Role.ADMIN });
+      expect(updated.status).toBe(AccountStatus.LOCKED);
+    });
+  });
+
+  describe('UpdateUserStatusDto', () => {
+    const check = (status: string) =>
+      validate(plainToInstance(UpdateUserStatusDto, { status })).then((errors) => errors.length);
+
+    it.each([AccountStatus.ACTIVE, AccountStatus.LOCKED, AccountStatus.SUSPENDED])('accepts %s', async (status) => {
+      expect(await check(status)).toBe(0);
+    });
+
+    it('rejects pending_verification, which only registration reaches', async () => {
+      expect(await check(AccountStatus.PENDING_VERIFICATION)).toBe(1);
     });
   });
 });
