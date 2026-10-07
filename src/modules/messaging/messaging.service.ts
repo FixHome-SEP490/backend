@@ -1,4 +1,5 @@
 // src/modules/messaging/messaging.service.ts
+import { ensureBookingConversation } from './ensure-conversation';
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, In, IsNull, LessThan, Repository } from 'typeorm';
@@ -80,20 +81,7 @@ export class MessagingService {
     booking: Booking,
     technicianId: string,
   ): Promise<Conversation> {
-    const existing = await manager.findOneBy(Conversation, {
-      bookingId: booking.id,
-      technicianId,
-    });
-    if (existing) return existing;
-
-    const created = manager.create(Conversation, {
-      bookingId: booking.id,
-      customerId: booking.customerId,
-      technicianId,
-      status: ConversationStatus.ACTIVE,
-      serviceNameSnapshot: booking.serviceNameSnapshot ?? null,
-    });
-    return manager.save(Conversation, created);
+    return ensureBookingConversation(manager, booking, technicianId);
   }
 
   /**

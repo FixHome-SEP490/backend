@@ -90,10 +90,18 @@ describe('AdminConfigService', () => {
       expect(cb?.consumerEvidence).toContain('hard-coded');
     });
 
-    it('annotates matching.max_shortlist as ACTIVE (read via BusinessConfigService)', async () => {
+    it('annotates matching.max_shortlist as informational: the shortlist is fixed at 1 or 2 (PO 07/10/2026)', async () => {
       const result = await adminConfigService.findAll();
       const k = result.find((r) => r.key === 'matching.max_shortlist');
-      expect(k?.effectStatus).toBe('ACTIVE');
+      expect(k?.effectStatus).toBe('NOT_IMPLEMENTED');
+    });
+
+    it('annotates the BRX-063 departure keys as ACTIVE', async () => {
+      const result = await adminConfigService.findAll();
+      for (const key of ['order.departure_grace_minutes', 'order.departure_cancel_minutes']) {
+        const k = result.find((r) => r.key === key);
+        if (k) expect(k.effectStatus).toBe('ACTIVE');
+      }
     });
 
     it('annotates matching.invitation_ttl_minutes as ACTIVE', async () => {

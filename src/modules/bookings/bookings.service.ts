@@ -1,11 +1,11 @@
 // src/modules/bookings/bookings.service.ts
+import { NotificationsService } from '../notifications/notifications.service';
 import { releaseOutgoingTechnicianPartRequests } from '../part-requests/part-request-lifecycle';
 import {
   Injectable,
   ForbiddenException,
   Logger,
-  NotFoundException,
-} from '@nestjs/common';
+  NotFoundException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, EntityManager, In } from 'typeorm';
 import { randomUUID } from 'crypto';
@@ -34,7 +34,7 @@ import { InvitationStatus, ServiceOrderStatus } from '../../shared/enums';
 import { resolveServiceArea } from '../../shared/utils/administrative-areas';
 import { haversineKm } from '../../shared/utils/geo';
 import { AiDiagnosis } from '../ai-diagnosis/entities/ai-diagnosis.entity';
-import { activateNextInvitation } from './activate-next-invitation';
+import { activateNextInvitation, invitationActivatedHook } from './activate-next-invitation';
 import { BusinessConfigService } from '../system-config/business-config.service';
 import {
   isLegacyPublicBookingMediaUrl,
@@ -87,6 +87,7 @@ export class BookingsService {
     private readonly dataSource: DataSource,
     private readonly privateBookingPhotoClaimService: PrivateBookingPhotoClaimService,
     private readonly configService: BusinessConfigService,
+    @Optional() private readonly notificationsService?: NotificationsService,
   ) {}
 
   /**
@@ -695,11 +696,15 @@ export class BookingsService {
       let rematched = false;
       if (order) {
         const assignment = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, isActive: true });
-        if (!assignment) throw new BusinessException(ErrorCodes.CONFLICT, 'No active assignment');
+        if (!assignment) {
+          // #34: waiting for a replacement technician. The new window is simply
+          // the one the next technician is invited for.
+          await manager.update(ServiceOrder, order.id, { scheduledAt: booking.preferredStartAt, departureWarnedAt: null });
+        } else {
         await manager.findOne(User, { where: { id: assignment.technicianId }, lock: { mode: 'pessimistic_write' } });
         const eligibility = await technicianEligibility(manager, assignment.technicianId, booking, order.id, { keepingExistingOrder: true });
         if (eligibility.eligible) {
-          await manager.update(ServiceOrder, order.id, { scheduledAt: booking.preferredStartAt });
+          await manager.update(ServiceOrder, order.id, { scheduledAt: booking.preferredStartAt, departureWarnedAt: null });
         } else {
           // Assigned technician can no longer serve the new window. The ServiceOrder row is kept (its bookingId is
           // unique — cancelling it would permanently block a future match for this booking) and only unassigned,
@@ -734,9 +739,10 @@ export class BookingsService {
           await manager.save(booking);
           // activateNextInvitation may flip the DB row straight to CLOSED (raw update, bypassing this in-memory
           // `booking`) if no candidate remains — re-fetch below rather than blindly re-saving the stale in-memory copy.
-          await activateNextInvitation(manager, booking, await this.configService.getInt('matching.invitation_ttl_minutes', 30));
+          await activateNextInvitation(manager, booking, await this.configService.getInt('matching.invitation_ttl_minutes', 30), invitationActivatedHook(this.notificationsService));
           action = 'BOOKING_RESCHEDULE_REMATCH';
           rematched = true;
+        }
         }
       } else {
         await this.cancelOpenInvitations(manager, bookingId);
