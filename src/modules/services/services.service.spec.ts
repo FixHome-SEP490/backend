@@ -135,6 +135,20 @@ describe('ServicesService', () => {
       ).rejects.toThrow(ConflictException);
     });
 
+    it('refuses a fixed-price service without a price above zero', async () => {
+      for (const fixedPrice of [undefined, 0]) {
+        await expect(
+          servicesService.create({ categoryId: 'cat-uuid-1', name: 'Lắp quạt', code: 'LAP_QUAT', pricingMode: ServicePricingMode.FIXED_PRICE, fixedPrice }),
+        ).rejects.toThrow('Dịch vụ giá cố định phải có giá lớn hơn 0');
+      }
+      expect(serviceRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('refuses switching an existing service to fixed price without a price', async () => {
+      serviceRepository.findOne.mockResolvedValue({ ...createMockService(), pricingMode: ServicePricingMode.INSPECTION_REQUIRED, fixedPrice: null });
+      await expect(servicesService.update('svc-1', { pricingMode: ServicePricingMode.FIXED_PRICE })).rejects.toThrow('giá lớn hơn 0');
+    });
+
     it('throws NotFoundException when category does not exist', async () => {
       serviceRepository.findOne.mockResolvedValue(null);
       categoryRepository.findOne.mockResolvedValue(null);

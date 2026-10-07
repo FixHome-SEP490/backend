@@ -71,6 +71,13 @@ describe('#28 a confirmed violation becomes a strike', () => {
     expect(s.updates.some(([entity, , values]) => entity === 'CancellationStrike' && values.status === StrikeStatus.EXPIRED)).toBe(true);
   });
 
+  it('refuses to waive without a reason, before writing anything', async () => {
+    const s = setup(CancelActor.CUSTOMER, 1);
+    await expect(s.service.reviewCancellation('cancel-1', { confirmViolation: true, waiveStrike: true, waiveReason: '   ' }, manager)).rejects.toThrow('lý do miễn');
+    expect(s.saved).toHaveLength(0);
+    expect(s.cancellation.strikeApplied).toBe(false);
+  });
+
   it('never strikes a cancellation made by staff', async () => {
     const s = setup(CancelActor.SERVICE_MANAGER, 0);
     await expect(s.service.reviewCancellation('cancel-1', { confirmViolation: true }, manager)).rejects.toThrow('customer or technician');

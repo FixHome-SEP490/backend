@@ -862,6 +862,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   ): Promise<Cancellation> {
     if (![Role.ADMIN, Role.SERVICE_MANAGER].includes(actor.role as Role)) throw new ForbiddenException('Staff review required');
     if (body.compensationDecision === 'GRANTED') throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Monetary cancellation compensation is not supported by MASTER v1.4');
+    // Checked before anything is written: the reason is what the audit and the user see later.
+    if (body.waiveStrike && !body.waiveReason?.trim()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Cần ghi lý do miễn vi phạm');
     const cancellation = await this.cancellationRepo.findOneBy({
       id: cancellationId,
     });
@@ -912,14 +914,13 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (body.waiveStrike && cancellation.strikeApplied) {
-      // Waive the strike
       const strike = await this.strikeRepo.findOne({
         where: { cancellationId: cancellation.id, status: StrikeStatus.ACTIVE },
       });
       if (strike) {
         strike.status = StrikeStatus.WAIVED;
         strike.waivedByUserId = actor.id;
-        strike.waiveReason = body.waiveReason || 'Waived by manager';
+        strike.waiveReason = body.waiveReason!.trim();
         await this.strikeRepo.save(strike);
       }
     }
