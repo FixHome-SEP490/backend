@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { PlatformDue } from '../finance/entities/platform-due.entity';
+import { PlatformDueStatus } from '../../shared/enums';
 import { SettlementService } from './settlement.service';
 import { WalletService } from './wallet.service';
 import { DataSource } from 'typeorm';
@@ -25,6 +27,7 @@ describe('SettlementService', () => {
       findOne: vi.fn(),
       find: vi.fn().mockResolvedValue([]),
       save: vi.fn(),
+      update: vi.fn().mockResolvedValue({ affected: 1 }),
     };
 
     mockWalletService = {
@@ -128,6 +131,12 @@ describe('SettlementService', () => {
         amount: 70000,
         allowNegative: true,
       }),
+    );
+    // the fee was collected, so the cash PlatformDue is closed
+    expect(mockEntityManager.update).toHaveBeenCalledWith(
+      PlatformDue,
+      { serviceOrderId: 'order-1', status: PlatformDueStatus.PENDING },
+      expect.objectContaining({ status: PlatformDueStatus.SETTLED }),
     );
   });
 

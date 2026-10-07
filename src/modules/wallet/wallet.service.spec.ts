@@ -309,6 +309,29 @@ describe('WalletService', () => {
       expect(mockNotificationsService.createNotification).toHaveBeenCalled();
     });
 
+    it('takes money off with DEBIT and keeps the stored amount positive', async () => {
+      const result = await service.adminAdjustBalance(
+        'tech-uuid-1',
+        { type: AdjustmentType.DEBIT, amount: 50000, reason: 'Thu hồi khoản cộng nhầm' },
+        { id: 'admin-uuid-1', role: 'admin' },
+      );
+
+      expect(result.wallet.balance).toBe(800000);
+      expect(result.transaction.amount).toBe(50000);
+      expect(result.transaction.balanceBefore).toBe(850000);
+      expect(result.transaction.balanceAfter).toBe(800000);
+    });
+
+    it('refuses a DEBIT larger than the balance', async () => {
+      await expect(
+        service.adminAdjustBalance(
+          'tech-uuid-1',
+          { type: AdjustmentType.DEBIT, amount: 900000, reason: 'Quá số dư' },
+          { id: 'admin-uuid-1', role: 'admin' },
+        ),
+      ).rejects.toThrow(BusinessException);
+    });
+
     it('fails when adjustment reason is missing', async () => {
       await expect(
         service.adminAdjustBalance(
