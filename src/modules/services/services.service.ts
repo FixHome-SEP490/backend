@@ -115,7 +115,7 @@ export class ServicesService {
   }
 
   async create(dto: CreateServiceDto, actor?: User): Promise<Service> {
-    this.validatePrices(dto);
+    this.validatePrices({ ...dto, pricingMode: dto.pricingMode ?? ServicePricingMode.INSPECTION_REQUIRED });
     const code = dto.code.trim().toUpperCase();
 
     // Check duplicate code
@@ -282,11 +282,13 @@ export class ServicesService {
   }
 
   private validatePrices(prices: {
-    basePrice?: number;
-    minPrice?: number;
-    maxPrice?: number;
+    basePrice?: number | null;
+    minPrice?: number | null;
+    maxPrice?: number | null;
+    fixedPrice?: number | null;
+    pricingMode?: ServicePricingMode;
   }): void {
-    for (const value of [prices.basePrice, prices.minPrice, prices.maxPrice]) {
+    for (const value of [prices.basePrice, prices.minPrice, prices.maxPrice, prices.fixedPrice]) {
       if (
         value != null &&
         (!Number.isFinite(Number(value)) ||
@@ -304,6 +306,11 @@ export class ServicesService {
       Number(prices.minPrice) > Number(prices.maxPrice)
     ) {
       throw new BadRequestException('minPrice must not exceed maxPrice');
+    }
+    // A fixed-price service without a price is listed to customers but every
+    // booking of it is refused ("Service fixed price is not configured").
+    if (prices.pricingMode === ServicePricingMode.FIXED_PRICE && !(Number(prices.fixedPrice) > 0)) {
+      throw new BadRequestException('Dịch vụ giá cố định phải có giá lớn hơn 0');
     }
   }
 }
