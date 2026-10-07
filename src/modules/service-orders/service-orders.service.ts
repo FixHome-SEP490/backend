@@ -4,7 +4,7 @@ import { Injectable, Logger, ForbiddenException, Optional } from '@nestjs/common
 import { NotificationsService } from '../notifications/notifications.service';
 import { randomUUID } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository, LessThanOrEqual } from 'typeorm';
+import { DataSource, Repository, LessThanOrEqual, In } from 'typeorm';
 import { ServiceOrder } from './entities/service-order.entity';
 import { TechnicianAssignment } from './entities/technician-assignment.entity';
 import { OrderStatusHistory } from './entities/order-status-history.entity';
@@ -69,6 +69,23 @@ import { authorizeOrder } from './order-access';
 import { isCompletionHeld } from '../support-cases/completion-hold';
 import { historicalOrderSummary, type HistoricalOrderSummary } from './historical-order-summary';
 import { repairHistoryStatuses } from './repair-history-filter';
+
+/** A cancellation as the review list shows it: who cancelled, and which order. */
+export type CancellationListItem = Cancellation & {
+  actorName: string | null;
+  actorRole: string | null;
+  orderCode: string | null;
+};
+
+/** A strike as the review list shows it: whose, and from which order. */
+export type StrikeListItem = CancellationStrike & {
+  userName: string | null;
+  userRole: string | null;
+  /** Until when the person may not book, when the strikes suspended them. */
+  userSuspendedUntil: Date | null;
+  serviceOrderId: string | null;
+  orderCode: string | null;
+};
 
 @Injectable()
 export class ServiceOrdersService {
@@ -687,16 +704,55 @@ export class ServiceOrdersService {
   async getCancellations(options: {
     page?: number;
     limit?: number;
-  }): Promise<{ data: Cancellation[]; total: number }> {
+  }): Promise<{ data: CancellationListItem[]; total: number }> {
     const page = options.page || 1;
     const limit = Math.min(options.limit || 20, 100);
 
-    const [data, total] = await this.cancellationRepo.findAndCount({
+    const [rows, total] = await this.cancellationRepo.findAndCount({
       order: { createdAt: 'DESC' },
       skip: (page - 1) * limit,
       take: limit,
     });
+    const [people, codes] = await Promise.all([
+      this.namesOf(rows.map((row) => row.actorUserId)),
+      this.orderCodesOf(rows.map((row) => row.serviceOrderId)),
+    ]);
+    const data = rows.map((row) => ({
+      ...row,
+      actorName: people.get(row.actorUserId)?.fullName ?? null,
+      actorRole: people.get(row.actorUserId)?.role ?? null,
+      orderCode: codes.get(row.serviceOrderId) ?? null,
+    }));
     return { data, total };
+  }
+
+  /**
+   * Who and which order, for the review lists. Service Managers review these
+   * lists but may not read user records (that is Admin's), so the list carries
+   * the name and role it shows instead of the page asking per row.
+   */
+  private async namesOf(userIds: string[]): Promise<Map<string, { fullName: string | null; role: string; bookingSuspendedUntil: Date | null }>> {
+    const ids = [...new Set(userIds.filter(Boolean))];
+    if (!ids.length) return new Map();
+    const users = await this.dataSource.getRepository(User).find({
+      where: { id: In(ids) },
+      select: { id: true, fullName: true, role: true, bookingSuspendedUntil: true },
+    });
+    return new Map(users.map((user) => [user.id, {
+      fullName: user.fullName ?? null,
+      role: String(user.role),
+      bookingSuspendedUntil: user.bookingSuspendedUntil ?? null,
+    }]));
+  }
+
+  private async orderCodesOf(orderIds: string[]): Promise<Map<string, string>> {
+    const ids = [...new Set(orderIds.filter(Boolean))];
+    if (!ids.length) return new Map();
+    const orders = await this.dataSource.getRepository(ServiceOrder).find({
+      where: { id: In(ids) },
+      select: { id: true, code: true },
+    });
+    return new Map(orders.map((order) => [order.id, order.code]));
   }
 
   /**
@@ -777,7 +833,7 @@ export class ServiceOrdersService {
     userId?: string;
     page?: number;
     limit?: number;
-  }): Promise<{ data: CancellationStrike[]; total: number }> {
+  }): Promise<{ data: StrikeListItem[]; total: number }> {
     const page = options.page || 1;
     const limit = Math.min(options.limit || 20, 100);
 
@@ -790,7 +846,29 @@ export class ServiceOrdersService {
       .skip((page - 1) * limit)
       .take(limit);
 
-    const [data, total] = await qb.getManyAndCount();
+    const [rows, total] = await qb.getManyAndCount();
+    const cancellations = rows.length
+      ? await this.cancellationRepo.find({
+          where: { id: In([...new Set(rows.map((row) => row.cancellationId))]) },
+          select: { id: true, serviceOrderId: true },
+        })
+      : [];
+    const orderOf = new Map(cancellations.map((c) => [c.id, c.serviceOrderId]));
+    const [people, codes] = await Promise.all([
+      this.namesOf(rows.map((row) => row.userId)),
+      this.orderCodesOf(cancellations.map((c) => c.serviceOrderId)),
+    ]);
+    const data = rows.map((row) => {
+      const orderId = orderOf.get(row.cancellationId);
+      return {
+        ...row,
+        userName: people.get(row.userId)?.fullName ?? null,
+        userRole: people.get(row.userId)?.role ?? null,
+        userSuspendedUntil: people.get(row.userId)?.bookingSuspendedUntil ?? null,
+        serviceOrderId: orderId ?? null,
+        orderCode: orderId ? codes.get(orderId) ?? null : null,
+      };
+    });
     return { data, total };
   }
 
