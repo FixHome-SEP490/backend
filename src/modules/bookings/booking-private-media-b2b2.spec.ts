@@ -1,5 +1,7 @@
 import 'reflect-metadata';
 import { validateSync } from 'class-validator';
+import { plainToInstance } from 'class-transformer';
+import { BookingListQueryDto } from './dto/booking-list-query.dto';
 import { describe, expect, it, vi } from 'vitest';
 import { Role, ServicePricingMode } from '../../shared/enums';
 import { PrivateBookingPhotoUpload } from '../media/entities/private-booking-photo-upload.entity';
@@ -364,8 +366,8 @@ describe('B2b2 Booking private photo wiring', () => {
     const attachBody = Object.assign(new AttachBookingMediaDto(), { url: LEGACY_PUBLIC_URL });
     const responses = [
       await controller.create(makeCreateDto(), { user: { id: CUSTOMER_ID, role: Role.CUSTOMER } }),
-      await controller.findMy({ user: { id: CUSTOMER_ID } }),
-      await controller.findAll(),
+      await controller.findMy({ user: { id: CUSTOMER_ID } }, plainToInstance(BookingListQueryDto, {})),
+      await controller.findAll(plainToInstance(BookingListQueryDto, {})),
       await controller.findById(BOOKING_ID, { user: { id: CUSTOMER_ID, role: Role.CUSTOMER } }),
       await controller.findById(BOOKING_ID, { user: { id: FOREIGN_CUSTOMER_ID, role: Role.TECHNICIAN } }),
       await controller.attachMedia(BOOKING_ID, attachBody, {

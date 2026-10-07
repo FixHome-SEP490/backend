@@ -155,6 +155,10 @@ describe('WalletService', () => {
       }),
     };
 
+    mockUserRepo = {
+      findOne: vi.fn(async ({ where }: { where: { id: string } }) =>
+        where.id === 'tech-uuid-1' ? { id: 'tech-uuid-1', role: 'technician' } : where.id === 'customer-uuid-1' ? { id: 'customer-uuid-1', role: 'customer' } : null),
+    };
     service = new WalletService(
       mockWalletRepo,
       mockTxRepo,
@@ -307,6 +311,36 @@ describe('WalletService', () => {
       expect(result.wallet.balance).toBe(900000);
       expect(mockAuditLogService.logWithManagerStrict).toHaveBeenCalled();
       expect(mockNotificationsService.createNotification).toHaveBeenCalled();
+    });
+
+    it('takes money off with DEBIT and keeps the stored amount positive', async () => {
+      const result = await service.adminAdjustBalance(
+        'tech-uuid-1',
+        { type: AdjustmentType.DEBIT, amount: 50000, reason: 'Thu hồi khoản cộng nhầm' },
+        { id: 'admin-uuid-1', role: 'admin' },
+      );
+
+      expect(result.wallet.balance).toBe(800000);
+      expect(result.transaction.amount).toBe(50000);
+      expect(result.transaction.balanceBefore).toBe(850000);
+      expect(result.transaction.balanceAfter).toBe(800000);
+    });
+
+    it('refuses a DEBIT larger than the balance', async () => {
+      await expect(
+        service.adminAdjustBalance(
+          'tech-uuid-1',
+          { type: AdjustmentType.DEBIT, amount: 900000, reason: 'Quá số dư' },
+          { id: 'admin-uuid-1', role: 'admin' },
+        ),
+      ).rejects.toThrow(BusinessException);
+    });
+
+    it.each(['customer-uuid-1', '11111111-1111-4111-8111-111111111111'])('refuses to touch a wallet for %s, which is not a technician', async (id) => {
+      await expect(
+        service.adminAdjustBalance(id, { type: AdjustmentType.CREDIT, amount: 50000, reason: 'x' }, { id: 'admin-uuid-1', role: 'admin' }),
+      ).rejects.toThrow('Không tìm thấy kỹ thuật viên');
+      await expect(service.getTechnicianWalletSummary(id)).rejects.toThrow('Không tìm thấy kỹ thuật viên');
     });
 
     it('fails when adjustment reason is missing', async () => {

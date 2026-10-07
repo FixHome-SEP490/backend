@@ -1,4 +1,5 @@
 import { closeOrderPartRequests } from '../part-requests/part-request-lifecycle';
+import { closeBookingForCancelledOrder } from '../service-orders/close-cancelled-booking';
 import { expireAdditionalCosts } from '../service-orders/expire-additional-costs';
 import { Injectable, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -331,5 +332,7 @@ export class QuotationsService {
     await manager.insert(OrderStatusHistory, { serviceOrderId: order.id, fromStatus: order.status, toStatus: ServiceOrderStatus.CANCELLED, actorUserId: actor.id, actorRole: actor.role, reason });
     await manager.insert(Cancellation, { serviceOrderId: order.id, actor: CancelActor.CUSTOMER, actorUserId: actor.id, reason, stateAtCancel: order.status, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE });
     await manager.update(TechnicianAssignment, { serviceOrderId: order.id, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: reason });
+    await closeBookingForCancelledOrder(manager, order.bookingId);
+    await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'ORDER_TRANSITION', resourceType: 'service_order', resourceId: order.id, before: { status: order.status }, after: { status: ServiceOrderStatus.CANCELLED, reason } });
   }
 }

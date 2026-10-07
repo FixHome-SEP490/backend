@@ -138,10 +138,17 @@ export class AuthService {
 
     const existingUser = await this.userRepository.findOne({ where: { email } });
     if (existingUser) {
-      if (existingUser.status === AccountStatus.ACTIVE) {
+      // Only an account still waiting for its email OTP may be registered
+      // again. A suspended or locked account is taken: re-registering it used
+      // to overwrite the password before any OTP and then reactivate it, which
+      // let a banned user unban themselves and a stranger take the account.
+      if (
+        existingUser.status !== AccountStatus.PENDING_VERIFICATION ||
+        existingUser.isEmailVerified
+      ) {
         throw new ConflictException('Email is already registered');
       }
-      // If user exists with pending_verification, update info and resend OTP
+      // Still pending verification: update info and resend OTP
       const passwordHash = await bcrypt.hash(dto.password, 12);
       existingUser.fullName = dto.fullName.trim();
       existingUser.phoneNumber = phoneNumber ?? existingUser.phoneNumber;
@@ -212,6 +219,24 @@ export class AuthService {
     };
   }
 
+  /**
+   * Take one attempt from an OTP if any are left, in a single conditional
+   * UPDATE. Returns the attempts used after this one, or null when none were
+   * left.
+   */
+  private async spendOtpAttempt(otp: OtpVerification): Promise<number | null> {
+    const result = await this.otpRepository
+      .createQueryBuilder()
+      .update(OtpVerification)
+      .set({ attempts: () => 'attempts + 1' })
+      .where('id = :id AND attempts < max_attempts', { id: otp.id })
+      .returning(['attempts'])
+      .execute();
+    if (!result.affected) return null;
+    const row = (result.raw as Array<{ attempts?: number | string }> | undefined)?.[0];
+    return row?.attempts !== undefined ? Number(row.attempts) : otp.attempts + 1;
+  }
+
   async verifyRegisterOtp(dto: VerifyOtpDto): Promise<AuthResponseDto> {
     const email = dto.email.toLowerCase().trim();
     const user = await this.userRepository.findOne({ where: { email } });
@@ -221,6 +246,13 @@ export class AuthService {
     if (user.status === AccountStatus.ACTIVE && user.isEmailVerified) {
       throw new BadRequestException(
         'Tài khoản này đã được kích hoạt trước đó. Vui lòng đăng nhập.',
+      );
+    }
+    // The register OTP activates an account that has never been active. It
+    // must not lift a suspension or a lock an admin put on.
+    if (user.status !== AccountStatus.PENDING_VERIFICATION) {
+      throw new BadRequestException(
+        'Tài khoản này đang bị tạm khoá. Vui lòng liên hệ FixHome để được hỗ trợ.',
       );
     }
 
@@ -240,7 +272,10 @@ export class AuthService {
       );
     }
 
-    if (otpRecord.attempts >= otpRecord.maxAttempts) {
+    // One attempt is spent atomically before comparing, so parallel guesses
+    // each take their own attempt and the cap holds whatever the concurrency.
+    const attemptsUsed = await this.spendOtpAttempt(otpRecord);
+    if (attemptsUsed === null) {
       throw new BadRequestException(
         'Mã OTP đã bị khóa do nhập sai quá nhiều lần. Vui lòng yêu cầu gửi lại mã mới.',
       );
@@ -250,9 +285,7 @@ export class AuthService {
       .update(dto.otp.trim())
       .digest('hex');
     if (inputHash !== otpRecord.codeHash) {
-      otpRecord.attempts += 1;
-      await this.otpRepository.save(otpRecord);
-      const remaining = otpRecord.maxAttempts - otpRecord.attempts;
+      const remaining = otpRecord.maxAttempts - attemptsUsed;
       if (remaining <= 0) {
         throw new BadRequestException(
           'Mã OTP đã bị khóa do nhập sai quá 5 lần. Vui lòng bấm gửi lại mã mới.',
@@ -475,13 +508,32 @@ export class AuthService {
   async createGoogleHandoffCode(profile: GoogleProfile): Promise<string> {
     const userId = await this.resolveGoogleUser(profile);
     return this.jwtService.signAsync(
-      { sub: userId, purpose: GOOGLE_HANDOFF_PURPOSE },
+      { sub: userId, purpose: GOOGLE_HANDOFF_PURPOSE, jti: randomUUID() },
       {
-        secret: this.configService.getOrThrow<string>('JWT_ACCESS_SECRET'),
+        secret: this.handoffSecret(),
         expiresIn: '60s',
         algorithm: 'HS256',
       },
     );
+  }
+
+  /**
+   * The hand-off code is signed with a key derived for this purpose only, so
+   * it can never pass as an access token, and each code is spent once.
+   */
+  private handoffSecret(): string {
+    return `${this.configService.getOrThrow<string>('JWT_ACCESS_SECRET')}:${GOOGLE_HANDOFF_PURPOSE}`;
+  }
+
+  /** jti -> expiry (ms) of hand-off codes already exchanged. Codes live 60s. */
+  private readonly spentHandoffCodes = new Map<string, number>();
+
+  private spendHandoffCode(jti: string, expiresAtSec: number | undefined): boolean {
+    const now = Date.now();
+    for (const [key, until] of this.spentHandoffCodes) if (until <= now) this.spentHandoffCodes.delete(key);
+    if (this.spentHandoffCodes.has(jti)) return false;
+    this.spentHandoffCodes.set(jti, (expiresAtSec ? expiresAtSec * 1000 : now + 60_000));
+    return true;
   }
 
   /** Lối vào của mobile, bước hai: đổi mã bàn giao lấy phiên thật. */
@@ -489,19 +541,20 @@ export class AuthService {
     code: string,
     deviceInfo?: string,
   ): Promise<AuthResponseDto> {
-    let payload: { sub?: string; purpose?: string };
+    let payload: { sub?: string; purpose?: string; jti?: string; exp?: number };
     try {
       payload = await this.jwtService.verifyAsync(code, {
-        secret: this.configService.getOrThrow<string>('JWT_ACCESS_SECRET'),
+        secret: this.handoffSecret(),
         algorithms: ['HS256'],
       });
     } catch {
       throw new UnauthorizedException('Mã đăng nhập đã hết hạn hoặc không hợp lệ');
     }
-    // Cùng một khoá ký với access token, nên phải kiểm `purpose`; thiếu bước
-    // này thì một access token thường cũng đổi được thành phiên mới.
-    if (payload.purpose !== GOOGLE_HANDOFF_PURPOSE || !payload.sub) {
+    if (payload.purpose !== GOOGLE_HANDOFF_PURPOSE || !payload.sub || !payload.jti) {
       throw new UnauthorizedException('Mã đăng nhập không hợp lệ');
+    }
+    if (!this.spendHandoffCode(payload.jti, payload.exp)) {
+      throw new UnauthorizedException('Mã đăng nhập đã được sử dụng');
     }
     return this.issueSessionForUser(payload.sub, deviceInfo);
   }
@@ -552,7 +605,10 @@ export class AuthService {
       );
     }
 
-    if (otpRecord.attempts >= otpRecord.maxAttempts) {
+    // One attempt is spent atomically before comparing, so parallel guesses
+    // each take their own attempt and the cap holds whatever the concurrency.
+    const attemptsUsed = await this.spendOtpAttempt(otpRecord);
+    if (attemptsUsed === null) {
       throw new BadRequestException(
         'Mã OTP đã bị khóa do nhập sai quá nhiều lần. Vui lòng yêu cầu gửi lại mã mới.',
       );
@@ -562,9 +618,7 @@ export class AuthService {
       .update(dto.otp.trim())
       .digest('hex');
     if (inputHash !== otpRecord.codeHash) {
-      otpRecord.attempts += 1;
-      await this.otpRepository.save(otpRecord);
-      const remaining = otpRecord.maxAttempts - otpRecord.attempts;
+      const remaining = otpRecord.maxAttempts - attemptsUsed;
       if (remaining <= 0) {
         throw new BadRequestException(
           'Mã OTP đã bị khóa do nhập sai quá 5 lần. Vui lòng bấm gửi lại mã mới.',

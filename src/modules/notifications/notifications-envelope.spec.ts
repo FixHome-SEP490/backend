@@ -1,6 +1,9 @@
 import type { CallHandler, ExecutionContext } from '@nestjs/common';
 import { of } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
+import { PageLimitQueryDto } from '../../shared/dto/page-size-query.dto';
 import { TransformInterceptor } from '../../common/interceptors/transform.interceptor';
 import { NotificationsController } from './notifications.controller';
 import type { NotificationsService } from './notifications.service';
@@ -38,8 +41,7 @@ describe('NotificationsController pagination envelope', () => {
 
     const controllerResult = await controller.getMyNotifications(
       { user: { id: 'customer-1' } },
-      '2',
-      '20',
+      Object.assign(new PageLimitQueryDto(), { page: 2, limit: 20 }),
     );
 
     expect(getMyNotifications).toHaveBeenCalledWith('customer-1', 2, 20);
@@ -74,28 +76,16 @@ describe('NotificationsController pagination envelope', () => {
     });
   });
 
-  it('keeps the existing page and limit clamps in the published metadata', async () => {
-    const getMyNotifications = vi.fn().mockResolvedValue({
-      data: [],
-      total: 101,
-    });
-    const controller = new NotificationsController(
-      { getMyNotifications } as unknown as NotificationsService,
-    );
-
-    await expect(controller.getMyNotifications(
-      { user: { id: 'customer-1' } },
-      '0',
-      '999',
-    )).resolves.toEqual({
-      data: [],
-      meta: {
-        page: 1,
-        limit: 100,
-        total: 101,
-        totalPages: 2,
-      },
-    });
-    expect(getMyNotifications).toHaveBeenCalledWith('customer-1', 1, 100);
+  it('rejects out-of-range paging before it reaches the query', async () => {
+    // page 0 or limit 999 used to be clamped here; the shared query DTO now
+    // answers 400, the same contract as every other list.
+    const errors = async (query: object) =>
+      (await validate(plainToInstance(PageLimitQueryDto, query))).map((error) => error.property);
+    expect(await errors({ page: '0', limit: '20' })).toEqual(['page']);
+    expect(await errors({ page: '1', limit: '999' })).toEqual(['limit']);
+    expect(await errors({ page: '99999999999999999999' })).toEqual(['page']);
+    expect(await errors({ page: 'abc' })).toEqual(['page']);
+    const defaults = plainToInstance(PageLimitQueryDto, {});
+    expect([defaults.page, defaults.limit]).toEqual([1, 20]);
   });
 });

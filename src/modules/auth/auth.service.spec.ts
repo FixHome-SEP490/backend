@@ -18,6 +18,7 @@ describe('AuthService', () => {
   let userRepository: any;
   let refreshTokenRepository: any;
   let otpRepository: any;
+  let otpAttemptUpdate: { affected: number; raw: Array<{ attempts: number }> };
   let jwtService: any;
   let configService: any;
   let mailService: any;
@@ -64,7 +65,13 @@ describe('AuthService', () => {
       update: vi.fn().mockResolvedValue({ affected: 1 }),
     };
 
+    // Spending an OTP attempt is one conditional UPDATE ... RETURNING attempts.
+    otpAttemptUpdate = { affected: 1, raw: [{ attempts: 1 }] };
+    const otpUpdateChain: Record<string, unknown> = {};
+    for (const step of ['update', 'set', 'where', 'returning']) otpUpdateChain[step] = vi.fn(() => otpUpdateChain);
+    otpUpdateChain.execute = vi.fn(async () => otpAttemptUpdate);
     otpRepository = {
+      createQueryBuilder: vi.fn(() => otpUpdateChain),
       findOne: vi.fn(),
       create: vi
         .fn()
@@ -375,6 +382,30 @@ describe('AuthService', () => {
       const profile = await authService.getMe(mockUser.id);
       expect(profile.id).toBe(mockUser.id);
       expect(profile.email).toBe(mockUser.email);
+    });
+  });
+
+  describe('account and OTP safety', () => {
+    it('refuses to re-register a suspended or locked account and never touches its password', async () => {
+      for (const status of [AccountStatus.SUSPENDED, AccountStatus.LOCKED, AccountStatus.ACTIVE]) {
+        userRepository.findOne.mockResolvedValueOnce({ ...mockUser, status, isEmailVerified: true });
+        userRepository.save.mockClear();
+        await expect(authService.register({ email: mockUser.email, password: 'NewPass123!', fullName: 'Kẻ Lạ', role: 'customer' } as never)).rejects.toThrow('Email is already registered');
+        expect(userRepository.save).not.toHaveBeenCalled();
+      }
+    });
+
+    it('does not let the register OTP reactivate a suspended account', async () => {
+      userRepository.findOne.mockResolvedValue({ ...mockUser, status: AccountStatus.SUSPENDED, isEmailVerified: true });
+      await expect(authService.verifyRegisterOtp({ email: mockUser.email, otp: '123456' } as never)).rejects.toThrow('tạm khoá');
+    });
+
+    it('locks the OTP when no attempt is left, even if the guess is right', async () => {
+      userRepository.findOne.mockResolvedValue({ ...mockUser, status: AccountStatus.PENDING_VERIFICATION, isEmailVerified: false });
+      const codeHash = createHash('sha256').update('123456').digest('hex');
+      otpRepository.findOne.mockResolvedValue({ id: 'otp-uuid', email: mockUser.email, codeHash, purpose: OtpPurpose.REGISTER, expiresAt: new Date(Date.now() + 300000), attempts: 4, maxAttempts: 5, isUsed: false });
+      otpAttemptUpdate = { affected: 0, raw: [] };
+      await expect(authService.verifyRegisterOtp({ email: mockUser.email, otp: '123456' } as never)).rejects.toThrow('khóa');
     });
   });
 });

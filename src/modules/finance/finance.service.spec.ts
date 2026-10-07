@@ -3,6 +3,7 @@ import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import {
   CashSettlementStatus,
+  CommissionDueStatus,
   PaymentAttemptStatus,
   PaymentMode,
   PaymentStatus,
@@ -113,6 +114,7 @@ const makeFinanceService = (options: {
 
   return {
     service,
+    manager,
     repositories,
     invoiceRepository,
     serviceOrderRepository,
@@ -139,6 +141,7 @@ const makeInvoice = (): Invoice =>
     grandTotal: 120000,
     commissionBase: 'LABOR',
     commissionAmount: 10000,
+    commissionRateSnapshot: 0.1,
     paymentStatus: PaymentStatus.UNPAID,
     issuedAt: new Date('2026-09-01T00:00:00.000Z'),
     paidAt: null,
@@ -373,5 +376,52 @@ describe('FinanceService money-state invariants', () => {
     expect(result.paymentUrl).toContain('https://sandbox.vnpayment.vn/vpcpay.html?');
     expect(result.paymentUrl).toContain('vnp_Amount=20000000');
     expect(result.paymentUrl).toContain('vnp_SecureHash=');
+  });
+});
+
+describe('Dues follow the invoice formula', () => {
+  const settle = async (invoiceOverrides: Partial<Invoice>, settlement: CashSettlement | null) => {
+    const invoice = { ...makeInvoice(), ...invoiceOverrides } as Invoice;
+    const order = makeOrder();
+    const assignment = { serviceOrderId: order.id, technicianId: 'technician-1', isActive: true } as TechnicianAssignment;
+    const setup = makeFinanceService({ invoice, order, booking: { id: 'booking-1', customerId: 'customer-1' } as Booking, assignment, settlement: settlement ?? undefined });
+    const commissionDues: CommissionDue[] = [];
+    const platformDues: PlatformDue[] = [];
+    const commissionDueRepository = setup.repositories.get(CommissionDue);
+    const platformDueRepository = setup.repositories.get(PlatformDue);
+    commissionDueRepository.findOne = vi.fn().mockResolvedValue(null);
+    commissionDueRepository.create = vi.fn((value) => value);
+    commissionDueRepository.save = vi.fn(async (value) => { commissionDues.push(value); return value; });
+    platformDueRepository.findOne = vi.fn().mockResolvedValue(null);
+    platformDueRepository.create = vi.fn((value) => value);
+    platformDueRepository.save = vi.fn(async (value) => { platformDues.push(value); return value; });
+    const ensure = (setup.service as unknown as {
+      ensureFinancialDues: (...args: unknown[]) => Promise<void>;
+    }).ensureFinancialDues.bind(setup.service);
+    await ensure(setup.manager, invoice, order, settlement, new Date('2026-10-07T00:00:00Z'));
+    return { commissionDues, platformDues };
+  };
+  const cash = { id: 'settlement-1', declaredByTechnicianId: 'technician-1' } as CashSettlement;
+
+  it('uses the rate frozen on the invoice, not a constant', async () => {
+    const { commissionDues, platformDues } = await settle({ commissionRateSnapshot: 0.15, commissionAmount: 15000 }, cash);
+    expect(commissionDues[0]).toMatchObject({ commissionRateSnapshot: 0.15, dueAmount: 15000 });
+    expect(platformDues[0]).toMatchObject({ commissionRateSnapshot: 0.15, dueAmount: 35000 });
+  });
+
+  it('owes commission plus FixHome parts plus shipping, never the technician\'s own parts or warranty fee', async () => {
+    const { platformDues } = await settle({
+      laborTotal: 500000, commissionAmount: 50000,
+      partsTotal: 300000, fixHomePartsTotal: 0, technicianPartsTotal: 300000,
+      technicianPartWarrantyFeeTotal: 40000, shippingFee: 15000,
+      grandTotal: 855000,
+    }, cash);
+    expect(platformDues[0]).toMatchObject({ fixHomePartsTotalSnapshot: 0, dueAmount: 65000 });
+  });
+
+  it('records an online payment\'s commission as collected and opens no PlatformDue', async () => {
+    const { commissionDues, platformDues } = await settle({}, null);
+    expect(commissionDues[0]).toMatchObject({ status: CommissionDueStatus.PAID, dueAmount: 10000 });
+    expect(platformDues).toHaveLength(0);
   });
 });

@@ -1,5 +1,6 @@
 // src/modules/users/users.service.ts
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -177,6 +178,23 @@ export class UsersService {
         lock: { mode: 'pessimistic_write' },
       });
       if (!user) throw new NotFoundException('User not found');
+      if (dto.status !== AccountStatus.ACTIVE) {
+        if (actor?.id === id) {
+          throw new BadRequestException('Không thể tự khoá tài khoản của chính mình.');
+        }
+        // Keep at least one active admin, or nobody can unlock anyone.
+        if (user.role === Role.ADMIN && user.isActive) {
+          const otherActiveAdmins = await users
+            .createQueryBuilder('u')
+            .where('u.role = :role', { role: Role.ADMIN })
+            .andWhere('u.is_active = true')
+            .andWhere('u.id <> :id', { id })
+            .getCount();
+          if (otherActiveAdmins === 0) {
+            throw new BadRequestException('Không thể khoá quản trị viên cuối cùng còn hoạt động.');
+          }
+        }
+      }
       const previousStatus = user.status;
       user.status = dto.status;
       user.isActive = dto.status === AccountStatus.ACTIVE;

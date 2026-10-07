@@ -1,4 +1,6 @@
 // src/modules/service-orders/service-orders.controller.ts
+import { OrderBoardQueryDto, OrderListQueryDto, StrikeListQueryDto } from './dto/order-list-query.dto';
+import { PageSizeQueryDto } from '../../shared/dto/page-size-query.dto';
 import {
   Controller,
   ParseUUIDPipe,
@@ -40,8 +42,7 @@ import { Role } from '../../shared/enums';
 import { CheckInDto, UpdateLocationDto, EvidenceDto, CompletionRequestDto, CompletionConfirmationDto, ReasonDto, TrackOrderDto } from './order-command.dto';
 import { ServiceOrdersService } from './service-orders.service';
 import {
-  ServiceOrderStatus,
-} from '../../shared/enums';
+  } from '../../shared/enums';
 import {
   CashSettlementConfirmationDto,
   CashSettlementDeclarationDto,
@@ -75,17 +76,12 @@ export class ServiceOrdersController {
   @RequirePermission('order:read_related')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List all service orders (SM / Admin board)' })
-  async findAll(
-    @Query('page') page?: string,
-    @Query('pageSize') pageSize?: string,
-    @Query('status') status?: ServiceOrderStatus,
-    @Query('search') search?: string,
-  ) {
+  async findAll(@Query() query: OrderBoardQueryDto) {
     const result = await this.serviceOrdersService.findAll({
-      page: page ? parseInt(page, 10) : 1,
-      limit: pageSize ? parseInt(pageSize, 10) : 20,
-      status,
-      search,
+      page: query.page,
+      limit: query.pageSize,
+      status: query.status,
+      search: query.search,
     });
     return { data: result.data, meta: { total: result.total } };
   }
@@ -97,18 +93,12 @@ export class ServiceOrdersController {
   @ApiOperation({ summary: 'List my service orders (Customer / Technician)' })
   async findMy(
     @Req() req: { user: { id: string; role: string } },
-    @Query('page') page?: string,
-    @Query('pageSize') pageSize?: string,
-    @Query('status') status?: ServiceOrderStatus,
+    @Query() query: OrderListQueryDto,
   ) {
     const result = await this.serviceOrdersService.findMyOrders(
       req.user.id,
       req.user.role,
-      {
-        page: page ? parseInt(page, 10) : 1,
-        limit: pageSize ? parseInt(pageSize, 10) : 20,
-        status,
-      },
+      { page: query.page, limit: query.pageSize, status: query.status },
     );
     return { data: result.data, meta: { total: result.total } };
   }
@@ -514,18 +504,12 @@ export class ServiceOrdersController {
   @ApiOperation({ summary: 'Get repair history (D-20 derived read model)' })
   async getRepairHistory(
     @Req() req: { user: { id: string; role: string } },
-    @Query('page') page?: string,
-    @Query('pageSize') pageSize?: string,
-    @Query('status') status?: ServiceOrderStatus,
+    @Query() query: OrderListQueryDto,
   ) {
     const result = await this.serviceOrdersService.getRepairHistory(
       req.user.id,
       req.user.role,
-      {
-        page: page ? parseInt(page, 10) : 1,
-        limit: pageSize ? parseInt(pageSize, 10) : 20,
-        status,
-      },
+      { page: query.page, limit: query.pageSize, status: query.status },
     );
     return { data: result.data, meta: { total: result.total } };
   }
@@ -538,13 +522,10 @@ export class ServiceOrdersController {
   @RequirePermission('order:read_related')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List cancellations for SM/Admin review' })
-  async getCancellations(
-    @Query('page') page?: string,
-    @Query('pageSize') pageSize?: string,
-  ) {
+  async getCancellations(@Query() query: PageSizeQueryDto) {
     const result = await this.serviceOrdersService.getCancellations({
-      page: page ? parseInt(page, 10) : 1,
-      limit: pageSize ? parseInt(pageSize, 10) : 20,
+      page: query.page,
+      limit: query.pageSize,
     });
     return { data: result.data, meta: { total: result.total } };
   }
@@ -579,15 +560,11 @@ export class ServiceOrdersController {
   @RequirePermission('strike:read_all')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List cancellation strikes (SM / Admin)' })
-  async getStrikes(
-    @Query('userId') userId?: string,
-    @Query('page') page?: string,
-    @Query('pageSize') pageSize?: string,
-  ) {
+  async getStrikes(@Query() query: StrikeListQueryDto) {
     const result = await this.serviceOrdersService.getStrikes({
-      userId,
-      page: page ? parseInt(page, 10) : 1,
-      limit: pageSize ? parseInt(pageSize, 10) : 20,
+      userId: query.userId,
+      page: query.page,
+      limit: query.pageSize,
     });
     return { data: result.data, meta: { total: result.total } };
   }

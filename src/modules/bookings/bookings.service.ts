@@ -1,4 +1,5 @@
 // src/modules/bookings/bookings.service.ts
+import { releaseOutgoingTechnicianPartRequests } from '../part-requests/part-request-lifecycle';
 import {
   Injectable,
   ForbiddenException,
@@ -418,9 +419,10 @@ export class BookingsService {
       if (current.status === BookingStatus.MATCHING && hasLiveInvitation) {
         return toTechnicianBookingPreview(current);
       }
-      if (current.status !== BookingStatus.MATCHED || !invitations.some(
-        item => item.technicianId === actor.id && item.status === InvitationStatus.ACCEPTED,
-      )) {
+      // The active assignment below is what proves the technician holds the
+      // job; an accepted invitation is not required, because a technician
+      // assigned by staff never had one.
+      if (current.status !== BookingStatus.MATCHED) {
         throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
       }
       const order = await manager.findOne(ServiceOrder, {
@@ -435,12 +437,10 @@ export class BookingsService {
       const fullBooking = await manager.findOne(Booking, {
         where: { id }, relations: ['service', 'address', 'media', 'invitations'],
       });
-      if (!fullBooking || fullBooking.status !== BookingStatus.MATCHED ||
-          !fullBooking.invitations?.some(item =>
-            item.technicianId === actor.id && item.status === InvitationStatus.ACCEPTED)) {
+      if (!fullBooking || fullBooking.status !== BookingStatus.MATCHED) {
         throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
       }
-      fullBooking.invitations = fullBooking.invitations.filter(item => item.technicianId === actor.id);
+      fullBooking.invitations = (fullBooking.invitations ?? []).filter(item => item.technicianId === actor.id);
       return this.addBookingReadDetails(fullBooking, order, manager);
     });
   }
@@ -672,9 +672,9 @@ export class BookingsService {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Repair already started or order closed');
       }
       // A description-only edit is not a reschedule. Keep the active invitation group,
-      // its expiry and the stored arrival window intact when both timestamps are equal.
-      if (!order && [BookingStatus.SUBMITTED, BookingStatus.MATCHING].includes(booking.status) &&
-          booking.preferredStartAt?.getTime() === new Date(dto.preferredStartAt).getTime() &&
+      // its expiry, the stored arrival window and the assigned technician intact when
+      // both timestamps are equal.
+      if (booking.preferredStartAt?.getTime() === new Date(dto.preferredStartAt).getTime() &&
           booking.preferredEndAt?.getTime() === new Date(dto.preferredEndAt).getTime()) {
         if (!dto.description || dto.description === booking.description) return booking;
         booking.description = dto.description;
@@ -697,7 +697,7 @@ export class BookingsService {
         const assignment = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, isActive: true });
         if (!assignment) throw new BusinessException(ErrorCodes.CONFLICT, 'No active assignment');
         await manager.findOne(User, { where: { id: assignment.technicianId }, lock: { mode: 'pessimistic_write' } });
-        const eligibility = await technicianEligibility(manager, assignment.technicianId, booking, order.id);
+        const eligibility = await technicianEligibility(manager, assignment.technicianId, booking, order.id, { keepingExistingOrder: true });
         if (eligibility.eligible) {
           await manager.update(ServiceOrder, order.id, { scheduledAt: booking.preferredStartAt });
         } else {
@@ -710,6 +710,7 @@ export class BookingsService {
           await manager.update(TechnicianAssignment, { serviceOrderId: order.id, isActive: true }, {
             isActive: false, unassignedAt: now, unassignReason: 'Customer rescheduled; technician unavailable for new time',
           });
+          await releaseOutgoingTechnicianPartRequests(manager, order.id, assignment.technicianId);
           await manager.insert(OrderStatusHistory, {
             serviceOrderId: order.id, fromStatus: order.status, toStatus: order.status,
             actorUserId: customer.id, actorRole: Role.CUSTOMER,

@@ -6,7 +6,7 @@ import { randomUUID } from 'crypto';
 import { firstValueFrom, timeout } from 'rxjs';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
-import { ErrorCodes, FINANCE_COMMISSION_RATE } from '../../shared/constants';
+import { ErrorCodes } from '../../shared/constants';
 import {
   CashSettlementStatus,
   CommissionDueStatus,
@@ -785,62 +785,7 @@ export class FinanceService {
       settlement.disputedByCustomerId = null;
       settlement.disputedAt = null;
       const savedSettlement = await settlementRepository.save(settlement);
-      invoice.paymentStatus = PaymentStatus.PAID;
-      invoice.paidAt = now;
-      await invoiceRepository.save(invoice);
-      await orderRepository.update(
-        { id: orderId },
-        { paymentStatus: PaymentStatus.PAID },
-      );
-      order.paymentStatus = PaymentStatus.PAID;
-
-      const confirmation = await manager.findOne(CustomerServiceConfirmation, {
-        where: { serviceOrderId: orderId },
-      });
-      if (
-        confirmation &&
-        order.status === ServiceOrderStatus.UNDER_REPAIR &&
-        !(await isCompletionHeld(manager, orderId))
-      ) {
-        if (!ServiceOrderStateMachine.canTransition(order.status, ServiceOrderStatus.COMPLETED)) {
-          throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Illegal order transition');
-        }
-        order.status = ServiceOrderStatus.COMPLETED;
-        order.completedAt = now;
-        await orderRepository.save(order);
-        await manager.insert(OrderStatusHistory, {
-          serviceOrderId: order.id,
-          fromStatus: ServiceOrderStatus.UNDER_REPAIR,
-          toStatus: ServiceOrderStatus.COMPLETED,
-          actorUserId: actor.id,
-          actorRole: actor.role,
-          reason: 'Work, customer confirmation and payment satisfied',
-        });
-        const items = await manager.find(InvoiceItem, { where: { invoiceId: invoice.id } });
-        for (const item of items) {
-          if (
-            item.warrantyDaysSnapshot <= 0 ||
-            (item.partSource === PartSource.TECHNICIAN &&
-              item.partWarrantyOption !== PartWarrantyOption.PAID_WARRANTY)
-          ) {
-            continue;
-          }
-          await manager.insert(WarrantyCoverage, {
-            serviceOrderId: order.id,
-            invoiceItemId: item.id,
-            warrantyDaysSnapshot: item.warrantyDaysSnapshot,
-            startsAt: now,
-            expiresAt: new Date(now.getTime() + item.warrantyDaysSnapshot * 86400000),
-            status: WarrantyStatus.ACTIVE,
-          });
-        }
-      }
-
-      await this.ensureCashPayment(manager, invoice, savedSettlement, actor.id, now);
-      await this.ensureFinancialDues(manager, invoice, order, savedSettlement, now);
-      if (this.settlementService) {
-        await this.settlementService.trySettleOrder(orderId, manager);
-      }
+      await this.applyConfirmedCash(manager, { order, invoice, settlement: savedSettlement, actor, now });
       await this.auditLogService.logWithManager(manager, {
         actorUserId: actor.id,
         actorRole: actor.role,
@@ -1298,6 +1243,77 @@ export class FinanceService {
     });
   }
 
+  /**
+   * Everything that follows a cash settlement becoming CONFIRMED, whether the
+   * customer confirmed it or a Service Manager resolved the dispute: invoice
+   * paid, order completed when the work is confirmed, the cash payment record,
+   * the dues and the wallet settlement. One path, so the two cannot drift.
+   */
+  async applyConfirmedCash(
+    manager: EntityManager,
+    params: { order: ServiceOrder; invoice: Invoice; settlement: CashSettlement; actor: FinanceActor; now: Date },
+  ): Promise<void> {
+    const { order, invoice, settlement: savedSettlement, actor, now } = params;
+    const orderRepository = manager.getRepository(ServiceOrder);
+    const invoiceRepository = manager.getRepository(Invoice);
+      invoice.paymentStatus = PaymentStatus.PAID;
+      invoice.paidAt = now;
+      await invoiceRepository.save(invoice);
+      await orderRepository.update(
+        { id: order.id },
+        { paymentStatus: PaymentStatus.PAID },
+      );
+      order.paymentStatus = PaymentStatus.PAID;
+
+      const confirmation = await manager.findOne(CustomerServiceConfirmation, {
+        where: { serviceOrderId: order.id },
+      });
+      if (
+        confirmation &&
+        order.status === ServiceOrderStatus.UNDER_REPAIR &&
+        !(await isCompletionHeld(manager, order.id))
+      ) {
+        if (!ServiceOrderStateMachine.canTransition(order.status, ServiceOrderStatus.COMPLETED)) {
+          throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Illegal order transition');
+        }
+        order.status = ServiceOrderStatus.COMPLETED;
+        order.completedAt = now;
+        await orderRepository.save(order);
+        await manager.insert(OrderStatusHistory, {
+          serviceOrderId: order.id,
+          fromStatus: ServiceOrderStatus.UNDER_REPAIR,
+          toStatus: ServiceOrderStatus.COMPLETED,
+          actorUserId: actor.id,
+          actorRole: actor.role,
+          reason: 'Work, customer confirmation and payment satisfied',
+        });
+        const items = await manager.find(InvoiceItem, { where: { invoiceId: invoice.id } });
+        for (const item of items) {
+          if (
+            item.warrantyDaysSnapshot <= 0 ||
+            (item.partSource === PartSource.TECHNICIAN &&
+              item.partWarrantyOption !== PartWarrantyOption.PAID_WARRANTY)
+          ) {
+            continue;
+          }
+          await manager.insert(WarrantyCoverage, {
+            serviceOrderId: order.id,
+            invoiceItemId: item.id,
+            warrantyDaysSnapshot: item.warrantyDaysSnapshot,
+            startsAt: now,
+            expiresAt: new Date(now.getTime() + item.warrantyDaysSnapshot * 86400000),
+            status: WarrantyStatus.ACTIVE,
+          });
+        }
+      }
+
+      await this.ensureCashPayment(manager, invoice, savedSettlement, actor.id, now);
+      await this.ensureFinancialDues(manager, invoice, order, savedSettlement, now);
+      if (this.settlementService) {
+        await this.settlementService.trySettleOrder(order.id, manager);
+      }
+  }
+
   private async ensureCashPayment(
     manager: EntityManager,
     invoice: Invoice,
@@ -1361,13 +1377,19 @@ export class FinanceService {
         'Invoice total snapshot is inconsistent',
       );
     }
-    if (commissionAmount !== Math.round(laborTotal * FINANCE_COMMISSION_RATE)) {
+    // The rate frozen on the invoice is the snapshot (BRX-026). Comparing
+    // with a constant broke every payment once an admin changed the rate.
+    const commissionRate = Number(invoice.commissionRateSnapshot);
+    if (!Number.isFinite(commissionRate) || commissionAmount !== Math.round(laborTotal * commissionRate)) {
       throw new BusinessException(
         ErrorCodes.CONFLICT,
         'Invoice commission snapshot is inconsistent',
       );
     }
-    const commissionRate = FINANCE_COMMISSION_RATE;
+    // #22: online, FixHome already holds the customer's money, so the
+    // commission is collected at payment and nothing is owed afterwards.
+    // PlatformDue exists only for cash (spec 8.18, BRX-030).
+    const paidOnline = settlement === null;
     const assignment = await manager.findOne(TechnicianAssignment, {
       where: { serviceOrderId: order.id, isActive: true },
     });
@@ -1398,14 +1420,16 @@ export class FinanceService {
             laborTotalSnapshot: laborTotal,
             commissionRateSnapshot: commissionRate,
             dueAmount: commissionAmount,
-            status: CommissionDueStatus.PENDING,
-            paidAt: null,
+            status: paidOnline ? CommissionDueStatus.PAID : CommissionDueStatus.PENDING,
+            paidAt: paidOnline ? now : null,
+            ...(paidOnline ? { paymentReference: `ONLINE_INVOICE:${invoice.id}` } : {}),
             dueDate,
           }),
         );
       }
     }
 
+    if (paidOnline) return;
     const existingPlatformDue = await platformDueRepository.findOne({
       where: { serviceOrderId: order.id },
     });

@@ -86,6 +86,7 @@ const makeEscalationService = (options: {
     cashSettlementRepository as any,
     assignmentRepository as any,
     { logWithManagerStrict: vi.fn() } as any,
+    { get: vi.fn() } as any,
   );
 
   return {

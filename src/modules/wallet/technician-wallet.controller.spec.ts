@@ -32,7 +32,7 @@ describe('TechnicianWalletController', () => {
     expect(mockWalletService.topUp).toHaveBeenCalledWith(
       'tech-user-123',
       200000,
-      expect.stringMatching(/^TOPUP_tech-use_\d+_[a-z0-9]+$/),
+      expect.stringMatching(/^TOPUP:tech-user-123:TOPUP_tech-use_\d+_[a-z0-9]+$/),
     );
     expect(res).toEqual({
       success: true,
@@ -57,7 +57,7 @@ describe('TechnicianWalletController', () => {
     expect(mockWalletService.topUp).toHaveBeenCalledWith(
       'tech-user-123',
       200000,
-      'CUSTOM_KEY_123',
+      'TOPUP:tech-user-123:CUSTOM_KEY_123',
     );
     expect(res.paymentId).toBe('tx-2');
   });

@@ -24,6 +24,7 @@ function harness(active: boolean) {
       innerJoin: vi.fn().mockReturnThis(), where: vi.fn().mockReturnThis(), andWhere: vi.fn().mockReturnThis(),
       orderBy: vi.fn().mockReturnThis(), skip: vi.fn().mockReturnThis(), take: vi.fn().mockReturnThis(),
       getManyAndCount: vi.fn(async () => [[order], 1]),
+      select: vi.fn().mockReturnThis(), getRawMany: vi.fn(async () => []),
     })),
   };
   const presentOrder = vi.fn(async () => ({ ...order, addressSummary: 'PRIVATE_ADDRESS', customerPhone: 'PRIVATE_PHONE' }));

@@ -1,4 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { PlatformDueStatus } from '../../shared/enums';
+import { PlatformDue } from '../finance/entities/platform-due.entity';
 import { DataSource, EntityManager } from 'typeorm';
 import {
   CashSettlementStatus,
@@ -161,6 +163,13 @@ export class SettlementService {
         due.paymentReference = `SETTLED_VIA_WALLET:${order.id}`;
         await manager.save(due);
       }
+      // The platform fee was taken from the wallet above, so the cash
+      // PlatformDue is settled too; nothing else ever closed it.
+      await manager.update(
+        PlatformDue,
+        { serviceOrderId: order.id, status: PlatformDueStatus.PENDING },
+        { status: PlatformDueStatus.SETTLED, settledAt: new Date() },
+      );
 
       return { settled: true };
     };
