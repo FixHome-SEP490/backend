@@ -15,17 +15,22 @@ import {
   IsArray,
   ArrayMinSize,
   IsUUID,
+  IsInt,
 } from 'class-validator';
+import { Trim } from '../../../shared/validation/input.transforms';
+import { IsPersonName } from '../../../shared/validation/text.validators';
 import { OnboardingStatus, Gender, VerificationStatus } from '../../../shared/enums';
 
 // ── Step 1: Personal Info ──────────────────────────────────────────────
 
 export class SavePersonalInfoDto {
   @ApiProperty({ example: 'Nguyễn Văn An', description: 'Full legal name' })
+  @Trim()
   @IsString()
   @MinLength(2)
   @MaxLength(200)
   @IsNotEmpty()
+  @IsPersonName()
   fullName: string;
 
   @ApiProperty({ example: '1995-06-15', description: 'Date of birth (ISO date)' })
@@ -67,7 +72,7 @@ export class SaveSkillsDto {
   serviceIds: string[];
 
   @ApiProperty({ example: 3, description: 'Years of experience' })
-  @IsNumber()
+  @IsInt()
   @Min(0)
   @Max(50)
   yearsExperience: number;
@@ -82,14 +87,17 @@ export class SaveSkillsDto {
 // ── Step 4: Address & Service Area ─────────────────────────────────────
 
 export class ServiceAreaItemDto {
+  // The columns hold 50 characters; longer codes failed at insert as a 500.
   @ApiProperty({ example: '01', description: 'Province code' })
   @IsString()
   @IsNotEmpty()
+  @MaxLength(50)
   provinceCode: string;
 
   @ApiProperty({ example: '001', description: 'District code' })
   @IsString()
   @IsNotEmpty()
+  @MaxLength(50)
   districtCode: string;
 }
 

@@ -6,7 +6,9 @@ import {
   MinLength,
   MaxLength,
   ValidateIf,
+  IsUrl,
 } from 'class-validator';
+import { IsPersonName } from '../../../shared/validation/text.validators';
 import { Trim, Phone } from '../../../shared/validation/input.transforms';
 
 export class UpdateProfileDto {
@@ -19,6 +21,7 @@ export class UpdateProfileDto {
   @MaxLength(200)
   @IsString()
   @MinLength(2, { message: 'fullName must be at least 2 characters long' })
+  @IsPersonName()
   fullName?: string;
 
   @ApiPropertyOptional({
@@ -37,8 +40,12 @@ export class UpdateProfileDto {
     example: 'https://res.cloudinary.com/demo/image/upload/avatar.jpg',
     description: 'Updated avatar URL',
   })
+  // A hosted image: a device path such as file:///... cannot be loaded by
+  // anyone else.
   @ValidateIf((_dto, value) => value !== undefined)
   @IsString()
+  @MaxLength(2048)
+  @IsUrl({ protocols: ['http', 'https'], require_protocol: true, require_tld: false }, { message: 'avatarUrl must be an http(s) URL' })
   avatarUrl?: string;
 }
 

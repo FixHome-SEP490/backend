@@ -65,8 +65,8 @@ export class ServiceManagerWalletController {
   @ApiOperation({
     summary: 'SM/Admin: Xem chi tiết ví một Kỹ thuật viên',
   })
-  async getWalletDetail(@Param('technicianId') technicianId: string) {
-    return this.walletService.getWalletSummary(technicianId);
+  async getWalletDetail(@Param('technicianId', ParseUUIDPipe) technicianId: string) {
+    return this.walletService.getTechnicianWalletSummary(technicianId);
   }
 
   @Get('wallets/:technicianId/transactions')
@@ -74,10 +74,10 @@ export class ServiceManagerWalletController {
     summary: 'SM/Admin: Xem lịch sử giao dịch ví của một Kỹ thuật viên',
   })
   async getWalletTransactions(
-    @Param('technicianId') technicianId: string,
+    @Param('technicianId', ParseUUIDPipe) technicianId: string,
     @Query() query: QueryWalletTransactionsDto,
   ) {
-    const summary = await this.walletService.getWalletSummary(technicianId);
+    const summary = await this.walletService.getTechnicianWalletSummary(technicianId);
     const result = await this.walletService.listTransactions(summary.id, query);
     return {
       data: result.data,

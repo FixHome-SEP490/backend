@@ -1,4 +1,5 @@
 // src/modules/reviews/reviews.controller.ts
+import { PageSizeQueryDto } from '../../shared/dto/page-size-query.dto';
 import {
   Controller,
   ParseUUIDPipe,
@@ -71,12 +72,11 @@ export class ReviewsController {
   @ApiOperation({ summary: 'Get reviews for a technician' })
   async getByTechnicianId(
     @Param('id', ParseUUIDPipe) technicianId: string,
-    @Query('page') page?: string,
-    @Query('pageSize') pageSize?: string,
+    @Query() query: PageSizeQueryDto,
   ) {
     const result = await this.reviewsService.findByTechnicianId(technicianId, {
-      page: page ? parseInt(page, 10) : 1,
-      limit: pageSize ? parseInt(pageSize, 10) : 20,
+      page: query.page,
+      limit: query.pageSize,
     });
     return { data: result.data, meta: { total: result.total } };
   }

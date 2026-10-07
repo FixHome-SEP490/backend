@@ -84,6 +84,23 @@ export class WalletService {
   }
 
   /**
+   * Staff look up a wallet by technician id. The id must belong to a
+   * technician: a customer's id used to get a wallet created for them, and an
+   * unknown id ran into the foreign key and surfaced as a 500.
+   */
+  async requireTechnician(technicianId: string): Promise<void> {
+    const user = await this.userRepo.findOne({ where: { id: technicianId }, select: { id: true, role: true } });
+    if (!user || user.role !== Role.TECHNICIAN) {
+      throw new NotFoundException('Không tìm thấy kỹ thuật viên');
+    }
+  }
+
+  async getTechnicianWalletSummary(technicianId: string): Promise<WalletSummaryResponseDto> {
+    await this.requireTechnician(technicianId);
+    return this.getWalletSummary(technicianId);
+  }
+
+  /**
    * Calculate runtime summary including pending withdrawal and eligibility.
    */
   async getWalletSummary(technicianId: string): Promise<WalletSummaryResponseDto> {
@@ -350,6 +367,7 @@ export class WalletService {
       );
     }
 
+    await this.requireTechnician(technicianId);
     const wallet = await this.getOrCreateWallet(technicianId);
     const amount = Math.abs(dto.amount);
     const idempotencyKey = `ADJUSTMENT:${technicianId}:${Date.now()}`;

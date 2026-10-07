@@ -41,6 +41,15 @@ export interface ServiceAreaItemDto {
   districtCode: string;
 }
 
+/** Both are "HH:mm", so text order is time order. */
+function assertScheduleWindows(schedules: ScheduleItemDto[]): void {
+  for (const s of schedules) {
+    if (s.startTime >= s.endTime) {
+      throw new BadRequestException(`Giờ bắt đầu phải trước giờ kết thúc (thứ ${s.dayOfWeek}: ${s.startTime}–${s.endTime})`);
+    }
+  }
+}
+
 @Injectable()
 export class TechniciansService {
   private readonly profileRepo: Repository<TechnicianProfile>;
@@ -303,23 +312,21 @@ export class TechniciansService {
         throw new BadRequestException('startTime and endTime are required');
       }
     }
+    assertScheduleWindows(schedules);
 
-    await this.scheduleRepo.delete({ technicianId: profile.id });
-
-    if (!schedules || schedules.length === 0) {
-      return [];
-    }
-
-    const items = schedules.map((s) =>
-      this.scheduleRepo.create({
+    // Replace in one transaction: deleting first and failing on the insert
+    // used to leave the technician with no schedule at all.
+    return this.scheduleRepo.manager.transaction(async (manager) => {
+      const repo = manager.getRepository(TechnicianSchedule);
+      await repo.delete({ technicianId: profile.id });
+      if (schedules.length === 0) return [];
+      return repo.save(schedules.map((s) => repo.create({
         technicianId: profile.id,
         dayOfWeek: s.dayOfWeek,
         startTime: s.startTime,
         endTime: s.endTime,
-      }),
-    );
-
-    return this.scheduleRepo.save(items);
+      })));
+    });
   }
 
   async getMyTimeOff(userId: string): Promise<TechnicianTimeOff[]> {
@@ -379,21 +386,16 @@ export class TechniciansService {
   ): Promise<TechnicianServiceArea[]> {
     const profile = await this.getMyProfile(userId);
 
-    await this.areaRepo.delete({ technicianId: profile.id });
-
-    if (!areas || areas.length === 0) {
-      return [];
-    }
-
-    const items = areas.map((a) =>
-      this.areaRepo.create({
+    return this.areaRepo.manager.transaction(async (manager) => {
+      const repo = manager.getRepository(TechnicianServiceArea);
+      await repo.delete({ technicianId: profile.id });
+      if (!areas || areas.length === 0) return [];
+      return repo.save(areas.map((a) => repo.create({
         technicianId: profile.id,
         provinceCode: a.provinceCode,
         districtCode: a.districtCode,
-      }),
-    );
-
-    return this.areaRepo.save(items);
+      })));
+    });
   }
 
   async getMyEarnings(userId: string) {

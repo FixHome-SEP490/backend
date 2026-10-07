@@ -1,4 +1,5 @@
 // src/modules/part-requests/dto/index.ts
+import { MAX_PAGE } from '../../../shared/dto/page-size-query.dto';
 import { Transform, Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
@@ -157,6 +158,7 @@ export class QueryPartRequestsDto {
   @IsOptional()
   @IsInt()
   @Min(1)
+  @Max(MAX_PAGE)
   page?: number;
 
   @ApiPropertyOptional({ default: 20 })

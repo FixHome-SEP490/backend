@@ -22,9 +22,17 @@ import {
   MaxLength,
 } from 'class-validator';
 
-/** Hard ceilings enforced by the AI Service. Rejecting here saves a round trip. */
+/**
+ * Hard ceilings enforced by the AI Service (app/schemas/diagnosis.py and
+ * chat.py). Anything longer passed here, failed there with a 422 and reached
+ * the customer as "trợ lý không kết nối được"; rejecting here says what is
+ * actually wrong.
+ */
 export const AI_MAX_IMAGES = 3;
-export const AI_MAX_DESCRIPTION = 4000;
+export const AI_MAX_DESCRIPTION = 2000;
+export const AI_MAX_QUESTION = 1000;
+export const AI_MAX_SESSION_ID = 64;
+export const AI_MAX_HINT = 64;
 
 export class AnalyzeDto {
   @ApiProperty({
@@ -33,6 +41,7 @@ export class AnalyzeDto {
     example: 'may giat nha em khong vat, keu to luc quay',
   })
   @IsString()
+  @MaxLength(AI_MAX_DESCRIPTION)
   description: string;
 
   @ApiPropertyOptional({
@@ -52,12 +61,13 @@ export class AnalyzeDto {
   })
   @IsOptional()
   @IsString()
-  @MaxLength(128)
+  @MaxLength(AI_MAX_SESSION_ID)
   sessionId?: string;
 
   @ApiPropertyOptional({ description: 'Service category the customer came in from.' })
   @IsOptional()
   @IsString()
+  @MaxLength(AI_MAX_HINT)
   categoryHint?: string;
 
   @ApiPropertyOptional({
@@ -76,18 +86,19 @@ export class AskDto {
   })
   @IsString()
   @IsNotEmpty()
-  @MaxLength(AI_MAX_DESCRIPTION)
+  @MaxLength(AI_MAX_QUESTION)
   question: string;
 
   @ApiPropertyOptional({ description: 'Same session contract as analyze.' })
   @IsOptional()
   @IsString()
-  @MaxLength(128)
+  @MaxLength(AI_MAX_SESSION_ID)
   sessionId?: string;
 
   @ApiPropertyOptional({ description: 'Narrows retrieval to one appliance.' })
   @IsOptional()
   @IsString()
+  @MaxLength(AI_MAX_HINT)
   deviceType?: string;
 }
 

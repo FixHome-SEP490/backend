@@ -1,4 +1,5 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication, PayloadTooLargeException, ValidationPipe } from '@nestjs/common';
+import type { NextFunction, Request, Response } from 'express';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder, type OpenAPIObject } from '@nestjs/swagger';
@@ -22,6 +23,32 @@ import { ApiErrorResponseDto } from './shared/dto';
  * tới trợ lý", which points at the network and is nothing to do with it.
  */
 const MAX_BODY_SIZE = '40mb';
+
+/**
+ * Every other JSON body is form data; files go up as multipart with their own
+ * limits. Accepting 40 MB everywhere let any caller, signed in or not, make the
+ * server parse 40 MB of JSON on any route.
+ */
+export const MAX_FORM_BODY_BYTES = 1024 * 1024;
+
+/** The only routes that carry images inline. */
+export const IMAGE_BODY_ROUTES = [`/${API_PREFIX}/ai/diagnoses`, `/${API_PREFIX}/ai-diagnosis/analyze`];
+
+/**
+ * Turns away a declared body over 1 MB before it is read, unless the route
+ * carries images. One parser stays in place: a second, route-specific parser
+ * would come from the top-level express 5 while Nest runs its own express 4,
+ * and the two do not see each other's "already parsed" mark.
+ */
+export function formBodySizeGuard(req: Request, _res: Response, next: NextFunction): void {
+  const declared = Number(req.headers['content-length'] ?? 0);
+  const path = (req.originalUrl ?? req.url ?? '').split('?')[0].replace(/\/+$/, '');
+  if (declared > MAX_FORM_BODY_BYTES && !IMAGE_BODY_ROUTES.includes(path)) {
+    next(new PayloadTooLargeException('Request payload is too large'));
+    return;
+  }
+  next();
+}
 
 export function normalizeOpenApiResponses(document: OpenAPIObject): void {
   for (const path of Object.values(document.paths ?? {})) {
@@ -80,6 +107,7 @@ export function configureApplication(
   // mô tả ở phần khai báo vẫn còn nguyên. Nối vào đây cho giới hạn có hiệu lực.
   // `app` khai kiểu Partial<NestExpressApplication> vì test dựng app tối giản,
   // nên gọi có điều kiện.
+  app.use(formBodySizeGuard);
   app.useBodyParser?.('json', { limit: MAX_BODY_SIZE });
   app.useBodyParser?.('urlencoded', { limit: MAX_BODY_SIZE, extended: true });
 

@@ -10,6 +10,7 @@ import {
   UseGuards,
   ParseUUIDPipe,
 } from '@nestjs/common';
+import { PageLimitQueryDto } from '../../shared/dto/page-size-query.dto';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -30,14 +31,13 @@ export class NotificationsController {
   @ApiOperation({ summary: 'Get user notifications' })
   async getMyNotifications(
     @Req() req: { user: { id: string } },
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
+    @Query() query: PageLimitQueryDto,
   ): Promise<{
     data: Awaited<ReturnType<NotificationsService['getMyNotifications']>>['data'];
     meta: PaginationMeta;
   }> {
-    const p = Math.max(1, parseInt(page || '1', 10) || 1);
-    const l = Math.min(100, Math.max(1, parseInt(limit || '20', 10) || 20));
+    const p = query.page;
+    const l = query.limit;
     const result = await this.notificationsService.getMyNotifications(req.user.id, p, l);
     return {
       data: result.data,

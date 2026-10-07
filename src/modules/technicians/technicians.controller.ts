@@ -35,11 +35,8 @@ export class UpdateTechnicianProfileDto {
   @IsOptional() @IsInt() @Min(0) @Max(80) yearsExperience?: number;
   @IsOptional() @IsNumber() @Min(1) @Max(100) serviceRadiusKm?: number;
 }
-import {
-  TechniciansService,
-  ScheduleItemDto,
-  ServiceAreaItemDto,
-} from './technicians.service';
+import { TechniciansService } from './technicians.service';
+import { CreateTimeOffDto, UpdateScheduleDto, UpdateServiceAreasDto } from './dto/availability.dto';
 import {
   TechnicianServiceOfferingResponseDto,
   UpdateSkillPricingDto,
@@ -141,11 +138,11 @@ export class TechniciansController {
   @ApiOperation({ summary: 'Configure technician weekly working schedule' })
   async updateMySchedule(
     @Req() req: { user: { id: string } },
-    @Body() body: { schedules: ScheduleItemDto[] },
+    @Body() body: UpdateScheduleDto,
   ) {
     const schedule = await this.techniciansService.updateMySchedule(
       req.user.id,
-      body.schedules || [],
+      body.schedules,
     );
     return { data: schedule };
   }
@@ -165,7 +162,7 @@ export class TechniciansController {
   @ApiOperation({ summary: 'Add a time off interval for technician' })
   async createTimeOff(
     @Req() req: { user: { id: string } },
-    @Body() dto: { startAt: string; endAt: string; reason?: string },
+    @Body() dto: CreateTimeOffDto,
   ) {
     const timeOff = await this.techniciansService.createTimeOff(req.user.id, dto);
     return { data: timeOff };
@@ -177,7 +174,7 @@ export class TechniciansController {
   @ApiOperation({ summary: 'Remove a time off entry' })
   async deleteTimeOff(
     @Req() req: { user: { id: string } },
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
   ) {
     const result = await this.techniciansService.deleteTimeOff(req.user.id, id);
     return { data: result };
@@ -198,11 +195,11 @@ export class TechniciansController {
   @ApiOperation({ summary: 'Update technician service areas' })
   async updateMyServiceAreas(
     @Req() req: { user: { id: string } },
-    @Body() body: { areas: ServiceAreaItemDto[] },
+    @Body() body: UpdateServiceAreasDto,
   ) {
     const areas = await this.techniciansService.updateMyServiceAreas(
       req.user.id,
-      body.areas || [],
+      body.areas,
     );
     return { data: areas };
   }

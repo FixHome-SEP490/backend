@@ -1,4 +1,5 @@
 // src/modules/bookings/bookings.controller.ts
+import { BookingListQueryDto } from './dto/booking-list-query.dto';
 import {
   Controller,
   ParseUUIDPipe,
@@ -23,7 +24,6 @@ import { BookingsService } from './bookings.service';
 import { InvitationsService } from './invitations.service';
 import { AttachBookingMediaDto, CreateBookingDto, ScheduleBookingDto, RebookDto, ShortlistDto } from './booking.dto';
 import { ReasonDto } from '../service-orders/order-command.dto';
-import { BookingStatus } from '../../shared/enums';
 import { toBookingInvitationResponse, toBookingMediaResponse, toBookingResponse } from './booking-privacy.dto';
 import { BookingPrivateMediaContentService } from './booking-private-media-content.service';
 
@@ -53,14 +53,12 @@ export class BookingsController {
   @ApiOperation({ summary: 'List my bookings' })
   async findMy(
     @Req() req: { user: { id: string } },
-    @Query('page') page?: string,
-    @Query('pageSize') pageSize?: string,
-    @Query('status') status?: BookingStatus,
+    @Query() query: BookingListQueryDto,
   ) {
     const result = await this.bookingsService.findMyBookings(req.user.id, {
-      page: page ? parseInt(page, 10) : 1,
-      limit: pageSize ? parseInt(pageSize, 10) : 20,
-      status,
+      page: query.page,
+      limit: query.pageSize,
+      status: query.status,
     });
     return { data: result.data.map(toBookingResponse), meta: { total: result.total } };
   }
@@ -70,15 +68,11 @@ export class BookingsController {
   @RequirePermission('booking:read_all')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List all bookings (SM / Admin board)' })
-  async findAll(
-    @Query('page') page?: string,
-    @Query('pageSize') pageSize?: string,
-    @Query('status') status?: BookingStatus,
-  ) {
+  async findAll(@Query() query: BookingListQueryDto) {
     const result = await this.bookingsService.findAllForStaff({
-      page: page ? parseInt(page, 10) : 1,
-      limit: pageSize ? parseInt(pageSize, 10) : 20,
-      status,
+      page: query.page,
+      limit: query.pageSize,
+      status: query.status,
     });
     return { data: result.data.map(toBookingResponse), meta: { total: result.total } };
   }
