@@ -1,4 +1,5 @@
 import { EntityManager } from 'typeorm';
+import { ErrorCodes, type ErrorCode } from '../../shared/constants';
 import { Booking } from './entities/booking.entity';
 import { User } from '../users/entities/user.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
@@ -103,4 +104,16 @@ export async function technicianEligibility(
   );
   if (distanceKm > Number(profile.serviceRadiusKm)) return fail('Outside technician service radius');
   return { eligible: true };
+}
+
+/**
+ * The error code for an eligibility failure. Only a locked, inactive or
+ * work-suspended technician is WORK_SUSPENDED; outside working hours, time off,
+ * a clash, the wallet minimum or distance are TECHNICIAN_NOT_ELIGIBLE, so the
+ * client can say what actually stands in the way.
+ */
+export function eligibilityErrorCode(reason: string | undefined): ErrorCode {
+  return reason === 'Technician account is not active' || reason === 'Technician is unavailable or suspended'
+    ? ErrorCodes.WORK_SUSPENDED
+    : ErrorCodes.TECHNICIAN_NOT_ELIGIBLE;
 }

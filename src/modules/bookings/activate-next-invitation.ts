@@ -1,4 +1,6 @@
 import { EntityManager } from 'typeorm';
+import type { NotificationsService } from '../notifications/notifications.service';
+import { ensureBookingConversation } from '../messaging/ensure-conversation';
 import { Booking } from './entities/booking.entity';
 import { BookingInvitation } from './entities/booking-invitation.entity';
 import { BookingStatus, InvitationStatus } from '../../shared/enums';
@@ -41,4 +43,30 @@ export async function activateNextInvitation(
       return;
     }
     await manager.update(Booking, booking.id, { status: BookingStatus.CLOSED });
+}
+
+/**
+ * What happens when an invitation reaches a technician, on every path that
+ * activates one (first round, rematch after a withdrawal or a reschedule, the
+ * background sweep): the conversation opens (spec 8.6) and the technician is
+ * told. A rematch used to activate the next invitation silently, so it usually
+ * expired before the technician knew it existed.
+ */
+export function invitationActivatedHook(
+  notifications?: NotificationsService,
+  openConversation: OnInvitationActivated = async (manager, booking, technicianId) => { await ensureBookingConversation(manager, booking, technicianId); },
+): OnInvitationActivated {
+  return async (manager, booking, technicianId) => {
+    await openConversation(manager, booking, technicianId);
+    if (notifications) {
+      void notifications.createNotification({
+        userId: technicianId,
+        title: 'Lời mời nhận việc mới!',
+        message: 'Bạn có một lời mời nhận việc mới từ khách hàng. Vui lòng kiểm tra và phản hồi sớm trước khi hết hạn.',
+        type: 'BOOKING_INVITATION',
+        referenceId: booking.id,
+        referenceType: 'BOOKING',
+      }).catch(() => undefined);
+    }
+  };
 }

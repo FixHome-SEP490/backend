@@ -1,8 +1,8 @@
 // src/modules/technician-assignment/technician-assignment.service.ts
+import { newOrderCode } from '../service-orders/order-code';
 import { Injectable, Logger, NotFoundException, ForbiddenException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
-import { randomUUID } from 'crypto';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { OrderStatusHistory } from '../service-orders/entities/order-status-history.entity';
@@ -65,9 +65,10 @@ export class TechnicianAssignmentService {
       if (!eligibility.eligible) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, eligibility.reason!);
 
       const now = new Date();
-      const code = existingOrder?.code ?? 'FH-' + now.toISOString().slice(0, 10).replace(/-/g, '') + '-' + randomUUID().slice(0, 8).toUpperCase();
+      const code = existingOrder?.code ?? newOrderCode(now);
       const serviceOrder = existingOrder ?? await manager.save(ServiceOrder, manager.create(ServiceOrder, { bookingId: booking.id, code, status: ServiceOrderStatus.ACCEPTED, scheduledAt: booking.preferredStartAt }));
       const assignment = await manager.save(TechnicianAssignment, manager.create(TechnicianAssignment, { serviceOrderId: serviceOrder.id, technicianId, isActive: true, assignedAt: now }));
+      if (existingOrder) await manager.update(ServiceOrder, serviceOrder.id, { departureWarnedAt: null });
       await manager.insert(OrderStatusHistory, { serviceOrderId: serviceOrder.id, fromStatus: existingOrder ? serviceOrder.status : null, toStatus: serviceOrder.status, actorUserId: actorUser.id, actorRole: actorUser.role, reason });
 
       await manager.createQueryBuilder().update(BookingInvitation).set({ status: InvitationStatus.CANCELLED, respondedAt: now }).where('booking_id = :bookingId AND status IN (:...statuses)', { bookingId, statuses: [InvitationStatus.PENDING, InvitationStatus.STANDBY] }).execute();
@@ -136,6 +137,7 @@ export class TechnicianAssignmentService {
         await releaseOutgoingTechnicianPartRequests(manager, orderId, existingAssignment.technicianId);
       }
 
+      await manager.update(ServiceOrder, orderId, { departureWarnedAt: null });
       const savedAssignment = await manager.save(manager.create(TechnicianAssignment, {
         serviceOrderId: orderId,
         technicianId,

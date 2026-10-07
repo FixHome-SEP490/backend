@@ -53,12 +53,14 @@ interface KeyValidationRule {
 }
 
 const KEY_VALIDATION: Record<string, KeyValidationRule> = {
-  'matching.max_shortlist':              { type: 'int', min: 1, max: 10 },
+  'matching.max_shortlist':              { type: 'int', min: 1, max: 2 },
   // matching.mode was SIMULTANEOUS (stale). v1.4 canonical is SEQUENTIAL.
   // Corrected in seed. No runtime consumer currently reads this key; sequential
   // invitation behavior is implemented independently in the Dev1-owned flow.
   'matching.mode':                       { type: 'enum', enumValues: ['SEQUENTIAL'] },
   'matching.invitation_ttl_minutes':     { type: 'int', min: 5, max: 1440 },
+  'order.departure_grace_minutes':       { type: 'int', min: 0, max: 240 },
+  'order.departure_cancel_minutes':      { type: 'int', min: 1, max: 240 },
   'geofence.radius_meters':             { type: 'int', min: 10, max: 5000 },
   'geofence.min_gps_accuracy_meters':   { type: 'int', min: 5, max: 500 },
   'evidence.before.min_count':          { type: 'int', min: 0, max: 10 },
@@ -105,8 +107,19 @@ const KEY_EFFECT: Record<
     status: 'ACTIVE',
     evidence: null,
   },
-  // ACTIVE: src/modules/bookings/invitations.service.ts reads via BusinessConfigService.getInt
+  // Product decision (PO 07/10/2026): a customer shortlists one or two
+  // technicians; the shortlist API enforces it, so this value only documents it.
   'matching.max_shortlist': {
+    status: 'NOT_IMPLEMENTED',
+    evidence:
+      'Shortlist size is fixed at 1 or 2 by product decision (PO 07/10/2026) and enforced by the shortlist DTO and invitations.service.ts; this value is informational.',
+  },
+  // ACTIVE: service-orders.service.ts sweepDepartures (BRX-063)
+  'order.departure_grace_minutes': {
+    status: 'ACTIVE',
+    evidence: null,
+  },
+  'order.departure_cancel_minutes': {
     status: 'ACTIVE',
     evidence: null,
   },
@@ -195,12 +208,11 @@ const KEY_EFFECT: Record<
     evidence:
       'src/modules/service-orders/service-orders.service.ts — commission base is hard-coded as \'LABOR\' (const commissionBase = \'LABOR\'); this key is NOT consumed from the DB. Wire BusinessConfigService.getString(\'commission.base\', \'LABOR\') to make ACTIVE.',
   },
-  // TO_WIRE: service-orders.service.ts hard-codes the 10% rate (0.1 multiplier)
-  // rather than reading commission.rate_bps from BusinessConfigService.
+  // ACTIVE: generateInvoice reads it and snapshots it on the invoice; dues and
+  // settlement use that snapshot (backend #71).
   'commission.rate_bps': {
-    status: 'TO_WIRE',
-    evidence:
-      'src/modules/service-orders/service-orders.service.ts — commission rate hard-coded as 0.1 (10%); this key is NOT consumed from DB. Wire BusinessConfigService.getInt(\'commission.rate_bps\', 1000) / 10000 at invoice-finalization.',
+    status: 'ACTIVE',
+    evidence: null,
   },
   // STALE_REVIEW (key mismatch): seed uses key \'additional_cost.approval_ttl_minutes\'
   // but quotations.service.ts reads \'additional_cost.ttl_minutes\' (different key) with fallback 120.
