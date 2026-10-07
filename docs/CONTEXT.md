@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-07 19:15 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/remaining-bugs-and-fake-data
+> Cập nhật lần cuối: 2026-10-07 21:03 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/order-completed-notices
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -112,6 +112,10 @@ Các PR #67 đến #72 vào `dev` sửa 26 lỗi trong đợt rà soát backend:
 
 Nhánh `fix/order-timing-and-matching`: luật quá giờ hẹn BRX-063 (cảnh báo rồi tự huỷ sau 10 phút), tác vụ nền mỗi phút cho lời mời hết hạn và giờ xuất phát, ghép lại thợ có mở chat và báo thợ, đổi lịch khi đang ghép lại, mã lỗi `TECHNICIAN_NOT_ELIGIBLE`, mã đơn theo ngày giờ Việt Nam.
 
+### Hoàn tất đơn
+
+Đơn sang COMPLETED ở bước đến sau cùng trong ba bước: khách xác nhận công việc, tiền mặt được xác nhận (khách hoặc quản lý xử lý tranh chấp) và thanh toán online được xác minh. Cả ba đường gọi `applyOrderCompletionEffects` (`service-orders/order-completion-effects.ts`) trong cùng transaction: bắt đầu bảo hành cho dòng hoá đơn đủ điều kiện và ghi thông báo ORDER_COMPLETED cho khách và kỹ thuật viên (`notifications/order-completed-notice.ts`). Thông báo chỉ nhắc bảo hành khi có dòng bảo hành thật. Case tiền mặt chỉ chốt tiền khi quản lý xử lý với mã `CASH_SETTLEMENT_CONFIRMED_BY_MANAGER`.
+
 ### Tác vụ nền
 
 Không dùng thư viện lịch; `src/common/background-job.ts` chạy mỗi `BACKGROUND_JOBS_INTERVAL_MS` (mặc định 60000, đặt 0 để tắt, không chạy khi test). Hai việc: `InvitationsService.sweepMatching` chuyển lời mời hết hạn sang kỹ thuật viên kế tiếp và báo khách khi hết người; `ServiceOrdersService.sweepDepartures` áp BRX-063. Chạy nhiều instance vẫn an toàn nhờ khoá dòng.
@@ -195,6 +199,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-07 21:03 (UTC+7) | ToanAltF4 | fix/order-completed-notices | Hoàn tất đơn qua tiền mặt hoặc VNPay giờ cũng gửi thông báo ORDER_COMPLETED; gom bảo hành và thông báo về applyOrderCompletionEffects.
 - 2026-10-07 19:15 (UTC+7) | ToanAltF4 | fix/remaining-bugs-and-fake-data | Ghi các lỗi còn lại đã sửa, quy định không dữ liệu giả, vi phạm do quản lý xác nhận, thu nhập theo hoá đơn và migration 027
 - 2026-10-07 18:53 (UTC+7) | ToanAltF4 | fix/order-timing-and-matching | Thêm luật quá giờ hẹn BRX-063, tác vụ nền, mã lỗi mới, quyết định PO ngày 07/10 và cập nhật việc đang dở
 - 2026-10-07 14:43 (UTC+7) | ToanAltF4 | docs/repo-context | Tạo file context theo bộ quy tắc chung của bốn repo, ghi hiện trạng sau đợt sửa lỗi ngày 07/10/2026
