@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-08 23:32 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/booking-sessions
+> Cập nhật lần cuối: 2026-10-08 23:52 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/order-steps-photos
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -119,6 +119,12 @@ Nhánh `fix/order-timing-and-matching`: luật quá giờ hẹn BRX-063 (cảnh 
 - Đổi lịch (`PATCH /bookings/:id/schedule`) theo ngày + buổi; thợ của đơn không rảnh buổi mới thì trả TECHNICIAN_NOT_ELIGIBLE, không tự gỡ thợ nữa. `GET /bookings/:id/available-slots?days=14[&previous=1]` trả các buổi và thợ có rảnh không. Đặt lại thợ (`POST /bookings/:id/rebook`) chỉ từ booking đã huỷ hoặc đơn đã xong/huỷ, mời đúng thợ cũ nếu rảnh (`previousTechnicianInvited`).
 - Xuất phát sớm nhất `order.depart_early_minutes` (60) trước giờ hẹn; chi tiết đơn có `departAvailableAt`, `customerNote`, `bookingMode`, `slot`. `PATCH /technicians/me/location` lưu vị trí lần cuối (bỏ qua sai số > 1 km). Bán kính 1-40 km.
 
+### Các bước của thợ trong đơn (PO 08/10/2026, nhánh `feat/order-steps-photos`)
+
+- Không còn bước "Bắt đầu sửa" riêng: `autoStartRepair` chuyển đơn sang UNDER_REPAIR ngay khi đủ điều kiện (check-in hợp lệ + ảnh sản phẩm, và với dịch vụ cần kiểm tra là báo giá đã duyệt). Gọi sau khi tải ảnh BEFORE và sau khi khách duyệt báo giá (`QuotationsService` lấy `ServiceOrdersService` qua ModuleRef). `POST /service-orders/:id/start-repair` vẫn giữ, gọi lại khi đã đang sửa thì trả đơn không đổi. Thông báo bắt đầu sửa dùng type REPAIR_STARTED.
+- Ảnh bằng chứng đóng dấu "dd/mm/yyyy HH:mm · mã đơn" (giờ VN) vào ảnh gốc khi tải lên Cloudinary (`evidenceStampTransformation`).
+- Case `technician_replacement` ("Cần thay đổi thợ", migration 029): thợ mở qua `POST /support/cases` khi đơn đang đi hoặc đang sửa và đã check-in hợp lệ. Trang xử lý của quản lý làm sau.
+
 ### Hoàn tất đơn
 
 Đơn sang COMPLETED ở bước đến sau cùng trong ba bước: khách xác nhận công việc, tiền mặt được xác nhận (khách hoặc quản lý xử lý tranh chấp) và thanh toán online được xác minh. Cả ba đường gọi `applyOrderCompletionEffects` (`service-orders/order-completion-effects.ts`) trong cùng transaction: bắt đầu bảo hành cho dòng hoá đơn đủ điều kiện và ghi thông báo ORDER_COMPLETED cho khách và kỹ thuật viên (`notifications/order-completed-notice.ts`). Thông báo chỉ nhắc bảo hành khi có dòng bảo hành thật. Case tiền mặt chỉ chốt tiền khi quản lý xử lý với mã `CASH_SETTLEMENT_CONFIRMED_BY_MANAGER`.
@@ -206,6 +212,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-08 23:52 (UTC+7) | ToanAltF4 | feat/order-steps-photos | Thợ: tự chuyển đang sửa khi đủ điều kiện, ảnh đóng dấu giờ và mã đơn, case cần thay đổi thợ sau check-in.
 - 2026-10-08 23:32 (UTC+7) | ToanAltF4 | feat/booking-sessions | Đặt lịch theo buổi sáng/chiều, đơn vãng lai theo GPS, đổi lịch chặn buổi thợ bận, buổi còn trống, đặt lại thợ cũ, xuất phát sớm 1 giờ, vị trí thợ.
 - 2026-10-08 21:53 (UTC+7) | ToanAltF4 | fix/strike-role | Xác nhận vi phạm ghi role vào cancellation_strikes (cột bắt buộc), trước đây insert lỗi trên DB thật.
 - 2026-10-07 21:27 (UTC+7) | ToanAltF4 | fix/fixed-price-and-waive-reason | Dịch vụ giá cố định bắt buộc có giá > 0; miễn vi phạm khi xét huỷ đơn bắt buộc có lý do, kiểm trước khi ghi.

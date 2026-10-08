@@ -67,7 +67,7 @@ import {
   CashSettlementResponseDto,
 } from '../finance/dto';
 import type { EntityManager } from 'typeorm';
-import { OrderEvidenceStorage, EvidenceFile } from '../media/order-evidence-storage.service';
+import { OrderEvidenceStorage, EvidenceFile, evidenceStampText } from '../media/order-evidence-storage.service';
 import { expireAdditionalCosts } from './expire-additional-costs';
 import { authorizeOrder } from './order-access';
 import { isCompletionHeld } from '../support-cases/completion-hold';
@@ -494,14 +494,40 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
 
 
   async startRepair(orderId: string, actor: { id: string; role: string }): Promise<ServiceOrder> {
+    // The repair usually starts by itself (autoStartRepair); an older client that
+    // still presses "Bắt đầu sửa" afterwards gets the order back unchanged.
+    const current = await this.orderRepo.findOneBy({ id: orderId });
+    if (current?.status === ServiceOrderStatus.UNDER_REPAIR) {
+      // Read-only ownership check: no row lock outside a transaction.
+      return authorizeOrder(this.dataSource.manager, orderId, actor, 'technician');
+    }
     const res = await this.transitionStatus(orderId, ServiceOrderStatus.UNDER_REPAIR, actor, 'Repair started');
     void this.notifyCustomerForOrder(
       orderId,
       'Kỹ thuật viên đã bắt đầu sửa chữa',
       `Kỹ thuật viên đã có mặt và bắt đầu tiến hành sửa chữa cho đơn hàng #${res.code}.`,
-      'TECHNICIAN_ARRIVED',
+      'REPAIR_STARTED',
     );
     return res;
+  }
+
+  /**
+   * PO 08/10/2026: there is no separate "start repair" step for the technician.
+   * As soon as the order is ready (valid check-in, product photo, and for an
+   * inspection job the approved quotation) it moves to UNDER_REPAIR by itself.
+   * Not ready yet is not an error: returns false and leaves the order as is.
+   */
+  async autoStartRepair(orderId: string): Promise<boolean> {
+    const order = await this.orderRepo.findOneBy({ id: orderId });
+    if (!order || order.status !== ServiceOrderStatus.EN_ROUTE) return false;
+    const assignment = await this.dataSource.manager.findOneBy(TechnicianAssignment, { serviceOrderId: orderId, isActive: true });
+    if (!assignment) return false;
+    try {
+      await this.startRepair(orderId, { id: assignment.technicianId, role: Role.TECHNICIAN });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
 
@@ -669,12 +695,18 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     // must never run while the ServiceOrder row lock is held, or every other read/write on
     // the same order blocks for as long as the upload takes (observed: 30s+ GETs).
     await this.dataSource.transaction(manager => checkEligible(manager));
-    const mediaUrl = await this.evidenceStorage.upload(orderId, actor.id, file);
+    const stampedOrder = await this.orderRepo.findOneBy({ id: orderId });
+    const capturedAt = body.capturedAt ? new Date(body.capturedAt) : new Date();
+    const mediaUrl = await this.evidenceStorage.upload(orderId, actor.id, file, stampedOrder ? evidenceStampText(capturedAt, stampedOrder.code) : undefined);
     try {
-      return await this.dataSource.transaction(async manager => {
+      const saved = await this.dataSource.transaction(async manager => {
         await checkEligible(manager); // re-validate: state may have changed during the upload
-        return manager.save(RepairEvidence, manager.create(RepairEvidence, { serviceOrderId: orderId, uploaderId: actor.id, type: body.type, mediaUrl, mimeType: file.mimetype, fileSize: file.size, note: body.note || null, capturedAt: body.capturedAt ? new Date(body.capturedAt) : new Date() }));
+        return manager.save(RepairEvidence, manager.create(RepairEvidence, { serviceOrderId: orderId, uploaderId: actor.id, type: body.type, mediaUrl, mimeType: file.mimetype, fileSize: file.size, note: body.note || null, capturedAt }));
       });
+      // Check-in with the product photo is the last step before repair for a
+      // fixed-price job; an inspection job also needs the approved quotation.
+      if (body.type === EvidenceType.BEFORE) await this.autoStartRepair(orderId);
+      return saved;
     } catch (error) {
       await this.evidenceStorage.delete(mediaUrl); // avoid an orphaned upload when the re-check rejects it
       throw error;
