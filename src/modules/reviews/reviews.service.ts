@@ -82,8 +82,8 @@ export class ReviewsService {
     const existing = await this.reviewRepo.findOneBy({ serviceOrderId: orderId });
     if (existing) {
       throw new BusinessException(
-        ErrorCodes.ADDITIONAL_COST_ALREADY_DECIDED, // or DUPLICATE_REVIEW
-        'A review has already been submitted for this order',
+        ErrorCodes.CONFLICT,
+        'Bạn đã đánh giá đơn này rồi.',
       );
     }
 

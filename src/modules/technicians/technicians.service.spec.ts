@@ -143,14 +143,28 @@ describe('TechniciansService', () => {
   });
 
   describe('createTimeOff', () => {
+    const inDays = (days: number) => new Date(Date.now() + days * 86400000).toISOString();
+
     it('should create time-off when endAt > startAt', async () => {
       const result = await service.createTimeOff('user-tech-uuid', {
-        startAt: '2026-10-01T08:00:00Z',
-        endAt: '2026-10-02T18:00:00Z',
+        startAt: inDays(3),
+        endAt: inDays(4),
         reason: 'Nghỉ phép',
       });
 
       expect(result.reason).toBe('Nghỉ phép');
+      expect(mockTimeOffRepo.save).toHaveBeenCalled();
+    });
+
+    it('should reject a time off that is already over', async () => {
+      await expect(
+        service.createTimeOff('user-tech-uuid', { startAt: inDays(-3), endAt: inDays(-2) }),
+      ).rejects.toThrow('Thời gian nghỉ đã qua');
+      expect(mockTimeOffRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('should accept a time off that already started but is still running', async () => {
+      await service.createTimeOff('user-tech-uuid', { startAt: inDays(-0.1), endAt: inDays(1) });
       expect(mockTimeOffRepo.save).toHaveBeenCalled();
     });
 

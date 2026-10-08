@@ -16,6 +16,7 @@ import { CancellationStrike } from './entities/cancellation-strike.entity';
 import { Invoice } from './entities/invoice.entity';
 import { InvoiceItem } from './entities/invoice-item.entity';
 import { WarrantyCoverage } from './entities/warranty-coverage.entity';
+import { applyOrderCompletionEffects } from './order-completion-effects';
 import { AdditionalCostRequest } from './entities/additional-cost-request.entity';
 import { Quotation } from '../quotations/entities/quotation.entity';
 import { AdditionalCostItem } from './entities/additional-cost-item.entity';
@@ -47,7 +48,6 @@ import {
   AdditionalCostStatus,
   Role,
   CostItemType,
-  WarrantyStatus,
   ServicePricingMode,
   PartSource,
   PartWarrantyOption,
@@ -862,6 +862,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   ): Promise<Cancellation> {
     if (![Role.ADMIN, Role.SERVICE_MANAGER].includes(actor.role as Role)) throw new ForbiddenException('Staff review required');
     if (body.compensationDecision === 'GRANTED') throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Monetary cancellation compensation is not supported by MASTER v1.4');
+    // Checked before anything is written: the reason is what the audit and the user see later.
+    if (body.waiveStrike && !body.waiveReason?.trim()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Cần ghi lý do miễn vi phạm');
     const cancellation = await this.cancellationRepo.findOneBy({
       id: cancellationId,
     });
@@ -902,6 +904,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         await manager.save(CancellationStrike, manager.create(CancellationStrike, {
           userId: cancellation.actorUserId,
           cancellationId: cancellation.id,
+          role,
           status: StrikeStatus.ACTIVE,
           expiresAt: new Date(Date.now() + windowDays * 86_400_000),
         }));
@@ -912,14 +915,13 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (body.waiveStrike && cancellation.strikeApplied) {
-      // Waive the strike
       const strike = await this.strikeRepo.findOne({
         where: { cancellationId: cancellation.id, status: StrikeStatus.ACTIVE },
       });
       if (strike) {
         strike.status = StrikeStatus.WAIVED;
         strike.waivedByUserId = actor.id;
-        strike.waiveReason = body.waiveReason || 'Waived by manager';
+        strike.waiveReason = body.waiveReason!.trim();
         await this.strikeRepo.save(strike);
       }
     }
@@ -1126,41 +1128,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     const invoice = await manager.findOneBy(Invoice, { serviceOrderId: order.id, paymentStatus: PaymentStatus.PAID });
     if (!invoice || order.paymentStatus !== PaymentStatus.PAID) return false;
     await this.commitTransition(manager, order, ServiceOrderStatus.COMPLETED, actor, 'Work, customer confirmation and payment satisfied');
-    if (this.notificationsService) {
-      void (async () => {
-        try {
-          const booking = await manager.findOneBy(Booking, { id: order.bookingId });
-          if (booking?.customerId) {
-            await this.notificationsService.createNotification({
-              userId: booking.customerId,
-              title: 'Đơn hàng đã hoàn thành xuất sắc!',
-              message: `Đơn hàng #${order.code} đã hoàn tất. Cảm ơn bạn đã tin tưởng dịch vụ FixHome. Gói bảo hành điện tử của bạn đã được kích hoạt.`,
-              type: 'ORDER_COMPLETED',
-              referenceId: order.id,
-              referenceType: 'SERVICE_ORDER',
-            });
-          }
-          const assignment = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, isActive: true });
-          if (assignment?.technicianId) {
-            await this.notificationsService.createNotification({
-              userId: assignment.technicianId,
-              title: 'Đơn hàng hoàn tất & Đã thanh toán',
-              message: `Đơn hàng #${order.code} đã hoàn tất thanh toán thành công. Thu nhập đã được cập nhật vào ví của bạn.`,
-              type: 'ORDER_COMPLETED',
-              referenceId: order.id,
-              referenceType: 'SERVICE_ORDER',
-            });
-          }
-        } catch {
-          // ignore notification error
-        }
-      })();
-    }
-    const items = await manager.find(InvoiceItem, { where: { invoiceId: invoice.id } });
-    for (const item of items) {
-      if (item.warrantyDaysSnapshot <= 0 || (item.partSource === PartSource.TECHNICIAN && item.partWarrantyOption !== PartWarrantyOption.PAID_WARRANTY)) continue;
-      await manager.insert(WarrantyCoverage, { serviceOrderId: order.id, invoiceItemId: item.id, warrantyDaysSnapshot: item.warrantyDaysSnapshot, startsAt: new Date(), expiresAt: new Date(Date.now() + item.warrantyDaysSnapshot * 86400000), status: WarrantyStatus.ACTIVE });
-    }
+    await applyOrderCompletionEffects(manager, order, invoice.id, new Date());
     if (this.settlementService) {
       await this.settlementService.trySettleOrder(order.id, manager);
     }
