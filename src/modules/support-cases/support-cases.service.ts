@@ -271,6 +271,16 @@ export class SupportCasesService {
         'Loại khiếu nại này không áp dụng ở trạng thái hiện tại của đơn.',
       );
     }
+    // "Cần thay đổi thợ" only after the technician has checked in on site.
+    if (dto.caseType === SupportCaseType.TECHNICIAN_REPLACEMENT && contextOrder) {
+      const checkedIn = await this.supportCaseRepository.manager.query(
+        `SELECT 1 FROM "arrival_check_ins" WHERE "service_order_id" = $1 AND "technician_id" = $2 AND "result" = 'valid' LIMIT 1`,
+        [contextOrder.id, actor.id],
+      );
+      if (!checkedIn.length) {
+        throw new BadRequestException('Chỉ báo cần thay đổi thợ sau khi đã check-in tại nhà khách.');
+      }
+    }
     if (
       orderStatus === ServiceOrderStatus.COMPLETED &&
       !isCompletionWindowOpen(contextOrder?.completedAt)

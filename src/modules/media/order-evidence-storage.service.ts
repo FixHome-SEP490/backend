@@ -6,6 +6,29 @@ import type { CloudinaryInstance, UploadApiResponse } from '../../shared/cloudin
 
 export type EvidenceFile = { buffer: Buffer; mimetype: string; size: number };
 
+/** "08/10/2026 23:45 · FH-20261008-6A4F12C3" in Vietnam time. */
+export function evidenceStampText(at: Date, orderCode: string): string {
+  const vn = new Date(at.getTime() + 7 * 3600_000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(vn.getUTCDate())}/${pad(vn.getUTCMonth() + 1)}/${vn.getUTCFullYear()} ${pad(vn.getUTCHours())}:${pad(vn.getUTCMinutes())} · ${orderCode}`;
+}
+
+/** White text on a dark band, bottom right, scaled to the photo width. */
+export function evidenceStampTransformation(text: string): Record<string, unknown> {
+  return {
+    overlay: { font_family: 'Arial', font_size: 40, font_weight: 'bold', text },
+    color: '#FFFFFF',
+    background: 'rgb:000000',
+    opacity: 85,
+    gravity: 'south_east',
+    x: 24,
+    y: 24,
+    width: '0.6',
+    flags: 'relative',
+    crop: 'fit',
+  };
+}
+
 /** Private Cloudinary objects; only the order service may issue short-lived read URLs. */
 @Injectable()
 export class OrderEvidenceStorage {
@@ -27,7 +50,7 @@ export class OrderEvidenceStorage {
     return this.cloudinary;
   }
 
-  async upload(orderId: string, ownerId: string, file: EvidenceFile): Promise<string> {
+  async upload(orderId: string, ownerId: string, file: EvidenceFile, stamp?: string): Promise<string> {
     this.validate(file);
     const cld = this.getCloudinary();
 
@@ -39,6 +62,9 @@ export class OrderEvidenceStorage {
         resource_type: 'image',
         type: 'authenticated', // Private — requires signed URLs to access
         overwrite: false,
+        // PO 08/10/2026: every order photo carries the time it was taken and the
+        // order code, burned into the stored image at upload.
+        ...(stamp ? { transformation: [evidenceStampTransformation(stamp)] } : {}),
       });
       return `cloudinary://evidence/${publicId}`;
     } catch {

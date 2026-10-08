@@ -1,4 +1,6 @@
 import { closeOrderPartRequests } from '../part-requests/part-request-lifecycle';
+import { ModuleRef } from '@nestjs/core';
+import { ServiceOrdersService } from '../service-orders/service-orders.service';
 import { closeBookingForCancelledOrder } from '../service-orders/close-cancelled-booking';
 import { expireAdditionalCosts } from '../service-orders/expire-additional-costs';
 import { Injectable, ForbiddenException } from '@nestjs/common';
@@ -44,6 +46,7 @@ export class QuotationsService {
     private readonly auditLogService: AuditLogService,
     private readonly partRequestsService: PartRequestsService,
     @Optional() private readonly notificationsService?: NotificationsService,
+    @Optional() private readonly moduleRef?: ModuleRef,
   ) {}
 
   private async validateItems(manager: EntityManager, items: CreateCostItemDto[]): Promise<CreateCostItemDto[]> {
@@ -146,7 +149,7 @@ export class QuotationsService {
   async decideQuotation(id: string, action: 'APPROVE' | 'REJECT', actor: Actor, paidWarrantyItemIds: string[] = []): Promise<Quotation> {
     const ref = await this.quotationRepo.findOneBy({ id });
     if (!ref) throw new ForbiddenException('Quotation not found');
-    return this.dataSource.transaction(async manager => {
+    const decided = await this.dataSource.transaction(async manager => {
       const order = await authorizeOrder(manager, ref.serviceOrderId, actor, 'customer', true);
       const quote = await manager.findOneOrFail(Quotation, { where: { id }, relations: ['items'] });
       const target = action === 'APPROVE' ? QuotationStatus.APPROVED : QuotationStatus.REJECTED;
@@ -177,6 +180,13 @@ export class QuotationsService {
       }
       return manager.save(quote);
     });
+    // PO 08/10/2026: no separate "start repair" step; an approved quotation on a
+    // checked-in order with its product photo moves it to repair by itself.
+    if (decided.status === QuotationStatus.APPROVED && this.moduleRef) {
+      const orders = this.moduleRef.get(ServiceOrdersService, { strict: false });
+      await orders.autoStartRepair(ref.serviceOrderId);
+    }
+    return decided;
   }
 
   async createAdditionalCost(orderId: string, dto: CreateAdditionalCostDto, actor: Actor): Promise<AdditionalCostRequest> {
