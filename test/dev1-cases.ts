@@ -16,7 +16,16 @@ const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
 export function registerDev1Cases(context: () => Context) {
   describe('DEV1 booking and order business regression', () => {
     let storage: any;
-    beforeAll(() => {
+    // These cases walk orders booked two days ahead; setting out opens one hour before
+    // the appointment (PO 08/10/2026), so the window is widened here and the rule itself
+    // has its own case below.
+    const setDepartEarlyMinutes = async (minutes: number) => {
+      const { BusinessConfigService } = runtimeRequire('./dist/modules/system-config/business-config.service.js');
+      await context().db.query(`UPDATE "system_configs" SET "value" = $1 WHERE "key" = 'order.depart_early_minutes'`, [String(minutes)]);
+      context().app.get(BusinessConfigService).invalidateCache();
+    };
+    beforeAll(async () => {
+      await setDepartEarlyMinutes(100000);
       const { OrderEvidenceStorage } = runtimeRequire('./dist/modules/media/order-evidence-storage.service.js');
       storage = context().app.get(OrderEvidenceStorage);
       vi.spyOn(storage, 'upload').mockImplementation(async (order: any, owner: any) => `storage://test/${order}/${owner}/${randomUUID()}`);
@@ -168,8 +177,24 @@ export function registerDev1Cases(context: () => Context) {
       const newBooking = await f.create();
       denied(await post(`/bookings/${newBooking.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.spare.user.id] }));
       await context().db.getRepository('Service').update(f.service.id, { fixedPrice: 250000 });
-      const rebooked = unwrap((await post(`/bookings/${newBooking.id}/rebook`, f.owner, { preferredStartAt: f.body.preferredStartAt, preferredEndAt: f.body.preferredEndAt }).expect(201)).body);
+      // Booking again only from a finished or cancelled booking (PO 08/10/2026).
+      denied(await post(`/bookings/${newBooking.id}/rebook`, f.owner, { preferredStartAt: f.body.preferredStartAt, preferredEndAt: f.body.preferredEndAt }));
+      const rebooked = unwrap((await post(`/bookings/${order.bookingId}/rebook`, f.owner, { preferredStartAt: f.body.preferredStartAt, preferredEndAt: f.body.preferredEndAt }).expect(201)).body);
       expect(Number(rebooked.fixedUnitPriceSnapshot)).toBe(250000);
+      expect(rebooked.previousTechnicianId).toBe(f.tech.user.id);
+    });
+
+    it('opens setting out only one hour before the appointment', async () => {
+      await setDepartEarlyMinutes(60);
+      try {
+        const f = await fixture(), { order } = await accept(f);
+        const response = await post(`/service-orders/${order.id}/en-route`, f.tech);
+        expect(response.status, JSON.stringify(response.body)).toBe(409);
+        const detail = unwrap((await get(`/service-orders/${order.id}`, f.tech).expect(200)).body);
+        expect(new Date(detail.departAvailableAt).getTime()).toBe(new Date(f.body.preferredStartAt).getTime() - 3600000);
+      } finally {
+        await setDepartEarlyMinutes(100000);
+      }
     });
 
     it('inspection approval and additional decisions are owner-only and idempotent', async () => {
