@@ -59,7 +59,8 @@ describe('#28 a confirmed violation becomes a strike', () => {
   it('records an active strike against the technician who cancelled', async () => {
     const s = setup(CancelActor.TECHNICIAN, 1);
     await s.service.reviewCancellation('cancel-1', { confirmViolation: true }, manager);
-    expect(s.saved).toContainEqual(expect.objectContaining({ userId: 'user-1', cancellationId: 'cancel-1', status: StrikeStatus.ACTIVE }));
+    // role is NOT NULL in cancellation_strikes; without it the insert fails on a real database.
+    expect(s.saved).toContainEqual(expect.objectContaining({ userId: 'user-1', cancellationId: 'cancel-1', role: Role.TECHNICIAN, status: StrikeStatus.ACTIVE }));
     expect(s.cancellation.strikeApplied).toBe(true);
     expect(s.updates.some(([entity]) => entity === 'TechnicianProfile')).toBe(false);
   });
