@@ -1,7 +1,6 @@
 // src/modules/bookings/bookings.service.ts
 import { displayRating } from '../technicians/technician-earnings';
 import { NotificationsService } from '../notifications/notifications.service';
-import { releaseOutgoingTechnicianPartRequests } from '../part-requests/part-request-lifecycle';
 import {
   Injectable,
   ForbiddenException,
@@ -9,7 +8,6 @@ import {
   NotFoundException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, EntityManager, In } from 'typeorm';
-import { randomUUID } from 'crypto';
 import { isUUID } from 'class-validator';
 import { Booking } from './entities/booking.entity';
 import { BookingMedia } from './entities/booking-media.entity';
@@ -24,18 +22,17 @@ import { TechnicianProfile } from '../technicians/entities/technician-profile.en
 import { TechnicianSkill } from '../technicians/entities/technician-skill.entity';
 
 export { CreateBookingDto } from './booking.dto';
-import { AttachBookingMediaDto, CreateBookingDto, RebookDto, validBookingWindow } from './booking.dto';
+import { AttachBookingMediaDto, CreateBookingDto, RebookDto, ScheduleBookingDto } from './booking.dto';
+import { BOOKING_SLOTS, resolveBookingWindow, slotWindow, vnDate, type BookingSlot } from './booking-slots';
+import { distanceToBooking, servesArea, technicianOrigin } from './technician-location';
+import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
 import { technicianEligibility } from './technician-eligibility';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
-import { OrderStatusHistory } from '../service-orders/entities/order-status-history.entity';
 import { BookingInvitation } from './entities/booking-invitation.entity';
-import { BookingInvitationGroup } from './entities/booking-invitation-group.entity';
 import { InvitationStatus, ServiceOrderStatus } from '../../shared/enums';
 import { resolveServiceArea } from '../../shared/utils/administrative-areas';
-import { haversineKm } from '../../shared/utils/geo';
 import { AiDiagnosis } from '../ai-diagnosis/entities/ai-diagnosis.entity';
-import { activateNextInvitation, invitationActivatedHook } from './activate-next-invitation';
 import { BusinessConfigService } from '../system-config/business-config.service';
 import {
   isLegacyPublicBookingMediaUrl,
@@ -113,7 +110,9 @@ export class BookingsService {
   async create(dto: CreateBookingDto, customer: { id: string; role: string }): Promise<Booking> {
     if (customer.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
     this.validateCreateMediaInput(dto);
-    if (!validBookingWindow(dto.preferredStartAt, dto.preferredEndAt)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Vui lòng chọn khung giờ hẹn trong tương lai (Choose a valid future start and end time)');
+    const urgentMinutes = dto.mode === 'urgent' ? await this.configService.getInt('booking.urgent_window_minutes', 120) : 0;
+    const window = resolveBookingWindow(dto, new Date(), urgentMinutes);
+    if ('error' in window) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, window.error);
     if (!dto.addressId || !Number.isInteger(dto.quantity ?? 1) || (dto.quantity ?? 1) < 1) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Address and positive integer quantity required');
 
     // Check suspension
@@ -146,18 +145,6 @@ export class BookingsService {
 
     const isFixed = service.pricingMode === ServicePricingMode.FIXED_PRICE;
     const quantity = Math.max(1, dto.quantity || 1);
-
-    // Spec v1.4: Validate time window if provided
-    if (dto.preferredStartAt && dto.preferredEndAt) {
-      const start = new Date(dto.preferredStartAt);
-      const end = new Date(dto.preferredEndAt);
-      if (start >= end) {
-        throw new BusinessException(
-          ErrorCodes.VALIDATION_FAILED,
-          'preferredStartAt must be before preferredEndAt',
-        );
-      }
-    }
 
     // Spec v1.4: Snapshot address for historical integrity
     let provinceSnapshot: string | null = null;
@@ -211,8 +198,11 @@ export class BookingsService {
         latitudeSnapshot,
         longitudeSnapshot,
         description: dto.description,
-        preferredStartAt: dto.preferredStartAt ? new Date(dto.preferredStartAt) : null,
-        preferredEndAt: dto.preferredEndAt ? new Date(dto.preferredEndAt) : null,
+        preferredStartAt: window.start,
+        preferredEndAt: window.end,
+        bookingMode: window.mode,
+        slot: window.slot,
+        customerNote: dto.customerNote?.trim() || null,
         pricingModeSnapshot: service.pricingMode,
         fixedUnitPriceSnapshot: isFixed ? service.fixedPrice : null,
         quantity,
@@ -541,27 +531,31 @@ export class BookingsService {
 
     const withSkill = await qb.getMany();
 
-    // Location/radius hard-filter (optimization only: technicianEligibility() below remains
-    // the final authority). Pull each technician's default address to compute distance from
-    // the booking's coordinate snapshot; a technician without a set location, radius, or a
-    // booking without coordinates never matches — this is intentionally fail-closed.
-    // ponytail: filtered in memory after fetching every skilled technician — move to a SQL/
-    // PostGIS radius filter if the technician count makes this scan too slow.
+    // Location pre-filter, same rule as technicianEligibility() (which stays the final
+    // authority): an urgent booking measures from a fresh GPS position when there is one,
+    // otherwise from the work address, and then the technician must also serve the
+    // booking's district if they chose service areas. Missing coordinates never match.
+    // ponytail: in-memory scan of every skilled technician; move to SQL/PostGIS if it grows.
     const userIds = withSkill.map((tp) => tp.userId);
     const workAddresses = userIds.length
       ? await this.addressRepo.find({ where: { userId: In(userIds), isDefault: true } })
       : [];
     const addressByUserId = new Map(workAddresses.map((a) => [a.userId, a]));
-
-    const bookingLat = booking.latitudeSnapshot != null ? Number(booking.latitudeSnapshot) : null;
-    const bookingLng = booking.longitudeSnapshot != null ? Number(booking.longitudeSnapshot) : null;
+    const profileIds = withSkill.map((tp) => tp.id);
+    const allAreas = profileIds.length
+      ? await this.dataSource.manager.find(TechnicianServiceArea, { where: { technicianId: In(profileIds) } })
+      : [];
+    const areasByProfile = new Map<string, TechnicianServiceArea[]>();
+    for (const area of allAreas) areasByProfile.set(area.technicianId, [...(areasByProfile.get(area.technicianId) ?? []), area]);
+    const mode = booking.bookingMode === 'urgent' ? 'urgent' : 'scheduled';
+    const gpsFreshMinutes = await this.configService.getInt('matching.gps_fresh_minutes', 15);
     const distanceByProfileId = new Map<string, number | null>();
     const ranked = withSkill.filter((tp) => {
-      if (bookingLat == null || bookingLng == null) return false;
-      const addr = addressByUserId.get(tp.userId);
-      if (addr?.lat == null || addr?.lng == null) return false;
-      const distance = Math.round(haversineKm(bookingLat, bookingLng, Number(addr.lat), Number(addr.lng)) * 10) / 10;
-      if (distance > Number(tp.serviceRadiusKm)) return false;
+      const origin = technicianOrigin(mode, tp, addressByUserId.get(tp.userId), gpsFreshMinutes);
+      if (!origin) return false;
+      if (origin.source === 'address' && !servesArea(areasByProfile.get(tp.id) ?? [], booking)) return false;
+      const distance = distanceToBooking(origin, booking);
+      if (distance == null || distance > Number(tp.serviceRadiusKm)) return false;
       distanceByProfileId.set(tp.id, distance);
       return true;
     });
@@ -652,16 +646,22 @@ export class BookingsService {
   }
 
   /**
-   * Reschedule a pending/matching booking.
+   * Reschedule a pending/matching booking (PO 08/10/2026). The customer picks a
+   * day and a session; an urgent booking that is moved becomes a scheduled one.
+   * When a technician already holds the order and is not free in that session,
+   * the change is refused so the customer picks another session; the client
+   * shows the technician's free sessions from GET /bookings/:id/available-slots.
    */
   async reschedule(
     bookingId: string,
-    dto: { preferredStartAt: string; preferredEndAt: string; description?: string },
+    dto: ScheduleBookingDto,
     customer: { id: string },
   ): Promise<Booking> {
-    if (!validBookingWindow(dto.preferredStartAt, dto.preferredEndAt)) {
-      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Choose a valid future time window');
+    if (dto.mode === 'urgent') {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Dời lịch thì chọn ngày và buổi (sáng hoặc chiều)');
     }
+    const window = resolveBookingWindow(dto, new Date(), 0);
+    if ('error' in window) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, window.error);
     return this.dataSource.transaction(async (manager) => {
       const booking = await manager.findOne(Booking, {
         where: { id: bookingId, customerId: customer.id },
@@ -675,11 +675,10 @@ export class BookingsService {
       if (order && ![ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(order.status)) {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Repair already started or order closed');
       }
-      // A description-only edit is not a reschedule. Keep the active invitation group,
-      // its expiry, the stored arrival window and the assigned technician intact when
-      // both timestamps are equal.
-      if (booking.preferredStartAt?.getTime() === new Date(dto.preferredStartAt).getTime() &&
-          booking.preferredEndAt?.getTime() === new Date(dto.preferredEndAt).getTime()) {
+      // A description-only edit is not a reschedule: same window keeps the
+      // invitations, their expiry and the assigned technician.
+      if (booking.preferredStartAt?.getTime() === window.start.getTime() &&
+          booking.preferredEndAt?.getTime() === window.end.getTime()) {
         if (!dto.description || dto.description === booking.description) return booking;
         booking.description = dto.description;
         await this.auditLogService.logWithManager(manager, {
@@ -692,61 +691,23 @@ export class BookingsService {
         });
         return manager.save(booking);
       }
-      booking.preferredStartAt = new Date(dto.preferredStartAt);
-      booking.preferredEndAt = new Date(dto.preferredEndAt);
+      booking.preferredStartAt = window.start;
+      booking.preferredEndAt = window.end;
+      booking.bookingMode = window.mode;
+      booking.slot = window.slot;
       if (dto.description) booking.description = dto.description;
-      let action = 'BOOKING_RESCHEDULE';
-      let rematched = false;
       if (order) {
         const assignment = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, isActive: true });
-        if (!assignment) {
-          // #34: waiting for a replacement technician. The new window is simply
-          // the one the next technician is invited for.
-          await manager.update(ServiceOrder, order.id, { scheduledAt: booking.preferredStartAt, departureWarnedAt: null });
-        } else {
-        await manager.findOne(User, { where: { id: assignment.technicianId }, lock: { mode: 'pessimistic_write' } });
-        const eligibility = await technicianEligibility(manager, assignment.technicianId, booking, order.id, { keepingExistingOrder: true });
-        if (eligibility.eligible) {
-          await manager.update(ServiceOrder, order.id, { scheduledAt: booking.preferredStartAt, departureWarnedAt: null });
-        } else {
-          // Assigned technician can no longer serve the new window. The ServiceOrder row is kept (its bookingId is
-          // unique — cancelling it would permanently block a future match for this booking) and only unassigned,
-          // mirroring the technician-withdrawal-before-arrival path in service-orders.service.ts#cancel: requeue the
-          // remaining candidates from the booking's original shortlist and let sequential dispatch try them again
-          // against the new time window.
-          const now = new Date();
-          await manager.update(TechnicianAssignment, { serviceOrderId: order.id, isActive: true }, {
-            isActive: false, unassignedAt: now, unassignReason: 'Customer rescheduled; technician unavailable for new time',
-          });
-          await releaseOutgoingTechnicianPartRequests(manager, order.id, assignment.technicianId);
-          await manager.insert(OrderStatusHistory, {
-            serviceOrderId: order.id, fromStatus: order.status, toStatus: order.status,
-            actorUserId: customer.id, actorRole: Role.CUSTOMER,
-            reason: 'Customer rescheduled outside assigned technician availability; awaiting replacement',
-          });
-          const previous = await manager.find(BookingInvitation, { where: { bookingId }, order: { priorityOrder: 'ASC' } });
-          const last = Math.max(0, ...previous.filter(inv => inv.status === InvitationStatus.ACCEPTED).map(inv => inv.priorityOrder));
-          const remaining = previous.filter(inv => inv.priorityOrder > last && inv.status === InvitationStatus.CANCELLED);
-          const offset = Math.max(0, ...previous.map(inv => inv.priorityOrder));
-          const group = remaining.length > 0
-            ? manager.create(BookingInvitationGroup, { id: randomUUID(), bookingId })
-            : null;
-          if (group) await manager.save(group);
-          for (const [index, candidate] of remaining.entries()) {
-            await manager.save(BookingInvitation, manager.create(BookingInvitation, {
-              groupId: group!.id, bookingId, technicianId: candidate.technicianId, priorityOrder: offset + index + 1,
-              status: InvitationStatus.STANDBY, invitedAt: new Date(), expiresAt: null,
-            }));
+        if (assignment) {
+          await manager.findOne(User, { where: { id: assignment.technicianId }, lock: { mode: 'pessimistic_write' } });
+          const eligibility = await technicianEligibility(manager, assignment.technicianId, booking, order.id, { keepingExistingOrder: true });
+          if (!eligibility.eligible) {
+            throw new BusinessException(ErrorCodes.TECHNICIAN_NOT_ELIGIBLE, 'Kỹ thuật viên của đơn không rảnh buổi này, vui lòng chọn buổi khác', { reason: eligibility.reason });
           }
-          booking.status = BookingStatus.MATCHING;
-          await manager.save(booking);
-          // activateNextInvitation may flip the DB row straight to CLOSED (raw update, bypassing this in-memory
-          // `booking`) if no candidate remains — re-fetch below rather than blindly re-saving the stale in-memory copy.
-          await activateNextInvitation(manager, booking, await this.configService.getInt('matching.invitation_ttl_minutes', 30), invitationActivatedHook(this.notificationsService));
-          action = 'BOOKING_RESCHEDULE_REMATCH';
-          rematched = true;
         }
-        }
+        // Without an active assignment the order waits for a replacement; the
+        // new window is the one the next technician is invited for.
+        await manager.update(ServiceOrder, order.id, { scheduledAt: booking.preferredStartAt, departureWarnedAt: null });
       } else {
         await this.cancelOpenInvitations(manager, bookingId);
         booking.status = BookingStatus.SUBMITTED;
@@ -754,12 +715,11 @@ export class BookingsService {
       await this.auditLogService.logWithManager(manager, {
         actorUserId: customer.id,
         actorRole: Role.CUSTOMER,
-        action,
+        action: 'BOOKING_RESCHEDULE',
         resourceType: 'booking',
         resourceId: bookingId,
-        after: dto,
+        after: { mode: window.mode, slot: window.slot, preferredStartAt: window.start, preferredEndAt: window.end, description: dto.description },
       });
-      if (rematched) return manager.findOneByOrFail(Booking, { id: bookingId });
       return manager.save(booking);
     });
   }
@@ -812,20 +772,90 @@ export class BookingsService {
     });
   }
 
-  async rebook(oldBookingId: string, customer: { id: string; role: string }, dto: RebookDto): Promise<Booking> {
+  /** The technician who held (or finished) the booking's order, if any. */
+  private async previousTechnicianId(manager: EntityManager, bookingId: string): Promise<string | null> {
+    const order = await manager.findOneBy(ServiceOrder, { bookingId });
+    if (!order) return null;
+    const last = await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: order.id }, order: { assignedAt: 'DESC' } });
+    return last?.technicianId ?? null;
+  }
+
+  /**
+   * Book again from a finished or cancelled booking (PO 08/10/2026): same
+   * service and address, a new day and session; the controller then invites
+   * the same technician when they are free, otherwise the customer chooses.
+   */
+  async rebook(oldBookingId: string, customer: { id: string; role: string }, dto: RebookDto): Promise<{ booking: Booking; previousTechnicianId: string | null }> {
     const old = await this.bookingRepo.findOneBy({ id: oldBookingId, customerId: customer.id });
     if (!old) throw new ForbiddenException('Booking not found');
-    return this.create(
+    const order = await this.dataSource.manager.findOneBy(ServiceOrder, { bookingId: old.id });
+    const finished = old.status === BookingStatus.CANCELLED
+      || (order && [ServiceOrderStatus.COMPLETED, ServiceOrderStatus.CANCELLED].includes(order.status));
+    if (!finished) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chỉ đặt lại từ đơn đã hoàn thành hoặc đã huỷ');
+    if (!old.addressId) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Đơn cũ không còn địa chỉ, vui lòng đặt mới');
+    const booking = await this.create(
       {
         serviceId: old.serviceId,
-        addressId: old.addressId!,
+        addressId: old.addressId,
         description: dto.problemDescription?.trim() || old.description,
+        mode: dto.mode,
+        date: dto.date,
+        slot: dto.slot,
         preferredStartAt: dto.preferredStartAt,
         preferredEndAt: dto.preferredEndAt,
         quantity: dto.quantity ?? old.quantity,
         urgency: old.urgency,
+        customerNote: dto.customerNote ?? old.customerNote ?? undefined,
       },
       customer,
     );
+    return { booking, previousTechnicianId: await this.previousTechnicianId(this.dataSource.manager, old.id) };
+  }
+
+  /**
+   * Sessions of the next `days` days and whether the relevant technician is
+   * free in each: the one holding this booking's order (to reschedule), or with
+   * `previous` the one who did it (to book again). Without a technician every
+   * future session is open. Only schedule, time off and taken sessions count.
+   */
+  async availableSessions(
+    bookingId: string,
+    customer: { id: string },
+    days: number,
+    previous = false,
+  ): Promise<{ technicianId: string | null; sessions: Array<{ date: string; slot: BookingSlot; label: string; available: boolean; reason: string | null }> }> {
+    const booking = await this.bookingRepo.findOneBy({ id: bookingId, customerId: customer.id });
+    if (!booking) throw new ForbiddenException('Booking not found');
+    const manager = this.dataSource.manager;
+    const order = await manager.findOneBy(ServiceOrder, { bookingId });
+    let technicianId: string | null = null;
+    if (previous) technicianId = await this.previousTechnicianId(manager, bookingId);
+    else if (order) technicianId = (await manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, isActive: true }))?.technicianId ?? null;
+    const reasons: Record<string, string> = {
+      'Session already booked': 'Thợ đã có lịch buổi này',
+      'Technician has time off': 'Thợ nghỉ buổi này',
+      'Outside working schedule': 'Thợ không làm buổi này',
+      'Assignment schedule conflict': 'Thợ đã có lịch buổi này',
+    };
+    const now = Date.now();
+    const today = vnDate(new Date(now));
+    const sessions: Array<{ date: string; slot: BookingSlot; label: string; available: boolean; reason: string | null }> = [];
+    for (let i = 0; i < Math.min(Math.max(days, 1), 30); i++) {
+      const date = vnDate(new Date(Date.parse(today + 'T00:00:00Z') + i * 86_400_000));
+      for (const slot of Object.keys(BOOKING_SLOTS) as BookingSlot[]) {
+        const window = slotWindow(date, slot)!;
+        if (window.start.getTime() <= now) continue;
+        let available = true;
+        let reason: string | null = null;
+        if (technicianId) {
+          const probe = Object.assign(Object.create(Booking.prototype) as Booking, booking, { bookingMode: 'scheduled', slot, preferredStartAt: window.start, preferredEndAt: window.end });
+          const verdict = await technicianEligibility(manager, technicianId, probe, previous ? undefined : order?.id, { keepingExistingOrder: true });
+          available = verdict.eligible;
+          reason = verdict.eligible ? null : reasons[verdict.reason ?? ''] ?? 'Thợ không nhận buổi này';
+        }
+        sessions.push({ date, slot, label: BOOKING_SLOTS[slot].label, available, reason });
+      }
+    }
+    return { technicianId, sessions };
   }
 }

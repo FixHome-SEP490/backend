@@ -6,10 +6,22 @@ import { UrgencyLevel } from '../../shared/enums';
 export const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 export class ScheduleBookingDto {
-  @ApiProperty({ format: 'date-time', example: '2030-10-21T08:00:00.000Z', description: 'Preferred arrival-window start: ISO 8601 with timezone, future date.' })
-  @IsDateString() preferredStartAt: string;
-  @ApiProperty({ format: 'date-time', example: '2030-10-21T10:00:00.000Z', description: 'Preferred arrival-window end: later than preferredStartAt.' })
-  @IsDateString() preferredEndAt: string;
+  @ApiPropertyOptional({ enum: ['scheduled', 'urgent'], description: 'scheduled = one session of a day (date + slot); urgent = come now. Omitted: the legacy preferredStartAt/preferredEndAt window is used.' })
+  @IsOptional() @IsIn(['scheduled', 'urgent'])
+  mode?: 'scheduled' | 'urgent';
+
+  @ApiPropertyOptional({ example: '2030-10-21', description: 'Vietnam calendar day of a scheduled booking (YYYY-MM-DD).' })
+  @IsOptional() @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'date must be YYYY-MM-DD' })
+  date?: string;
+
+  @ApiPropertyOptional({ enum: ['morning', 'afternoon'], description: 'morning = 08:00-12:00, afternoon = 13:00-18:00 Vietnam time.' })
+  @IsOptional() @IsIn(['morning', 'afternoon'])
+  slot?: 'morning' | 'afternoon';
+
+  @ApiPropertyOptional({ format: 'date-time', example: '2030-10-21T08:00:00.000Z', description: 'Legacy arrival-window start (ISO 8601). Ignored when mode is given.' })
+  @IsOptional() @IsDateString() preferredStartAt?: string;
+  @ApiPropertyOptional({ format: 'date-time', example: '2030-10-21T10:00:00.000Z', description: 'Legacy arrival-window end.' })
+  @IsOptional() @IsDateString() preferredEndAt?: string;
 
   @IsOptional()
   @Transform(({ value }) => typeof value === 'string' ? value.trim() : value)
@@ -50,6 +62,11 @@ export class CreateBookingDto extends ScheduleBookingDto {
   @Matches(UUID_REGEX, { each: true, message: 'Each photo upload ID must be a valid UUID' })
   photoUploadIds?: string[];
 
+  @Transform(({ value }) => typeof value === 'string' ? value.trim() : value)
+  @ApiPropertyOptional({ maxLength: 1000, example: 'Gọi trước khi đến, nhà trong hẻm', description: 'Note for the technician, apart from the problem description.' })
+  @IsOptional() @IsString() @MaxLength(1000)
+  customerNote?: string;
+
   @ApiPropertyOptional({ format: 'uuid', description: 'Optional linked AI diagnosis ID.' })
   @IsOptional() @Matches(UUID_REGEX, { message: 'aiDiagnosisId must be a valid UUID' })
   aiDiagnosisId?: string;
@@ -73,6 +90,8 @@ export class AttachBookingMediaDto {
 export class RebookDto extends ScheduleBookingDto {
   @IsOptional() @IsString() @MaxLength(5000) problemDescription?: string;
   @IsOptional() @IsInt() @Min(1) @Max(1000) quantity?: number;
+  @Transform(({ value }) => typeof value === 'string' ? value.trim() : value)
+  @IsOptional() @IsString() @MaxLength(1000) customerNote?: string;
 }
 
 export class ShortlistDto {

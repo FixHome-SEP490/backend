@@ -21,7 +21,8 @@ function fixture() {
   let unpaidDues = false;
   let missingAddress = false;
   const timeOff: Array<{ startAt: Date; endAt: Date }> = [];
-  const assignments: Array<{ busyStart: Date | null; busyEnd: Date | null }> = [];
+  const assignments: Array<{ busyStart: Date | null; busyEnd: Date | null; status?: string; slot?: string | null; mode?: string }> = [];
+  const areas: Array<{ provinceCode: string; districtCode: string }> = [];
   const manager = {
     findOneBy: vi.fn(async (entity: { name?: string }) => {
       if (entity.name === 'User') return user;
@@ -33,6 +34,7 @@ function fixture() {
     count: vi.fn(async () => Number(unpaidDues)),
     find: vi.fn(async (entity: { name?: string }) => {
       if (entity.name === 'TechnicianSchedule') return schedules;
+      if (entity.name === 'TechnicianServiceArea') return areas;
       return [];
     }),
     createQueryBuilder: vi.fn((entity: { name?: string } | string) => {
@@ -47,7 +49,7 @@ function fixture() {
       return qb;
     }),
   };
-  return { booking, user, profile, schedules, timeOff, assignments,
+  return { booking, user, profile, schedules, timeOff, assignments, areas,
     manager: manager as unknown as EntityManager,
     revokeSkill: () => { verifiedSkill = false; },
     setDues: () => { unpaidDues = true; },
@@ -64,16 +66,15 @@ describe('ARRIVAL: actual shared technicianEligibility permits a valid arrival s
     f.booking.preferredStartAt = at(11);
     expect(await allowed(f)).toBe(false);
   });
-  it('permits a partial TimeOff and a partial active assignment, not a fully blocked interval', async () => {
+  it('blocks any time off inside the window (PO 08/10), still permits a partial active assignment', async () => {
     const f = fixture();
     f.timeOff.push({ startAt: at(10), endAt: at(10, 30) });
-    expect(await allowed(f)).toBe(true);
-    f.assignments.push({ busyStart: at(10, 30), busyEnd: at(11) });
     expect(await allowed(f)).toBe(false);
-    f.assignments.length = 0;
     f.timeOff.length = 0;
     f.assignments.push({ busyStart: at(10), busyEnd: at(10, 30) });
     expect(await allowed(f)).toBe(true);
+    f.assignments.push({ busyStart: at(10, 30), busyEnd: at(11) });
+    expect(await allowed(f)).toBe(false);
   });
   it('blocks malformed/missing busy booking intervals rather than interpreting them as free time', async () => {
     for (const assignment of [
@@ -139,8 +140,67 @@ describe('ARRIVAL: actual shared technicianEligibility permits a valid arrival s
     expect(await allowed(f, 'order-to-exclude')).toBe(true);
     const calls = vi.mocked(f.manager.createQueryBuilder).mock.results;
     const busyBuilder = calls[calls.length - 1].value;
-    expect(busyBuilder.select).toHaveBeenCalledWith('b.preferred_start_at', 'busyStart');
+    expect(busyBuilder.addSelect).toHaveBeenCalledWith('b.preferred_start_at', 'busyStart');
     expect(busyBuilder.addSelect).toHaveBeenCalledWith('b.preferred_end_at', 'busyEnd');
     expect(busyBuilder.andWhere).toHaveBeenCalledWith('o.id != :excludeOrderId', { excludeOrderId: 'order-to-exclude' });
+  });
+});
+
+describe('sessions and urgent bookings (PO 08/10/2026)', () => {
+  // 2030-10-15 morning session = 01:00-05:00Z, afternoon = 06:00-11:00Z.
+  const morning = (f: ReturnType<typeof fixture>) => {
+    Object.assign(f.booking, { bookingMode: 'scheduled', slot: 'morning', preferredStartAt: at(1), preferredEndAt: at(5) });
+  };
+
+  it('allows one scheduled booking per session, even after the job of that session is completed', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2030-10-14T00:00:00Z'));
+    try {
+      const f = fixture();
+      morning(f);
+      expect(await allowed(f)).toBe(true);
+      f.assignments.push({ busyStart: at(1), busyEnd: at(5), slot: 'morning', mode: 'scheduled', status: 'completed' });
+      expect(await allowed(f)).toBe(false);
+      f.assignments[0].slot = 'afternoon';
+      f.assignments[0].busyStart = at(6);
+      f.assignments[0].busyEnd = at(11);
+      expect(await allowed(f)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('urgent: not while on another job, nor in a session whose scheduled job is not done', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(at(2)); // 09:00 Vietnam, morning session
+    try {
+      const f = fixture();
+      Object.assign(f.booking, { bookingMode: 'urgent', slot: null, preferredStartAt: at(2), preferredEndAt: at(4) });
+      expect(await allowed(f)).toBe(true);
+      f.assignments.push({ busyStart: at(1), busyEnd: at(5), slot: 'morning', mode: 'scheduled', status: 'accepted' });
+      expect(await allowed(f)).toBe(false);
+      f.assignments[0].status = 'completed';
+      expect(await allowed(f)).toBe(true);
+      f.assignments.push({ busyStart: at(1), busyEnd: at(3), slot: null, mode: 'urgent', status: 'en_route' });
+      expect(await allowed(f)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('serves only the chosen districts when measured from the work address', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2030-10-14T00:00:00Z'));
+    try {
+      const f = fixture();
+      morning(f);
+      Object.assign(f.booking, { provinceSnapshot: '79', districtSnapshot: '760' });
+      f.areas.push({ provinceCode: '79', districtCode: '761' });
+      expect(await allowed(f)).toBe(false);
+      f.areas.push({ provinceCode: '79', districtCode: '760' });
+      expect(await allowed(f)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

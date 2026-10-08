@@ -9,8 +9,10 @@ import { TechnicianTimeOff } from '../technicians/entities/technician-time-off.e
 import { Address } from '../users/entities/address.entity';
 import { CommissionDue } from '../service-orders/entities/commission-due.entity';
 import { AccountStatus, CommissionDueStatus, Role, VerificationStatus } from '../../shared/enums';
-import { haversineKm } from '../../shared/utils/geo';
 import { hasAvailableArrival, type ArrivalInterval } from './arrival-window';
+import { bookingSession, sameSession, slotAt } from './booking-slots';
+import { distanceToBooking, servesArea, technicianOrigin } from './technician-location';
+import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
 import { Wallet } from '../wallet/entities/wallet.entity';
 import { SystemConfig } from '../system-config/entities/system-config.entity';
 
@@ -53,56 +55,66 @@ export async function technicianEligibility(
   const now = Date.now();
   if (!(start < end) || end.getTime() <= now) return fail('Booking time window is invalid or expired');
   const arrivalStart = new Date(Math.max(start.getTime(), now));
+  const window: ArrivalInterval = { start: arrivalStart, end };
+  const mode = booking.bookingMode === 'urgent' ? 'urgent' : 'scheduled';
+  const session = mode === 'scheduled' ? bookingSession(booking) : null;
   const schedules = await manager.find(TechnicianSchedule, { where: { technicianId: profile.id } });
   const timeOff = await manager.createQueryBuilder(TechnicianTimeOff, 't')
     .where('t.technicianId = :id', { id: profile.id })
     .andWhere('t.startAt < :end AND t.endAt > :start', { start: arrivalStart, end }).getMany();
-  const conflict = await manager.createQueryBuilder('technician_assignments', 'a')
-    .select('b.preferred_start_at', 'busyStart')
+  if (timeOff.length) return fail('Technician has time off');
+  if (!hasAvailableArrival(window, schedules, [])) return fail('Outside working schedule');
+
+  // Every order the technician holds that is not cancelled, completed ones included:
+  // a session counts as taken even after its order is done (one scheduled booking per session).
+  const held = manager.createQueryBuilder('technician_assignments', 'a')
+    .select('o.id', 'orderId')
+    .addSelect('o.status', 'status')
+    .addSelect('b.slot', 'slot')
+    .addSelect('b.booking_mode', 'mode')
+    .addSelect('b.preferred_start_at', 'busyStart')
     .addSelect('b.preferred_end_at', 'busyEnd')
     .innerJoin('service_orders', 'o', 'o.id = a.service_order_id')
     .innerJoin('bookings', 'b', 'b.id = o.booking_id')
     .where('a.technician_id = :id AND a.is_active = true', { id: technicianId })
-    .andWhere('o.status NOT IN (:...terminal)', { terminal: ['completed', 'cancelled'] })
-    .andWhere('(b.preferred_start_at IS NULL OR b.preferred_end_at IS NULL OR (b.preferred_start_at < :end AND b.preferred_end_at > :start))', { start: arrivalStart, end });
-  if (excludeOrderId) conflict.andWhere('o.id != :excludeOrderId', { excludeOrderId });
-  const assignments = await conflict.getRawMany<{
-    busyStart: Date | string | null;
-    busyEnd: Date | string | null;
-  }>();
-  if (assignments.some(assignment => assignment.busyStart == null || assignment.busyEnd == null)) {
-    return fail('Assignment schedule conflict');
-  }
+    .andWhere("o.status <> 'cancelled'");
+  if (excludeOrderId) held.andWhere('o.id != :excludeOrderId', { excludeOrderId });
+  const orders = (await held.getRawMany<{ orderId: string; status: string; slot: string | null; mode: string | null; busyStart: Date | string | null; busyEnd: Date | string | null }>())
+    .map((o) => ({ ...o, session: o.mode === 'urgent' ? null : bookingSession({ slot: o.slot, preferredStartAt: o.busyStart, preferredEndAt: o.busyEnd }) }));
+  const running = orders.filter((o) => o.status !== 'completed');
 
-  const window: ArrivalInterval = { start: arrivalStart, end };
-  if (!hasAvailableArrival(window, schedules, [])) return fail('Outside working schedule');
-  const timeOffIntervals = timeOff.map(interval => ({
-    start: interval.startAt,
-    end: interval.endAt,
-  }));
-  const assignmentIntervals = assignments.map(assignment => ({
-    start: assignment.busyStart instanceof Date ? assignment.busyStart : new Date(assignment.busyStart!),
-    end: assignment.busyEnd instanceof Date ? assignment.busyEnd : new Date(assignment.busyEnd!),
-  }));
-  const unavailable = [...timeOffIntervals, ...assignmentIntervals];
-  if (!hasAvailableArrival(window, schedules, unavailable)) {
-    if (timeOffIntervals.length && !hasAvailableArrival(window, schedules, timeOffIntervals)) {
-      return fail('Technician has time off');
+  if (mode === 'urgent') {
+    // Come now: not while on another job, nor during a session whose scheduled job is not done.
+    if (running.some((o) => ['accepted', 'en_route', 'under_repair'].includes(o.status) && (o.mode === 'urgent' || !o.session || sameSession(o.session, slotAt(new Date(now)))))) {
+      return fail('Technician is on another job');
     }
-    if (assignmentIntervals.length && !hasAvailableArrival(window, schedules, assignmentIntervals)) {
-      return fail('Assignment schedule conflict');
-    }
-    return fail('No available arrival interval');
+    const current = slotAt(new Date(now));
+    if (current && running.some((o) => sameSession(o.session, current))) return fail('Scheduled job in this session is not done');
+  } else if (session) {
+    if (orders.some((o) => sameSession(o.session, session))) return fail('Session already booked');
+    // Older bookings without a session still block by their own window.
+    const legacy = running.filter((o) => !o.session && o.mode !== 'urgent' && o.busyStart && o.busyEnd)
+      .map((o) => ({ start: new Date(o.busyStart!), end: new Date(o.busyEnd!) }));
+    if (legacy.length && !hasAvailableArrival(window, schedules, legacy)) return fail('Assignment schedule conflict');
+  } else {
+    if (running.some((o) => o.busyStart == null || o.busyEnd == null)) return fail('Assignment schedule conflict');
+    const busy = running.filter((o) => new Date(o.busyStart!) < end && new Date(o.busyEnd!) > arrivalStart)
+      .map((o) => ({ start: new Date(o.busyStart!), end: new Date(o.busyEnd!) }));
+    if (busy.length && !hasAvailableArrival(window, schedules, busy)) return fail('Assignment schedule conflict');
   }
   if (keeping) return { eligible: true };
+
   if (booking.latitudeSnapshot == null || booking.longitudeSnapshot == null) return fail('Booking location is missing');
   const address = await manager.findOneBy(Address, { userId: technicianId, isDefault: true });
-  if (!address || address.lat == null || address.lng == null) return fail('Technician location is missing');
-  const distanceKm = haversineKm(
-    Number(booking.latitudeSnapshot), Number(booking.longitudeSnapshot),
-    Number(address.lat), Number(address.lng),
-  );
-  if (distanceKm > Number(profile.serviceRadiusKm)) return fail('Outside technician service radius');
+  const gpsConfig = await manager.findOneBy(SystemConfig, { key: 'matching.gps_fresh_minutes' });
+  const origin = technicianOrigin(mode, profile, address, gpsConfig ? Number(gpsConfig.value) : 15, now);
+  if (!origin) return fail('Technician location is missing');
+  if (origin.source === 'address') {
+    const areas = await manager.find(TechnicianServiceArea, { where: { technicianId: profile.id } });
+    if (!servesArea(areas, booking)) return fail('Outside technician service areas');
+  }
+  const distanceKm = distanceToBooking(origin, booking);
+  if (distanceKm == null || distanceKm > Number(profile.serviceRadiusKm)) return fail('Outside technician service radius');
   return { eligible: true };
 }
 

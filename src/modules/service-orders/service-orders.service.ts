@@ -399,6 +399,12 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       quantity: booking.quantity || 1,
       scopeDescription: booking.scopeSnapshot || '',
       bookingDescription: booking.description || '',
+      customerNote: booking.customerNote ?? null,
+      bookingMode: booking.bookingMode ?? 'scheduled',
+      slot: booking.slot ?? null,
+      departAvailableAt: booking.preferredStartAt
+        ? new Date(booking.preferredStartAt.getTime() - (await this.configService.getInt('order.depart_early_minutes', 60)) * 60_000).toISOString()
+        : null,
       customerName: customer?.fullName || '', customerPhone: customer?.phoneNumber || '',
       technician: technician ? { id: technician.id, fullName: technician.fullName, phoneNumber: technician.phoneNumber } : undefined,
       destination: booking.latitudeSnapshot != null && booking.longitudeSnapshot != null
@@ -419,6 +425,17 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     orderId: string,
     actor: { id: string; role: string },
   ): Promise<ServiceOrder> {
+    // PO 08/10/2026: setting out is allowed from order.depart_early_minutes (60)
+    // before the appointment; an urgent booking's appointment is its creation.
+    const current = await this.orderRepo.findOneBy({ id: orderId });
+    const booking = current ? await this.dataSource.manager.findOneBy(Booking, { id: current.bookingId }) : null;
+    if (booking?.preferredStartAt) {
+      const earlyMinutes = await this.configService.getInt('order.depart_early_minutes', 60);
+      const opensAt = booking.preferredStartAt.getTime() - earlyMinutes * 60_000;
+      if (Date.now() < opensAt) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, `Chỉ xuất phát được từ ${earlyMinutes} phút trước giờ hẹn`, { departAvailableAt: new Date(opensAt).toISOString() });
+      }
+    }
     const res = await this.transitionStatus(
       orderId,
       ServiceOrderStatus.EN_ROUTE,

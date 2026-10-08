@@ -356,7 +356,7 @@ describe('B2b2 Booking private photo wiring', () => {
       attachMedia: vi.fn(async () => privateMedia),
       reschedule: vi.fn(async () => booking),
       cancelBooking: vi.fn(async () => booking),
-      rebook: vi.fn(async () => booking),
+      rebook: vi.fn(async () => ({ booking, previousTechnicianId: null })),
     };
     const controller = new BookingsController(
       service as never,

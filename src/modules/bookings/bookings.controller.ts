@@ -215,7 +215,32 @@ export class BookingsController {
     body: RebookDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
-    const newBooking = await this.bookingsService.rebook(id, req.user, body);
-    return { data: toBookingResponse(newBooking) };
+    const { booking, previousTechnicianId } = await this.bookingsService.rebook(id, req.user, body);
+    // Invite the same technician when they are free; otherwise the customer picks from the candidates.
+    let previousTechnicianInvited = false;
+    if (previousTechnicianId) {
+      try {
+        await this.invitationsService.createShortlist(booking.id, [previousTechnicianId], req.user);
+        previousTechnicianInvited = true;
+      } catch {
+        previousTechnicianInvited = false;
+      }
+    }
+    return { data: { ...toBookingResponse(booking), previousTechnicianId, previousTechnicianInvited } };
+  }
+
+  @Get(':id/available-slots')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('booking:create')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Customer: sessions of the next days and whether the technician is free', description: 'For rescheduling: the technician holding the order. With previous=1: the technician of a finished booking, for booking again. Morning 08-12 and afternoon 13-18 Vietnam time.' })
+  async availableSlots(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('days') days: string | undefined,
+    @Query('previous') previous: string | undefined,
+    @Req() req: { user: { id: string } },
+  ) {
+    const n = Number(days ?? 14);
+    return { data: await this.bookingsService.availableSessions(id, req.user, Number.isFinite(n) ? n : 14, previous === '1' || previous === 'true') };
   }
 }
