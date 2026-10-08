@@ -498,7 +498,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     // still presses "Bắt đầu sửa" afterwards gets the order back unchanged.
     const current = await this.orderRepo.findOneBy({ id: orderId });
     if (current?.status === ServiceOrderStatus.UNDER_REPAIR) {
-      return authorizeOrder(this.dataSource.manager, orderId, actor, 'technician', true);
+      // Read-only ownership check: no row lock outside a transaction.
+      return authorizeOrder(this.dataSource.manager, orderId, actor, 'technician');
     }
     const res = await this.transitionStatus(orderId, ServiceOrderStatus.UNDER_REPAIR, actor, 'Repair started');
     void this.notifyCustomerForOrder(
