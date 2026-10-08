@@ -131,7 +131,7 @@ export class SaveAddressDto {
   @IsOptional()
   @IsNumber()
   @Min(1)
-  @Max(50)
+  @Max(40)
   serviceRadiusKm?: number;
 }
 

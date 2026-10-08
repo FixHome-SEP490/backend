@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-08 21:53 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/strike-role
+> Cập nhật lần cuối: 2026-10-08 23:32 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/booking-sessions
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -112,6 +112,13 @@ Các PR #67 đến #72 vào `dev` sửa 26 lỗi trong đợt rà soát backend:
 
 Nhánh `fix/order-timing-and-matching`: luật quá giờ hẹn BRX-063 (cảnh báo rồi tự huỷ sau 10 phút), tác vụ nền mỗi phút cho lời mời hết hạn và giờ xuất phát, ghép lại thợ có mở chat và báo thợ, đổi lịch khi đang ghép lại, mã lỗi `TECHNICIAN_NOT_ELIGIBLE`, mã đơn theo ngày giờ Việt Nam.
 
+### Đặt lịch theo buổi, đơn vãng lai, GPS (PO 08/10/2026, nhánh `feat/booking-sessions`)
+
+- Booking có `booking_mode` (scheduled | urgent), `slot` (morning 08-12 | afternoon 13-18 giờ VN) và `customer_note` (migration 028). Tạo booking gửi `mode` + `date` + `slot`, hoặc `mode: urgent` (khung = bây giờ tới `booking.urgent_window_minutes`, 120). Không gửi mode thì vẫn nhận khung giờ cũ (client cũ). Hàm: `bookings/booking-slots.ts`.
+- `technicianEligibility`: đặt trước thì mỗi thợ một đơn mỗi buổi kể cả đơn đã xong (tối đa 2 buổi/ngày), ngày nghỉ trùng khung là chặn, phải có lịch tuần phủ buổi. Vãng lai thì thợ không được đang trong đơn nào, và nếu đang trong một buổi có đơn đặt trước chưa xong thì không nhận. Gốc toạ độ (`bookings/technician-location.ts`): vãng lai dùng GPS gửi trong `matching.gps_fresh_minutes` (15) nếu có, còn lại dùng địa chỉ thợ + khu vực đã chọn. Khu vực có hai bộ mã (quận cũ 1-3 chữ số, phường mới 5 chữ số), chỉ so trong cùng bộ, khác bộ thì bán kính quyết định.
+- Đổi lịch (`PATCH /bookings/:id/schedule`) theo ngày + buổi; thợ của đơn không rảnh buổi mới thì trả TECHNICIAN_NOT_ELIGIBLE, không tự gỡ thợ nữa. `GET /bookings/:id/available-slots?days=14[&previous=1]` trả các buổi và thợ có rảnh không. Đặt lại thợ (`POST /bookings/:id/rebook`) chỉ từ booking đã huỷ hoặc đơn đã xong/huỷ, mời đúng thợ cũ nếu rảnh (`previousTechnicianInvited`).
+- Xuất phát sớm nhất `order.depart_early_minutes` (60) trước giờ hẹn; chi tiết đơn có `departAvailableAt`, `customerNote`, `bookingMode`, `slot`. `PATCH /technicians/me/location` lưu vị trí lần cuối (bỏ qua sai số > 1 km). Bán kính 1-40 km.
+
 ### Hoàn tất đơn
 
 Đơn sang COMPLETED ở bước đến sau cùng trong ba bước: khách xác nhận công việc, tiền mặt được xác nhận (khách hoặc quản lý xử lý tranh chấp) và thanh toán online được xác minh. Cả ba đường gọi `applyOrderCompletionEffects` (`service-orders/order-completion-effects.ts`) trong cùng transaction: bắt đầu bảo hành cho dòng hoá đơn đủ điều kiện và ghi thông báo ORDER_COMPLETED cho khách và kỹ thuật viên (`notifications/order-completed-notice.ts`). Thông báo chỉ nhắc bảo hành khi có dòng bảo hành thật. Case tiền mặt chỉ chốt tiền khi quản lý xử lý với mã `CASH_SETTLEMENT_CONFIRMED_BY_MANAGER`.
@@ -199,6 +206,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-08 23:32 (UTC+7) | ToanAltF4 | feat/booking-sessions | Đặt lịch theo buổi sáng/chiều, đơn vãng lai theo GPS, đổi lịch chặn buổi thợ bận, buổi còn trống, đặt lại thợ cũ, xuất phát sớm 1 giờ, vị trí thợ.
 - 2026-10-08 21:53 (UTC+7) | ToanAltF4 | fix/strike-role | Xác nhận vi phạm ghi role vào cancellation_strikes (cột bắt buộc), trước đây insert lỗi trên DB thật.
 - 2026-10-07 21:27 (UTC+7) | ToanAltF4 | fix/fixed-price-and-waive-reason | Dịch vụ giá cố định bắt buộc có giá > 0; miễn vi phạm khi xét huỷ đơn bắt buộc có lý do, kiểm trước khi ghi.
 - 2026-10-07 21:17 (UTC+7) | ToanAltF4 | fix/time-off-and-review-guards | Chặn khai báo ngày nghỉ đã qua; đánh giá trùng trả CONFLICT với câu tiếng Việt.

@@ -120,9 +120,9 @@ describe('Rescheduling keeps a technician who is free at the new time', () => {
     expect((await technicianEligibility(manager, 'tech-1', booking, 'order-1', keeping)).eligible).toBe(true);
   });
 
-  it('still lets go of a technician who is busy at the new time', async () => {
+  it('reports a technician who already has a job in that session (the move is then refused, PO 08/10)', async () => {
     const { manager, booking } = technicianWith({ busy: true });
     const verdict = await technicianEligibility(manager, 'tech-1', booking, 'order-1', keeping);
-    expect(verdict).toEqual({ eligible: false, reason: 'Assignment schedule conflict' });
+    expect(verdict).toEqual({ eligible: false, reason: 'Session already booked' });
   });
 });

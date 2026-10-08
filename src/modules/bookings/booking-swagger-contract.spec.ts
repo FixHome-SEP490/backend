@@ -44,7 +44,7 @@ describe('Booking Swagger contract: ordered invitations', () => {
     const createBooking = doc.paths['/api/v1/bookings']?.post;
     expect(createBooking?.summary).toContain('create a Booking');
     expect(doc.components?.schemas?.CreateBookingDto).toMatchObject({
-      required: expect.arrayContaining(['serviceId', 'addressId', 'description', 'preferredStartAt', 'preferredEndAt']),
+      required: expect.arrayContaining(['serviceId', 'addressId', 'description']),
       properties: {
         serviceId: { type: 'string', format: 'uuid' },
         addressId: { type: 'string', format: 'uuid' },

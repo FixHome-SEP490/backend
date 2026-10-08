@@ -141,6 +141,17 @@ export class TechniciansService {
     return this.profileRepo.save(profile);
   }
 
+  /** Keep the last good GPS fix; a fix worse than 1 km is too coarse to match on. */
+  async reportLocation(userId: string, dto: { lat: number; lng: number; accuracyMeters?: number }): Promise<{ recorded: boolean; at: string | null }> {
+    const profile = await this.getMyProfile(userId);
+    if (dto.accuracyMeters != null && dto.accuracyMeters > 1000) {
+      return { recorded: false, at: profile.lastLocationAt ? new Date(profile.lastLocationAt).toISOString() : null };
+    }
+    const at = new Date();
+    await this.profileRepo.update(profile.id, { lastLat: dto.lat, lastLng: dto.lng, lastLocationAt: at });
+    return { recorded: true, at: at.toISOString() };
+  }
+
   async getMySkills(
     userId: string,
   ): Promise<TechnicianServiceOfferingResponseDto[]> {
