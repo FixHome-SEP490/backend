@@ -904,6 +904,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         await manager.save(CancellationStrike, manager.create(CancellationStrike, {
           userId: cancellation.actorUserId,
           cancellationId: cancellation.id,
+          role,
           status: StrikeStatus.ACTIVE,
           expiresAt: new Date(Date.now() + windowDays * 86_400_000),
         }));
