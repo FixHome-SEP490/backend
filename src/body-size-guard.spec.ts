@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PayloadTooLargeException } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { formBodySizeGuard, MAX_FORM_BODY_BYTES } from './setup-app';
+import { formBodySizeGuard, MAX_FORM_BODY_BYTES, MAX_MULTIPART_BODY_BYTES } from './setup-app';
 
-const run = (url: string, length: number) => {
+const run = (url: string, length: number, contentType = 'application/json') => {
   const next = vi.fn();
-  formBodySizeGuard({ originalUrl: url, headers: { 'content-length': String(length) } } as unknown as Request, {} as Response, next);
+  formBodySizeGuard({ originalUrl: url, headers: { 'content-length': String(length), 'content-type': contentType } } as unknown as Request, {} as Response, next);
   return next.mock.calls[0][0];
 };
 
@@ -23,5 +23,16 @@ describe('Request body size', () => {
     expect(run('/api/v1/ai/diagnoses', 30 * MAX_FORM_BODY_BYTES)).toBeUndefined();
     expect(run('/api/v1/ai-diagnosis/analyze/', 30 * MAX_FORM_BODY_BYTES)).toBeUndefined();
     expect(run('/api/v1/ai/chat/ask', 2 * MAX_FORM_BODY_BYTES)).toBeInstanceOf(PayloadTooLargeException);
+  });
+
+  it('lets a photo of several MB up on the file upload routes, as multipart only (fixed 10/10/2026)', () => {
+    const form = 'multipart/form-data; boundary=x';
+    for (const url of ['/api/v1/media/booking-photo-upload', '/api/v1/media/upload', '/api/v1/service-orders/9b0c/evidence']) {
+      expect(run(url, 6 * MAX_FORM_BODY_BYTES, form)).toBeUndefined();
+      expect(run(url, MAX_MULTIPART_BODY_BYTES + 1, form)).toBeInstanceOf(PayloadTooLargeException);
+    }
+    expect(run('/api/v1/media/booking-photo-upload', 6 * MAX_FORM_BODY_BYTES)).toBeInstanceOf(PayloadTooLargeException);
+    expect(run('/api/v1/bookings', 6 * MAX_FORM_BODY_BYTES, form)).toBeInstanceOf(PayloadTooLargeException);
+    expect(run('/api/v1/media/booking-photo-upload/x', 6 * MAX_FORM_BODY_BYTES, form)).toBeInstanceOf(PayloadTooLargeException);
   });
 });
