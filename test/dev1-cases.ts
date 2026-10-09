@@ -250,19 +250,24 @@ export function registerDev1Cases(context: () => Context) {
       expect(earning.map((t: any) => t.type)).toContain('ONLINE_EARNING');
       const [payment] = await db.query("SELECT provider, status FROM payments WHERE invoice_id = $1 AND status = 'verified'", [invoice.id]);
       expect(payment).toMatchObject({ provider: 'wallet', status: 'verified' });
-      // A complaint resolved as a refund puts money back into the wallet, never more than was paid.
-      const opened = await post('/support/cases', f.owner, { caseType: 'quality', reason: 'Máy vẫn kêu sau khi sửa', serviceOrderId: order.id });
-      expect(opened.status, JSON.stringify(opened.body)).toBe(201);
-      const caseId = unwrap(opened.body).id;
+      // A refund goes into the wallet only for a faulty part or a warranty failure, FixHome bearing it (PO 09/10/2026).
       const manager = await context().register();
       await db.query('UPDATE users SET role = $1 WHERE id = $2', ['service_manager', manager.user.id]);
+      const quality = unwrap((await post('/support/cases', f.owner, { caseType: 'quality', reason: 'Máy vẫn kêu sau khi sửa', serviceOrderId: order.id }).expect(201)).body).id;
+      denied(await post(`/support/cases/${quality}/resolve`, manager, { finalStatus: 'resolved', resolutionCode: 'refund_to_wallet', reason: 'Hoàn tiền vì sửa chưa đạt', amount: 50000 }));
+      const opened = await post('/support/cases', f.owner, { caseType: 'parts_dispute', reason: 'Linh kiện thay vào bị hỏng', serviceOrderId: order.id });
+      expect(opened.status, JSON.stringify(opened.body)).toBe(201);
+      const caseId = unwrap(opened.body).id;
       denied(await post(`/support/cases/${caseId}/resolve`, manager, { finalStatus: 'resolved', resolutionCode: 'refund_to_wallet', reason: 'Hoàn một phần vì sửa chưa đạt', amount: total + 1 }));
       denied(await post(`/support/cases/${caseId}/resolve`, manager, { finalStatus: 'resolved', resolutionCode: 'refund_to_wallet', reason: 'Hoàn một phần vì sửa chưa đạt' }));
       await post(`/support/cases/${caseId}/resolve`, manager, { finalStatus: 'resolved', resolutionCode: 'refund_to_wallet', reason: 'Hoàn một phần vì sửa chưa đạt', amount: 150000 }).expect(200);
       const wallet = unwrap((await get('/customer/wallet', f.owner).expect(200)).body);
       expect(wallet.balance).toBe(750000);
       expect(wallet.transactions.map((t: any) => t.type)).toEqual(['refund', 'invoice_payment']);
-      const second = unwrap((await post('/support/cases', f.owner, { caseType: 'quality', reason: 'Vẫn chưa ổn', serviceOrderId: order.id }).expect(201)).body).id;
+      const [refundCase] = await db.query('SELECT liable_party FROM support_cases WHERE id = $1', [caseId]);
+      expect(refundCase.liable_party).toBe('platform');
+      await post(`/support/cases/${quality}/resolve`, manager, { finalStatus: 'resolved', resolutionCode: 'no_action', reason: 'Không hoàn tiền cho khiếu nại chất lượng' }).expect(200);
+      const second = unwrap((await post('/support/cases', f.owner, { caseType: 'parts_dispute', reason: 'Linh kiện vẫn hỏng', serviceOrderId: order.id }).expect(201)).body).id;
       denied(await post(`/support/cases/${second}/resolve`, manager, { finalStatus: 'resolved', resolutionCode: 'refund_to_wallet', reason: 'Hoàn thêm phần còn lại của đơn', amount: total - 150000 + 1 }));
       denied(await get('/customer/wallet', f.tech));
     });
