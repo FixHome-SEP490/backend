@@ -172,6 +172,27 @@ export class ReputationService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  /** The customer's or technician's own score for the profile page: points, when they reset, any running ban and why the score moved. */
+  async mine(userId: string) {
+    const user = await this.userRepo.findOne({ where: { id: userId } });
+    if (!user || (user.role !== Role.CUSTOMER && user.role !== Role.TECHNICIAN)) throw new NotFoundException('Chỉ khách hàng và kỹ thuật viên có điểm uy tín');
+    const months = await this.configService.getInt('reputation.reset_months', 2);
+    const resetsAt = new Date(user.reputationPeriodStart ?? new Date());
+    resetsAt.setMonth(resetsAt.getMonth() + months);
+    const ban = user.role === Role.CUSTOMER
+      ? user.bookingSuspendedUntil
+      : (await this.dataSource.manager.findOne(TechnicianProfile, { where: { userId } }))?.workSuspendedUntil;
+    const events = await this.eventRepo.find({ where: { userId }, order: { createdAt: 'DESC' }, take: 20 });
+    return {
+      points: user.reputationPoints ?? REPUTATION_START,
+      periodStart: user.reputationPeriodStart ?? null,
+      resetsAt,
+      suspendedUntil: ban && new Date(ban) > new Date() ? ban : null,
+      locked: user.status === AccountStatus.LOCKED,
+      events: events.map((e) => ({ id: e.id, kind: e.kind, delta: e.delta, pointsAfter: e.pointsAfter, reason: e.reason, penalty: e.penalty ?? null, createdAt: e.createdAt })),
+    };
+  }
+
   async events(userId: string): Promise<ReputationEvent[]> {
     return this.eventRepo.find({ where: { userId }, order: { createdAt: 'DESC' }, take: 100 });
   }

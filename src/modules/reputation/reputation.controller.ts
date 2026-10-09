@@ -26,6 +26,14 @@ export class ReputationController {
     return this.service.list(query);
   }
 
+  @Get('me')
+  @Roles(Role.CUSTOMER, Role.TECHNICIAN)
+  @RequirePermission('profile:read_own')
+  @ApiOperation({ summary: 'Customer / Technician: own reputation points, ban and history' })
+  mine(@Req() req: Req) {
+    return this.service.mine(req.user.id);
+  }
+
   @Get(':userId/events')
   @RequirePermission('strike:read_all')
   @ApiOperation({ summary: 'SM / Admin: why a user\'s reputation points changed' })

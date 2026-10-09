@@ -142,6 +142,10 @@ export function registerDev1Cases(context: () => Context) {
       expect(event).toMatchObject({ kind: 'violation', delta: -10, points_after: 90, service_order_id: first.order.id });
       expect(event.cancellation_id).toBeTruthy();
       expect(unwrap((await get('/users/me', f.owner).expect(200)).body).reputationPoints).toBe(90);
+      const mine = unwrap((await get('/reputation/me', f.owner).expect(200)).body);
+      expect(mine).toMatchObject({ points: 90, suspendedUntil: null, locked: false });
+      expect(mine.events).toHaveLength(1);
+      expect(new Date(mine.resetsAt).getTime()).toBeGreaterThan(Date.now());
       // Technician withdraws before arrival: -10 for the technician, the customer keeps 90.
       const second = await accept(f);
       await post(`/service-orders/${second.order.id}/cancel`, f.tech, { reason: 'Kẹt xe' }).expect(200);
@@ -168,6 +172,8 @@ export function registerDev1Cases(context: () => Context) {
       const [{ booking_suspended_until: until }] = await db.query('SELECT booking_suspended_until FROM users WHERE id = $1', [f.owner.user.id]);
       expect(Math.round((new Date(until).getTime() - Date.now()) / 3600000)).toBe(72);
       denied(await post('/bookings', f.owner, f.body));
+      expect(unwrap((await get('/reputation/me', f.owner).expect(200)).body).suspendedUntil).toBeTruthy();
+      denied(await get('/reputation/me', manager));
       // Staff see the lowest scores first, read why, and adjust with a reason; others cannot.
       denied(await get('/reputation', f.owner));
       denied(await post(`/reputation/${f.owner.user.id}/adjust`, f.tech, { delta: 10, reason: 'Tự cộng điểm' }));

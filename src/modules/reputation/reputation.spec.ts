@@ -157,3 +157,34 @@ describe('ReputationService.resetSweep', () => {
   });
 
 });
+
+describe('ReputationService.mine', () => {
+  function mineSetup(user: Partial<User>, workSuspendedUntil: Date | null = null) {
+    const events = [{ id: 'e1', kind: 'violation', delta: -10, pointsAfter: 90, reason: 'Huỷ', penalty: null, createdAt: new Date() }];
+    const service = new ReputationService(
+      { find: vi.fn(async () => events) } as never,
+      { findOne: vi.fn(async () => user) } as never,
+      { manager: { findOne: vi.fn(async () => ({ workSuspendedUntil })) } } as never,
+      { getInt: vi.fn(async (_k: string, fallback: number) => fallback) } as never,
+    );
+    return service;
+  }
+
+  it('shows a customer the score, the next reset and a running booking ban', async () => {
+    const until = new Date(Date.now() + 3600_000);
+    const result = await mineSetup({ id: 'c1', role: Role.CUSTOMER, status: AccountStatus.ACTIVE, reputationPoints: 60, reputationPeriodStart: new Date('2026-09-01T00:00:00Z'), bookingSuspendedUntil: until }).mine('c1');
+    expect(result).toMatchObject({ points: 60, suspendedUntil: until, locked: false });
+    expect(result.resetsAt.toISOString()).toBe('2026-11-01T00:00:00.000Z');
+    expect(result.events).toHaveLength(1);
+  });
+
+  it('shows a technician the work ban, and nothing once it has passed', async () => {
+    const tech = { id: 't1', role: Role.TECHNICIAN, status: AccountStatus.ACTIVE, reputationPoints: 30, reputationPeriodStart: new Date() };
+    expect((await mineSetup(tech, new Date(Date.now() + 3600_000)).mine('t1')).suspendedUntil).toBeInstanceOf(Date);
+    expect((await mineSetup(tech, new Date(Date.now() - 1000)).mine('t1')).suspendedUntil).toBeNull();
+  });
+
+  it('staff have no score', async () => {
+    await expect(mineSetup({ id: 'a1', role: Role.ADMIN }).mine('a1')).rejects.toThrow('Chỉ khách hàng');
+  });
+});
