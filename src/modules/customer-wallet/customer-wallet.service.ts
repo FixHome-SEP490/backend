@@ -17,7 +17,7 @@ export interface CustomerWalletEntry {
   description?: string | null;
 }
 
-const INCOMING: CustomerWalletTransactionType[] = ['top_up', 'refund'];
+const INCOMING: CustomerWalletTransactionType[] = ['top_up', 'refund', 'adjustment_credit'];
 
 /**
  * The customer wallet ledger (PO 08/10/2026). Money comes in by top-up or
@@ -56,7 +56,10 @@ export class CustomerWalletService {
     const before = Number(wallet.balance);
     const after = INCOMING.includes(entry.type) ? before + entry.amount : before - entry.amount;
     if (after < 0) {
-      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Số dư ví không đủ để thanh toán, vui lòng nạp thêm', {
+      const message = entry.type === 'adjustment_debit'
+        ? 'Số dư ví khách không đủ để trừ số tiền này'
+        : 'Số dư ví không đủ để thanh toán, vui lòng nạp thêm';
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, message, {
         balance: before,
         required: entry.amount,
       });

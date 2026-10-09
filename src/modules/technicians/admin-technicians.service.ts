@@ -3,8 +3,8 @@ import { DataSource } from 'typeorm';
 
 const UUID_PREFIX = /^[0-9a-f-]{6,36}$/i;
 // Vietnamese letters without their marks, so "Nguyen" finds "Nguyễn" (same map in SQL translate()).
-const VN_FROM = 'àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ';
-const VN_TO = 'aaaaaaaaaaaaaaaaaeeeeeeeeeeeiiiiiooooooooooooooooouuuuuuuuuuuyyyyyd';
+export const VN_FROM = 'àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ';
+export const VN_TO = 'aaaaaaaaaaaaaaaaaeeeeeeeeeeeiiiiiooooooooooooooooouuuuuuuuuuuyyyyyd';
 
 /** Lower case without Vietnamese diacritics. */
 export function foldVietnamese(text: string): string {
