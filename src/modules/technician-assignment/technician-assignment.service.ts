@@ -1,4 +1,5 @@
 // src/modules/technician-assignment/technician-assignment.service.ts
+import { snapshotLaborWarranty } from '../service-orders/labor-warranty';
 import { newOrderCode } from '../service-orders/order-code';
 import { Injectable, Logger, NotFoundException, ForbiddenException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -73,6 +74,7 @@ export class TechnicianAssignmentService {
       const code = existingOrder?.code ?? newOrderCode(now);
       const serviceOrder = existingOrder ?? await manager.save(ServiceOrder, manager.create(ServiceOrder, { bookingId: booking.id, code, status: ServiceOrderStatus.ACCEPTED, scheduledAt: booking.preferredStartAt }));
       const assignment = await manager.save(TechnicianAssignment, manager.create(TechnicianAssignment, { serviceOrderId: serviceOrder.id, technicianId, isActive: true, assignedAt: now }));
+      await snapshotLaborWarranty(manager, serviceOrder.id, technicianId, booking.serviceId);
       if (existingOrder) await manager.update(ServiceOrder, serviceOrder.id, { departureWarnedAt: null });
       await manager.insert(OrderStatusHistory, { serviceOrderId: serviceOrder.id, fromStatus: existingOrder ? serviceOrder.status : null, toStatus: serviceOrder.status, actorUserId: actorUser.id, actorRole: actorUser.role, reason });
 
@@ -149,6 +151,7 @@ export class TechnicianAssignmentService {
         isActive: true,
         assignedAt: now,
       }));
+      await snapshotLaborWarranty(manager, orderId, technicianId, booking.serviceId);
 
       await manager.createQueryBuilder().update(BookingInvitation).set({ status: InvitationStatus.CANCELLED, respondedAt: now }).where('booking_id = :bookingId AND status IN (:...statuses)', { bookingId: booking.id, statuses: [InvitationStatus.PENDING, InvitationStatus.STANDBY] }).execute();
       if (booking.status !== BookingStatus.MATCHED) await manager.update(Booking, booking.id, { status: BookingStatus.MATCHED });
@@ -236,6 +239,7 @@ export class TechnicianAssignmentService {
       await manager.update(Quotation, { serviceOrderId: orderId, status: In([QuotationStatus.DRAFT, QuotationStatus.SENT]) }, { status: QuotationStatus.SUPERSEDED });
       await manager.update(ServiceOrder, orderId, { status: ServiceOrderStatus.ACCEPTED, departureWarnedAt: null });
       await manager.save(manager.create(TechnicianAssignment, { serviceOrderId: orderId, technicianId, isActive: true, assignedAt: now }));
+      await snapshotLaborWarranty(manager, orderId, technicianId, booking.serviceId);
       await this.messagingService.ensureConversation(manager, booking, technicianId);
       await this.messagingService.attachToServiceOrder(manager, booking.id, technicianId, orderId);
       await manager.save(manager.create(OrderStatusHistory, {

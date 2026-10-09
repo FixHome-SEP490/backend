@@ -9,7 +9,7 @@ vi.mock('../bookings/technician-eligibility', () => ({
 const staff = { id: 'sm-1', role: Role.SERVICE_MANAGER };
 
 function setup(bookingStatus: BookingStatus = BookingStatus.MATCHING) {
-  const booking = { id: 'booking-1', customerId: 'customer-1', status: bookingStatus };
+  const booking = { id: 'booking-1', customerId: 'customer-1', serviceId: 'service-1', status: bookingStatus };
   const order = { id: 'order-1', bookingId: 'booking-1', code: 'FH-1', status: ServiceOrderStatus.ACCEPTED };
   const previous = { id: 'assignment-old', serviceOrderId: 'order-1', technicianId: 'tech-old', isActive: true };
   const invitationUpdate = { set: vi.fn(), where: vi.fn(), execute: vi.fn(async () => ({})) };
@@ -22,6 +22,8 @@ function setup(bookingStatus: BookingStatus = BookingStatus.MATCHING) {
       if (entity.name === 'TechnicianAssignment') return previous;
       return { id: 'tech-new' };
     }),
+    // The new technician's own labor warranty; no per-service value, no config row.
+    findOneBy: vi.fn(async (entity: { name: string }) => (entity.name === 'TechnicianProfile' ? { id: 'profile-new', defaultLaborWarrantyDays: 45 } : null)),
     create: vi.fn((_entity: unknown, values: object) => ({ ...values })),
     save: vi.fn(async (value: object) => value),
     update: vi.fn(async () => ({ affected: 1 })),
@@ -54,6 +56,12 @@ describe('Staff replacing the technician of an order', () => {
     expect(s.messaging.ensureConversation).toHaveBeenCalledWith(s.manager, expect.objectContaining({ id: 'booking-1' }), 'tech-new');
     expect(s.messaging.attachToServiceOrder).toHaveBeenCalledWith(s.manager, 'booking-1', 'tech-new', 'order-1');
     expect(s.greeting.send).toHaveBeenCalledWith({ bookingId: 'booking-1', technicianId: 'tech-new', serviceOrderId: 'order-1', orderCode: 'FH-1' });
+  });
+
+  it('takes the labor warranty the new technician gives (PO 10/10/2026)', async () => {
+    await s.service.overrideAssign('tech-new', 'order-1', staff, 'Thợ cũ báo ốm');
+
+    expect(s.manager.update).toHaveBeenCalledWith(expect.objectContaining({ name: 'ServiceOrder' }), 'order-1', { laborWarrantyDays: 45 });
   });
 
   it('retires the previous technician and releases their unpicked parts', async () => {

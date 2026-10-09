@@ -504,6 +504,53 @@ export function registerDev1Cases(context: () => Context) {
       expect(Number(stored.grandTotal)).toBe(200000);
     });
 
+    it('snapshots the technician labor warranty on accept and uses it as the quote default (PO 10/10/2026)', async () => {
+      const f = await fixture('inspection_required'), db = context().db;
+      const put = (path: string, session: Session, body: object) => request(context().app.getHttpServer()).put(`/api/v1${path}`).set('Authorization', `Bearer ${session.accessToken}`).send(body);
+      denied(await put('/technicians/me/warranty-default', f.owner, { days: 90 }));
+      for (const days of [-1, 1.5, 3651]) denied(await put('/technicians/me/warranty-default', f.tech, { days }));
+      // Above warranty.max_days (365) is refused too.
+      denied(await put('/technicians/me/warranty-default', f.tech, { days: 400 }));
+      denied(await put(`/technicians/me/services/${f.service.id}`, f.tech, { typicalWarrantyDays: 400 }));
+      // Only the default: the service keeps its own 30 days, which wins.
+      expect(unwrap((await put('/technicians/me/warranty-default', f.tech, { days: 60 }).expect(200)).body)).toEqual({ defaultLaborWarrantyDays: 60, servicesUpdated: 0 });
+      expect(unwrap((await get('/technicians/me/profile', f.tech).expect(200)).body).defaultLaborWarrantyDays).toBe(60);
+      expect(unwrap((await get('/technicians/me/services', f.tech).expect(200)).body)[0].typicalWarrantyDays).toBe(30);
+      expect(unwrap((await put('/technicians/me/warranty-default', f.tech, { days: 90, applyToAllServices: true }).expect(200)).body)).toEqual({ defaultLaborWarrantyDays: 90, servicesUpdated: 1 });
+      const { order } = await accept(f), path = `/service-orders/${order.id}`;
+      expect(unwrap((await get(path, f.tech).expect(200)).body).laborWarrantyDays).toBe(90);
+      // Changing the default later does not touch an order already accepted.
+      await put('/technicians/me/warranty-default', f.tech, { days: 10, applyToAllServices: true }).expect(200);
+      await arrived(order.id, f.tech);
+      denied(await post(path + '/quotations', f.tech, { items: [{ type: 'labor', description: 'Repair labor', quantity: 1, unitPrice: 100000, warrantyDays: 366 }] }));
+      const quote = unwrap((await post(path + '/quotations', f.tech, { items: [{ type: 'labor', description: 'Repair labor', quantity: 1, unitPrice: 100000 }] }).expect(201)).body);
+      expect(quote.items[0].warrantyDaysSnapshot).toBe(90);
+      await post(`/quotations/${quote.id}/decision`, f.owner, { action: 'APPROVE' }).expect(200);
+      await post(path + '/start-repair', f.tech).expect(200);
+      await evidence(order.id, f.tech, 'after').expect(201);
+      await post(path + '/request-completion', f.tech).expect(200);
+      const invoice = unwrap((await get(path + '/invoice', f.owner).expect(200)).body);
+      await post(path + '/cash-settlement/declare', f.tech, { declaredAmount: Number(invoice.grandTotal) }).expect(200);
+      await post(path + '/cash-settlement/confirm', f.owner, { agreed: true, confirmedAmount: Number(invoice.grandTotal) }).expect(200);
+      expect((await db.query('SELECT warranty_days_snapshot AS days FROM warranty_coverages WHERE service_order_id = $1', [order.id])).map((r: any) => r.days)).toEqual([90]);
+    });
+
+    it('puts the technician default labor warranty on a fixed-price invoice (PO 10/10/2026)', async () => {
+      const f = await fixture(), db = context().db;
+      const put = (path: string, session: Session, body: object) => request(context().app.getHttpServer()).put(`/api/v1${path}`).set('Authorization', `Bearer ${session.accessToken}`).send(body);
+      // No per-service value: the technician default applies.
+      await db.getRepository('TechnicianSkill').update({ serviceId: f.service.id }, { typicalWarrantyDays: null });
+      await put('/technicians/me/warranty-default', f.tech, { days: 45 }).expect(200);
+      const { order } = await accept(f), path = `/service-orders/${order.id}`;
+      expect(unwrap((await get(path, f.tech).expect(200)).body).laborWarrantyDays).toBe(45);
+      await arrived(order.id, f.tech);
+      await evidence(order.id, f.tech, 'after').expect(201);
+      await post(path + '/request-completion', f.tech).expect(200);
+      await get(path + '/invoice', f.owner).expect(200);
+      const [line] = await db.query("SELECT ii.warranty_days_snapshot AS days FROM invoice_items ii JOIN invoices i ON i.id = ii.invoice_id WHERE i.service_order_id = $1 AND ii.source_type = 'FIXED_PRICE'", [order.id]);
+      expect(line.days).toBe(45);
+    });
+
     it.each([false, true])('keeps technician part warranty opt-in and outside labor commission: selected=%s', async selected => {
       const f = await fixture('inspection_required'), { order } = await accept(f), path = `/service-orders/${order.id}`;
       await arrived(order.id, f.tech);

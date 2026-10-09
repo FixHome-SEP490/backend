@@ -1,3 +1,4 @@
+import { snapshotLaborWarranty } from '../service-orders/labor-warranty';
 import { Injectable, ForbiddenException, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ServiceOrderStateMachine } from '../service-orders/service-order-state-machine';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -209,6 +210,7 @@ export class InvitationsService implements OnModuleInit, OnModuleDestroy {
       }
       serviceOrder ??= await manager.save(ServiceOrder, manager.create(ServiceOrder, { bookingId: booking.id, code, status: ServiceOrderStatus.ACCEPTED, scheduledAt: booking.preferredStartAt }));
       await manager.save(TechnicianAssignment, manager.create(TechnicianAssignment, { serviceOrderId: serviceOrder.id, technicianId: technician.id, isActive: true, assignedAt: now }));
+      await snapshotLaborWarranty(manager, serviceOrder.id, technician.id, booking.serviceId);
       await manager.insert(OrderStatusHistory, { serviceOrderId: serviceOrder.id, fromStatus: replacement ? serviceOrder.status : null, toStatus: serviceOrder.status, actorUserId: technician.id, actorRole: technician.role, reason: replacement ? 'Replacement technician accepted invitation' : 'Technician accepted invitation' });
       invitation.status = InvitationStatus.ACCEPTED;
       invitation.respondedAt = now;

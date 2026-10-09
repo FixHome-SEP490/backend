@@ -68,6 +68,10 @@ export class TechnicianProfile extends BaseEntity {
   })
   priorityBoostUntil?: Date | null;
 
+  /** Labor warranty the technician gives by default when a service has none of its own (PO 10/10/2026). */
+  @Column({ name: 'default_labor_warranty_days', type: 'int', nullable: true })
+  defaultLaborWarrantyDays?: number | null;
+
   @Column({ name: 'is_available', type: 'boolean', default: true })
   isAvailable: boolean;
 
