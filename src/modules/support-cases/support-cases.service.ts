@@ -40,6 +40,7 @@ import {
   allowedCaseTypes,
   isCompletionWindowOpen,
   respondByFor,
+  REFUND_CASE_TYPES,
 } from './support-case-policy';
 import {
   SUPPORT_CASE_MAX_DESCRIPTION_LENGTH,
@@ -538,7 +539,8 @@ export class SupportCasesService {
           evidenceRefs: evidenceRefs ?? supportCase.evidenceRefs ?? null,
           resolvedAt: new Date(),
           holdCompletion: false,
-          liableParty: dto.liableParty ?? supportCase.liableParty ?? null,
+          // A refund into the wallet is FixHome's to bear unless the manager says otherwise (PO 09/10/2026).
+          liableParty: dto.liableParty ?? supportCase.liableParty ?? (resolutionCode === 'refund_to_wallet' ? 'platform' : null),
           amount: dto.amount ?? supportCase.amount ?? null,
         };
 
@@ -623,6 +625,9 @@ export class SupportCasesService {
     }
     if (finalStatus !== SupportCaseStatus.RESOLVED) {
       throw new BadRequestException('Hoàn tiền vào ví chỉ dùng khi chấp nhận khiếu nại');
+    }
+    if (!(REFUND_CASE_TYPES as readonly SupportCaseType[]).includes(supportCase.caseType)) {
+      throw new BadRequestException('Chỉ hoàn tiền vào ví khi khiếu nại về linh kiện hỏng hoặc bảo hành');
     }
     if (!Number.isSafeInteger(amount) || (amount as number) <= 0) {
       throw new BadRequestException('Nhập số tiền hoàn lớn hơn 0');

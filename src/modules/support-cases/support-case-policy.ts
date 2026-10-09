@@ -88,3 +88,10 @@ export const COMPLAINT_RESOLUTION_CODES = [
 ] as const;
 
 export const LIABLE_PARTIES = ['technician', 'customer', 'platform', 'shared'] as const;
+
+/**
+ * Money goes back into the customer's wallet only for a faulty part or a
+ * warranty failure (PO 09/10/2026). FixHome bears it; charging the technician
+ * afterwards is an admin wallet adjustment.
+ */
+export const REFUND_CASE_TYPES = [SupportCaseType.PARTS_DISPUTE, SupportCaseType.WARRANTY_DISPUTE] as const;
