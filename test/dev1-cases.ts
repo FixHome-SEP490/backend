@@ -378,6 +378,17 @@ export function registerDev1Cases(context: () => Context) {
       denied(await get(`/admin/technicians/${f.owner.user.id}`, admin));
     });
 
+    it('tells a technician whether they receive jobs now: schedule switches, manual pauses (PO 08/10/2026)', async () => {
+      const fresh = await context().provisionTechnician();
+      expect(unwrap((await get('/technicians/me/availability', fresh).expect(200)).body)).toMatchObject({ state: 'no_schedule', receiving: false });
+      const f = await fixture();
+      const scheduled = unwrap((await get('/technicians/me/availability', f.tech).expect(200)).body);
+      expect(['receiving', 'off_hours']).toContain(scheduled.state);
+      expect(scheduled.nextStartAt).toBeTruthy();
+      await patch('/technicians/me/profile', f.tech, { isAvailable: false }).expect(200);
+      expect(unwrap((await get('/technicians/me/availability', f.tech).expect(200)).body)).toMatchObject({ state: 'paused', receiving: false });
+    });
+
     it('opens setting out only one hour before the appointment', async () => {
       await setDepartEarlyMinutes(60);
       try {
