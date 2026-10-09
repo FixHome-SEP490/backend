@@ -643,7 +643,8 @@ export class BookingsService {
           tp.priorityBoostUntil && new Date(tp.priorityBoostUntil) > new Date(),
         ),
         listedLaborPrice: matchedSkill?.listedLaborPrice != null ? Number(matchedSkill.listedLaborPrice) : null,
-        typicalWarrantyDays: matchedSkill?.typicalWarrantyDays ?? 30,
+        // What the technician set for the service, else their default; null when they set none (was shown as 30).
+        typicalWarrantyDays: matchedSkill?.typicalWarrantyDays ?? tp.defaultLaborWarrantyDays ?? null,
         distanceKm: distanceByProfileId.get(tp.id) ?? null,
         bio: tp.bio || null,
         completedOrdersCount,

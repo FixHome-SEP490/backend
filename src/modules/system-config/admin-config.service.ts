@@ -222,17 +222,15 @@ const KEY_EFFECT: Record<
     evidence:
       'KEY MISMATCH: seed registers key \'additional_cost.approval_ttl_minutes\' but src/modules/quotations/quotations.service.ts reads \'additional_cost.ttl_minutes\' (with fallback 120). The seeded key is never consumed by any code path. To fix: rename seed key to \'additional_cost.ttl_minutes\' OR update quotations.service.ts to read the seeded key; coordinate with Dev1 before changing.',
   },
-  // TO_WIRE: no BusinessConfigService consumer found for warranty defaults
   'warranty.default_days': {
-    status: 'TO_WIRE',
+    status: 'ACTIVE',
     evidence:
-      'src/modules/quotations/ — warranty default days not read from BusinessConfigService; existing code uses hard-coded or entity-default warranty values. Wire at WarrantyCoverage creation to make ACTIVE.',
+      'src/modules/service-orders/labor-warranty.ts — laborWarrantyDefault() falls back to this when the technician set no labor warranty for the service nor a default; snapshotted onto service_orders.labor_warranty_days at assignment.',
   },
-  // TO_WIRE: no BusinessConfigService consumer found for warranty max
   'warranty.max_days': {
-    status: 'TO_WIRE',
+    status: 'ACTIVE',
     evidence:
-      'src/modules/quotations/ — warranty max days not read from BusinessConfigService; existing code does not validate against this key. Wire into warranty-term validation to make ACTIVE.',
+      'src/modules/service-orders/labor-warranty.ts — maxLaborWarrantyDays() caps the technician default, per-service warranty and quotation/additional-cost labor warrantyDays.',
   },
   // TO_WIRE: ai-diagnosis module exists but reads provider/timeout from .env/ConfigService,
   // not from BusinessConfigService. These DB config values have no runtime consumer yet.

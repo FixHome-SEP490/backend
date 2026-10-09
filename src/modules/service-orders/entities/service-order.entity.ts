@@ -71,6 +71,10 @@ export class ServiceOrder extends BaseEntity {
   @Column({ name: 'technician_last_lng', type: 'decimal', precision: 10, scale: 7, nullable: true })
   technicianLastLng?: number | null;
 
+  /** Labor warranty fixed when the technician was assigned; used for fixed-price jobs (PO 10/10/2026). */
+  @Column({ name: 'labor_warranty_days', type: 'int', nullable: true })
+  laborWarrantyDays?: number | null;
+
   @Column({ name: 'technician_location_updated_at', type: 'timestamptz', nullable: true })
   technicianLocationUpdatedAt?: Date | null;
 }

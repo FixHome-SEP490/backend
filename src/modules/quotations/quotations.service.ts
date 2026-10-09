@@ -1,3 +1,4 @@
+import { laborWarrantyDefault, maxLaborWarrantyDays } from '../service-orders/labor-warranty';
 import { closeOrderPartRequests } from '../part-requests/part-request-lifecycle';
 import { ModuleRef } from '@nestjs/core';
 import { ServiceOrdersService } from '../service-orders/service-orders.service';
@@ -31,6 +32,8 @@ import { Optional } from '@nestjs/common';
 export { CreateCostItemDto, CreateQuotationDto, CreateAdditionalCostDto } from './quotation.dto';
 type Actor = { id: string; role: string };
 
+interface LaborWarrantyRule { days: number; max: number }
+
 @Injectable()
 export class QuotationsService {
   constructor(
@@ -49,7 +52,14 @@ export class QuotationsService {
     @Optional() private readonly moduleRef?: ModuleRef,
   ) {}
 
-  private async validateItems(manager: EntityManager, items: CreateCostItemDto[]): Promise<CreateCostItemDto[]> {
+  /** Labor warranty for a new quotation or additional cost: the order's (or technician's) default, and the ceiling. */
+  private async laborWarranty(manager: EntityManager, order: ServiceOrder, technicianId: string): Promise<LaborWarrantyRule> {
+    const booking = await manager.findOneByOrFail(Booking, { id: order.bookingId });
+    const days = order.laborWarrantyDays ?? await laborWarrantyDefault(manager, technicianId, booking.serviceId);
+    return { days, max: await maxLaborWarrantyDays(manager) };
+  }
+
+  private async validateItems(manager: EntityManager, items: CreateCostItemDto[], labor: LaborWarrantyRule): Promise<CreateCostItemDto[]> {
     if (!items?.length) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'At least one cost item required');
     const validated: CreateCostItemDto[] = [];
     for (const input of items) {
@@ -61,6 +71,11 @@ export class QuotationsService {
         if (!Number.isInteger(item.unitPrice) || item.unitPrice < 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid labor unit price');
         if (item.partSource || item.partCatalogId || item.partWarrantyOption || item.warrantyFee || item.warrantyTermDays) {
           throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Part warranty fields are not allowed on labor');
+        }
+        // Labor warranty the technician declares for this job (PO 10/10/2026); their default when left out.
+        item.warrantyDays ??= labor.days;
+        if (item.warrantyDays > labor.max) {
+          throw new BusinessException(ErrorCodes.VALIDATION_FAILED, `Bảo hành công tối đa ${labor.max} ngày`);
         }
       } else {
         if (!Object.values(PartSource).includes(item.partSource!)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Part source required');
@@ -113,7 +128,7 @@ export class QuotationsService {
       if (booking.pricingModeSnapshot !== ServicePricingMode.INSPECTION_REQUIRED || order.status !== ServiceOrderStatus.EN_ROUTE) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Official quotation requires inspection service in EN_ROUTE');
       if (!await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, result: CheckInResult.VALID })) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Verified arrival required before quotation');
       if (await manager.findOneBy(Quotation, { serviceOrderId: orderId, status: QuotationStatus.APPROVED })) throw new BusinessException(ErrorCodes.ADDITIONAL_COST_IMMUTABLE, 'Approved base quotation is immutable; use additional costs');
-      const items = await this.validateItems(manager, dto.items);
+      const items = await this.validateItems(manager, dto.items, await this.laborWarranty(manager, order, actor.id));
       const laborTotal = items.filter(i => i.type === CostItemType.LABOR).reduce((v,i) => v+i.quantity*i.unitPrice,0);
       const partsTotal = items.filter(i => i.type === CostItemType.PARTS_EQUIPMENT).reduce((v,i) => v+i.quantity*i.unitPrice,0);
       const version = await manager.count(Quotation, { where: { serviceOrderId: orderId } }) + 1;
@@ -199,7 +214,7 @@ export class QuotationsService {
   private async saveAdditional(manager: EntityManager, order: ServiceOrder, dto: CreateAdditionalCostDto, actor: Actor, supersedesId?: string): Promise<AdditionalCostRequest> {
     if (order.status !== ServiceOrderStatus.UNDER_REPAIR || order.completionRequestedAt) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Additional cost requires ongoing repair before completion request');
     if (!dto.reason?.trim()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Reason required');
-    const items = await this.validateItems(manager, dto.items);
+    const items = await this.validateItems(manager, dto.items, await this.laborWarranty(manager, order, actor.id));
     const labor = items.filter(i=>i.type===CostItemType.LABOR).reduce((v,i)=>v+i.quantity*i.unitPrice,0);
     const parts = items.filter(i=>i.type===CostItemType.PARTS_EQUIPMENT).reduce((v,i)=>v+i.quantity*i.unitPrice,0);
     const ttl = await this.configService.getInt('additional_cost.ttl_minutes',120);

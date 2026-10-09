@@ -1265,7 +1265,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         quantity,
         unitPrice,
         lineTotal,
-        warrantyDaysSnapshot: 0,
+        // Fixed when the technician was assigned (PO 10/10/2026); orders from before then had none.
+        warrantyDaysSnapshot: order?.laborWarrantyDays ?? 0,
       });
     }
 
