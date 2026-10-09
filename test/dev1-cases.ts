@@ -303,6 +303,19 @@ export function registerDev1Cases(context: () => Context) {
       expect(audits).toHaveLength(2);
       const notes = await db.query("SELECT 1 FROM notifications WHERE user_id = $1 AND type = 'WALLET_ADJUSTED'", [f.owner.user.id]);
       expect(notes.length).toBeGreaterThanOrEqual(1);
+      // The admin lists the payments with who paid and the order behind them (PO 09/10/2026).
+      const [{ code: orderCode }] = await db.query('SELECT code FROM service_orders WHERE id = $1', [order.id]);
+      const today = new Date(Date.now() + 7 * 3_600_000).toISOString().slice(0, 10);
+      const payments = await get(`/admin/payments?search=${encodeURIComponent(orderCode)}&status=verified&from=${today}&to=${today}`, admin).expect(200);
+      expect(unwrap(payments.body)).toEqual([expect.objectContaining({
+        purpose: 'invoice', provider: 'wallet', status: 'verified', amount: total, orderCode, payerId: f.owner.user.id, payerRole: 'customer',
+      })]);
+      expect(payments.body.meta.summary).toMatchObject({ verifiedAmount: total, verified: 1 });
+      expect(unwrap((await get(`/admin/payments?search=${encodeURIComponent(orderCode)}&status=failed`, admin).expect(200)).body)).toEqual([]);
+      expect(unwrap((await get(`/admin/payments?search=${encodeURIComponent(orderCode)}&provider=vnpay`, admin).expect(200)).body)).toEqual([]);
+      const yesterday = new Date(Date.now() + 7 * 3_600_000 - 86_400_000).toISOString().slice(0, 10);
+      expect(unwrap((await get(`/admin/payments?search=${encodeURIComponent(orderCode)}&to=${yesterday}`, admin).expect(200)).body)).toEqual([]);
+      for (const user of [manager, f.owner, f.tech]) denied(await get('/admin/payments', user));
     });
 
     it('enforces ownership, valid GPS, file evidence, completion and cash gates end-to-end', async () => {
