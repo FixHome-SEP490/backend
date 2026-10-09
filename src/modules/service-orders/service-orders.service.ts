@@ -1,3 +1,4 @@
+import { NO_DEPARTURE_CANCEL_REASON } from './no-departure';
 import { closeOrderPartRequests, assertPartsResolved, usedPartQuantities, holderPartRequests, releaseOutgoingTechnicianPartRequests } from '../part-requests/part-request-lifecycle';
 import { Payment } from '../finance/entities/payment.entity';
 import { PartRequest } from '../part-requests/entities/part-request.entity';
@@ -233,7 +234,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       const assignment = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: id, isActive: true });
       if (!booking || !order || order.status !== ServiceOrderStatus.ACCEPTED || !order.departureWarnedAt || !assignment) return null;
       if (new Date(order.departureWarnedAt).getTime() + cancelMinutes * 60000 > Date.now()) return null;
-      const reason = 'Tự huỷ: kỹ thuật viên không xuất phát sau khi đã được nhắc';
+      const reason = NO_DEPARTURE_CANCEL_REASON;
       await this.commitTransition(manager, order, ServiceOrderStatus.CANCELLED, { id: null, role: 'system' }, reason);
       await closeBookingForCancelledOrder(manager, booking.id);
       await manager.update(TechnicianAssignment, { serviceOrderId: id, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: reason });
