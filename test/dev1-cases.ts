@@ -228,8 +228,8 @@ export function registerDev1Cases(context: () => Context) {
       await post(path + '/check-in', f.tech, { lat: 10.77, lng: 106.69, accuracyMeters: 5 }).expect(200);
       await evidence(order.id, f.tech, 'before').expect(201);
       await evidence(order.id, f.tech, 'after').expect(201);
+      // No customer acceptance (PO 09/10/2026): the technician's completion with the after photo is enough.
       await post(path + '/request-completion', f.tech).expect(200);
-      await post(path + '/confirm-completion', f.owner).expect(200);
       const invoice = unwrap((await get(path + '/invoice', f.owner).expect(200)).body);
       const total = Number(invoice.grandTotal);
       expect(total).toBe(400000);
@@ -347,9 +347,10 @@ export function registerDev1Cases(context: () => Context) {
       await evidence(order.id, f.tech, 'after').expect(201);
       await post(path + '/request-completion', f.tech).expect(200);
       denied(await evidence(order.id, f.tech, 'after'));
+      // The customer no longer accepts the work (PO 09/10/2026); only the payment is left.
       denied(await post(path + '/confirm-completion', f.outsider));
-      await post(path + '/confirm-completion', f.owner).expect(200);
       expect(unwrap((await get(path, f.owner).expect(200)).body).status).toBe('under_repair');
+      expect(await context().db.getRepository('CustomerServiceConfirmation').count({ where: { serviceOrderId: order.id } })).toBe(0);
       denied(await post(path + '/complete', f.tech));
       await post(path + '/cash-settlement/declare', f.tech, { declaredAmount: 400000 }).expect(200);
       const paid = await Promise.all([1, 2].map(() => post(path + '/cash-settlement/confirm', f.owner, { agreed: true, confirmedAmount: 400000 })));
@@ -526,9 +527,9 @@ export function registerDev1Cases(context: () => Context) {
       expect(cashResponse.status, JSON.stringify(cashResponse.body)).toBe(selected ? 200 : 409);
       const cash = unwrap((await get(path + '/cash-settlement', f.owner).expect(200)).body);
       expect(cash.status).toBe(selected ? 'confirmed' : 'disputed');
-      expect(unwrap((await get(path, f.owner).expect(200)).body).status).toBe('under_repair');
+      // Confirmed cash after the technician's completion finishes the order, with no customer acceptance (PO 09/10/2026).
+      expect(unwrap((await get(path, f.owner).expect(200)).body).status).toBe(selected ? 'completed' : 'under_repair');
       if (selected) {
-        await post(path + '/confirm-completion', f.owner).expect(200);
         const warranties = unwrap((await get(path + '/warranties', f.owner).expect(200)).body);
         expect(warranties).toHaveLength(2);
       } else {

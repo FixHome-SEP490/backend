@@ -248,7 +248,7 @@ export class ServiceOrdersController {
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Technician requests completion (requires AFTER evidence)',
-    description: 'Requires UNDER_REPAIR and required evidence/approvals. Generates invoice and records the completion request, but does NOT immediately change status to COMPLETED.',
+    description: 'Requires UNDER_REPAIR and required evidence/approvals. Generates invoice and records the completion; this is the acceptance (no customer step since PO 09/10/2026). It does NOT immediately change status to COMPLETED: the order completes once the invoice is verified paid.',
   })
   async requestCompletion(
     @Param('id', ParseUUIDPipe) id: string,
@@ -269,8 +269,8 @@ export class ServiceOrdersController {
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Customer confirms work; verified payment still required',
-    description: 'Only the booking customer can confirm after the technician requested completion. COMPLETED requires both confirmation and a verified paid invoice/order; this endpoint does not itself charge Wallet or mark payment PAID.',
+    summary: 'Optional: customer leaves feedback on finished work (no longer required)',
+    description: 'Kept for older clients. Since PO 09/10/2026 the customer does not accept the work: COMPLETED needs only the technician completion and a verified paid invoice/order. Only the booking customer can call it, after the technician completed; it records feedback and completes the order if it is already verified paid. It never charges Wallet or marks payment PAID.'
   })
   async confirmCompletion(
     @Param('id', ParseUUIDPipe) id: string,
