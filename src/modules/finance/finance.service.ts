@@ -1,3 +1,5 @@
+import { CustomerWalletService } from '../customer-wallet/customer-wallet.service';
+import { User } from '../users/entities/user.entity';
 import { forwardRef, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
@@ -91,6 +93,7 @@ export class FinanceService {
     private readonly httpService: HttpService,
     @Optional() @Inject(forwardRef(() => SettlementService)) private readonly settlementService?: SettlementService,
     @Optional() @Inject(forwardRef(() => WalletService)) private readonly walletService?: WalletService,
+    @Optional() private readonly customerWalletService?: CustomerWalletService,
   ) {}
 
   async getInvoice(
@@ -316,6 +319,7 @@ export class FinanceService {
     ipAddr: string,
     idempotencyKey?: string,
     platform: 'web' | 'mobile' = 'web',
+    owner: 'technician' | 'customer' = 'technician',
   ): Promise<{ paymentId: string; paymentUrl: string }> {
     const wholeAmount = this.requireWholeVnd(amount, 'Top up amount');
     if (wholeAmount < 10000 || wholeAmount > 50000000) {
@@ -374,10 +378,11 @@ export class FinanceService {
       return paymentRepository.save(created);
     });
 
+    const who = owner === 'customer' ? 'Nap vi khach FixHome' : 'Nap tien vi FixHome';
     const orderInfo =
       platform === 'mobile'
-        ? `Nap tien vi FixHome mobile ${payment.idempotencyKey.substring(0, 16)}`
-        : `Nap tien vi FixHome ${payment.idempotencyKey.substring(0, 16)}`;
+        ? `${who} mobile ${payment.idempotencyKey.substring(0, 16)}`
+        : `${who} ${payment.idempotencyKey.substring(0, 16)}`;
 
     return {
       paymentId: payment.id,
@@ -460,6 +465,7 @@ export class FinanceService {
     purpose?: PaymentPurpose;
     amount?: number;
     orderInfo?: string;
+    payerRole?: string;
   }> {
     const hashSecret = this.config.get<string>('VNPAY_HASH_SECRET');
     if (!hashSecret || !verifySignature(query, hashSecret)) {
@@ -479,6 +485,9 @@ export class FinanceService {
     const invoice = payment.invoiceId
       ? await this.invoiceRepository.findOneBy({ id: payment.invoiceId })
       : null;
+    const payer = payment.requestedByUserId
+      ? await this.dataSource.getRepository(User).findOne({ where: { id: payment.requestedByUserId }, select: { id: true, role: true } })
+      : null;
     return {
       ok: query.vnp_ResponseCode === '00',
       invoiceId: payment.invoiceId ?? null,
@@ -486,6 +495,7 @@ export class FinanceService {
       purpose: payment.purpose,
       amount: Number(payment.amount),
       orderInfo: query.vnp_OrderInfo,
+      payerRole: payer?.role,
     };
   }
 
@@ -1127,7 +1137,6 @@ export class FinanceService {
       const now = new Date();
       if (current.purpose === PaymentPurpose.INVOICE && current.invoiceId) {
         const invoiceRepository = manager.getRepository(Invoice);
-        const orderRepository = manager.getRepository(ServiceOrder);
         const invoice = await invoiceRepository.findOne({
           where: { id: current.invoiceId },
           lock: { mode: 'pessimistic_write' },
@@ -1143,45 +1152,7 @@ export class FinanceService {
           current.failureCode = ErrorCodes.PAYMENT_AMOUNT_MISMATCH;
           return paymentRepository.save(current);
         }
-        invoice.paymentStatus = PaymentStatus.PAID;
-        invoice.paidAt = now;
-        await invoiceRepository.save(invoice);
-        await orderRepository.update(
-          { id: invoice.serviceOrderId },
-          { paymentStatus: PaymentStatus.PAID },
-        );
-        const order = await manager.findOne(ServiceOrder, {
-          where: { id: invoice.serviceOrderId },
-        });
-        if (order) {
-          await this.ensureFinancialDues(manager, invoice, order, null, now);
-          const confirmation = await manager.findOne(CustomerServiceConfirmation, {
-            where: { serviceOrderId: invoice.serviceOrderId },
-          });
-          if (
-            confirmation &&
-            order.status === ServiceOrderStatus.UNDER_REPAIR &&
-            !(await isCompletionHeld(manager, order.id))
-          ) {
-            if (ServiceOrderStateMachine.canTransition(order.status, ServiceOrderStatus.COMPLETED)) {
-              order.status = ServiceOrderStatus.COMPLETED;
-              order.completedAt = now;
-              await orderRepository.save(order);
-              await manager.insert(OrderStatusHistory, {
-                serviceOrderId: order.id,
-                fromStatus: ServiceOrderStatus.UNDER_REPAIR,
-                toStatus: ServiceOrderStatus.COMPLETED,
-                actorUserId: current.requestedByUserId,
-                actorRole: Role.CUSTOMER,
-                reason: 'Work, customer confirmation and payment satisfied',
-              });
-              await applyOrderCompletionEffects(manager, order, invoice.id, now);
-            }
-          }
-          if (this.settlementService && order.status === ServiceOrderStatus.COMPLETED) {
-            await this.settlementService.trySettleOrder(order.id, manager);
-          }
-        }
+        await this.markInvoicePaidOnline(manager, invoice, current.requestedByUserId, now);
       } else if (current.purpose === PaymentPurpose.COMMISSION_DUE && current.commissionDueId) {
         const dueRepository = manager.getRepository(CommissionDue);
         const due = await dueRepository.findOne({
@@ -1198,13 +1169,28 @@ export class FinanceService {
         due.paidAt = now;
         due.paymentReference = current.id;
         await dueRepository.save(due);
-      } else if (current.purpose === PaymentPurpose.WALLET_TOP_UP && this.walletService) {
-        await this.walletService.topUp(
-          current.requestedByUserId,
-          Number(current.amount),
-          current.idempotencyKey,
-          manager,
-        );
+      } else if (current.purpose === PaymentPurpose.WALLET_TOP_UP) {
+        // Whose wallet: a customer's ledger or a technician's (PO 08/10/2026).
+        const payer = await manager.findOne(User, { where: { id: current.requestedByUserId }, select: { id: true, role: true } });
+        if (payer?.role === Role.CUSTOMER) {
+          if (!this.customerWalletService) throw new BusinessException(ErrorCodes.PAYMENT_PROVIDER_UNAVAILABLE, 'Customer wallet is unavailable');
+          await this.customerWalletService.apply(manager, {
+            userId: current.requestedByUserId,
+            type: 'top_up',
+            amount: Number(current.amount),
+            idempotencyKey: `TOP_UP:${current.idempotencyKey}`,
+            referenceType: 'PAYMENT',
+            referenceId: current.id,
+            description: 'Nạp ví qua VNPay',
+          });
+        } else if (this.walletService) {
+          await this.walletService.topUp(
+            current.requestedByUserId,
+            Number(current.amount),
+            current.idempotencyKey,
+            manager,
+          );
+        }
       }
 
       current.status = PaymentAttemptStatus.VERIFIED;
@@ -1215,16 +1201,137 @@ export class FinanceService {
       await this.auditLogService.logWithManager(manager, {
         actorUserId: current.requestedByUserId,
         actorRole:
-          current.purpose === PaymentPurpose.COMMISSION_DUE ||
-          current.purpose === PaymentPurpose.WALLET_TOP_UP
+          current.purpose === PaymentPurpose.COMMISSION_DUE
             ? Role.TECHNICIAN
-            : Role.CUSTOMER,
+            : current.purpose === PaymentPurpose.WALLET_TOP_UP
+              ? ((await manager.findOne(User, { where: { id: current.requestedByUserId }, select: { id: true, role: true } }))?.role ?? Role.TECHNICIAN)
+              : Role.CUSTOMER,
         action: 'PAYMENT_VERIFIED',
         resourceType: 'payment',
         resourceId: current.id,
         after: { purpose: current.purpose, amount: Number(current.amount) },
       });
       return saved;
+    });
+  }
+
+  /**
+   * What follows an invoice being paid to FixHome (VNPay or the customer
+   * wallet): invoice and order paid, the commission collected at once, the
+   * order completed when the work is confirmed, and the technician's share
+   * settled into their wallet. The caller holds the invoice row lock.
+   */
+  private async markInvoicePaidOnline(manager: EntityManager, invoice: Invoice, payerUserId: string, now: Date): Promise<void> {
+    const invoiceRepository = manager.getRepository(Invoice);
+    const orderRepository = manager.getRepository(ServiceOrder);
+    invoice.paymentStatus = PaymentStatus.PAID;
+    invoice.paidAt = now;
+    await invoiceRepository.save(invoice);
+    await orderRepository.update(
+      { id: invoice.serviceOrderId },
+      { paymentStatus: PaymentStatus.PAID },
+    );
+    const order = await manager.findOne(ServiceOrder, {
+      where: { id: invoice.serviceOrderId },
+    });
+    if (!order) return;
+    await this.ensureFinancialDues(manager, invoice, order, null, now);
+    const confirmation = await manager.findOne(CustomerServiceConfirmation, {
+      where: { serviceOrderId: invoice.serviceOrderId },
+    });
+    if (
+      confirmation &&
+      order.status === ServiceOrderStatus.UNDER_REPAIR &&
+      !(await isCompletionHeld(manager, order.id))
+    ) {
+      if (ServiceOrderStateMachine.canTransition(order.status, ServiceOrderStatus.COMPLETED)) {
+        order.status = ServiceOrderStatus.COMPLETED;
+        order.completedAt = now;
+        await orderRepository.save(order);
+        await manager.insert(OrderStatusHistory, {
+          serviceOrderId: order.id,
+          fromStatus: ServiceOrderStatus.UNDER_REPAIR,
+          toStatus: ServiceOrderStatus.COMPLETED,
+          actorUserId: payerUserId,
+          actorRole: Role.CUSTOMER,
+          reason: 'Work, customer confirmation and payment satisfied',
+        });
+        await applyOrderCompletionEffects(manager, order, invoice.id, now);
+      }
+    }
+    if (this.settlementService && order.status === ServiceOrderStatus.COMPLETED) {
+      await this.settlementService.trySettleOrder(order.id, manager);
+    }
+  }
+
+  /**
+   * The customer pays the whole invoice from their wallet (PO 08/10/2026).
+   * One transaction: the invoice lock, the wallet debit and the payment record
+   * succeed together or not at all; the rest is the same as a VNPay payment.
+   */
+  async payInvoiceWithWallet(invoiceId: string, actor: FinanceActor): Promise<{ invoiceId: string; paid: true; amount: number; balance: number }> {
+    if (actor.role !== Role.CUSTOMER) {
+      throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Only the invoice customer can pay it');
+    }
+    if (!this.customerWalletService) {
+      throw new BusinessException(ErrorCodes.PAYMENT_PROVIDER_UNAVAILABLE, 'Ví chưa sẵn sàng, vui lòng thử lại sau');
+    }
+    const wallet = this.customerWalletService;
+    return this.dataSource.transaction(async (manager) => {
+      const invoice = await manager.findOne(Invoice, { where: { id: invoiceId }, lock: { mode: 'pessimistic_write' } });
+      if (!invoice) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Invoice not found');
+      const order = await manager.findOne(ServiceOrder, { where: { id: invoice.serviceOrderId } });
+      if (!order) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Service order not found');
+      const booking = await manager.findOne(Booking, { where: { id: order.bookingId } });
+      if (!booking || booking.customerId !== actor.id) {
+        throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Invoice not found');
+      }
+      if (invoice.paymentStatus === PaymentStatus.PAID) {
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Hoá đơn đã được thanh toán');
+      }
+      if (order.status === ServiceOrderStatus.CANCELLED) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Đơn đã huỷ, không thanh toán hoá đơn này được');
+      }
+      const amount = this.requireWholeVnd(invoice.grandTotal, 'Invoice amount');
+      if (amount <= 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hoá đơn không có số tiền cần thanh toán');
+      const now = new Date();
+      const tx = await wallet.apply(manager, {
+        userId: actor.id,
+        type: 'invoice_payment',
+        amount,
+        idempotencyKey: `INVOICE:${invoice.id}`,
+        referenceType: 'INVOICE',
+        referenceId: invoice.id,
+        description: `Thanh toán đơn #${order.code}`,
+      });
+      // A VNPay attempt still open for this invoice can no longer be applied.
+      await manager.update(Payment, { invoiceId: invoice.id, status: PaymentAttemptStatus.PENDING }, { status: PaymentAttemptStatus.CANCELLED, failureCode: 'PAID_FROM_WALLET' });
+      const payment = await manager.save(Payment, manager.create(Payment, {
+        invoiceId: invoice.id,
+        commissionDueId: null,
+        purpose: PaymentPurpose.INVOICE,
+        amount,
+        currency: 'VND',
+        mode: PaymentMode.LIVE,
+        provider: 'wallet',
+        status: PaymentAttemptStatus.VERIFIED,
+        idempotencyKey: `WALLET_INVOICE:${invoice.id}`,
+        providerReference: `WALLET_TX:${tx.id}`,
+        requestedByUserId: actor.id,
+        failureCode: null,
+        requestedAt: now,
+        verifiedAt: now,
+      }));
+      await this.markInvoicePaidOnline(manager, invoice, actor.id, now);
+      await this.auditLogService.logWithManager(manager, {
+        actorUserId: actor.id,
+        actorRole: Role.CUSTOMER,
+        action: 'PAYMENT_VERIFIED',
+        resourceType: 'payment',
+        resourceId: payment.id,
+        after: { purpose: PaymentPurpose.INVOICE, provider: 'wallet', amount },
+      });
+      return { invoiceId: invoice.id, paid: true as const, amount, balance: tx.balanceAfter };
     });
   }
 

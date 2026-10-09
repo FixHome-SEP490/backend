@@ -221,6 +221,52 @@ export function registerDev1Cases(context: () => Context) {
       expect(taken).toMatchObject({ available: false });
     });
 
+    it('pays an invoice from the customer wallet, settles like an online payment and refunds into the wallet (PO 08/10/2026)', async () => {
+      const f = await fixture(), db = context().db, { order } = await accept(f), path = `/service-orders/${order.id}`;
+      await post(path + '/en-route', f.tech).expect(200);
+      await post(path + '/check-in', f.tech, { lat: 10.77, lng: 106.69, accuracyMeters: 5 }).expect(200);
+      await evidence(order.id, f.tech, 'before').expect(201);
+      await evidence(order.id, f.tech, 'after').expect(201);
+      await post(path + '/request-completion', f.tech).expect(200);
+      await post(path + '/confirm-completion', f.owner).expect(200);
+      const invoice = unwrap((await get(path + '/invoice', f.owner).expect(200)).body);
+      const total = Number(invoice.grandTotal);
+      expect(total).toBe(400000);
+      // Empty wallet: refused, nothing moves.
+      denied(await post(`/invoices/${invoice.id}/pay-with-wallet`, f.owner));
+      expect(unwrap((await get('/customer/wallet', f.owner).expect(200)).body)).toMatchObject({ balance: 0 });
+      // Money already in the wallet (a VNPay top-up is not reachable from CI).
+      await db.query('INSERT INTO customer_wallets (user_id, balance) VALUES ($1, $2)', [f.owner.user.id, 1000000]);
+      denied(await post(`/invoices/${invoice.id}/pay-with-wallet`, f.outsider));
+      denied(await post(`/invoices/${invoice.id}/pay-with-wallet`, f.tech));
+      const paid = unwrap((await post(`/invoices/${invoice.id}/pay-with-wallet`, f.owner).expect(200)).body);
+      expect(paid).toMatchObject({ paid: true, amount: total, balance: 600000 });
+      denied(await post(`/invoices/${invoice.id}/pay-with-wallet`, f.owner));
+      expect(unwrap((await get(path, f.owner).expect(200)).body).status).toBe('completed');
+      const [due] = await db.query('SELECT status FROM commission_dues WHERE service_order_id = $1', [order.id]);
+      expect(due.status).toBe('paid');
+      expect(await db.query('SELECT 1 FROM platform_dues WHERE service_order_id = $1', [order.id])).toHaveLength(0);
+      const earning = await db.query("SELECT t.type FROM wallet_transactions t JOIN wallets w ON w.id = t.wallet_id WHERE w.technician_id = $1 AND t.reference_id = $2", [f.tech.user.id, order.id]);
+      expect(earning.map((t: any) => t.type)).toContain('ONLINE_EARNING');
+      const [payment] = await db.query("SELECT provider, status FROM payments WHERE invoice_id = $1 AND status = 'verified'", [invoice.id]);
+      expect(payment).toMatchObject({ provider: 'wallet', status: 'verified' });
+      // A complaint resolved as a refund puts money back into the wallet, never more than was paid.
+      const opened = await post('/support/cases', f.owner, { caseType: 'quality', reason: 'Máy vẫn kêu sau khi sửa', serviceOrderId: order.id });
+      expect(opened.status, JSON.stringify(opened.body)).toBe(201);
+      const caseId = unwrap(opened.body).id;
+      const manager = await context().register();
+      await db.query('UPDATE users SET role = $1 WHERE id = $2', ['service_manager', manager.user.id]);
+      denied(await post(`/support/cases/${caseId}/resolve`, manager, { finalStatus: 'resolved', resolutionCode: 'refund_to_wallet', reason: 'Hoàn một phần vì sửa chưa đạt', amount: total + 1 }));
+      denied(await post(`/support/cases/${caseId}/resolve`, manager, { finalStatus: 'resolved', resolutionCode: 'refund_to_wallet', reason: 'Hoàn một phần vì sửa chưa đạt' }));
+      await post(`/support/cases/${caseId}/resolve`, manager, { finalStatus: 'resolved', resolutionCode: 'refund_to_wallet', reason: 'Hoàn một phần vì sửa chưa đạt', amount: 150000 }).expect(200);
+      const wallet = unwrap((await get('/customer/wallet', f.owner).expect(200)).body);
+      expect(wallet.balance).toBe(750000);
+      expect(wallet.transactions.map((t: any) => t.type)).toEqual(['refund', 'invoice_payment']);
+      const second = unwrap((await post('/support/cases', f.owner, { caseType: 'quality', reason: 'Vẫn chưa ổn', serviceOrderId: order.id }).expect(201)).body).id;
+      denied(await post(`/support/cases/${second}/resolve`, manager, { finalStatus: 'resolved', resolutionCode: 'refund_to_wallet', reason: 'Hoàn thêm phần còn lại của đơn', amount: total - 150000 + 1 }));
+      denied(await get('/customer/wallet', f.tech));
+    });
+
     it('enforces ownership, valid GPS, file evidence, completion and cash gates end-to-end', async () => {
       const f = await fixture(), { order } = await accept(f), path = `/service-orders/${order.id}`;
       await get('/technicians/me/profile', f.owner).expect(403);

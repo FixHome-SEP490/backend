@@ -1,3 +1,4 @@
+import { CustomerWalletService } from '../customer-wallet/customer-wallet.service';
 import {
   BadRequestException,
   ConflictException,
@@ -104,6 +105,7 @@ export class SupportCasesService {
     private readonly auditLogService: AuditLogService,
     private readonly moduleRef: ModuleRef,
     @Optional() private readonly notificationsService?: NotificationsService,
+    @Optional() private readonly customerWalletService?: CustomerWalletService,
   ) {}
 
   /**
@@ -496,6 +498,7 @@ export class SupportCasesService {
         ? undefined
         : this.normalizeEvidenceRefs(dto.evidenceRefs);
 
+    let refunded: { customerId: string; amount: number; orderCode: string } | null = null;
     const resolvedCase = await this.supportCaseRepository.manager.transaction(
       async (manager: EntityManager) => {
         const repository = manager.getRepository(SupportCase);
@@ -558,6 +561,9 @@ export class SupportCasesService {
           actor,
           reason,
         );
+        if (resolutionCode === 'refund_to_wallet') {
+          refunded = await this.refundToWallet(manager, supportCase, finalStatus, dto.amount);
+        }
 
         await this.auditLogService.logWithManagerStrict(manager, {
           actorUserId: actor.id,
@@ -587,7 +593,69 @@ export class SupportCasesService {
       'Quản lý dịch vụ đã xử lý khiếu nại liên quan đến đơn của bạn. Vui lòng xem kết quả.',
       'SUPPORT_CASE_RESOLVED',
     );
+    const refund = refunded as { customerId: string; amount: number; orderCode: string } | null;
+    if (refund && this.notificationsService) {
+      await this.notificationsService.createNotification({
+        userId: refund.customerId,
+        title: 'Đã hoàn tiền vào ví',
+        message: `${refund.amount.toLocaleString('vi-VN')} ₫ của đơn #${refund.orderCode} đã được hoàn vào ví FixHome của bạn, dùng để thanh toán lần sau.`,
+        type: 'WALLET_REFUND',
+        referenceId: resolvedCase.id,
+        referenceType: 'SUPPORT_CASE',
+      }).catch(() => undefined);
+    }
     return this.toDetailDto(resolvedCase);
+  }
+
+  /**
+   * Refund into the customer's wallet (PO 08/10/2026): only on a RESOLVED
+   * complaint about an order the customer paid, never more in total than the
+   * invoice. The invoice row lock serialises refunds of the same order.
+   */
+  private async refundToWallet(
+    manager: EntityManager,
+    supportCase: SupportCase,
+    finalStatus: SupportCaseStatus,
+    amount: number | undefined,
+  ): Promise<{ customerId: string; amount: number; orderCode: string }> {
+    if (!this.customerWalletService) {
+      throw new ConflictException('Ví khách chưa sẵn sàng, chưa hoàn tiền được');
+    }
+    if (finalStatus !== SupportCaseStatus.RESOLVED) {
+      throw new BadRequestException('Hoàn tiền vào ví chỉ dùng khi chấp nhận khiếu nại');
+    }
+    if (!Number.isSafeInteger(amount) || (amount as number) <= 0) {
+      throw new BadRequestException('Nhập số tiền hoàn lớn hơn 0');
+    }
+    if (!supportCase.customerId || !supportCase.serviceOrderId) {
+      throw new BadRequestException('Khiếu nại không gắn với đơn của khách nên không hoàn tiền được');
+    }
+    const invoice = await manager.findOne(Invoice, {
+      where: { serviceOrderId: supportCase.serviceOrderId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!invoice || invoice.paymentStatus !== PaymentStatus.PAID) {
+      throw new BadRequestException('Đơn chưa thanh toán nên không có tiền để hoàn');
+    }
+    const paid = Number(invoice.grandTotal);
+    const already = await this.customerWalletService.refundedForOrder(manager, supportCase.serviceOrderId);
+    if (already + (amount as number) > paid) {
+      throw new BadRequestException(
+        `Tổng tiền hoàn vượt số khách đã trả (${paid.toLocaleString('vi-VN')} ₫, đã hoàn ${already.toLocaleString('vi-VN')} ₫)`,
+      );
+    }
+    const order = await manager.findOne(ServiceOrder, { where: { id: supportCase.serviceOrderId } });
+    const orderCode = order?.code ?? '';
+    await this.customerWalletService.apply(manager, {
+      userId: supportCase.customerId,
+      type: 'refund',
+      amount: amount as number,
+      idempotencyKey: `REFUND:CASE_${supportCase.id}`,
+      referenceType: 'SERVICE_ORDER',
+      referenceId: supportCase.serviceOrderId,
+      description: `Hoàn tiền khiếu nại đơn #${orderCode}`,
+    });
+    return { customerId: supportCase.customerId, amount: amount as number, orderCode };
   }
 
   /** Manager takes the case: OPEN becomes IN_REVIEW and the manager is recorded. */
