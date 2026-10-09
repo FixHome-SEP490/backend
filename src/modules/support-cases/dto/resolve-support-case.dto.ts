@@ -83,7 +83,7 @@ export class ResolveSupportCaseDto {
   @IsIn(LIABLE_PARTIES)
   liableParty?: (typeof LIABLE_PARTIES)[number];
 
-  @ApiPropertyOptional({ description: 'Whole VND recorded with the decision; informational only' })
+  @ApiPropertyOptional({ description: 'Whole VND recorded with the decision; with resolutionCode refund_to_wallet it is credited to the customer wallet' })
   @IsOptional()
   @IsInt()
   @Min(0)

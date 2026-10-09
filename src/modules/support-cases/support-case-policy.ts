@@ -80,6 +80,8 @@ export const COMPLAINT_RESOLUTION_CODES = [
   'order_cancelled_no_fee',
   'price_adjusted',
   'refund_recorded',
+  // Money back into the customer's wallet (PO 08/10/2026); needs an amount.
+  'refund_to_wallet',
   'escalate_admin',
   'warranty_upheld',
   'warranty_overturned',

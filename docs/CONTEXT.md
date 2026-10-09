@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-09 17:13 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/reschedule-notify
+> Cập nhật lần cuối: 2026-10-09 18:12 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/customer-wallet
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -198,6 +198,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - Không có xác thực giữa `backend` và `ai-service`; PO xác định đây không phải phạm vi cần làm.
 - Không có dữ liệu hay luồng giả lập (PO 07/10/2026): không mã QR thử khi nhận linh kiện; nạp ví chỉ qua VNPay khi `payment.mode` là `LIVE` (mặc định `LIVE`); rút tiền chỉ qua payOS, chưa cấu hình thì từ chối trước khi trừ ví; chưa cấu hình SMTP thì báo lỗi chứ không giả vờ đã gửi email; kỹ thuật viên chưa có đánh giá thì API trả `rating: null`.
 - Bỏ xác nhận vi phạm thủ công (PO 09/10/2026): huỷ đơn tự trừ điểm uy tín, `confirmViolation` trong `POST cancellations/:id/review` bị từ chối (422). `waiveStrike` chỉ còn cho vi phạm ghi từ trước. Danh sách `GET /cancellations` có `reputationDelta` (số điểm lần huỷ đó đã trừ, null nếu không trừ). Ngoại lệ không trừ duy nhất phía thợ: đã check-in và báo "Cần thay đổi thợ", đơn chuyển SM, SM huỷ thì không ai bị trừ.
+- Ví khách (PO 08/10/2026, module `customer-wallet`, migration 031, bảng `customer_wallets` + `customer_wallet_transactions` tách khỏi ví thợ, giao dịch chỉ thêm, khoá chống trùng theo `idempotency_key`): `GET /customer/wallet` (số dư + lịch sử), `POST /customer/wallet/top-up {amount}` tạo link VNPay (dùng chung purpose `wallet_top_up`, phân biệt theo vai trò người nạp; IPN cộng vào ví khách; trang trả về `/app/wallet`), `POST /invoices/:id/pay-with-wallet` trả trọn hoá đơn từ ví trong một giao dịch rồi đi chung đường với VNPay (`markInvoicePaidOnline`: hoa hồng thu ngay, không PlatformDue, thợ được `ONLINE_EARNING`), Payment `provider='wallet'`. Hoàn tiền: giải quyết khiếu nại với `resolutionCode: refund_to_wallet` + `amount` (chỉ khi RESOLVED, đơn đã thanh toán, tổng hoàn không vượt hoá đơn, khoá dòng hoá đơn), khách nhận thông báo `WALLET_REFUND`. Không có rút tiền. Ai chịu khoản hoàn (thợ hay FixHome) chưa có luật: chỉ ghi `liableParty`, không trừ ví thợ.
 - Khách đổi lịch đơn thợ đã nhận (`PATCH /bookings/:id/schedule` với `mode: scheduled, date, slot`, đơn còn ACCEPTED/EN_ROUTE): chỉ được buổi thợ đó còn trống, lưu xong thợ nhận thông báo `BOOKING_RESCHEDULED` "Đơn #... chuyển sang Buổi ..., dd/mm/yyyy".
 - Xem trước lời mời của thợ (`GET /invitations/my`, `GET /bookings/:id` khi là người được mời) có thêm `bookingMode` và `slot` để thợ biết buổi trước khi nhận; ghi chú của khách (`customerNote`) chỉ hiện sau khi nhận đơn vì có thể chứa thông tin riêng.
 - Điểm uy tín (PO 08/10/2026, module `reputation`, migration 030): khách và thợ bắt đầu 100 điểm (`users.reputation_points`). Mỗi lần khách huỷ đơn đã có thợ nhận, thợ rút khỏi đơn trước khi đến, hoặc đơn bị tự huỷ vì thợ không xuất phát, bị trừ `reputation.violation_points` (10), ghi vào `reputation_events` cùng lần huỷ. Quản lý huỷ thì không ai bị trừ. Thợ đã báo "Cần thay đổi thợ" (case `technician_replacement`) trên đơn đó thì không bị trừ. Điểm sau khi trừ quyết định mức khoá: dưới 70 khoá 72 giờ, dưới 40 khoá 7 ngày, từ 20 trở xuống khoá 30 ngày, 0 khoá tài khoản (`status = locked`); khách bị khoá đặt lịch (`booking_suspended_until`), thợ bị khoá nhận việc (`work_suspended_until`), lần sau không bao giờ rút ngắn lần khoá đang chạy. Cứ `reputation.reset_months` (2) tháng điểm về lại 100 (job nền), tài khoản đã khoá giữ nguyên. SM/admin: `GET /reputation?role&search&page&pageSize` (điểm thấp trước), `GET /reputation/:userId/events`, `POST /reputation/:userId/adjust {delta, reason}` (lý do bắt buộc, chỉ khách và thợ, nâng lên từ 70 thì gỡ khoá). `/users/me` và `/me` trả `reputationPoints`, `reputationPeriodStart`. Khách và thợ xem điểm của mình ở `GET /reputation/me` (điểm, ngày làm mới `resetsAt`, `suspendedUntil` nếu đang bị khoá, `locked`, 20 thay đổi gần nhất).
@@ -215,6 +216,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-09 18:12 (UTC+7) | ToanAltF4 | feat/customer-wallet | Ví khách: nạp VNPay, trả hoá đơn bằng ví, hoàn tiền vào ví qua khiếu nại; migration 031
 - 2026-10-09 17:13 (UTC+7) | ToanAltF4 | feat/reschedule-notify | Đổi lịch đơn đã có thợ thì báo cho thợ; e2e đổi lịch theo buổi
 - 2026-10-09 16:57 (UTC+7) | ToanAltF4 | feat/customer-booking-sessions | Xem trước lời mời có buổi hẹn (bookingMode, slot), không lộ ghi chú của khách
 - 2026-10-09 15:11 (UTC+7) | ToanAltF4 | feat/auto-reputation-only | Bỏ xác nhận vi phạm thủ công, huỷ đơn tự trừ điểm; danh sách huỷ đơn có số điểm đã trừ
