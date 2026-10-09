@@ -3,6 +3,8 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ReviewsController } from './reviews.controller';
 import { ReviewsService } from './reviews.service';
+import { AdminReviewsController } from './admin-reviews.controller';
+import { AdminReviewsService } from './admin-reviews.service';
 import { Review } from './entities/review.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { Booking } from '../bookings/entities/booking.entity';
@@ -22,8 +24,8 @@ import { NotificationsModule } from '../notifications/notifications.module';
     ]),
     NotificationsModule,
   ],
-  controllers: [ReviewsController],
-  providers: [ReviewsService],
+  controllers: [ReviewsController, AdminReviewsController],
+  providers: [ReviewsService, AdminReviewsService],
   exports: [ReviewsService],
 })
 export class ReviewsModule {}

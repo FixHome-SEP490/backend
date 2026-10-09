@@ -361,6 +361,19 @@ export function registerDev1Cases(context: () => Context) {
       denied(await post(path + '/start-repair', f.tech));
       await post(path + '/reviews', f.owner, { rating: 5, comment: 'Complete' }).expect(201);
       denied(await post(path + '/reviews', f.owner, { rating: 5 }));
+      // The admin reads the reviews with who rated whom on which order (PO 09/10/2026).
+      denied(await get('/admin/reviews', f.owner));
+      denied(await get('/admin/reviews', f.tech));
+      await context().db.query('UPDATE users SET role = $1 WHERE id = $2', ['admin', f.outsider.user.id]);
+      const [{ code: reviewedCode }] = await context().db.query('SELECT code FROM service_orders WHERE id = $1', [order.id]);
+      const reviews = await get(`/admin/reviews?search=${encodeURIComponent(reviewedCode)}`, f.outsider).expect(200);
+      expect(unwrap(reviews.body)).toEqual([expect.objectContaining({
+        rating: 5, comment: 'Complete', orderCode: reviewedCode, customerId: f.owner.user.id, technicianId: f.tech.user.id,
+      })]);
+      expect(reviews.body.meta.summary).toMatchObject({ average: 5, stars: { 5: 1, 1: 0 } });
+      expect(unwrap((await get(`/admin/reviews?search=${encodeURIComponent(reviewedCode)}&maxRating=2`, f.outsider).expect(200)).body)).toEqual([]);
+      expect(unwrap((await get(`/admin/reviews?search=${encodeURIComponent(reviewedCode)}&rating=9`, f.outsider).expect(200)).body)).toHaveLength(1);
+      await context().db.query('UPDATE users SET role = $1 WHERE id = $2', ['customer', f.outsider.user.id]);
       const newBooking = await f.create();
       denied(await post(`/bookings/${newBooking.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.spare.user.id] }));
       await context().db.getRepository('Service').update(f.service.id, { fixedPrice: 250000 });
