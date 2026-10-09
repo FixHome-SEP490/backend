@@ -171,7 +171,10 @@ export function registerDev1Cases(context: () => Context) {
       // Staff see the lowest scores first, read why, and adjust with a reason; others cannot.
       denied(await get('/reputation', f.owner));
       denied(await post(`/reputation/${f.owner.user.id}/adjust`, f.tech, { delta: 10, reason: 'Tự cộng điểm' }));
-      const listed = unwrap((await get('/reputation?role=customer', manager).expect(200)).body);
+      const page = (await get('/reputation?role=customer&pageSize=50', manager).expect(200)).body;
+      expect(page.meta).toMatchObject({ page: 1, limit: 50 });
+      expect(page.meta.total).toBeGreaterThanOrEqual(1);
+      const listed = unwrap(page);
       expect(listed.find((row: any) => row.id === f.owner.user.id)?.reputationPoints).toBe(60);
       expect(unwrap((await get(`/reputation/${f.owner.user.id}/events`, manager).expect(200)).body)).toHaveLength(1);
       denied(await post(`/reputation/${f.owner.user.id}/adjust`, manager, { delta: 0, reason: 'Không đổi gì' }));

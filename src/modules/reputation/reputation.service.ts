@@ -166,7 +166,10 @@ export class ReputationService implements OnModuleInit, OnModuleDestroy {
     }
     const total = await qb.getCount();
     const data = await qb.orderBy('u.reputationPoints', 'ASC').addOrderBy('u.fullName', 'ASC').offset((page - 1) * pageSize).limit(pageSize).getRawMany();
-    return { data: data.map((r) => ({ ...r, reputationPoints: Number(r.reputationPoints) })), total, page, pageSize };
+    return {
+      data: data.map((r) => ({ ...r, reputationPoints: Number(r.reputationPoints) })),
+      meta: { page, limit: pageSize, total, totalPages: Math.ceil(total / pageSize) },
+    };
   }
 
   async events(userId: string): Promise<ReputationEvent[]> {
