@@ -82,6 +82,9 @@ export interface TechnicianBookingPreviewDto {
   urgency: Booking['urgency'];
   preferredStartAt: Date | null;
   preferredEndAt: Date | null;
+  /** scheduled = one session (morning 08-12 / afternoon 13-18, Vietnam time); urgent = come now. */
+  bookingMode: Booking['bookingMode'];
+  slot: Booking['slot'] | null;
 }
 
 export interface TechnicianInvitationPreviewDto {
@@ -104,6 +107,8 @@ export function toTechnicianBookingPreview(booking: Booking): TechnicianBookingP
     urgency: booking.urgency,
     preferredStartAt: booking.preferredStartAt ?? null,
     preferredEndAt: booking.preferredEndAt ?? null,
+    bookingMode: booking.bookingMode,
+    slot: booking.slot ?? null,
   };
 }
 
