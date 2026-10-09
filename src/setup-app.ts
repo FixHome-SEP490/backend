@@ -35,6 +35,17 @@ export const MAX_FORM_BODY_BYTES = 1024 * 1024;
 export const IMAGE_BODY_ROUTES = [`/${API_PREFIX}/ai/diagnoses`, `/${API_PREFIX}/ai-diagnosis/analyze`];
 
 /**
+ * Multipart uploads: one file of up to 10 MB each (multer enforces it per route), plus the form
+ * fields. Until 10/10/2026 the 1 MB form limit applied to them too, so every photo over 1 MB, the
+ * booking photos included, came back 413 and the app said "Không thể tải ảnh ... lên".
+ */
+export const MAX_MULTIPART_BODY_BYTES = 11 * 1024 * 1024;
+export const FILE_UPLOAD_ROUTES: RegExp[] = [
+  new RegExp(`^/${API_PREFIX}/media/(booking-photo-upload|upload)$`),
+  new RegExp(`^/${API_PREFIX}/service-orders/[^/]+/evidence$`),
+];
+
+/**
  * Turns away a declared body over 1 MB before it is read, unless the route
  * carries images. One parser stays in place: a second, route-specific parser
  * would come from the top-level express 5 while Nest runs its own express 4,
@@ -43,6 +54,12 @@ export const IMAGE_BODY_ROUTES = [`/${API_PREFIX}/ai/diagnoses`, `/${API_PREFIX}
 export function formBodySizeGuard(req: Request, _res: Response, next: NextFunction): void {
   const declared = Number(req.headers['content-length'] ?? 0);
   const path = (req.originalUrl ?? req.url ?? '').split('?')[0].replace(/\/+$/, '');
+  const multipart = String(req.headers['content-type'] ?? '').toLowerCase().startsWith('multipart/form-data');
+  if (multipart && FILE_UPLOAD_ROUTES.some((route) => route.test(path))) {
+    if (declared > MAX_MULTIPART_BODY_BYTES) next(new PayloadTooLargeException('Request payload is too large'));
+    else next();
+    return;
+  }
   if (declared > MAX_FORM_BODY_BYTES && !IMAGE_BODY_ROUTES.includes(path)) {
     next(new PayloadTooLargeException('Request payload is too large'));
     return;

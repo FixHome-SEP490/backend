@@ -345,6 +345,10 @@ export function registerDev1Cases(context: () => Context) {
       denied(await patch(path + '/location', f.tech, { lat: 10.77, lng: 106.69 }));
       denied(await post(path + '/request-completion', f.tech));
       await evidence(order.id, f.tech, 'after').expect(201);
+      // A photo over 1 MB goes up (10/10/2026: the 1 MB form limit used to answer 413 to every real photo).
+      const largePhoto = Buffer.concat([png, Buffer.alloc(2_500_000)]);
+      const large = await request(context().app.getHttpServer()).post(`/api/v1${path}/evidence`).set('Authorization', `Bearer ${f.tech.accessToken}`).field('type', 'after').attach('file', largePhoto, { filename: 'after-large.png', contentType: 'image/png' });
+      expect(large.status, JSON.stringify(large.body)).toBe(201);
       await post(path + '/request-completion', f.tech).expect(200);
       denied(await evidence(order.id, f.tech, 'after'));
       // The customer no longer accepts the work (PO 09/10/2026); only the payment is left.
