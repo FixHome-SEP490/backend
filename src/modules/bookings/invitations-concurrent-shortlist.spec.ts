@@ -32,7 +32,7 @@ function scenario(status: BookingStatus = BookingStatus.SUBMITTED) {
   const messaging = { ensureConversation: vi.fn(async () => undefined) };
   const service = new InvitationsService(
     {} as never, {} as never,
-    { transaction: async (fn: (m: typeof manager) => unknown) => fn(manager) } as never,
+    { query: async () => [], transaction: async (fn: (m: typeof manager) => unknown) => fn(manager) } as never,
     { getInt: vi.fn(async () => 30) } as never, audit as never, messaging as never,
   );
   vi.mocked(technicianEligibility).mockResolvedValue({ eligible: true });

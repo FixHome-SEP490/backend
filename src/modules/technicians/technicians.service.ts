@@ -143,13 +143,14 @@ export class TechniciansService {
 
   async updateMyProfile(
     userId: string,
-    dto: { bio?: string; isAvailable?: boolean; yearsExperience?: number; serviceRadiusKm?: number },
+    dto: { bio?: string; isAvailable?: boolean; yearsExperience?: number; serviceRadiusKm?: number; autoAcceptInvitations?: boolean },
   ): Promise<TechnicianProfile> {
     const profile = await this.getMyProfile(userId);
     if (dto.bio !== undefined) profile.bio = dto.bio;
     if (dto.isAvailable !== undefined) profile.isAvailable = dto.isAvailable;
     if (dto.yearsExperience !== undefined) profile.yearsExperience = dto.yearsExperience;
     if (dto.serviceRadiusKm !== undefined) profile.serviceRadiusKm = dto.serviceRadiusKm;
+    if (dto.autoAcceptInvitations !== undefined) profile.autoAcceptInvitations = dto.autoAcceptInvitations;
     return this.profileRepo.save(profile);
   }
 

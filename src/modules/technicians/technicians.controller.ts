@@ -34,6 +34,7 @@ export class UpdateTechnicianProfileDto {
   @IsOptional() @IsBoolean() isAvailable?: boolean;
   @IsOptional() @IsInt() @Min(0) @Max(80) yearsExperience?: number;
   @IsOptional() @IsNumber() @Min(1) @Max(40) serviceRadiusKm?: number;
+  @IsOptional() @IsBoolean() autoAcceptInvitations?: boolean;
 }
 /** Labor warranty the technician gives by default; applyToAllServices also sets every service they offer. */
 export class DefaultLaborWarrantyDto {
