@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import { createRequire } from 'module';
 import { resolve } from 'path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { NO_DEPARTURE_CANCEL_REASON } from '../src/modules/service-orders/no-departure';
 
 type Session = { accessToken: string; user: { id: string } };
 type Context = { app: INestApplication; db: DataSource; register: () => Promise<Session>; provisionTechnician: () => Promise<Session> };
@@ -367,7 +368,11 @@ export function registerDev1Cases(context: () => Context) {
       await evidence(order.id, f.tech, 'before').expect(201);
       // Not without a report from the technician on site.
       denied(await post(path + '/replace-technician', manager, body));
+      // The manager's overview counts the reports still waiting (PO 09/10/2026).
+      const ops = async () => unwrap((await get('/dashboard/operations', manager).expect(200)).body);
+      const waiting = (await ops()).openReplacementCases;
       await post('/support/cases', f.tech, { caseType: 'technician_replacement', reason: 'Ngoài kỹ năng', serviceOrderId: order.id }).expect(201);
+      expect((await ops()).openReplacementCases).toBe(waiting + 1);
       denied(await post(path + '/replace-technician', f.owner, body));
       denied(await post(path + '/replace-technician', manager, { ...body, technicianId: f.tech.user.id }));
       const replaced = unwrap((await post(path + '/replace-technician', manager, body).expect(200)).body);
@@ -376,6 +381,18 @@ export function registerDev1Cases(context: () => Context) {
       expect(row.status).toBe('accepted');
       const [kase] = await db.query("SELECT status, resolution_code FROM support_cases WHERE service_order_id = $1 AND case_type = 'technician_replacement'", [order.id]);
       expect(kase).toMatchObject({ status: 'resolved', resolution_code: 'worker_reassigned' });
+      expect((await ops()).openReplacementCases).toBe(waiting);
+      // Orders the system cancelled because the technician never set out, over the last 7 days.
+      const autoCancelled = (await ops()).noDepartureCancellations7d;
+      const insertCancel = (at: string) => db.query(
+        "INSERT INTO cancellations (service_order_id, actor, actor_user_id, reason, state_at_cancel, created_at) VALUES ($1, 'technician', $2, $3, 'accepted', $4)",
+        [order.id, f.tech.user.id, NO_DEPARTURE_CANCEL_REASON, at],
+      );
+      await insertCancel(new Date().toISOString());
+      await insertCancel(new Date(Date.now() - 8 * 86_400_000).toISOString());
+      expect((await ops()).noDepartureCancellations7d).toBe(autoCancelled + 1);
+      denied(await get('/dashboard/operations', f.tech));
+      await db.query('DELETE FROM cancellations WHERE service_order_id = $1 AND reason = $2', [order.id, NO_DEPARTURE_CANCEL_REASON]);
       const [{ reputation_points: points }] = await db.query('SELECT reputation_points FROM users WHERE id = $1', [f.tech.user.id]);
       expect(Number(points)).toBe(100);
       const told = await db.query("SELECT user_id FROM notifications WHERE type = 'TECHNICIAN_REPLACED' AND reference_id = $1", [order.id]);
