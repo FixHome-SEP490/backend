@@ -1,4 +1,6 @@
 // src/modules/technicians/technicians.module.ts
+import { AdminTechniciansController } from './admin-technicians.controller';
+import { AdminTechniciansService } from './admin-technicians.service';
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { TechniciansController } from './technicians.controller';
@@ -40,8 +42,8 @@ import { CommissionDue } from '../service-orders/entities/commission-due.entity'
       TechnicianVerification,
     ]),
   ],
-  controllers: [TechniciansController, TechnicianOnboardingController],
-  providers: [TechniciansService, TechnicianOnboardingService],
+  controllers: [TechniciansController, TechnicianOnboardingController, AdminTechniciansController],
+  providers: [TechniciansService, TechnicianOnboardingService, AdminTechniciansService],
   exports: [TechniciansService, TechnicianOnboardingService, TypeOrmModule],
 })
 export class TechniciansModule {}

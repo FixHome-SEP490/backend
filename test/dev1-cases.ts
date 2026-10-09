@@ -352,6 +352,32 @@ export function registerDev1Cases(context: () => Context) {
       await post(path + '/cancel', f.spare, { reason: 'Kẹt xe không tới kịp' }).expect(200);
     });
 
+    it('lets an admin find a technician by name, email, phone, CCCD or id, never by address, and read everything about them (PO 08/10/2026)', async () => {
+      const f = await fixture(), db = context().db;
+      const admin = await context().register();
+      await db.query('UPDATE users SET role = $1 WHERE id = $2', ['admin', admin.user.id]);
+      const tag = randomUUID().slice(0, 8);
+      await db.query('UPDATE users SET full_name = $2, phone_number = $3, citizen_id_number = $4 WHERE id = $1', [f.tech.user.id, `Thợ Tra Cứu ${tag}`, `09${tag.replace(/\D/g, '').padEnd(8, '7').slice(0, 8)}`, `0790${tag.replace(/\D/g, '').padEnd(8, '1').slice(0, 8)}`]);
+      const [u] = await db.query('SELECT email, phone_number AS phone, citizen_id_number AS cccd FROM users WHERE id = $1', [f.tech.user.id]);
+      const found = async (search: string) => unwrap((await get(`/admin/technicians?search=${encodeURIComponent(search)}&pageSize=100`, admin).expect(200)).body).map((r: any) => r.id);
+      expect(await found(`Tra Cứu ${tag}`)).toContain(f.tech.user.id);
+      expect(await found(`tho tra cuu ${tag}`)).toContain(f.tech.user.id);
+      expect(await found(u.email)).toContain(f.tech.user.id);
+      expect(await found(u.phone)).toContain(f.tech.user.id);
+      expect(await found('+84' + u.phone.slice(1))).toContain(f.tech.user.id);
+      expect(await found(u.cccd)).toContain(f.tech.user.id);
+      expect(await found(f.tech.user.id.slice(0, 8))).toContain(f.tech.user.id);
+      expect(await found('Tech shop')).not.toContain(f.tech.user.id);
+      denied(await get('/admin/technicians?search=x', f.owner));
+      denied(await get('/admin/technicians?search=x', f.tech));
+      const detail = unwrap((await get(`/admin/technicians/${f.tech.user.id}`, admin).expect(200)).body);
+      expect(detail.user).toMatchObject({ id: f.tech.user.id, citizenIdNumber: u.cccd, reputationPoints: 100 });
+      expect(detail.profile.verificationStatus).toBe('verified');
+      expect(detail.skills).toEqual([expect.objectContaining({ serviceName: 'Repair fixture', listedLaborPrice: 100000 })]);
+      expect(detail.schedule).toHaveLength(7);
+      denied(await get(`/admin/technicians/${f.owner.user.id}`, admin));
+    });
+
     it('opens setting out only one hour before the appointment', async () => {
       await setDepartEarlyMinutes(60);
       try {
