@@ -551,6 +551,25 @@ export function registerDev1Cases(context: () => Context) {
       expect(line.days).toBe(45);
     });
 
+    it('accepts an invitation for a technician who switched on auto-accept (PO 10/10/2026)', async () => {
+      const f = await fixture(), db = context().db;
+      expect(unwrap((await get('/technicians/me/profile', f.tech).expect(200)).body).autoAcceptInvitations).toBe(false);
+      denied(await patch('/technicians/me/profile', f.tech, { autoAcceptInvitations: 'yes' }));
+      await patch('/technicians/me/profile', f.tech, { autoAcceptInvitations: true }).expect(200);
+      expect(unwrap((await get('/technicians/me/profile', f.tech).expect(200)).body).autoAcceptInvitations).toBe(true);
+      const booking = await f.create();
+      const shortlisted = await post(`/bookings/${booking.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.spare.user.id] });
+      expect(shortlisted.status, JSON.stringify(shortlisted.body)).toBe(201);
+      expect(unwrap(shortlisted.body).map((i: any) => i.status)).toEqual(['accepted', 'cancelled']);
+      const [order] = await db.query(`SELECT o.id, o.status, a.technician_id FROM service_orders o JOIN technician_assignments a ON a.service_order_id = o.id AND a.is_active WHERE o.booking_id = $1`, [booking.id]);
+      expect(order).toMatchObject({ status: 'accepted', technician_id: f.tech.user.id });
+      const [history] = await db.query('SELECT reason FROM order_status_history WHERE service_order_id = $1', [order.id]);
+      expect(history.reason).toContain('tự nhận việc');
+      const notes = await db.query("SELECT 1 FROM notifications WHERE user_id = $1 AND type = 'INVITATION_AUTO_ACCEPTED' AND reference_id = $2", [f.tech.user.id, order.id]);
+      expect(notes).toHaveLength(1);
+      expect(unwrap((await get(`/bookings/${booking.id}`, f.owner).expect(200)).body).status).toBe('matched');
+    });
+
     it.each([false, true])('keeps technician part warranty opt-in and outside labor commission: selected=%s', async selected => {
       const f = await fixture('inspection_required'), { order } = await accept(f), path = `/service-orders/${order.id}`;
       await arrived(order.id, f.tech);

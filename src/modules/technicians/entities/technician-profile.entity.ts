@@ -72,6 +72,10 @@ export class TechnicianProfile extends BaseEntity {
   @Column({ name: 'default_labor_warranty_days', type: 'int', nullable: true })
   defaultLaborWarrantyDays?: number | null;
 
+  /** "Tự nhận việc" (PO 10/10/2026): invitations that reach this technician are accepted for them. */
+  @Column({ name: 'auto_accept_invitations', type: 'boolean', default: false })
+  autoAcceptInvitations: boolean;
+
   @Column({ name: 'is_available', type: 'boolean', default: true })
   isAvailable: boolean;
 

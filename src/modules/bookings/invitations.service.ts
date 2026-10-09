@@ -75,9 +75,63 @@ export class InvitationsService implements OnModuleInit, OnModuleDestroy {
         this.logger.warn(`matching sweep skipped booking ${bookingId}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+    // Invitations activated on paths outside this service (a rematch after a withdrawal) or
+    // waiting when the technician switched "tự nhận việc" on.
+    const waiting: Array<{ bookingId: string }> = await this.dataSource.query(
+      `SELECT DISTINCT i.booking_id AS "bookingId"
+         FROM booking_invitations i
+         JOIN bookings b ON b.id = i.booking_id
+         JOIN technician_profiles tp ON tp.user_id = i.technician_id
+        WHERE b.status = $1 AND i.status = $2 AND i.expires_at > now() AND tp.auto_accept_invitations`,
+      [BookingStatus.MATCHING, InvitationStatus.PENDING],
+    );
+    for (const { bookingId } of waiting) await this.autoAcceptPending(bookingId);
+  }
+
+  /**
+   * "Tự nhận việc" (PO 10/10/2026): the pending invitation of a booking is accepted for its
+   * technician when they switched it on, through the same respond() as their own Accept, so
+   * every rule of accepting applies. When it cannot be accepted (a clash, no longer eligible)
+   * the invitation stays with the technician to answer by hand. Called after the transaction
+   * that activated the invitation has committed.
+   */
+  async autoAcceptPending(bookingId: string): Promise<boolean> {
+    const rows: Array<{ id: string; technicianId: string }> = await this.dataSource.query(
+      `SELECT i.id, i.technician_id AS "technicianId"
+         FROM booking_invitations i
+         JOIN technician_profiles tp ON tp.user_id = i.technician_id
+        WHERE i.booking_id = $1 AND i.status = $2 AND i.expires_at > now() AND tp.auto_accept_invitations`,
+      [bookingId, InvitationStatus.PENDING],
+    );
+    let accepted = false;
+    for (const row of rows) {
+      try {
+        const { serviceOrder } = await this.respond(row.id, 'ACCEPT', { id: row.technicianId, role: Role.TECHNICIAN }, { auto: true });
+        accepted ||= !!serviceOrder;
+        if (serviceOrder && this.notificationsService) {
+          await this.notificationsService.createNotification({
+            userId: row.technicianId,
+            title: 'Đã tự nhận đơn mới',
+            message: `Hệ thống đã nhận đơn #${serviceOrder.code} cho bạn theo chế độ tự nhận việc. Xem lịch hẹn và chuẩn bị đi làm nhé.`,
+            type: 'INVITATION_AUTO_ACCEPTED',
+            referenceId: serviceOrder.id,
+            referenceType: 'SERVICE_ORDER',
+          }).catch(() => undefined);
+        }
+      } catch (error) {
+        this.logger.warn(`auto-accept left invitation ${row.id} to the technician: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return accepted;
   }
 
   async createShortlist(bookingId: string, technicianIds: string[], customer: { id: string; role: string }): Promise<BookingInvitation[]> {
+    const invitations = await this.openShortlist(bookingId, technicianIds, customer);
+    if (!(await this.autoAcceptPending(bookingId))) return invitations;
+    return this.invitationRepo.find({ where: { bookingId }, order: { priorityOrder: 'ASC' } });
+  }
+
+  private async openShortlist(bookingId: string, technicianIds: string[], customer: { id: string; role: string }): Promise<BookingInvitation[]> {
     if (customer.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
     if (!Array.isArray(technicianIds) || technicianIds.length < 1 || technicianIds.length > 2 || new Set(technicianIds).size !== technicianIds.length) throw new BusinessException(ErrorCodes.SHORTLIST_LIMIT_EXCEEDED, 'Select 1 or 2 distinct technicians in priority order');
     return this.dataSource.transaction(async manager => {
@@ -123,6 +177,7 @@ export class InvitationsService implements OnModuleInit, OnModuleDestroy {
       if (hasActive) return;
       await this.activateNext(manager, booking);
     });
+    await this.autoAcceptPending(bookingId);
   }
 
   async getMyInvitations(technicianId: string): Promise<TechnicianInvitationPreviewDto[]> {
@@ -145,7 +200,7 @@ export class InvitationsService implements OnModuleInit, OnModuleDestroy {
       .map(toTechnicianInvitationPreview);
   }
 
-  async respond(invitationId: string, action: 'ACCEPT' | 'DECLINE', technician: { id: string; role: string }): Promise<{ invitation: BookingInvitation; serviceOrder?: ServiceOrder }> {
+  async respond(invitationId: string, action: 'ACCEPT' | 'DECLINE', technician: { id: string; role: string }, opts: { auto?: boolean } = {}): Promise<{ invitation: BookingInvitation; serviceOrder?: ServiceOrder }> {
     if (technician.role !== Role.TECHNICIAN) throw new ForbiddenException('Technician role required');
     if (!['ACCEPT', 'DECLINE'].includes(action)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid invitation action');
     const ref = await this.invitationRepo.findOneBy({ id: invitationId, technicianId: technician.id });
@@ -211,7 +266,7 @@ export class InvitationsService implements OnModuleInit, OnModuleDestroy {
       serviceOrder ??= await manager.save(ServiceOrder, manager.create(ServiceOrder, { bookingId: booking.id, code, status: ServiceOrderStatus.ACCEPTED, scheduledAt: booking.preferredStartAt }));
       await manager.save(TechnicianAssignment, manager.create(TechnicianAssignment, { serviceOrderId: serviceOrder.id, technicianId: technician.id, isActive: true, assignedAt: now }));
       await snapshotLaborWarranty(manager, serviceOrder.id, technician.id, booking.serviceId);
-      await manager.insert(OrderStatusHistory, { serviceOrderId: serviceOrder.id, fromStatus: replacement ? serviceOrder.status : null, toStatus: serviceOrder.status, actorUserId: technician.id, actorRole: technician.role, reason: replacement ? 'Replacement technician accepted invitation' : 'Technician accepted invitation' });
+      await manager.insert(OrderStatusHistory, { serviceOrderId: serviceOrder.id, fromStatus: replacement ? serviceOrder.status : null, toStatus: serviceOrder.status, actorUserId: technician.id, actorRole: technician.role, reason: `${replacement ? 'Replacement technician accepted invitation' : 'Technician accepted invitation'}${opts.auto ? ' (tự nhận việc)' : ''}` });
       invitation.status = InvitationStatus.ACCEPTED;
       invitation.respondedAt = now;
       await manager.save(invitation);
@@ -222,7 +277,7 @@ export class InvitationsService implements OnModuleInit, OnModuleDestroy {
       await this.messagingService.ensureConversation(manager, booking, technician.id);
       await this.messagingService.attachToServiceOrder(manager, booking.id, technician.id, serviceOrder.id);
       await manager.update(TechnicianProfile, { userId: technician.id }, { priorityBoostUntil: null });
-      await this.auditLogService.logWithManager(manager, { actorUserId: technician.id, actorRole: technician.role, action: 'INVITATION_ACCEPT', resourceType: 'booking_invitation', resourceId: invitation.id, after: { serviceOrderId: serviceOrder.id, code } });
+      await this.auditLogService.logWithManager(manager, { actorUserId: technician.id, actorRole: technician.role, action: 'INVITATION_ACCEPT', resourceType: 'booking_invitation', resourceId: invitation.id, after: { serviceOrderId: serviceOrder.id, code, ...(opts.auto ? { autoAccepted: true } : {}) } });
       if (this.notificationsService && booking.customerId) {
         void this.notificationsService.createNotification({
           userId: booking.customerId,
@@ -236,6 +291,8 @@ export class InvitationsService implements OnModuleInit, OnModuleDestroy {
       accepted = { bookingId: booking.id, serviceOrderId: serviceOrder.id, orderCode: code };
       return { invitation, serviceOrder };
     });
+    // A decline or an expiry handed the booking to the next technician, who may take jobs automatically.
+    if (!opts.auto && ('expired' in outcome || action === 'DECLINE')) await this.autoAcceptPending(ref.bookingId);
     if ('expired' in outcome) throw new BusinessException(ErrorCodes.INVITATION_EXPIRED, 'Invitation expired');
     // After commit: the customer hears from the technician who took the job.
     if (accepted) await this.acceptGreeting?.send({ ...(accepted as { bookingId: string; serviceOrderId: string; orderCode: string }), technicianId: technician.id });

@@ -115,7 +115,7 @@ function makeBookingsHarness(
       entity === Booking ? booking : entity === ServiceOrder ? options.order ?? null : entity === AiDiagnosis ? diagnosis : null),
     find: vi.fn(async (entity: unknown) => entity === BookingInvitation ? booking.invitations : []),
   };
-  const dataSource = { manager, transaction: vi.fn(async (callback: (tx: typeof manager) => unknown) => callback(manager)) };
+  const dataSource = { manager, query: async () => [], transaction: vi.fn(async (callback: (tx: typeof manager) => unknown) => callback(manager)) };
   const service = new BookingsService(
     bookingRepo as never,
     {} as never,
@@ -145,6 +145,7 @@ function makeInvitationsHarness(invitation: Record<string, unknown>, booking: Re
     update: vi.fn(async () => undefined),
   };
   const dataSource = {
+    query: vi.fn(async () => []),
     transaction: vi.fn(async (callback: (tx: typeof manager) => unknown) => callback(manager)),
   };
   const service = new InvitationsService(
