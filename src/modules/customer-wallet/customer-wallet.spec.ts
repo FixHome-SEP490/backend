@@ -62,4 +62,15 @@ describe('Customer wallet ledger (PO 08/10/2026)', () => {
     const h = harness(100_000);
     await expect(h.service.apply(h.manager as never, { userId: 'c1', type: 'top_up', amount, idempotencyKey: 'k' })).rejects.toThrow('số nguyên dương');
   });
+
+  it('credits and debits an admin correction, never below zero (PO 09/10/2026)', async () => {
+    const h = harness(40_000);
+    const up = await h.service.apply(h.manager as never, { userId: 'c1', type: 'adjustment_credit', amount: 10_000, idempotencyKey: 'CADJUST:1' });
+    expect(up.balanceAfter).toBe(50_000);
+    const low = harness(40_000);
+    const down = await low.service.apply(low.manager as never, { userId: 'c1', type: 'adjustment_debit', amount: 15_000, idempotencyKey: 'CADJUST:2' });
+    expect(down.balanceAfter).toBe(25_000);
+    await expect(harness(40_000).service.apply(low.manager as never, { userId: 'c1', type: 'adjustment_debit', amount: 40_001, idempotencyKey: 'CADJUST:3' }))
+      .rejects.toThrow('không đủ để trừ');
+  });
 });

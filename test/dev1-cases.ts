@@ -270,6 +270,38 @@ export function registerDev1Cases(context: () => Context) {
       const second = unwrap((await post('/support/cases', f.owner, { caseType: 'parts_dispute', reason: 'Linh kiện vẫn hỏng', serviceOrderId: order.id }).expect(201)).body).id;
       denied(await post(`/support/cases/${second}/resolve`, manager, { finalStatus: 'resolved', resolutionCode: 'refund_to_wallet', reason: 'Hoàn thêm phần còn lại của đơn', amount: total - 150000 + 1 }));
       denied(await get('/customer/wallet', f.tech));
+      // The admin sees every customer wallet and corrects one with a reason, audited (PO 09/10/2026).
+      // The outsider of the fixture becomes the admin: one more sign-up would hit the register rate limit.
+      const admin = f.outsider;
+      await db.query('UPDATE users SET role = $1 WHERE id = $2', ['admin', admin.user.id]);
+      const owner = `/admin/customer-wallets/${f.owner.user.id}`;
+      const [{ email: ownerEmail }] = await db.query('SELECT email FROM users WHERE id = $1', [f.owner.user.id]);
+      const listed = await get(`/admin/customer-wallets?withBalance=true&search=${encodeURIComponent(ownerEmail)}`, admin).expect(200);
+      expect(unwrap(listed.body)).toEqual([expect.objectContaining({ userId: f.owner.user.id, balance: 750000 })]);
+      expect(listed.body.meta.totalBalance).toBe(750000);
+      const phone = `09${String(Date.now()).slice(-8)}`;
+      await db.query('UPDATE users SET phone_number = $1 WHERE id = $2', [phone, f.owner.user.id]);
+      const byPhone = unwrap((await get(`/admin/customer-wallets?search=${encodeURIComponent('+84 ' + phone.slice(1))}`, admin).expect(200)).body);
+      expect(byPhone.map((r: any) => r.userId)).toContain(f.owner.user.id);
+      expect(unwrap((await get(owner, admin).expect(200)).body)).toMatchObject({ customer: { id: f.owner.user.id }, balance: 750000 });
+      for (const user of [manager, f.owner, f.tech]) {
+        denied(await get('/admin/customer-wallets', user));
+        denied(await post(owner + '/adjustments', user, { type: 'CREDIT', amount: 1000, reason: 'Thử điều chỉnh không có quyền' }));
+      }
+      denied(await post(owner + '/adjustments', admin, { type: 'CREDIT', amount: 1000, reason: 'ngắn' }));
+      denied(await post(owner + '/adjustments', admin, { type: 'CREDIT', amount: 0, reason: 'Số tiền phải lớn hơn không' }));
+      denied(await post(owner + '/adjustments', admin, { type: 'DEBIT', amount: 750001, reason: 'Trừ nhiều hơn số dư đang có' }));
+      denied(await post(`/admin/customer-wallets/${f.tech.user.id}/adjustments`, admin, { type: 'CREDIT', amount: 1000, reason: 'Ví khách không áp cho thợ' }));
+      const credited = unwrap((await post(owner + '/adjustments', admin, { type: 'CREDIT', amount: 20000, reason: 'Bù khoản hoàn ghi thiếu cho đơn' }).expect(201)).body);
+      expect(credited.balanceAfter).toBe(770000);
+      await post(owner + '/adjustments', admin, { type: 'DEBIT', amount: 70000, reason: 'Thu lại khoản cộng nhầm hôm trước' }).expect(201);
+      const corrected = unwrap((await get('/customer/wallet', f.owner).expect(200)).body);
+      expect(corrected.balance).toBe(700000);
+      expect(corrected.transactions.slice(0, 2).map((t: any) => t.type)).toEqual(['adjustment_debit', 'adjustment_credit']);
+      const audits = await db.query("SELECT after FROM audit_logs WHERE action = 'CUSTOMER_WALLET_ADJUSTMENT' AND actor_user_id = $1", [admin.user.id]);
+      expect(audits).toHaveLength(2);
+      const notes = await db.query("SELECT 1 FROM notifications WHERE user_id = $1 AND type = 'WALLET_ADJUSTED'", [f.owner.user.id]);
+      expect(notes.length).toBeGreaterThanOrEqual(1);
     });
 
     it('enforces ownership, valid GPS, file evidence, completion and cash gates end-to-end', async () => {
