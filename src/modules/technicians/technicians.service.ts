@@ -1,4 +1,5 @@
 // src/modules/technicians/technicians.service.ts
+import { availabilityNow, type AvailabilityNow } from './availability-now';
 import { completedOrderEarnings, displayRating } from './technician-earnings';
 import {
   BadRequestException,
@@ -111,6 +112,16 @@ export class TechniciansService {
       if (commissionDueRepo) this.commissionDueRepo = commissionDueRepo;
       if (servicesService) this.servicesService = servicesService;
     }
+  }
+
+  /** Receiving jobs now, from the weekly schedule, the manual switch and time off (PO 08/10/2026). */
+  async getMyAvailability(userId: string): Promise<AvailabilityNow> {
+    const profile = await this.getMyProfile(userId);
+    return availabilityNow({
+      manual: profile.isAvailable,
+      schedules: profile.schedules ?? [],
+      timeOff: (profile.timeOffs ?? []).map((t) => ({ startAt: t.startAt, endAt: t.endAt })),
+    });
   }
 
   async getMyProfile(userId: string): Promise<TechnicianProfile> {

@@ -64,6 +64,14 @@ export class TechniciansController {
     return { data: profile };
   }
 
+  @Get('me/availability')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Technician: receiving jobs right now? The weekly schedule switches it, the manual switch pauses, time off wins' })
+  async getMyAvailability(@Req() req: { user: { id: string } }) {
+    return { data: await this.techniciansService.getMyAvailability(req.user.id) };
+  }
+
   @Patch('me/profile')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
