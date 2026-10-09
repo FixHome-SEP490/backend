@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-09 18:12 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/customer-wallet
+> Cập nhật lần cuối: 2026-10-09 18:50 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/replace-after-report
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -198,6 +198,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - Không có xác thực giữa `backend` và `ai-service`; PO xác định đây không phải phạm vi cần làm.
 - Không có dữ liệu hay luồng giả lập (PO 07/10/2026): không mã QR thử khi nhận linh kiện; nạp ví chỉ qua VNPay khi `payment.mode` là `LIVE` (mặc định `LIVE`); rút tiền chỉ qua payOS, chưa cấu hình thì từ chối trước khi trừ ví; chưa cấu hình SMTP thì báo lỗi chứ không giả vờ đã gửi email; kỹ thuật viên chưa có đánh giá thì API trả `rating: null`.
 - Bỏ xác nhận vi phạm thủ công (PO 09/10/2026): huỷ đơn tự trừ điểm uy tín, `confirmViolation` trong `POST cancellations/:id/review` bị từ chối (422). `waiveStrike` chỉ còn cho vi phạm ghi từ trước. Danh sách `GET /cancellations` có `reputationDelta` (số điểm lần huỷ đó đã trừ, null nếu không trừ). Ngoại lệ không trừ duy nhất phía thợ: đã check-in và báo "Cần thay đổi thợ", đơn chuyển SM, SM huỷ thì không ai bị trừ.
+- Đổi thợ sau khi thợ báo "Cần thay đổi thợ" (PO 08/10/2026): `POST /service-orders/:id/replace-technician {technicianId, reason}` (SM/admin, quyền `assignment:override`). Chỉ khi đơn EN_ROUTE/UNDER_REPAIR và có case `technician_replacement` đang mở; từ chối khi khách đã duyệt báo giá hoặc đã có hoá đơn (khi đó SM huỷ đơn, không ai bị trừ điểm). Thợ cũ rời đơn không qua huỷ nên không bị trừ điểm; báo giá chờ duyệt chuyển SUPERSEDED; đơn về ACCEPTED để thợ mới xuất phát và tự check-in (check-in gắn theo thợ); case đóng `worker_reassigned`; khách, thợ cũ, thợ mới nhận thông báo `TECHNICIAN_REPLACED`. Thợ rút đơn chỉ bị coi là đã tới nơi khi có check-in của chính mình.
 - Ví khách (PO 08/10/2026, module `customer-wallet`, migration 031, bảng `customer_wallets` + `customer_wallet_transactions` tách khỏi ví thợ, giao dịch chỉ thêm, khoá chống trùng theo `idempotency_key`): `GET /customer/wallet` (số dư + lịch sử), `POST /customer/wallet/top-up {amount}` tạo link VNPay (dùng chung purpose `wallet_top_up`, phân biệt theo vai trò người nạp; IPN cộng vào ví khách; trang trả về `/app/wallet`), `POST /invoices/:id/pay-with-wallet` trả trọn hoá đơn từ ví trong một giao dịch rồi đi chung đường với VNPay (`markInvoicePaidOnline`: hoa hồng thu ngay, không PlatformDue, thợ được `ONLINE_EARNING`), Payment `provider='wallet'`. Hoàn tiền: giải quyết khiếu nại với `resolutionCode: refund_to_wallet` + `amount` (chỉ khi RESOLVED, đơn đã thanh toán, tổng hoàn không vượt hoá đơn, khoá dòng hoá đơn), khách nhận thông báo `WALLET_REFUND`. Không có rút tiền. Ai chịu khoản hoàn (thợ hay FixHome) chưa có luật: chỉ ghi `liableParty`, không trừ ví thợ.
 - Khách đổi lịch đơn thợ đã nhận (`PATCH /bookings/:id/schedule` với `mode: scheduled, date, slot`, đơn còn ACCEPTED/EN_ROUTE): chỉ được buổi thợ đó còn trống, lưu xong thợ nhận thông báo `BOOKING_RESCHEDULED` "Đơn #... chuyển sang Buổi ..., dd/mm/yyyy".
 - Xem trước lời mời của thợ (`GET /invitations/my`, `GET /bookings/:id` khi là người được mời) có thêm `bookingMode` và `slot` để thợ biết buổi trước khi nhận; ghi chú của khách (`customerNote`) chỉ hiện sau khi nhận đơn vì có thể chứa thông tin riêng.
@@ -216,6 +217,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-09 18:50 (UTC+7) | ToanAltF4 | feat/replace-after-report | SM đổi thợ sau khi thợ báo cần thay; thợ rút chỉ tính check-in của chính mình
 - 2026-10-09 18:12 (UTC+7) | ToanAltF4 | feat/customer-wallet | Ví khách: nạp VNPay, trả hoá đơn bằng ví, hoàn tiền vào ví qua khiếu nại; migration 031
 - 2026-10-09 17:13 (UTC+7) | ToanAltF4 | feat/reschedule-notify | Đổi lịch đơn đã có thợ thì báo cho thợ; e2e đổi lịch theo buổi
 - 2026-10-09 16:57 (UTC+7) | ToanAltF4 | feat/customer-booking-sessions | Xem trước lời mời có buổi hẹn (bookingMode, slot), không lộ ghi chú của khách
