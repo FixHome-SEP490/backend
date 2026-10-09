@@ -320,6 +320,38 @@ export function registerDev1Cases(context: () => Context) {
       expect(rebooked.previousTechnicianId).toBe(f.tech.user.id);
     });
 
+    it('hands an order to another technician after the one on site reported it, costing them no points (PO 08/10/2026)', async () => {
+      const f = await fixture(), db = context().db, { order } = await accept(f), path = `/service-orders/${order.id}`;
+      const manager = await context().register();
+      await db.query('UPDATE users SET role = $1 WHERE id = $2', ['service_manager', manager.user.id]);
+      const body = { technicianId: f.spare.user.id, reason: 'Việc ngoài kỹ năng của thợ trước' };
+      await post(path + '/en-route', f.tech).expect(200);
+      await post(path + '/check-in', f.tech, { lat: 10.77, lng: 106.69, accuracyMeters: 5 }).expect(200);
+      await evidence(order.id, f.tech, 'before').expect(201);
+      // Not without a report from the technician on site.
+      denied(await post(path + '/replace-technician', manager, body));
+      await post('/support/cases', f.tech, { caseType: 'technician_replacement', reason: 'Ngoài kỹ năng', serviceOrderId: order.id }).expect(201);
+      denied(await post(path + '/replace-technician', f.owner, body));
+      denied(await post(path + '/replace-technician', manager, { ...body, technicianId: f.tech.user.id }));
+      const replaced = unwrap((await post(path + '/replace-technician', manager, body).expect(200)).body);
+      expect(replaced).toMatchObject({ technicianId: f.spare.user.id, previousTechnicianId: f.tech.user.id });
+      const [row] = await db.query('SELECT status FROM service_orders WHERE id = $1', [order.id]);
+      expect(row.status).toBe('accepted');
+      const [kase] = await db.query("SELECT status, resolution_code FROM support_cases WHERE service_order_id = $1 AND case_type = 'technician_replacement'", [order.id]);
+      expect(kase).toMatchObject({ status: 'resolved', resolution_code: 'worker_reassigned' });
+      const [{ reputation_points: points }] = await db.query('SELECT reputation_points FROM users WHERE id = $1', [f.tech.user.id]);
+      expect(Number(points)).toBe(100);
+      const told = await db.query("SELECT user_id FROM notifications WHERE type = 'TECHNICIAN_REPLACED' AND reference_id = $1", [order.id]);
+      expect(told.map((n: any) => n.user_id).sort()).toEqual([f.owner.user.id, f.tech.user.id, f.spare.user.id].sort());
+      // The first technician is out; the new one sets out and checks in themselves.
+      denied(await post(path + '/en-route', f.tech));
+      await post(path + '/en-route', f.spare).expect(200);
+      denied(await evidence(order.id, f.spare, 'before'));
+      denied(await post(path + '/replace-technician', manager, body));
+      // Not arrived yet themselves, the new technician may still withdraw before arrival.
+      await post(path + '/cancel', f.spare, { reason: 'Kẹt xe không tới kịp' }).expect(200);
+    });
+
     it('opens setting out only one hour before the appointment', async () => {
       await setDepartEarlyMinutes(60);
       try {

@@ -617,10 +617,15 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       const order = await authorizeOrder(manager, orderId, actor, actor.role === Role.TECHNICIAN ? 'technician' : 'read', true);
       if (order.status === ServiceOrderStatus.CANCELLED) return order;
       const arrived = await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, result: CheckInResult.VALID });
-      if (actor.role === Role.TECHNICIAN && arrived) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'After arrival, request Service Manager exception handling');
+      // A technician has arrived only with their own check-in: after a replacement the earlier
+      // technician's check-in stays on the order but says nothing about the new one.
+      const selfArrived = actor.role === Role.TECHNICIAN
+        ? await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, result: CheckInResult.VALID })
+        : arrived;
+      if (actor.role === Role.TECHNICIAN && selfArrived) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'After arrival, request Service Manager exception handling');
       if (actor.role === Role.CUSTOMER && order.status === ServiceOrderStatus.UNDER_REPAIR) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'During repair, request Service Manager exception handling');
       const from = order.status;
-      if (actor.role === Role.TECHNICIAN && !arrived && [ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(from)) {
+      if (actor.role === Role.TECHNICIAN && !selfArrived && [ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(from)) {
         await manager.update(TechnicianAssignment, { serviceOrderId: orderId, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: body.reason });
         await releaseOutgoingTechnicianPartRequests(manager, orderId, actor.id);
         const withdrawal = await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: CancelActor.TECHNICIAN, actorUserId: actor.id, reason: body.reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
