@@ -97,6 +97,28 @@ describe('BookingPrivateMediaContentService', () => {
     expect(harness.storage.download).not.toHaveBeenCalled();
   }
 
+  it('serves the seeded accounts, whose ids are not RFC 4122 versions (10/10/2026)', async () => {
+    // customer1 and tech1 of the seed: valid to PostgreSQL, rejected by isUUID().
+    const seedCustomer = 'd0000000-0000-0000-0000-000000000001';
+    const seedTechnician = 'c0000000-0000-0000-0000-000000000001';
+    const seedRef = `storage://booking-private/${seedCustomer}/${UPLOAD_ID}`;
+    const seeded = () => createHarness({
+      booking: { id: BOOKING_ID, customerId: seedCustomer, status: BookingStatus.MATCHED },
+      assignment: { serviceOrderId: '0c3b3f9f-c0b7-41b5-880f-3596756646f9', technicianId: seedTechnician, isActive: true },
+      upload: { id: UPLOAD_ID, ownerUserId: seedCustomer, claimedBookingId: BOOKING_ID, objectRef: seedRef },
+    });
+    for (const actor of [{ id: seedCustomer, role: Role.CUSTOMER }, { id: seedTechnician, role: Role.TECHNICIAN }]) {
+      const harness = seeded();
+      expect(await harness.service.download(BOOKING_ID, MEDIA_ID, actor)).toEqual({ buffer: PNG, mimeType: 'image/png' });
+      expect(harness.storage.download).toHaveBeenCalledWith(seedRef, seedCustomer);
+    }
+    // Still only the uuid shape: anything else is refused before the database.
+    for (const bad of ['d0000000-0000-0000-0000-00000000000', 'not-a-uuid', "1' OR '1'='1"]) {
+      await expectDeniedWithoutStorage(seeded(), { id: bad, role: Role.CUSTOMER });
+      await expectDeniedWithoutStorage(seeded(), owner, bad);
+    }
+  });
+
   it('denies foreign customers and roles outside the explicit access set', async () => {
     await expectDeniedWithoutStorage(createHarness(), { id: FOREIGN_USER_ID, role: Role.CUSTOMER });
     await expectDeniedWithoutStorage(createHarness(), { id: FOREIGN_USER_ID, role: 'unknown' });

@@ -4,17 +4,10 @@ import { EntityManager, IsNull, MoreThan } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import { PrivateBookingPhotoUpload } from './entities/private-booking-photo-upload.entity';
+import { DB_UUID } from '../../shared/utils/db-uuid';
 
 const MAX_BOOKING_PHOTO_UPLOADS = 5;
 
-/**
- * The shape PostgreSQL stores for a uuid column. The owner and the booking are
- * the server's own ids (the signed-in user, the booking just created), and the
- * seeded accounts carry ids such as d0000000-0000-0000-0000-000000000001 that
- * are valid uuids to the database but not RFC 4122 versions, so isUUID()
- * rejected every photo booking those accounts made.
- */
-const DB_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export type PrivateBookingPhotoClaimMetadata = {
   uploadId: string;
