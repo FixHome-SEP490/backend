@@ -131,6 +131,58 @@ export function registerDev1Cases(context: () => Context) {
       await post(`/service-orders/${order.id}/en-route`, f.spare).expect(200);
     });
 
+    it('costs reputation points when a customer or technician cancels a held order, never for staff (PO 08/10/2026)', async () => {
+      const f = await fixture(), db = context().db;
+      const points = async (userId: string) => Number((await db.query('SELECT reputation_points FROM users WHERE id = $1', [userId]))[0].reputation_points);
+      // Customer cancels an order a technician holds: -10, recorded with the cancellation.
+      const first = await accept(f);
+      await post(`/service-orders/${first.order.id}/cancel`, f.owner, { reason: 'Đổi ý' }).expect(200);
+      expect(await points(f.owner.user.id)).toBe(90);
+      const [event] = await db.query('SELECT kind, delta, points_after, cancellation_id, service_order_id FROM reputation_events WHERE user_id = $1', [f.owner.user.id]);
+      expect(event).toMatchObject({ kind: 'violation', delta: -10, points_after: 90, service_order_id: first.order.id });
+      expect(event.cancellation_id).toBeTruthy();
+      expect(unwrap((await get('/users/me', f.owner).expect(200)).body).reputationPoints).toBe(90);
+      // Technician withdraws before arrival: -10 for the technician, the customer keeps 90.
+      const second = await accept(f);
+      await post(`/service-orders/${second.order.id}/cancel`, f.tech, { reason: 'Kẹt xe' }).expect(200);
+      expect(await points(f.tech.user.id)).toBe(90);
+      expect(await points(f.owner.user.id)).toBe(90);
+      // Staff cancellations cost nobody points.
+      const manager = await context().register();
+      await db.query('UPDATE users SET role = $1 WHERE id = $2', ['service_manager', manager.user.id]);
+      const third = await accept(f, await f.create());
+      await post(`/service-orders/${third.order.id}/cancel`, manager, { reason: 'Khách nhờ huỷ hộ' }).expect(200);
+      expect(await points(f.owner.user.id)).toBe(90);
+    });
+
+    it('bans a customer below 70 points and lets only staff read and adjust the score (PO 08/10/2026)', async () => {
+      const f = await fixture(), db = context().db;
+      const points = async (userId: string) => Number((await db.query('SELECT reputation_points FROM users WHERE id = $1', [userId]))[0].reputation_points);
+      const manager = await context().register();
+      await db.query('UPDATE users SET role = $1 WHERE id = $2', ['service_manager', manager.user.id]);
+      // Below 70 the customer cannot book for 72 hours.
+      await db.query('UPDATE users SET reputation_points = 70 WHERE id = $1', [f.owner.user.id]);
+      const fourth = await accept(f);
+      await post(`/service-orders/${fourth.order.id}/cancel`, f.owner, { reason: 'Đổi ý lần nữa' }).expect(200);
+      expect(await points(f.owner.user.id)).toBe(60);
+      const [{ booking_suspended_until: until }] = await db.query('SELECT booking_suspended_until FROM users WHERE id = $1', [f.owner.user.id]);
+      expect(Math.round((new Date(until).getTime() - Date.now()) / 3600000)).toBe(72);
+      denied(await post('/bookings', f.owner, f.body));
+      // Staff see the lowest scores first, read why, and adjust with a reason; others cannot.
+      denied(await get('/reputation', f.owner));
+      denied(await post(`/reputation/${f.owner.user.id}/adjust`, f.tech, { delta: 10, reason: 'Tự cộng điểm' }));
+      const listed = unwrap((await get('/reputation?role=customer', manager).expect(200)).body);
+      expect(listed.find((row: any) => row.id === f.owner.user.id)?.reputationPoints).toBe(60);
+      expect(unwrap((await get(`/reputation/${f.owner.user.id}/events`, manager).expect(200)).body)).toHaveLength(1);
+      denied(await post(`/reputation/${f.owner.user.id}/adjust`, manager, { delta: 0, reason: 'Không đổi gì' }));
+      denied(await post(`/reputation/${f.owner.user.id}/adjust`, manager, { delta: 10, reason: '' }));
+      denied(await post(`/reputation/${manager.user.id}/adjust`, manager, { delta: -10, reason: 'Trừ điểm quản lý' }));
+      const adjusted = unwrap((await post(`/reputation/${f.owner.user.id}/adjust`, manager, { delta: 20, reason: 'Thợ đến trễ nên khách huỷ' }).expect(200)).body);
+      expect(adjusted.points).toBe(80);
+      expect((await db.query('SELECT booking_suspended_until FROM users WHERE id = $1', [f.owner.user.id]))[0].booking_suspended_until).toBeNull();
+      await post('/bookings', f.owner, f.body).expect(201);
+    });
+
     it('enforces ownership, valid GPS, file evidence, completion and cash gates end-to-end', async () => {
       const f = await fixture(), { order } = await accept(f), path = `/service-orders/${order.id}`;
       await get('/technicians/me/profile', f.owner).expect(403);

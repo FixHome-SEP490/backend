@@ -40,6 +40,12 @@ export class UserProfileDto {
   @ApiProperty({ nullable: true, example: null })
   bookingSuspendedUntil?: Date | null;
 
+  @ApiProperty({ example: 100, description: 'Điểm uy tín 0-100 (khách hàng và kỹ thuật viên)' })
+  reputationPoints?: number;
+
+  @ApiProperty({ example: '2026-10-09T00:00:00.000Z', description: 'Đầu kỳ điểm uy tín hiện tại; hết kỳ điểm về lại 100' })
+  reputationPeriodStart?: Date | null;
+
   @ApiProperty({ type: [String], example: ['booking:create', 'profile:read_own'] })
   permissions?: string[];
 
@@ -55,6 +61,8 @@ export class UserProfileDto {
       isEmailVerified: user.isEmailVerified ?? false,
       avatarUrl: user.avatarUrl ?? null,
       bookingSuspendedUntil: user.bookingSuspendedUntil ?? null,
+      reputationPoints: user.reputationPoints ?? 100,
+      reputationPeriodStart: user.reputationPeriodStart ?? null,
       permissions: permissions ?? [],
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
