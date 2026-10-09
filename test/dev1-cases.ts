@@ -200,6 +200,27 @@ export function registerDev1Cases(context: () => Context) {
       await post('/bookings', f.owner, f.body).expect(201);
     });
 
+    it('moves an accepted order to a session its technician is free for, tells them, and refuses a taken one (PO 08/10/2026)', async () => {
+      const f = await fixture(), db = context().db;
+      const day = new Date(Date.now() + 7 * 3600000 + 3 * 86400000).toISOString().slice(0, 10);
+      const first = await accept(f);
+      await patch(`/bookings/${first.booking.id}/schedule`, f.owner, { mode: 'scheduled', date: day, slot: 'afternoon' }).expect(200);
+      const [order] = await db.query('SELECT scheduled_at FROM service_orders WHERE id = $1', [first.order.id]);
+      expect(new Date(order.scheduled_at).toISOString()).toBe(`${day}T06:00:00.000Z`);
+      const notices = await db.query("SELECT message FROM notifications WHERE user_id = $1 AND type = 'BOOKING_RESCHEDULED'", [f.tech.user.id]);
+      expect(notices).toHaveLength(1);
+      expect(notices[0].message).toContain('Buổi chiều');
+      // The same technician takes the morning of that day on another booking; that session is now theirs.
+      const morning = await post('/bookings', f.owner, { ...f.body, preferredStartAt: undefined, preferredEndAt: undefined, mode: 'scheduled', date: day, slot: 'morning' });
+      expect(morning.status, JSON.stringify(morning.body)).toBe(201);
+      await accept(f, unwrap(morning.body));
+      denied(await patch(`/bookings/${first.booking.id}/schedule`, f.owner, { mode: 'scheduled', date: day, slot: 'morning' }));
+      denied(await patch(`/bookings/${first.booking.id}/schedule`, f.owner, { mode: 'urgent' }));
+      const slots = unwrap((await get(`/bookings/${first.booking.id}/available-slots?days=5`, f.owner).expect(200)).body);
+      const taken = slots.sessions.find((s: any) => s.date === day && s.slot === 'morning');
+      expect(taken).toMatchObject({ available: false });
+    });
+
     it('enforces ownership, valid GPS, file evidence, completion and cash gates end-to-end', async () => {
       const f = await fixture(), { order } = await accept(f), path = `/service-orders/${order.id}`;
       await get('/technicians/me/profile', f.owner).expect(403);

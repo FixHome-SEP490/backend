@@ -662,7 +662,9 @@ export class BookingsService {
     }
     const window = resolveBookingWindow(dto, new Date(), 0);
     if ('error' in window) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, window.error);
-    return this.dataSource.transaction(async (manager) => {
+    // The technician holding the order hears about the new session once it is saved.
+    let moved: { technicianId: string; orderId: string; code: string } | null = null;
+    const saved = await this.dataSource.transaction(async (manager) => {
       const booking = await manager.findOne(Booking, {
         where: { id: bookingId, customerId: customer.id },
         lock: { mode: 'pessimistic_write' },
@@ -705,6 +707,7 @@ export class BookingsService {
             throw new BusinessException(ErrorCodes.TECHNICIAN_NOT_ELIGIBLE, 'Kỹ thuật viên của đơn không rảnh buổi này, vui lòng chọn buổi khác', { reason: eligibility.reason });
           }
         }
+        if (assignment) moved = { technicianId: assignment.technicianId, orderId: order.id, code: order.code };
         // Without an active assignment the order waits for a replacement; the
         // new window is the one the next technician is invited for.
         await manager.update(ServiceOrder, order.id, { scheduledAt: booking.preferredStartAt, departureWarnedAt: null });
@@ -722,6 +725,20 @@ export class BookingsService {
       });
       return manager.save(booking);
     });
+    const notice = moved as { technicianId: string; orderId: string; code: string } | null;
+    if (notice && this.notificationsService) {
+      const [y, m, d] = vnDate(window.start).split('-');
+      const when = window.slot ? `${BOOKING_SLOTS[window.slot].label}, ${d}/${m}/${y}` : `${d}/${m}/${y}`;
+      await this.notificationsService.createNotification({
+        userId: notice.technicianId,
+        title: 'Khách đã đổi lịch hẹn',
+        message: `Đơn #${notice.code} chuyển sang ${when}.`,
+        type: 'BOOKING_RESCHEDULED',
+        referenceId: notice.orderId,
+        referenceType: 'SERVICE_ORDER',
+      }).catch(() => undefined);
+    }
+    return saved;
   }
 
   private async cancelOpenInvitations(manager: EntityManager, bookingId: string): Promise<void> {
