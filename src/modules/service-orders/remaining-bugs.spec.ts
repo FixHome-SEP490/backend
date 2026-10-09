@@ -65,11 +65,12 @@ describe('#28 a confirmed violation becomes a strike', () => {
     expect(s.updates.some(([entity]) => entity === 'TechnicianProfile')).toBe(false);
   });
 
-  it('suspends at the threshold and resets the active count (BRX-033)', async () => {
+  it('no longer suspends by strike count: reputation points decide (PO 08/10/2026)', async () => {
     const s = setup(CancelActor.CUSTOMER, 2);
     await s.service.reviewCancellation('cancel-1', { confirmViolation: true }, manager);
-    expect(s.updates.some(([entity, , values]) => entity === 'User' && values.bookingSuspendedUntil instanceof Date)).toBe(true);
-    expect(s.updates.some(([entity, , values]) => entity === 'CancellationStrike' && values.status === StrikeStatus.EXPIRED)).toBe(true);
+    expect(s.saved).toContainEqual(expect.objectContaining({ userId: 'user-1', role: Role.CUSTOMER, status: StrikeStatus.ACTIVE }));
+    expect(s.updates.some(([entity, , values]) => entity === 'User' && 'bookingSuspendedUntil' in values)).toBe(false);
+    expect(s.updates.some(([entity, , values]) => entity === 'CancellationStrike' && values.status === StrikeStatus.EXPIRED)).toBe(false);
   });
 
   it('refuses to waive without a reason, before writing anything', async () => {

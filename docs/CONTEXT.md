@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-08 23:52 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/order-steps-photos
+> Cập nhật lần cuối: 2026-10-09 10:06 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/reputation-points
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -190,14 +190,15 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - Không làm hoàn tiền; cuộc trò chuyện không tự đóng khi đơn hoàn tất hay bị huỷ (PO 07/10/2026).
 - Linh kiện vượt báo giá đi qua chi phí phát sinh để khách duyệt; báo giá chỉ là ước tính (PO 07/10/2026).
 - Duyệt KYC và quản lý danh mục chỉ admin làm; quản lý dịch vụ xử lý ngoại lệ (BRX-041, BRX-045).
-- Huỷ đơn không tự sinh vi phạm; vi phạm chỉ tạo khi quản lý xét (BRX-032).
+- Huỷ đơn không tự sinh vi phạm; vi phạm chỉ tạo khi quản lý xét (BRX-032). Vi phạm giờ chỉ là bản ghi cho quản lý, việc tạm khoá do điểm uy tín quyết định (xem dưới).
 - PlatformDue chỉ có ở đơn tiền mặt và bằng hoa hồng + linh kiện FixHome + phí giao (BRX-030, BRX-057); khi quyết toán được trừ thẳng vào ví kỹ thuật viên.
 - BRX-063 (PO 07/10/2026): đến giờ hẹn (đầu khung giờ khách chọn, hoặc lúc nhận đơn nếu muộn hơn) mà kỹ thuật viên chưa bấm "Đang đến" thì báo cho kỹ thuật viên và khách; 10 phút sau vẫn chưa xuất phát thì tự huỷ đơn và booking. Hai mốc là cấu hình `order.departure_grace_minutes` (0) và `order.departure_cancel_minutes` (10).
 - BRX-064 (PO 07/10/2026): chẩn đoán AI bắt buộc có mô tả, ảnh không bắt buộc.
 - Khi tài liệu chính thức lệch với code thì code là chuẩn; tài liệu chính thức đã được sửa khớp ngày 07/10/2026 (shortlist 1 đến 2, có ví và mức tối thiểu, AI tự host, PlatformDue trừ qua ví).
 - Không có xác thực giữa `backend` và `ai-service`; PO xác định đây không phải phạm vi cần làm.
 - Không có dữ liệu hay luồng giả lập (PO 07/10/2026): không mã QR thử khi nhận linh kiện; nạp ví chỉ qua VNPay khi `payment.mode` là `LIVE` (mặc định `LIVE`); rút tiền chỉ qua payOS, chưa cấu hình thì từ chối trước khi trừ ví; chưa cấu hình SMTP thì báo lỗi chứ không giả vờ đã gửi email; kỹ thuật viên chưa có đánh giá thì API trả `rating: null`.
-- Vi phạm huỷ đơn chỉ tạo khi quản lý bấm xác nhận (`confirmViolation` trong `POST cancellations/:id/review`); đủ ngưỡng thì tạm khoá theo `strike.*.threshold` và `*.suspension.hours`, sau đó số vi phạm đang tính được đặt lại, lịch sử giữ nguyên (BRX-033).
+- Vi phạm huỷ đơn chỉ tạo khi quản lý bấm xác nhận (`confirmViolation` trong `POST cancellations/:id/review`) và không còn tự tạm khoá theo `strike.*.threshold` (PO 08/10/2026 thay bằng điểm uy tín).
+- Điểm uy tín (PO 08/10/2026, module `reputation`, migration 030): khách và thợ bắt đầu 100 điểm (`users.reputation_points`). Mỗi lần khách huỷ đơn đã có thợ nhận, thợ rút khỏi đơn trước khi đến, hoặc đơn bị tự huỷ vì thợ không xuất phát, bị trừ `reputation.violation_points` (10), ghi vào `reputation_events` cùng lần huỷ. Quản lý huỷ thì không ai bị trừ. Thợ đã báo "Cần thay đổi thợ" (case `technician_replacement`) trên đơn đó thì không bị trừ. Điểm sau khi trừ quyết định mức khoá: dưới 70 khoá 72 giờ, dưới 40 khoá 7 ngày, từ 20 trở xuống khoá 30 ngày, 0 khoá tài khoản (`status = locked`); khách bị khoá đặt lịch (`booking_suspended_until`), thợ bị khoá nhận việc (`work_suspended_until`), lần sau không bao giờ rút ngắn lần khoá đang chạy. Cứ `reputation.reset_months` (2) tháng điểm về lại 100 (job nền), tài khoản đã khoá giữ nguyên. SM/admin: `GET /reputation?role&search&page&pageSize` (điểm thấp trước), `GET /reputation/:userId/events`, `POST /reputation/:userId/adjust {delta, reason}` (lý do bắt buộc, chỉ khách và thợ, nâng lên từ 70 thì gỡ khoá). `/users/me` và `/me` trả `reputationPoints`, `reputationPeriodStart`. Khách và thợ xem điểm của mình ở `GET /reputation/me` (điểm, ngày làm mới `resetsAt`, `suspendedUntil` nếu đang bị khoá, `locked`, 20 thay đổi gần nhất).
 - Đơn đã huỷ thì không thanh toán hoá đơn được nữa; các lần thanh toán đang chờ bị đóng với mã `ORDER_CANCELLED`. Không hoàn tiền.
 
 ## 8. Việc đang dở và rủi ro đã biết
@@ -212,6 +213,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-09 10:06 (UTC+7) | ToanAltF4 | feat/reputation-points | Điểm uy tín khách và thợ: trừ khi huỷ đơn đã có thợ, khoá theo mức điểm, reset 2 tháng, SM xem và điều chỉnh; vi phạm cũ không còn tự khoá; migration 030
 - 2026-10-08 23:52 (UTC+7) | ToanAltF4 | feat/order-steps-photos | Thợ: tự chuyển đang sửa khi đủ điều kiện, ảnh đóng dấu giờ và mã đơn, case cần thay đổi thợ sau check-in.
 - 2026-10-08 23:32 (UTC+7) | ToanAltF4 | feat/booking-sessions | Đặt lịch theo buổi sáng/chiều, đơn vãng lai theo GPS, đổi lịch chặn buổi thợ bận, buổi còn trống, đặt lại thợ cũ, xuất phát sớm 1 giờ, vị trí thợ.
 - 2026-10-08 21:53 (UTC+7) | ToanAltF4 | fix/strike-role | Xác nhận vi phạm ghi role vào cancellation_strikes (cột bắt buộc), trước đây insert lỗi trên DB thật.

@@ -75,6 +75,14 @@ export class User extends BaseEntity {
   })
   bookingSuspendedUntil?: Date | null;
 
+  /** Reputation points 0-100 (PO 08/10/2026), see modules/reputation/reputation-rules.ts. */
+  @Column({ name: 'reputation_points', type: 'int', default: 100 })
+  reputationPoints: number;
+
+  /** Start of the current reputation period; the score goes back to 100 when it ends. */
+  @Column({ name: 'reputation_period_start', type: 'timestamptz', default: () => 'now()' })
+  reputationPeriodStart: Date;
+
   @Column({ name: 'date_of_birth', type: 'date', nullable: true })
   dateOfBirth?: Date | null;
 

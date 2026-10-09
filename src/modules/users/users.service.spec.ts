@@ -29,6 +29,8 @@ describe('UsersService', () => {
     createdAt: new Date(),
     updatedAt: new Date(),
     refreshTokens: [],
+    reputationPoints: 100,
+    reputationPeriodStart: new Date('2026-01-01T00:00:00Z'),
   });
 
   beforeEach(() => {

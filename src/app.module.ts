@@ -20,6 +20,7 @@ import { ServicesModule } from './modules/services/services.module';
 import { BookingsModule } from './modules/bookings/bookings.module';
 import { AiDiagnosisModule } from './modules/ai-diagnosis/ai-diagnosis.module';
 import { ServiceOrdersModule } from './modules/service-orders/service-orders.module';
+import { ReputationModule } from './modules/reputation/reputation.module';
 import { QuotationsModule } from './modules/quotations/quotations.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { MessagingModule } from './modules/messaging/messaging.module';
@@ -68,6 +69,7 @@ import { WalletModule } from './modules/wallet/wallet.module';
     BookingsModule,
     AiDiagnosisModule,
     ServiceOrdersModule,
+    ReputationModule,
     QuotationsModule,
     PartRequestsModule,
     NotificationsModule,
