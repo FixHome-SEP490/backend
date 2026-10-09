@@ -50,6 +50,9 @@ function makeBooking(
     description: 'PRIVATE_DESCRIPTION_SENTINEL',
     preferredStartAt,
     preferredEndAt,
+    bookingMode: 'scheduled',
+    slot: 'morning',
+    customerNote: 'PRIVATE_CUSTOMER_NOTE gate code 1234',
     quantity: 2,
     urgency: UrgencyLevel.HIGH,
     status,
@@ -302,6 +305,8 @@ describe('BE-PRIVACY-A synthetic booking reads', () => {
           urgency: UrgencyLevel.HIGH,
           preferredStartAt: preferredStartAt.toISOString(),
           preferredEndAt: preferredEndAt.toISOString(),
+          bookingMode: 'scheduled',
+          slot: 'morning',
         },
       }],
     });
@@ -366,6 +371,8 @@ describe('BE-PRIVACY-A synthetic booking reads', () => {
         urgency: UrgencyLevel.HIGH,
         preferredStartAt: preferredStartAt.toISOString(),
         preferredEndAt: preferredEndAt.toISOString(),
+        bookingMode: 'scheduled',
+        slot: 'morning',
       },
     });
     expect(stringify(serialized)).not.toContain('PRIVATE_');

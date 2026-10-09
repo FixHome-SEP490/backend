@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-09 15:11 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/auto-reputation-only
+> Cập nhật lần cuối: 2026-10-09 16:57 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/customer-booking-sessions
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -198,6 +198,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - Không có xác thực giữa `backend` và `ai-service`; PO xác định đây không phải phạm vi cần làm.
 - Không có dữ liệu hay luồng giả lập (PO 07/10/2026): không mã QR thử khi nhận linh kiện; nạp ví chỉ qua VNPay khi `payment.mode` là `LIVE` (mặc định `LIVE`); rút tiền chỉ qua payOS, chưa cấu hình thì từ chối trước khi trừ ví; chưa cấu hình SMTP thì báo lỗi chứ không giả vờ đã gửi email; kỹ thuật viên chưa có đánh giá thì API trả `rating: null`.
 - Bỏ xác nhận vi phạm thủ công (PO 09/10/2026): huỷ đơn tự trừ điểm uy tín, `confirmViolation` trong `POST cancellations/:id/review` bị từ chối (422). `waiveStrike` chỉ còn cho vi phạm ghi từ trước. Danh sách `GET /cancellations` có `reputationDelta` (số điểm lần huỷ đó đã trừ, null nếu không trừ). Ngoại lệ không trừ duy nhất phía thợ: đã check-in và báo "Cần thay đổi thợ", đơn chuyển SM, SM huỷ thì không ai bị trừ.
+- Xem trước lời mời của thợ (`GET /invitations/my`, `GET /bookings/:id` khi là người được mời) có thêm `bookingMode` và `slot` để thợ biết buổi trước khi nhận; ghi chú của khách (`customerNote`) chỉ hiện sau khi nhận đơn vì có thể chứa thông tin riêng.
 - Điểm uy tín (PO 08/10/2026, module `reputation`, migration 030): khách và thợ bắt đầu 100 điểm (`users.reputation_points`). Mỗi lần khách huỷ đơn đã có thợ nhận, thợ rút khỏi đơn trước khi đến, hoặc đơn bị tự huỷ vì thợ không xuất phát, bị trừ `reputation.violation_points` (10), ghi vào `reputation_events` cùng lần huỷ. Quản lý huỷ thì không ai bị trừ. Thợ đã báo "Cần thay đổi thợ" (case `technician_replacement`) trên đơn đó thì không bị trừ. Điểm sau khi trừ quyết định mức khoá: dưới 70 khoá 72 giờ, dưới 40 khoá 7 ngày, từ 20 trở xuống khoá 30 ngày, 0 khoá tài khoản (`status = locked`); khách bị khoá đặt lịch (`booking_suspended_until`), thợ bị khoá nhận việc (`work_suspended_until`), lần sau không bao giờ rút ngắn lần khoá đang chạy. Cứ `reputation.reset_months` (2) tháng điểm về lại 100 (job nền), tài khoản đã khoá giữ nguyên. SM/admin: `GET /reputation?role&search&page&pageSize` (điểm thấp trước), `GET /reputation/:userId/events`, `POST /reputation/:userId/adjust {delta, reason}` (lý do bắt buộc, chỉ khách và thợ, nâng lên từ 70 thì gỡ khoá). `/users/me` và `/me` trả `reputationPoints`, `reputationPeriodStart`. Khách và thợ xem điểm của mình ở `GET /reputation/me` (điểm, ngày làm mới `resetsAt`, `suspendedUntil` nếu đang bị khoá, `locked`, 20 thay đổi gần nhất).
 - Đơn đã huỷ thì không thanh toán hoá đơn được nữa; các lần thanh toán đang chờ bị đóng với mã `ORDER_CANCELLED`. Không hoàn tiền.
 
@@ -213,6 +214,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-09 16:57 (UTC+7) | ToanAltF4 | feat/customer-booking-sessions | Xem trước lời mời có buổi hẹn (bookingMode, slot), không lộ ghi chú của khách
 - 2026-10-09 15:11 (UTC+7) | ToanAltF4 | feat/auto-reputation-only | Bỏ xác nhận vi phạm thủ công, huỷ đơn tự trừ điểm; danh sách huỷ đơn có số điểm đã trừ
 - 2026-10-09 10:06 (UTC+7) | ToanAltF4 | feat/reputation-points | Điểm uy tín khách và thợ: trừ khi huỷ đơn đã có thợ, khoá theo mức điểm, reset 2 tháng, SM xem và điều chỉnh; vi phạm cũ không còn tự khoá; migration 030
 - 2026-10-08 23:52 (UTC+7) | ToanAltF4 | feat/order-steps-photos | Thợ: tự chuyển đang sửa khi đủ điều kiện, ảnh đóng dấu giờ và mã đơn, case cần thay đổi thợ sau check-in.
