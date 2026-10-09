@@ -1,4 +1,5 @@
 // src/modules/technicians/technicians.service.ts
+import { availabilityNow, type AvailabilityNow } from './availability-now';
 import { completedOrderEarnings, displayRating } from './technician-earnings';
 import {
   BadRequestException,
@@ -113,6 +114,16 @@ export class TechniciansService {
     }
   }
 
+  /** Receiving jobs now, from the weekly schedule, the manual switch and time off (PO 08/10/2026). */
+  async getMyAvailability(userId: string): Promise<AvailabilityNow> {
+    const profile = await this.getMyProfile(userId);
+    return availabilityNow({
+      manual: profile.isAvailable,
+      schedules: profile.schedules ?? [],
+      timeOff: (profile.timeOffs ?? []).map((t) => ({ startAt: t.startAt, endAt: t.endAt })),
+    });
+  }
+
   async getMyProfile(userId: string): Promise<TechnicianProfile> {
     let profile = await this.profileRepo.findOne({
       where: { userId },
@@ -139,6 +150,17 @@ export class TechniciansService {
     if (dto.yearsExperience !== undefined) profile.yearsExperience = dto.yearsExperience;
     if (dto.serviceRadiusKm !== undefined) profile.serviceRadiusKm = dto.serviceRadiusKm;
     return this.profileRepo.save(profile);
+  }
+
+  /** Keep the last good GPS fix; a fix worse than 1 km is too coarse to match on. */
+  async reportLocation(userId: string, dto: { lat: number; lng: number; accuracyMeters?: number }): Promise<{ recorded: boolean; at: string | null }> {
+    const profile = await this.getMyProfile(userId);
+    if (dto.accuracyMeters != null && dto.accuracyMeters > 1000) {
+      return { recorded: false, at: profile.lastLocationAt ? new Date(profile.lastLocationAt).toISOString() : null };
+    }
+    const at = new Date();
+    await this.profileRepo.update(profile.id, { lastLat: dto.lat, lastLng: dto.lng, lastLocationAt: at });
+    return { recorded: true, at: at.toISOString() };
   }
 
   async getMySkills(

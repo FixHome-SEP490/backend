@@ -34,7 +34,7 @@ describe('#42 province cache', () => {
   });
 });
 
-describe('#28 a confirmed violation becomes a strike', () => {
+describe('#28 violations come from reputation points, not a manual confirmation', () => {
   function setup(actor: CancelActor, activeStrikesAfter: number) {
     const cancellation = { id: 'cancel-1', serviceOrderId: 'order-1', actor, actorUserId: 'user-1', strikeApplied: false, reviewedByUserId: null };
     const saved: unknown[] = [];
@@ -56,32 +56,24 @@ describe('#28 a confirmed violation becomes a strike', () => {
   }
   const manager = { id: 'sm-1', role: Role.SERVICE_MANAGER };
 
-  it('records an active strike against the technician who cancelled', async () => {
-    const s = setup(CancelActor.TECHNICIAN, 1);
-    await s.service.reviewCancellation('cancel-1', { confirmViolation: true }, manager);
-    // role is NOT NULL in cancellation_strikes; without it the insert fails on a real database.
-    expect(s.saved).toContainEqual(expect.objectContaining({ userId: 'user-1', cancellationId: 'cancel-1', role: Role.TECHNICIAN, status: StrikeStatus.ACTIVE }));
-    expect(s.cancellation.strikeApplied).toBe(true);
-    expect(s.updates.some(([entity]) => entity === 'TechnicianProfile')).toBe(false);
+  it('refuses a manual violation: cancelling already cost reputation points (PO 09/10/2026)', async () => {
+    for (const actor of [CancelActor.CUSTOMER, CancelActor.TECHNICIAN, CancelActor.SERVICE_MANAGER]) {
+      const s = setup(actor, 0);
+      await expect(s.service.reviewCancellation('cancel-1', { confirmViolation: true }, manager)).rejects.toThrow('không còn xác nhận vi phạm thủ công');
+      expect(s.saved).toHaveLength(0);
+      expect(s.updates).toHaveLength(0);
+      expect(s.cancellation.strikeApplied).toBe(false);
+    }
   });
 
-  it('suspends at the threshold and resets the active count (BRX-033)', async () => {
-    const s = setup(CancelActor.CUSTOMER, 2);
-    await s.service.reviewCancellation('cancel-1', { confirmViolation: true }, manager);
-    expect(s.updates.some(([entity, , values]) => entity === 'User' && values.bookingSuspendedUntil instanceof Date)).toBe(true);
-    expect(s.updates.some(([entity, , values]) => entity === 'CancellationStrike' && values.status === StrikeStatus.EXPIRED)).toBe(true);
-  });
-
-  it('refuses to waive without a reason, before writing anything', async () => {
-    const s = setup(CancelActor.CUSTOMER, 1);
-    await expect(s.service.reviewCancellation('cancel-1', { confirmViolation: true, waiveStrike: true, waiveReason: '   ' }, manager)).rejects.toThrow('lý do miễn');
-    expect(s.saved).toHaveLength(0);
-    expect(s.cancellation.strikeApplied).toBe(false);
-  });
-
-  it('never strikes a cancellation made by staff', async () => {
-    const s = setup(CancelActor.SERVICE_MANAGER, 0);
-    await expect(s.service.reviewCancellation('cancel-1', { confirmViolation: true }, manager)).rejects.toThrow('customer or technician');
+  it('still waives a strike recorded before, with a reason', async () => {
+    const s = setup(CancelActor.CUSTOMER, 0);
+    s.cancellation.strikeApplied = true;
+    await expect(s.service.reviewCancellation('cancel-1', { waiveStrike: true, waiveReason: '   ' }, manager)).rejects.toThrow('lý do miễn');
+    const strike = { id: 'strike-1', status: StrikeStatus.ACTIVE } as Record<string, unknown>;
+    Object.assign(s.service, { strikeRepo: { findOne: vi.fn(async () => strike), save: vi.fn(async (v: object) => v) } });
+    await s.service.reviewCancellation('cancel-1', { waiveStrike: true, waiveReason: 'Khách huỷ vì thợ đến trễ' }, manager);
+    expect(strike).toMatchObject({ status: StrikeStatus.WAIVED, waivedByUserId: 'sm-1', waiveReason: 'Khách huỷ vì thợ đến trễ' });
   });
 });
 

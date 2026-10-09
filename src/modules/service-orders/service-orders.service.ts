@@ -1,7 +1,9 @@
+import { NO_DEPARTURE_CANCEL_REASON } from './no-departure';
 import { closeOrderPartRequests, assertPartsResolved, usedPartQuantities, holderPartRequests, releaseOutgoingTechnicianPartRequests } from '../part-requests/part-request-lifecycle';
 import { Payment } from '../finance/entities/payment.entity';
 import { PartRequest } from '../part-requests/entities/part-request.entity';
 import { Injectable, Logger, ForbiddenException, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
+import { ReputationService } from '../reputation/reputation.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { randomUUID } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -67,7 +69,7 @@ import {
   CashSettlementResponseDto,
 } from '../finance/dto';
 import type { EntityManager } from 'typeorm';
-import { OrderEvidenceStorage, EvidenceFile } from '../media/order-evidence-storage.service';
+import { OrderEvidenceStorage, EvidenceFile, evidenceStampText } from '../media/order-evidence-storage.service';
 import { expireAdditionalCosts } from './expire-additional-costs';
 import { authorizeOrder } from './order-access';
 import { isCompletionHeld } from '../support-cases/completion-hold';
@@ -79,6 +81,8 @@ export type CancellationListItem = Cancellation & {
   actorName: string | null;
   actorRole: string | null;
   orderCode: string | null;
+  /** Reputation points this cancellation cost whoever cancelled (negative), or null when it cost nothing. */
+  reputationDelta: number | null;
 };
 
 /** A strike as the review list shows it: whose, and from which order. */
@@ -140,6 +144,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     private readonly financeService: FinanceService,
     @Optional() private readonly settlementService?: SettlementService,
     @Optional() private readonly notificationsService?: NotificationsService,
+    @Optional() private readonly reputationService?: ReputationService,
   ) {}
 
   private async notifyCustomerForOrder(orderId: string, title: string, message: string, type: string): Promise<void> {
@@ -229,11 +234,12 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       const assignment = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: id, isActive: true });
       if (!booking || !order || order.status !== ServiceOrderStatus.ACCEPTED || !order.departureWarnedAt || !assignment) return null;
       if (new Date(order.departureWarnedAt).getTime() + cancelMinutes * 60000 > Date.now()) return null;
-      const reason = 'Tự huỷ: kỹ thuật viên không xuất phát sau khi đã được nhắc';
+      const reason = NO_DEPARTURE_CANCEL_REASON;
       await this.commitTransition(manager, order, ServiceOrderStatus.CANCELLED, { id: null, role: 'system' }, reason);
       await closeBookingForCancelledOrder(manager, booking.id);
       await manager.update(TechnicianAssignment, { serviceOrderId: id, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: reason });
-      await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: id, actor: CancelActor.TECHNICIAN, actorUserId: assignment.technicianId, reason, stateAtCancel: ServiceOrderStatus.ACCEPTED, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
+      const cancellation = await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: id, actor: CancelActor.TECHNICIAN, actorUserId: assignment.technicianId, reason, stateAtCancel: ServiceOrderStatus.ACCEPTED, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
+      await this.reputationService?.penalize(manager, { userId: assignment.technicianId, role: Role.TECHNICIAN, reason: `Không xuất phát đơn #${order.code} dù đã được nhắc`, serviceOrderId: id, cancellationId: cancellation.id });
       return { order, customerId: booking.customerId, technicianId: assignment.technicianId };
     });
     if (!cancelled || !this.notificationsService) return;
@@ -399,6 +405,12 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       quantity: booking.quantity || 1,
       scopeDescription: booking.scopeSnapshot || '',
       bookingDescription: booking.description || '',
+      customerNote: booking.customerNote ?? null,
+      bookingMode: booking.bookingMode ?? 'scheduled',
+      slot: booking.slot ?? null,
+      departAvailableAt: booking.preferredStartAt
+        ? new Date(booking.preferredStartAt.getTime() - (await this.configService.getInt('order.depart_early_minutes', 60)) * 60_000).toISOString()
+        : null,
       customerName: customer?.fullName || '', customerPhone: customer?.phoneNumber || '',
       technician: technician ? { id: technician.id, fullName: technician.fullName, phoneNumber: technician.phoneNumber } : undefined,
       destination: booking.latitudeSnapshot != null && booking.longitudeSnapshot != null
@@ -419,6 +431,17 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     orderId: string,
     actor: { id: string; role: string },
   ): Promise<ServiceOrder> {
+    // PO 08/10/2026: setting out is allowed from order.depart_early_minutes (60)
+    // before the appointment; an urgent booking's appointment is its creation.
+    const current = await this.orderRepo.findOneBy({ id: orderId });
+    const booking = current ? await this.dataSource.manager.findOneBy(Booking, { id: current.bookingId }) : null;
+    if (booking?.preferredStartAt) {
+      const earlyMinutes = await this.configService.getInt('order.depart_early_minutes', 60);
+      const opensAt = booking.preferredStartAt.getTime() - earlyMinutes * 60_000;
+      if (Date.now() < opensAt) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, `Chỉ xuất phát được từ ${earlyMinutes} phút trước giờ hẹn`, { departAvailableAt: new Date(opensAt).toISOString() });
+      }
+    }
     const res = await this.transitionStatus(
       orderId,
       ServiceOrderStatus.EN_ROUTE,
@@ -477,14 +500,40 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
 
 
   async startRepair(orderId: string, actor: { id: string; role: string }): Promise<ServiceOrder> {
+    // The repair usually starts by itself (autoStartRepair); an older client that
+    // still presses "Bắt đầu sửa" afterwards gets the order back unchanged.
+    const current = await this.orderRepo.findOneBy({ id: orderId });
+    if (current?.status === ServiceOrderStatus.UNDER_REPAIR) {
+      // Read-only ownership check: no row lock outside a transaction.
+      return authorizeOrder(this.dataSource.manager, orderId, actor, 'technician');
+    }
     const res = await this.transitionStatus(orderId, ServiceOrderStatus.UNDER_REPAIR, actor, 'Repair started');
     void this.notifyCustomerForOrder(
       orderId,
       'Kỹ thuật viên đã bắt đầu sửa chữa',
       `Kỹ thuật viên đã có mặt và bắt đầu tiến hành sửa chữa cho đơn hàng #${res.code}.`,
-      'TECHNICIAN_ARRIVED',
+      'REPAIR_STARTED',
     );
     return res;
+  }
+
+  /**
+   * PO 08/10/2026: there is no separate "start repair" step for the technician.
+   * As soon as the order is ready (valid check-in, product photo, and for an
+   * inspection job the approved quotation) it moves to UNDER_REPAIR by itself.
+   * Not ready yet is not an error: returns false and leaves the order as is.
+   */
+  async autoStartRepair(orderId: string): Promise<boolean> {
+    const order = await this.orderRepo.findOneBy({ id: orderId });
+    if (!order || order.status !== ServiceOrderStatus.EN_ROUTE) return false;
+    const assignment = await this.dataSource.manager.findOneBy(TechnicianAssignment, { serviceOrderId: orderId, isActive: true });
+    if (!assignment) return false;
+    try {
+      await this.startRepair(orderId, { id: assignment.technicianId, role: Role.TECHNICIAN });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
 
@@ -569,13 +618,19 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       const order = await authorizeOrder(manager, orderId, actor, actor.role === Role.TECHNICIAN ? 'technician' : 'read', true);
       if (order.status === ServiceOrderStatus.CANCELLED) return order;
       const arrived = await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, result: CheckInResult.VALID });
-      if (actor.role === Role.TECHNICIAN && arrived) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'After arrival, request Service Manager exception handling');
+      // A technician has arrived only with their own check-in: after a replacement the earlier
+      // technician's check-in stays on the order but says nothing about the new one.
+      const selfArrived = actor.role === Role.TECHNICIAN
+        ? await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, result: CheckInResult.VALID })
+        : arrived;
+      if (actor.role === Role.TECHNICIAN && selfArrived) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'After arrival, request Service Manager exception handling');
       if (actor.role === Role.CUSTOMER && order.status === ServiceOrderStatus.UNDER_REPAIR) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'During repair, request Service Manager exception handling');
       const from = order.status;
-      if (actor.role === Role.TECHNICIAN && !arrived && [ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(from)) {
+      if (actor.role === Role.TECHNICIAN && !selfArrived && [ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(from)) {
         await manager.update(TechnicianAssignment, { serviceOrderId: orderId, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: body.reason });
         await releaseOutgoingTechnicianPartRequests(manager, orderId, actor.id);
-        await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: CancelActor.TECHNICIAN, actorUserId: actor.id, reason: body.reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
+        const withdrawal = await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: CancelActor.TECHNICIAN, actorUserId: actor.id, reason: body.reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
+        await this.reputationService?.penalize(manager, { userId: actor.id, role: Role.TECHNICIAN, reason: `Huỷ nhận đơn #${order.code}: ${body.reason}`, serviceOrderId: orderId, cancellationId: withdrawal.id });
         if (this.notificationsService && booking.customerId) {
           void this.notificationsService.createNotification({
             userId: booking.customerId,
@@ -605,7 +660,9 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       }
       await this.commitTransition(manager, order, ServiceOrderStatus.CANCELLED, actor, body.reason);
       await closeBookingForCancelledOrder(manager, booking.id);
-      await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: actor.role as unknown as CancelActor, actorUserId: actor.id, reason: body.reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
+      const cancellation = await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: actor.role as unknown as CancelActor, actorUserId: actor.id, reason: body.reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
+      // A customer who cancels an order a technician already holds loses points (PO 08/10/2026); staff cancellations cost nobody points.
+      if (actor.role === Role.CUSTOMER) await this.reputationService?.penalize(manager, { userId: actor.id, role: Role.CUSTOMER, reason: `Huỷ đơn #${order.code} đã có thợ nhận: ${body.reason}`, serviceOrderId: orderId, cancellationId: cancellation.id });
       await manager.update(TechnicianAssignment, { serviceOrderId: orderId, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: body.reason });
       await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: arrived ? 'CANCELLATION_REQUIRES_REVIEW' : 'ORDER_CANCEL', resourceType: 'service_order', resourceId: orderId, after: { reason: body.reason, strikeApplied: false } });
       if (this.notificationsService) {
@@ -652,12 +709,18 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     // must never run while the ServiceOrder row lock is held, or every other read/write on
     // the same order blocks for as long as the upload takes (observed: 30s+ GETs).
     await this.dataSource.transaction(manager => checkEligible(manager));
-    const mediaUrl = await this.evidenceStorage.upload(orderId, actor.id, file);
+    const stampedOrder = await this.orderRepo.findOneBy({ id: orderId });
+    const capturedAt = body.capturedAt ? new Date(body.capturedAt) : new Date();
+    const mediaUrl = await this.evidenceStorage.upload(orderId, actor.id, file, stampedOrder ? evidenceStampText(capturedAt, stampedOrder.code) : undefined);
     try {
-      return await this.dataSource.transaction(async manager => {
+      const saved = await this.dataSource.transaction(async manager => {
         await checkEligible(manager); // re-validate: state may have changed during the upload
-        return manager.save(RepairEvidence, manager.create(RepairEvidence, { serviceOrderId: orderId, uploaderId: actor.id, type: body.type, mediaUrl, mimeType: file.mimetype, fileSize: file.size, note: body.note || null, capturedAt: body.capturedAt ? new Date(body.capturedAt) : new Date() }));
+        return manager.save(RepairEvidence, manager.create(RepairEvidence, { serviceOrderId: orderId, uploaderId: actor.id, type: body.type, mediaUrl, mimeType: file.mimetype, fileSize: file.size, note: body.note || null, capturedAt }));
       });
+      // Check-in with the product photo is the last step before repair for a
+      // fixed-price job; an inspection job also needs the approved quotation.
+      if (body.type === EvidenceType.BEFORE) await this.autoStartRepair(orderId);
+      return saved;
     } catch (error) {
       await this.evidenceStorage.delete(mediaUrl); // avoid an orphaned upload when the re-check rejects it
       throw error;
@@ -804,15 +867,17 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       skip: (page - 1) * limit,
       take: limit,
     });
-    const [people, codes] = await Promise.all([
+    const [people, codes, points] = await Promise.all([
       this.namesOf(rows.map((row) => row.actorUserId)),
       this.orderCodesOf(rows.map((row) => row.serviceOrderId)),
+      this.reputationCostOf(rows.map((row) => row.id)),
     ]);
     const data = rows.map((row) => ({
       ...row,
       actorName: people.get(row.actorUserId)?.fullName ?? null,
       actorRole: people.get(row.actorUserId)?.role ?? null,
       orderCode: codes.get(row.serviceOrderId) ?? null,
+      reputationDelta: points.get(row.id) ?? null,
     }));
     return { data, total };
   }
@@ -834,6 +899,17 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       role: String(user.role),
       bookingSuspendedUntil: user.bookingSuspendedUntil ?? null,
     }]));
+  }
+
+  /** Points each cancellation cost, from the reputation history. */
+  private async reputationCostOf(cancellationIds: string[]): Promise<Map<string, number>> {
+    const ids = [...new Set(cancellationIds.filter(Boolean))];
+    if (!ids.length) return new Map();
+    const rows: Array<{ cancellation_id: string; delta: string }> = await this.dataSource.query(
+      `SELECT "cancellation_id", SUM("delta") AS delta FROM "reputation_events" WHERE "kind" = 'violation' AND "cancellation_id" = ANY($1) GROUP BY "cancellation_id"`,
+      [ids],
+    );
+    return new Map(rows.map((row) => [row.cancellation_id, Number(row.delta)]));
   }
 
   private async orderCodesOf(orderIds: string[]): Promise<Map<string, string>> {
@@ -862,6 +938,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   ): Promise<Cancellation> {
     if (![Role.ADMIN, Role.SERVICE_MANAGER].includes(actor.role as Role)) throw new ForbiddenException('Staff review required');
     if (body.compensationDecision === 'GRANTED') throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Monetary cancellation compensation is not supported by MASTER v1.4');
+    // PO 09/10/2026: cancelling costs reputation points by itself; staff no longer confirm violations by hand.
+    if (body.confirmViolation) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Huỷ đơn đã tự trừ điểm uy tín, không còn xác nhận vi phạm thủ công. Điều chỉnh điểm ở trang Điểm uy tín.');
     // Checked before anything is written: the reason is what the audit and the user see later.
     if (body.waiveStrike && !body.waiveReason?.trim()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Cần ghi lý do miễn vi phạm');
     const cancellation = await this.cancellationRepo.findOneBy({
@@ -891,27 +969,6 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
           { priorityBoostUntil: boostUntil },
         );
       }
-    }
-
-    // BRX-032/033: a cancellation becomes a strike only when staff confirm it
-    // was a violation. Customer and technician cancellations can carry one;
-    // staff cancellations cannot. Reaching the threshold suspends the account.
-    if (body.confirmViolation && !cancellation.strikeApplied) {
-      const role = cancellation.actor === CancelActor.CUSTOMER ? Role.CUSTOMER : cancellation.actor === CancelActor.TECHNICIAN ? Role.TECHNICIAN : null;
-      if (!role) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Only customer or technician cancellations can be a violation');
-      await this.dataSource.transaction(async manager => {
-        const windowDays = await this.configService.getInt('strike.window.days', 30);
-        await manager.save(CancellationStrike, manager.create(CancellationStrike, {
-          userId: cancellation.actorUserId,
-          cancellationId: cancellation.id,
-          role,
-          status: StrikeStatus.ACTIVE,
-          expiresAt: new Date(Date.now() + windowDays * 86_400_000),
-        }));
-        await manager.update(Cancellation, cancellation.id, { strikeApplied: true });
-        await this.checkStrikeThreshold(cancellation.actorUserId, role, manager);
-      });
-      cancellation.strikeApplied = true;
     }
 
     if (body.waiveStrike && cancellation.strikeApplied) {
@@ -1324,54 +1381,6 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     });
 
     return savedInvoice;
-  }
-
-  /**
-   * Check if user has exceeded strike threshold → apply suspension.
-   */
-  private async checkStrikeThreshold(
-    userId: string,
-    role: string,
-    manager: EntityManager,
-  ): Promise<void> {
-    const thresholdKey =
-      role === Role.CUSTOMER
-        ? 'strike.customer.threshold'
-        : 'strike.technician.threshold';
-    const suspensionKey =
-      role === Role.CUSTOMER
-        ? 'customer.suspension.hours'
-        : 'technician.suspension.hours';
-
-    const threshold = await this.configService.getInt(thresholdKey, 2);
-    const suspensionHours = await this.configService.getInt(suspensionKey, 72);
-
-    const activeStrikes = await manager.count(CancellationStrike, {
-      where: { userId, status: StrikeStatus.ACTIVE },
-    });
-
-    if (activeStrikes >= threshold) {
-      const suspendedUntil = new Date(
-        Date.now() + suspensionHours * 60 * 60 * 1000,
-      );
-
-      if (role === Role.CUSTOMER) {
-        await manager.update(User, userId, {
-          bookingSuspendedUntil: suspendedUntil,
-        });
-      } else if (role === Role.TECHNICIAN) {
-        await manager.update(
-          TechnicianProfile,
-          { userId },
-          { workSuspendedUntil: suspendedUntil },
-        );
-      }
-
-      await manager.update(CancellationStrike, { userId, status: StrikeStatus.ACTIVE }, { status: StrikeStatus.EXPIRED });
-      this.logger.warn(
-        `User ${userId} suspended until ${suspendedUntil.toISOString()} (${activeStrikes} active strikes)`,
-      );
-    }
   }
 
   /**

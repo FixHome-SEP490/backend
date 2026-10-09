@@ -32,6 +32,11 @@ export class VnpayController {
     if (result.purpose === PaymentPurpose.WALLET_TOP_UP) {
       const params = new URLSearchParams({ payment: isSuccess });
       if (result.amount) params.set('amount', String(result.amount));
+      // A customer topped up their own wallet (PO 08/10/2026).
+      if (result.payerRole === 'customer') {
+        const isMobileApp = result.orderInfo?.includes('mobile') || query.app === 'mobile' || query.platform === 'mobile';
+        return res.redirect(isMobileApp ? `fixhome://app/wallet?${params.toString()}` : `${frontendUrl}/app/wallet?${params.toString()}`);
+      }
 
       const isMobile =
         result.orderInfo?.includes('mobile') ||

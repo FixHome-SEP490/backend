@@ -29,10 +29,10 @@ const ALLOWED: Record<ActorRole, Record<Phase, SupportCaseType[]>> = {
   [Role.TECHNICIAN]: {
     no_order: [],
     [ServiceOrderStatus.ACCEPTED]: [S.ARRIVAL_ABNORMAL, S.CONDUCT, S.OTHER],
-    [ServiceOrderStatus.EN_ROUTE]: [S.ARRIVAL_ABNORMAL, S.CONDUCT, S.OTHER],
+    [ServiceOrderStatus.EN_ROUTE]: [S.ARRIVAL_ABNORMAL, S.TECHNICIAN_REPLACEMENT, S.CONDUCT, S.OTHER],
     [ServiceOrderStatus.UNDER_REPAIR]: [
       S.MID_JOB_INTERRUPTION, S.PARTS_DISPUTE, S.PRICING_DISPUTE,
-      S.PROPERTY_DAMAGE, S.CONDUCT, S.OTHER,
+      S.PROPERTY_DAMAGE, S.TECHNICIAN_REPLACEMENT, S.CONDUCT, S.OTHER,
     ],
     [ServiceOrderStatus.COMPLETED]: [S.CASH_MISMATCH, S.CONDUCT, S.OTHER],
     [ServiceOrderStatus.CANCELLED]: [S.CANCELLATION_REVIEW, S.OTHER],
@@ -80,9 +80,18 @@ export const COMPLAINT_RESOLUTION_CODES = [
   'order_cancelled_no_fee',
   'price_adjusted',
   'refund_recorded',
+  // Money back into the customer's wallet (PO 08/10/2026); needs an amount.
+  'refund_to_wallet',
   'escalate_admin',
   'warranty_upheld',
   'warranty_overturned',
 ] as const;
 
 export const LIABLE_PARTIES = ['technician', 'customer', 'platform', 'shared'] as const;
+
+/**
+ * Money goes back into the customer's wallet only for a faulty part or a
+ * warranty failure (PO 09/10/2026). FixHome bears it; charging the technician
+ * afterwards is an admin wallet adjustment.
+ */
+export const REFUND_CASE_TYPES = [SupportCaseType.PARTS_DISPUTE, SupportCaseType.WARRANTY_DISPUTE] as const;

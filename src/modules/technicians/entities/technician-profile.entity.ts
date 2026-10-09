@@ -97,6 +97,16 @@ export class TechnicianProfile extends BaseEntity {
   @Column({ name: 'longitude', type: 'decimal', precision: 10, scale: 7, nullable: true })
   longitude?: number | null;
 
+  /** Last GPS position the app sent, for urgent bookings nearby (PO 08/10/2026). */
+  @Column({ name: 'last_lat', type: 'decimal', precision: 10, scale: 7, nullable: true })
+  lastLat?: number | null;
+
+  @Column({ name: 'last_lng', type: 'decimal', precision: 10, scale: 7, nullable: true })
+  lastLng?: number | null;
+
+  @Column({ name: 'last_location_at', type: 'timestamptz', nullable: true })
+  lastLocationAt?: Date | null;
+
   // ── Relations ────────────────────────────────────────────────────────
 
   @OneToMany(() => TechnicianSkill, (skill) => skill.technician)

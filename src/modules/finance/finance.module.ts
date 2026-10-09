@@ -3,6 +3,10 @@ import { HttpModule } from '@nestjs/axios';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuditLogModule } from '../audit-log/audit-log.module';
 import { SupportCasesModule } from '../support-cases/support-cases.module';
+import { CustomerWalletModule } from '../customer-wallet/customer-wallet.module';
+import { CustomerWalletController } from './customer-wallet.controller';
+import { AdminPaymentsController } from './admin-payments.controller';
+import { AdminPaymentsService } from './admin-payments.service';
 import { WalletModule } from '../wallet/wallet.module';
 import { Booking } from '../bookings/entities/booking.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
@@ -25,6 +29,7 @@ import { UnconfiguredPaymentVerificationAdapter } from './unconfigured-payment-v
     HttpModule,
     AuditLogModule,
     SupportCasesModule,
+    CustomerWalletModule,
     forwardRef(() => WalletModule),
     TypeOrmModule.forFeature([
       Booking,
@@ -37,9 +42,10 @@ import { UnconfiguredPaymentVerificationAdapter } from './unconfigured-payment-v
       PlatformDue,
     ]),
   ],
-  controllers: [FinanceController, VnpayController],
+  controllers: [FinanceController, VnpayController, CustomerWalletController, AdminPaymentsController],
   providers: [
     FinanceService,
+    AdminPaymentsService,
     UnconfiguredPaymentVerificationAdapter,
     {
       provide: PAYMENT_VERIFICATION_PORT,

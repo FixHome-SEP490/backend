@@ -33,7 +33,13 @@ export class UpdateTechnicianProfileDto {
   @IsOptional() @IsString() @MaxLength(2000) bio?: string;
   @IsOptional() @IsBoolean() isAvailable?: boolean;
   @IsOptional() @IsInt() @Min(0) @Max(80) yearsExperience?: number;
-  @IsOptional() @IsNumber() @Min(1) @Max(100) serviceRadiusKm?: number;
+  @IsOptional() @IsNumber() @Min(1) @Max(40) serviceRadiusKm?: number;
+}
+/** GPS ping from the technician app while it is open (PO 08/10/2026). */
+export class LocationPingDto {
+  @IsNumber() @Min(-90) @Max(90) lat: number;
+  @IsNumber() @Min(-180) @Max(180) lng: number;
+  @IsOptional() @IsNumber() @Min(0) @Max(100000) accuracyMeters?: number;
 }
 import { TechniciansService } from './technicians.service';
 import { CreateTimeOffDto, UpdateScheduleDto, UpdateServiceAreasDto } from './dto/availability.dto';
@@ -58,6 +64,14 @@ export class TechniciansController {
     return { data: profile };
   }
 
+  @Get('me/availability')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Technician: receiving jobs right now? The weekly schedule switches it, the manual switch pauses, time off wins' })
+  async getMyAvailability(@Req() req: { user: { id: string } }) {
+    return { data: await this.techniciansService.getMyAvailability(req.user.id) };
+  }
+
   @Patch('me/profile')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
@@ -68,6 +82,17 @@ export class TechniciansController {
   ) {
     const profile = await this.techniciansService.updateMyProfile(req.user.id, dto);
     return { data: profile };
+  }
+
+  @Patch('me/location')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Technician: report current GPS position', description: 'Sent by the app while it is open. A position younger than matching.gps_fresh_minutes is used to offer urgent bookings nearby; otherwise the work address and chosen districts are used. A fix worse than 1 km accuracy is ignored.' })
+  async reportLocation(
+    @Req() req: { user: { id: string } },
+    @Body() dto: LocationPingDto,
+  ) {
+    return { data: await this.techniciansService.reportLocation(req.user.id, dto) };
   }
 
   @Get('me/services')

@@ -12,4 +12,6 @@ export enum SupportCaseType {
   PRICING_DISPUTE = 'pricing_dispute',
   CONDUCT = 'conduct',
   OTHER = 'other',
+  /** Technician on site: the job is outside their skills, the manager sends someone else (PO 08/10/2026). */
+  TECHNICIAN_REPLACEMENT = 'technician_replacement',
 }

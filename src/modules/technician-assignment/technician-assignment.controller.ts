@@ -68,6 +68,22 @@ export class TechnicianAssignmentController {
     return { data: assignment };
   }
 
+  @Post('service-orders/:id/replace-technician')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('assignment:override')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'SM / Admin: hand an order to another technician after the one on site reported "Cần thay đổi thợ"',
+  })
+  async replaceAfterReport(
+    @Param('id', ParseUUIDPipe) orderId: string,
+    @Body() body: AssignByOrderDto,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    return { data: await this.technicianAssignmentService.replaceAfterReport(orderId, body.technicianId, req.user, body.reason) };
+  }
+
   @Post('bookings/:id/assign')
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('assignment:override')

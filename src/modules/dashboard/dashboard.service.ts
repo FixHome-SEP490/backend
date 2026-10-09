@@ -9,6 +9,7 @@ import { BookingInvitation } from '../bookings/entities/booking-invitation.entit
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
 import { Cancellation } from '../service-orders/entities/cancellation.entity';
+import { NO_DEPARTURE_CANCEL_REASON } from '../service-orders/no-departure';
 import { User } from '../users/entities/user.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import {
@@ -216,11 +217,24 @@ export class DashboardService {
       ],
     });
 
+    // PO 09/10/2026: "Cần thay đổi thợ" reports still waiting for the manager, and
+    // orders the system cancelled because the technician never set out (last 7 days).
+    const [attention] = await this.cancellationRepo.manager.query(
+      `SELECT
+         (SELECT COUNT(*)::int FROM "support_cases"
+           WHERE "case_type" = 'technician_replacement' AND "status" IN ('open', 'in_review')) AS "openReplacementCases",
+         (SELECT COUNT(*)::int FROM "cancellations"
+           WHERE "reason" = $1 AND "created_at" >= now() - interval '7 days') AS "noDepartureCancellations7d"`,
+      [NO_DEPARTURE_CANCEL_REASON],
+    );
+
     return {
       ordersByStatus,
       activeOrders,
       matchingBookings,
       pendingCancellations,
+      openReplacementCases: Number(attention?.openReplacementCases ?? 0),
+      noDepartureCancellations7d: Number(attention?.noDepartureCancellations7d ?? 0),
     };
   }
 
