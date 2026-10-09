@@ -80,6 +80,8 @@ export type CancellationListItem = Cancellation & {
   actorName: string | null;
   actorRole: string | null;
   orderCode: string | null;
+  /** Reputation points this cancellation cost whoever cancelled (negative), or null when it cost nothing. */
+  reputationDelta: number | null;
 };
 
 /** A strike as the review list shows it: whose, and from which order. */
@@ -859,15 +861,17 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       skip: (page - 1) * limit,
       take: limit,
     });
-    const [people, codes] = await Promise.all([
+    const [people, codes, points] = await Promise.all([
       this.namesOf(rows.map((row) => row.actorUserId)),
       this.orderCodesOf(rows.map((row) => row.serviceOrderId)),
+      this.reputationCostOf(rows.map((row) => row.id)),
     ]);
     const data = rows.map((row) => ({
       ...row,
       actorName: people.get(row.actorUserId)?.fullName ?? null,
       actorRole: people.get(row.actorUserId)?.role ?? null,
       orderCode: codes.get(row.serviceOrderId) ?? null,
+      reputationDelta: points.get(row.id) ?? null,
     }));
     return { data, total };
   }
@@ -889,6 +893,17 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       role: String(user.role),
       bookingSuspendedUntil: user.bookingSuspendedUntil ?? null,
     }]));
+  }
+
+  /** Points each cancellation cost, from the reputation history. */
+  private async reputationCostOf(cancellationIds: string[]): Promise<Map<string, number>> {
+    const ids = [...new Set(cancellationIds.filter(Boolean))];
+    if (!ids.length) return new Map();
+    const rows: Array<{ cancellation_id: string; delta: string }> = await this.dataSource.query(
+      `SELECT "cancellation_id", SUM("delta") AS delta FROM "reputation_events" WHERE "kind" = 'violation' AND "cancellation_id" = ANY($1) GROUP BY "cancellation_id"`,
+      [ids],
+    );
+    return new Map(rows.map((row) => [row.cancellation_id, Number(row.delta)]));
   }
 
   private async orderCodesOf(orderIds: string[]): Promise<Map<string, string>> {
@@ -917,6 +932,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   ): Promise<Cancellation> {
     if (![Role.ADMIN, Role.SERVICE_MANAGER].includes(actor.role as Role)) throw new ForbiddenException('Staff review required');
     if (body.compensationDecision === 'GRANTED') throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Monetary cancellation compensation is not supported by MASTER v1.4');
+    // PO 09/10/2026: cancelling costs reputation points by itself; staff no longer confirm violations by hand.
+    if (body.confirmViolation) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Huỷ đơn đã tự trừ điểm uy tín, không còn xác nhận vi phạm thủ công. Điều chỉnh điểm ở trang Điểm uy tín.');
     // Checked before anything is written: the reason is what the audit and the user see later.
     if (body.waiveStrike && !body.waiveReason?.trim()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Cần ghi lý do miễn vi phạm');
     const cancellation = await this.cancellationRepo.findOneBy({
@@ -946,28 +963,6 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
           { priorityBoostUntil: boostUntil },
         );
       }
-    }
-
-    // BRX-032: a cancellation becomes a strike only when staff confirm it was a
-    // violation. Customer and technician cancellations can carry one; staff
-    // cancellations cannot. Suspensions now come from reputation points (PO
-    // 08/10/2026), which the cancellation already cost, so a strike is a record
-    // for staff and suspends nobody by itself.
-    if (body.confirmViolation && !cancellation.strikeApplied) {
-      const role = cancellation.actor === CancelActor.CUSTOMER ? Role.CUSTOMER : cancellation.actor === CancelActor.TECHNICIAN ? Role.TECHNICIAN : null;
-      if (!role) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Only customer or technician cancellations can be a violation');
-      await this.dataSource.transaction(async manager => {
-        const windowDays = await this.configService.getInt('strike.window.days', 30);
-        await manager.save(CancellationStrike, manager.create(CancellationStrike, {
-          userId: cancellation.actorUserId,
-          cancellationId: cancellation.id,
-          role,
-          status: StrikeStatus.ACTIVE,
-          expiresAt: new Date(Date.now() + windowDays * 86_400_000),
-        }));
-        await manager.update(Cancellation, cancellation.id, { strikeApplied: true });
-      });
-      cancellation.strikeApplied = true;
     }
 
     if (body.waiveStrike && cancellation.strikeApplied) {

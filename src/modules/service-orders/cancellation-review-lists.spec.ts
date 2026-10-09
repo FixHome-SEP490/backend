@@ -18,7 +18,11 @@ const orders = [
 function harness(cancellations: Record<string, unknown>[], strikes: Record<string, unknown>[] = []) {
   const userFind = vi.fn(async ({ where }: { where: { id: { _value: string[] } } }) => people.filter((p) => where.id._value.includes(p.id)));
   const orderFind = vi.fn(async ({ where }: { where: { id: { _value: string[] } } }) => orders.filter((o) => where.id._value.includes(o.id)));
+  // Points each cancellation cost, from reputation_events (PO 09/10/2026).
+  const costs = [{ cancellation_id: 'c1', delta: '-10' }, { cancellation_id: 'c2', delta: '-10' }];
+  const pointsQuery = vi.fn(async (_sql: string, [ids]: [string[]]) => costs.filter((c) => ids.includes(c.cancellation_id)));
   const dataSource = {
+    query: pointsQuery,
     getRepository: vi.fn((entity: unknown) => (entity === User ? { find: userFind } : entity === ServiceOrder ? { find: orderFind } : null)),
   };
   const cancellationRepo = {
@@ -31,7 +35,7 @@ function harness(cancellations: Record<string, unknown>[], strikes: Record<strin
   };
   const strikeRepo = { createQueryBuilder: vi.fn(() => qb) };
   const service = Object.assign(Object.create(ServiceOrdersService.prototype), { dataSource, cancellationRepo, strikeRepo }) as ServiceOrdersService;
-  return { service, userFind, orderFind };
+  return { service, userFind, orderFind, pointsQuery };
 }
 
 describe('Cancellation review lists for Service Managers', () => {
@@ -45,14 +49,16 @@ describe('Cancellation review lists for Service Managers', () => {
     expect(total).toBe(3);
     expect(data[0]).toMatchObject({ id: 'c1', actorName: 'Khách Hàng 1', actorRole: 'customer', orderCode: 'FH-20261001-AAAA0001' });
     expect(data[1]).toMatchObject({ actorName: 'Thợ Điện Lạnh 1', actorRole: 'technician', orderCode: 'FH-20261001-AAAA0002' });
+    expect(data.map((c) => c.reputationDelta)).toEqual([-10, -10, null]);
     expect(h.userFind).toHaveBeenCalledTimes(1);
     expect(h.orderFind).toHaveBeenCalledTimes(1);
+    expect(h.pointsQuery).toHaveBeenCalledTimes(1);
   });
 
   it('leaves names empty, not invented, when a person or order is gone', async () => {
-    const h = harness([{ id: 'c1', serviceOrderId: 'order-missing', actorUserId: 'user-missing' }]);
+    const h = harness([{ id: 'c7', serviceOrderId: 'order-missing', actorUserId: 'user-missing' }]);
     const { data } = await h.service.getCancellations({});
-    expect(data[0]).toMatchObject({ actorName: null, actorRole: null, orderCode: null });
+    expect(data[0]).toMatchObject({ actorName: null, actorRole: null, orderCode: null, reputationDelta: null });
   });
 
   it('does not query people or orders for an empty page', async () => {
@@ -60,6 +66,7 @@ describe('Cancellation review lists for Service Managers', () => {
     expect((await h.service.getCancellations({})).data).toEqual([]);
     expect(h.userFind).not.toHaveBeenCalled();
     expect(h.orderFind).not.toHaveBeenCalled();
+    expect(h.pointsQuery).not.toHaveBeenCalled();
   });
 
   it('carries whose strike it is and the order it came from', async () => {

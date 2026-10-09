@@ -3,12 +3,12 @@ import { IsBoolean, IsIn, IsOptional, IsString, MaxLength } from 'class-validato
 
 /** Service Manager / Admin decision on a recorded cancellation (BRX-032 to BRX-034). */
 export class ReviewCancellationDto {
-  @ApiPropertyOptional({ description: 'Confirm the cancellation was a policy violation: records a strike against whoever cancelled (BRX-032)' })
+  @ApiPropertyOptional({ description: 'No longer accepted (PO 09/10/2026): a cancellation costs reputation points by itself; staff adjust points on /reputation' })
   @IsOptional()
   @IsBoolean()
   confirmViolation?: boolean;
 
-  @ApiPropertyOptional({ description: 'Waive the strike already recorded for this cancellation' })
+  @ApiPropertyOptional({ description: 'Waive a strike recorded before reputation points replaced strikes' })
   @IsOptional()
   @IsBoolean()
   waiveStrike?: boolean;

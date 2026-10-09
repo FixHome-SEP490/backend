@@ -157,6 +157,14 @@ export function registerDev1Cases(context: () => Context) {
       const third = await accept(f, await f.create());
       await post(`/service-orders/${third.order.id}/cancel`, manager, { reason: 'Khách nhờ huỷ hộ' }).expect(200);
       expect(await points(f.owner.user.id)).toBe(90);
+      // The review list shows what each cancellation cost; violations are no longer confirmed by hand (PO 09/10/2026).
+      const cancellations = unwrap((await get('/cancellations?pageSize=100', manager).expect(200)).body);
+      const costOf = (orderId: string) => cancellations.find((c: any) => c.serviceOrderId === orderId)?.reputationDelta;
+      expect(costOf(first.order.id)).toBe(-10);
+      expect(costOf(second.order.id)).toBe(-10);
+      expect(costOf(third.order.id)).toBeNull();
+      const customerCancel = cancellations.find((c: any) => c.serviceOrderId === first.order.id);
+      expect((await post(`/cancellations/${customerCancel.id}/review`, manager, { confirmViolation: true })).status).toBe(422);
     });
 
     it('bans a customer below 70 points and lets only staff read and adjust the score (PO 08/10/2026)', async () => {
