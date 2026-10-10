@@ -84,7 +84,7 @@ function scenario(count: number, greeting?: { send: ReturnType<typeof vi.fn> }) 
   };
   const service = new InvitationsService(
     repo as never, {} as never,
-    { transaction: async (fn: (m: typeof manager) => unknown) => fn(manager) } as never,
+    { query: async () => [], transaction: async (fn: (m: typeof manager) => unknown) => fn(manager) } as never,
     { getInt: vi.fn(async () => 30) } as never, audit as never, messaging as never,
     undefined, greeting as never,
   );

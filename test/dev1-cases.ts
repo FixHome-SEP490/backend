@@ -228,8 +228,8 @@ export function registerDev1Cases(context: () => Context) {
       await post(path + '/check-in', f.tech, { lat: 10.77, lng: 106.69, accuracyMeters: 5 }).expect(200);
       await evidence(order.id, f.tech, 'before').expect(201);
       await evidence(order.id, f.tech, 'after').expect(201);
+      // No customer acceptance (PO 09/10/2026): the technician's completion with the after photo is enough.
       await post(path + '/request-completion', f.tech).expect(200);
-      await post(path + '/confirm-completion', f.owner).expect(200);
       const invoice = unwrap((await get(path + '/invoice', f.owner).expect(200)).body);
       const total = Number(invoice.grandTotal);
       expect(total).toBe(400000);
@@ -345,11 +345,16 @@ export function registerDev1Cases(context: () => Context) {
       denied(await patch(path + '/location', f.tech, { lat: 10.77, lng: 106.69 }));
       denied(await post(path + '/request-completion', f.tech));
       await evidence(order.id, f.tech, 'after').expect(201);
+      // A photo over 1 MB goes up (10/10/2026: the 1 MB form limit used to answer 413 to every real photo).
+      const largePhoto = Buffer.concat([png, Buffer.alloc(2_500_000)]);
+      const large = await request(context().app.getHttpServer()).post(`/api/v1${path}/evidence`).set('Authorization', `Bearer ${f.tech.accessToken}`).field('type', 'after').attach('file', largePhoto, { filename: 'after-large.png', contentType: 'image/png' });
+      expect(large.status, JSON.stringify(large.body)).toBe(201);
       await post(path + '/request-completion', f.tech).expect(200);
       denied(await evidence(order.id, f.tech, 'after'));
+      // The customer no longer accepts the work (PO 09/10/2026); only the payment is left.
       denied(await post(path + '/confirm-completion', f.outsider));
-      await post(path + '/confirm-completion', f.owner).expect(200);
       expect(unwrap((await get(path, f.owner).expect(200)).body).status).toBe('under_repair');
+      expect(await context().db.getRepository('CustomerServiceConfirmation').count({ where: { serviceOrderId: order.id } })).toBe(0);
       denied(await post(path + '/complete', f.tech));
       await post(path + '/cash-settlement/declare', f.tech, { declaredAmount: 400000 }).expect(200);
       const paid = await Promise.all([1, 2].map(() => post(path + '/cash-settlement/confirm', f.owner, { agreed: true, confirmedAmount: 400000 })));
@@ -499,6 +504,72 @@ export function registerDev1Cases(context: () => Context) {
       expect(Number(stored.grandTotal)).toBe(200000);
     });
 
+    it('snapshots the technician labor warranty on accept and uses it as the quote default (PO 10/10/2026)', async () => {
+      const f = await fixture('inspection_required'), db = context().db;
+      const put = (path: string, session: Session, body: object) => request(context().app.getHttpServer()).put(`/api/v1${path}`).set('Authorization', `Bearer ${session.accessToken}`).send(body);
+      denied(await put('/technicians/me/warranty-default', f.owner, { days: 90 }));
+      for (const days of [-1, 1.5, 3651]) denied(await put('/technicians/me/warranty-default', f.tech, { days }));
+      // Above warranty.max_days (365) is refused too.
+      denied(await put('/technicians/me/warranty-default', f.tech, { days: 400 }));
+      denied(await put(`/technicians/me/services/${f.service.id}`, f.tech, { typicalWarrantyDays: 400 }));
+      // Only the default: the service keeps its own 30 days, which wins.
+      expect(unwrap((await put('/technicians/me/warranty-default', f.tech, { days: 60 }).expect(200)).body)).toEqual({ defaultLaborWarrantyDays: 60, servicesUpdated: 0 });
+      expect(unwrap((await get('/technicians/me/profile', f.tech).expect(200)).body).defaultLaborWarrantyDays).toBe(60);
+      expect(unwrap((await get('/technicians/me/services', f.tech).expect(200)).body)[0].typicalWarrantyDays).toBe(30);
+      expect(unwrap((await put('/technicians/me/warranty-default', f.tech, { days: 90, applyToAllServices: true }).expect(200)).body)).toEqual({ defaultLaborWarrantyDays: 90, servicesUpdated: 1 });
+      const { order } = await accept(f), path = `/service-orders/${order.id}`;
+      expect(unwrap((await get(path, f.tech).expect(200)).body).laborWarrantyDays).toBe(90);
+      // Changing the default later does not touch an order already accepted.
+      await put('/technicians/me/warranty-default', f.tech, { days: 10, applyToAllServices: true }).expect(200);
+      await arrived(order.id, f.tech);
+      denied(await post(path + '/quotations', f.tech, { items: [{ type: 'labor', description: 'Repair labor', quantity: 1, unitPrice: 100000, warrantyDays: 366 }] }));
+      const quote = unwrap((await post(path + '/quotations', f.tech, { items: [{ type: 'labor', description: 'Repair labor', quantity: 1, unitPrice: 100000 }] }).expect(201)).body);
+      expect(quote.items[0].warrantyDaysSnapshot).toBe(90);
+      await post(`/quotations/${quote.id}/decision`, f.owner, { action: 'APPROVE' }).expect(200);
+      await post(path + '/start-repair', f.tech).expect(200);
+      await evidence(order.id, f.tech, 'after').expect(201);
+      await post(path + '/request-completion', f.tech).expect(200);
+      const invoice = unwrap((await get(path + '/invoice', f.owner).expect(200)).body);
+      await post(path + '/cash-settlement/declare', f.tech, { declaredAmount: Number(invoice.grandTotal) }).expect(200);
+      await post(path + '/cash-settlement/confirm', f.owner, { agreed: true, confirmedAmount: Number(invoice.grandTotal) }).expect(200);
+      expect((await db.query('SELECT warranty_days_snapshot AS days FROM warranty_coverages WHERE service_order_id = $1', [order.id])).map((r: any) => r.days)).toEqual([90]);
+    });
+
+    it('puts the technician default labor warranty on a fixed-price invoice (PO 10/10/2026)', async () => {
+      const f = await fixture(), db = context().db;
+      const put = (path: string, session: Session, body: object) => request(context().app.getHttpServer()).put(`/api/v1${path}`).set('Authorization', `Bearer ${session.accessToken}`).send(body);
+      // No per-service value: the technician default applies.
+      await db.getRepository('TechnicianSkill').update({ serviceId: f.service.id }, { typicalWarrantyDays: null });
+      await put('/technicians/me/warranty-default', f.tech, { days: 45 }).expect(200);
+      const { order } = await accept(f), path = `/service-orders/${order.id}`;
+      expect(unwrap((await get(path, f.tech).expect(200)).body).laborWarrantyDays).toBe(45);
+      await arrived(order.id, f.tech);
+      await evidence(order.id, f.tech, 'after').expect(201);
+      await post(path + '/request-completion', f.tech).expect(200);
+      await get(path + '/invoice', f.owner).expect(200);
+      const [line] = await db.query("SELECT ii.warranty_days_snapshot AS days FROM invoice_items ii JOIN invoices i ON i.id = ii.invoice_id WHERE i.service_order_id = $1 AND ii.source_type = 'FIXED_PRICE'", [order.id]);
+      expect(line.days).toBe(45);
+    });
+
+    it('accepts an invitation for a technician who switched on auto-accept (PO 10/10/2026)', async () => {
+      const f = await fixture(), db = context().db;
+      expect(unwrap((await get('/technicians/me/profile', f.tech).expect(200)).body).autoAcceptInvitations).toBe(false);
+      denied(await patch('/technicians/me/profile', f.tech, { autoAcceptInvitations: 'yes' }));
+      await patch('/technicians/me/profile', f.tech, { autoAcceptInvitations: true }).expect(200);
+      expect(unwrap((await get('/technicians/me/profile', f.tech).expect(200)).body).autoAcceptInvitations).toBe(true);
+      const booking = await f.create();
+      const shortlisted = await post(`/bookings/${booking.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.spare.user.id] });
+      expect(shortlisted.status, JSON.stringify(shortlisted.body)).toBe(201);
+      expect(unwrap(shortlisted.body).map((i: any) => i.status)).toEqual(['accepted', 'cancelled']);
+      const [order] = await db.query(`SELECT o.id, o.status, a.technician_id FROM service_orders o JOIN technician_assignments a ON a.service_order_id = o.id AND a.is_active WHERE o.booking_id = $1`, [booking.id]);
+      expect(order).toMatchObject({ status: 'accepted', technician_id: f.tech.user.id });
+      const [history] = await db.query('SELECT reason FROM order_status_history WHERE service_order_id = $1', [order.id]);
+      expect(history.reason).toContain('tự nhận việc');
+      const notes = await db.query("SELECT 1 FROM notifications WHERE user_id = $1 AND type = 'INVITATION_AUTO_ACCEPTED' AND reference_id = $2", [f.tech.user.id, order.id]);
+      expect(notes).toHaveLength(1);
+      expect(unwrap((await get(`/bookings/${booking.id}`, f.owner).expect(200)).body).status).toBe('matched');
+    });
+
     it.each([false, true])('keeps technician part warranty opt-in and outside labor commission: selected=%s', async selected => {
       const f = await fixture('inspection_required'), { order } = await accept(f), path = `/service-orders/${order.id}`;
       await arrived(order.id, f.tech);
@@ -526,9 +597,9 @@ export function registerDev1Cases(context: () => Context) {
       expect(cashResponse.status, JSON.stringify(cashResponse.body)).toBe(selected ? 200 : 409);
       const cash = unwrap((await get(path + '/cash-settlement', f.owner).expect(200)).body);
       expect(cash.status).toBe(selected ? 'confirmed' : 'disputed');
-      expect(unwrap((await get(path, f.owner).expect(200)).body).status).toBe('under_repair');
+      // Confirmed cash after the technician's completion finishes the order, with no customer acceptance (PO 09/10/2026).
+      expect(unwrap((await get(path, f.owner).expect(200)).body).status).toBe(selected ? 'completed' : 'under_repair');
       if (selected) {
-        await post(path + '/confirm-completion', f.owner).expect(200);
         const warranties = unwrap((await get(path + '/warranties', f.owner).expect(200)).body);
         expect(warranties).toHaveLength(2);
       } else {

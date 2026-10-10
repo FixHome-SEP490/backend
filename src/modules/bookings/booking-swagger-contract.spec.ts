@@ -71,6 +71,7 @@ describe('Booking Swagger contract: ordered invitations', () => {
     const confirmCompletion = doc.paths['/api/v1/service-orders/{id}/confirm-completion']?.post;
     expect(requestCompletion?.description).toContain('NOT immediately');
     expect(confirmCompletion?.description).toContain('verified paid');
+    expect(confirmCompletion?.summary).toContain('no longer required');
     expect(doc.components?.schemas?.CompletionRequestDto).toMatchObject({ properties: { completionNote: { type: 'string' } } });
     expect(doc.components?.schemas?.CompletionConfirmationDto).toMatchObject({
       properties: { feedback: { type: 'string' }, rating: { type: 'number', minimum: 1, maximum: 5 }, signatureUrl: { type: 'string', format: 'uri' } },

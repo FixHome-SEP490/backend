@@ -30,7 +30,6 @@ import { CommissionDue } from '../service-orders/entities/commission-due.entity'
 import { Invoice } from '../service-orders/entities/invoice.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { ServiceOrderStateMachine } from '../service-orders/service-order-state-machine';
-import { CustomerServiceConfirmation } from '../service-orders/entities/customer-service-confirmation.entity';
 import { OrderStatusHistory } from '../service-orders/entities/order-status-history.entity';
 import { isCompletionHeld } from '../support-cases/completion-hold';
 import { applyOrderCompletionEffects } from '../service-orders/order-completion-effects';
@@ -1236,11 +1235,9 @@ export class FinanceService {
     });
     if (!order) return;
     await this.ensureFinancialDues(manager, invoice, order, null, now);
-    const confirmation = await manager.findOne(CustomerServiceConfirmation, {
-      where: { serviceOrderId: invoice.serviceOrderId },
-    });
+    // No customer acceptance step (PO 09/10/2026): paid after the technician reported completion is done.
     if (
-      confirmation &&
+      order.completionRequestedAt &&
       order.status === ServiceOrderStatus.UNDER_REPAIR &&
       !(await isCompletionHeld(manager, order.id))
     ) {
@@ -1254,7 +1251,7 @@ export class FinanceService {
           toStatus: ServiceOrderStatus.COMPLETED,
           actorUserId: payerUserId,
           actorRole: Role.CUSTOMER,
-          reason: 'Work, customer confirmation and payment satisfied',
+          reason: 'Work completed by the technician and payment verified',
         });
         await applyOrderCompletionEffects(manager, order, invoice.id, now);
       }
@@ -1357,11 +1354,9 @@ export class FinanceService {
       );
       order.paymentStatus = PaymentStatus.PAID;
 
-      const confirmation = await manager.findOne(CustomerServiceConfirmation, {
-        where: { serviceOrderId: order.id },
-      });
+      // No customer acceptance step (PO 09/10/2026): paid after the technician reported completion is done.
       if (
-        confirmation &&
+        order.completionRequestedAt &&
         order.status === ServiceOrderStatus.UNDER_REPAIR &&
         !(await isCompletionHeld(manager, order.id))
       ) {
@@ -1377,7 +1372,7 @@ export class FinanceService {
           toStatus: ServiceOrderStatus.COMPLETED,
           actorUserId: actor.id,
           actorRole: actor.role,
-          reason: 'Work, customer confirmation and payment satisfied',
+          reason: 'Work completed by the technician and payment verified',
         });
         await applyOrderCompletionEffects(manager, order, invoice.id, now);
       }

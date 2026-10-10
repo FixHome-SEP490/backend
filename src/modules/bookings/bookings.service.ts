@@ -1,4 +1,5 @@
 // src/modules/bookings/bookings.service.ts
+import { firstEligible } from './first-eligible';
 import { displayRating } from '../technicians/technician-earnings';
 import { NotificationsService } from '../notifications/notifications.service';
 import {
@@ -61,6 +62,11 @@ export interface TechnicianCandidate {
   completedOrdersCount?: number;
   completionRate?: number;
 }
+
+/** At most this many technicians are offered for one booking. */
+const CANDIDATE_LIMIT = 20;
+/** Technicians whose eligibility is checked at once; stays under the database pool. */
+const ELIGIBILITY_BATCH = 8;
 
 @Injectable()
 export class BookingsService {
@@ -579,13 +585,14 @@ export class BookingsService {
       return b.reliabilityScore - a.reliabilityScore;
     });
 
-    const profiles: TechnicianProfile[] = [];
-    for (const profile of ranked) {
-      if ((await technicianEligibility(this.dataSource.manager, profile.userId, booking)).eligible) {
-        profiles.push(profile);
-      }
-      if (profiles.length === 20) break;
-    }
+    // The full check costs about a dozen queries per technician; run a batch of them at once and keep
+    // the ranking order, stopping as soon as 20 are eligible (was one technician at a time: 8-11 s).
+    const profiles = await firstEligible(
+      ranked,
+      async (p) => (await technicianEligibility(this.dataSource.manager, p.userId, booking)).eligible,
+      CANDIDATE_LIMIT,
+      ELIGIBILITY_BATCH,
+    );
 
     const profileUserIds = profiles.map((p) => p.userId);
     const orderCountsByTech = new Map<string, { total: number; completed: number }>();
@@ -636,7 +643,8 @@ export class BookingsService {
           tp.priorityBoostUntil && new Date(tp.priorityBoostUntil) > new Date(),
         ),
         listedLaborPrice: matchedSkill?.listedLaborPrice != null ? Number(matchedSkill.listedLaborPrice) : null,
-        typicalWarrantyDays: matchedSkill?.typicalWarrantyDays ?? 30,
+        // What the technician set for the service, else their default; null when they set none (was shown as 30).
+        typicalWarrantyDays: matchedSkill?.typicalWarrantyDays ?? tp.defaultLaborWarrantyDays ?? null,
         distanceKm: distanceByProfileId.get(tp.id) ?? null,
         bio: tp.bio || null,
         completedOrdersCount,

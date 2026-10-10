@@ -34,6 +34,12 @@ export class UpdateTechnicianProfileDto {
   @IsOptional() @IsBoolean() isAvailable?: boolean;
   @IsOptional() @IsInt() @Min(0) @Max(80) yearsExperience?: number;
   @IsOptional() @IsNumber() @Min(1) @Max(40) serviceRadiusKm?: number;
+  @IsOptional() @IsBoolean() autoAcceptInvitations?: boolean;
+}
+/** Labor warranty the technician gives by default; applyToAllServices also sets every service they offer. */
+export class DefaultLaborWarrantyDto {
+  @IsInt() @Min(0) @Max(3650) days: number;
+  @IsOptional() @IsBoolean() applyToAllServices?: boolean;
 }
 /** GPS ping from the technician app while it is open (PO 08/10/2026). */
 export class LocationPingDto {
@@ -82,6 +88,19 @@ export class TechniciansController {
   ) {
     const profile = await this.techniciansService.updateMyProfile(req.user.id, dto);
     return { data: profile };
+  }
+
+  @Put('me/warranty-default')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionGuard)
+  @Roles(Role.TECHNICIAN)
+  @RequirePermission('profile:update_own')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Technician: set the default labor warranty (days)', description: 'Each order snapshots the warranty when the technician is assigned: the per-service value first, then this default, then warranty.default_days. Capped by warranty.max_days.' })
+  async setDefaultLaborWarranty(
+    @Req() req: { user: { id: string } },
+    @Body() dto: DefaultLaborWarrantyDto,
+  ) {
+    return { data: await this.techniciansService.setDefaultLaborWarranty(req.user.id, dto) };
   }
 
   @Patch('me/location')

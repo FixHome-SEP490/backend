@@ -548,8 +548,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'ORDER_COMPLETION_REQUESTED', resourceType: 'service_order', resourceId: orderId });
       void this.notifyCustomerForOrder(
         orderId,
-        'Yêu cầu nghiệm thu dịch vụ',
-        `Kỹ thuật viên đã hoàn thành công việc cho đơn #${order.code} và tải ảnh nghiệm thu. Vui lòng kiểm tra và xác nhận nghiệm thu.`,
+        'Kỹ thuật viên đã hoàn thành',
+        `Kỹ thuật viên đã hoàn thành công việc cho đơn #${order.code} và gửi ảnh sau sửa. Vui lòng thanh toán hoá đơn để hoàn tất đơn.`,
         'COMPLETION_REQUESTED',
       );
       return manager.findOneByOrFail(ServiceOrder, { id: orderId });
@@ -593,7 +593,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
       if (order.status === ServiceOrderStatus.COMPLETED) return order;
       if (await isCompletionHeld(manager, order.id)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Đơn đang được quản lý dịch vụ xem xét khiếu nại nên chưa thể hoàn tất.');
-      if (!await this.finalizeIfSatisfied(manager, order, actor)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Customer confirmation and verified payment are required');
+      if (!await this.finalizeIfSatisfied(manager, order, actor)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Verified payment is required');
       return manager.findOneByOrFail(ServiceOrder, { id: orderId });
     });
   }
@@ -1181,10 +1181,11 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     if (order.status !== ServiceOrderStatus.UNDER_REPAIR || !order.completionRequestedAt) return false;
     if (await isCompletionHeld(manager, order.id)) return false;
     await this.assertCompletionReady(manager, order);
-    if (!await manager.findOneBy(CustomerServiceConfirmation, { serviceOrderId: order.id })) return false;
+    // No customer acceptance step (PO 09/10/2026): the technician's completion with the after photo is the
+    // acceptance; what is left is the payment.
     const invoice = await manager.findOneBy(Invoice, { serviceOrderId: order.id, paymentStatus: PaymentStatus.PAID });
     if (!invoice || order.paymentStatus !== PaymentStatus.PAID) return false;
-    await this.commitTransition(manager, order, ServiceOrderStatus.COMPLETED, actor, 'Work, customer confirmation and payment satisfied');
+    await this.commitTransition(manager, order, ServiceOrderStatus.COMPLETED, actor, 'Work completed by the technician and payment verified');
     await applyOrderCompletionEffects(manager, order, invoice.id, new Date());
     if (this.settlementService) {
       await this.settlementService.trySettleOrder(order.id, manager);
@@ -1264,7 +1265,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         quantity,
         unitPrice,
         lineTotal,
-        warrantyDaysSnapshot: 0,
+        // Fixed when the technician was assigned (PO 10/10/2026); orders from before then had none.
+        warrantyDaysSnapshot: order?.laborWarrantyDays ?? 0,
       });
     }
 

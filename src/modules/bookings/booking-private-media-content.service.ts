@@ -7,7 +7,7 @@ import { PrivateBookingPhotoStorage } from '../media/private-booking-photo-stora
 import { PrivateBookingPhotoUpload } from '../media/entities/private-booking-photo-upload.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
-import { isUUID } from 'class-validator';
+import { isDbUuid } from '../../shared/utils/db-uuid';
 import { BookingMedia } from './entities/booking-media.entity';
 import { Booking } from './entities/booking.entity';
 
@@ -31,7 +31,8 @@ export class BookingPrivateMediaContentService {
     mediaId: string,
     actor: { id: string; role: string },
   ): Promise<PrivateBookingImageContent> {
-    if (!isUUID(bookingId) || !isUUID(mediaId) || !actor || !isUUID(actor.id)) this.notFound();
+    // Shape only, not isUUID(): seeded accounts and their bookings have non-RFC-4122 ids.
+    if (!isDbUuid(bookingId) || !isDbUuid(mediaId) || !actor || !isDbUuid(actor.id)) this.notFound();
 
     const authorizedObject = await this.dataSource.transaction(async manager => {
       // Lock order is Booking -> ServiceOrder -> TechnicianAssignment. This matches
@@ -64,7 +65,7 @@ export class BookingPrivateMediaContentService {
       const media = await manager.findOne(BookingMedia, {
         where: { id: mediaId, bookingId: booking.id },
       });
-      if (!media || !media.privateUploadId || !isUUID(media.privateUploadId)) this.notFound();
+      if (!media || !media.privateUploadId || !isDbUuid(media.privateUploadId)) this.notFound();
 
       const upload = await manager.findOne(PrivateBookingPhotoUpload, {
         where: { id: media.privateUploadId },

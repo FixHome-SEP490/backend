@@ -18,6 +18,7 @@ import { TechnicianServiceArea } from './entities/technician-service-area.entity
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { CommissionDue } from '../service-orders/entities/commission-due.entity';
+import { maxLaborWarrantyDays } from '../service-orders/labor-warranty';
 import {
   CommissionDueStatus,
   ServicePricingMode,
@@ -142,14 +143,42 @@ export class TechniciansService {
 
   async updateMyProfile(
     userId: string,
-    dto: { bio?: string; isAvailable?: boolean; yearsExperience?: number; serviceRadiusKm?: number },
+    dto: { bio?: string; isAvailable?: boolean; yearsExperience?: number; serviceRadiusKm?: number; autoAcceptInvitations?: boolean },
   ): Promise<TechnicianProfile> {
     const profile = await this.getMyProfile(userId);
     if (dto.bio !== undefined) profile.bio = dto.bio;
     if (dto.isAvailable !== undefined) profile.isAvailable = dto.isAvailable;
     if (dto.yearsExperience !== undefined) profile.yearsExperience = dto.yearsExperience;
     if (dto.serviceRadiusKm !== undefined) profile.serviceRadiusKm = dto.serviceRadiusKm;
+    if (dto.autoAcceptInvitations !== undefined) profile.autoAcceptInvitations = dto.autoAcceptInvitations;
     return this.profileRepo.save(profile);
+  }
+
+  /**
+   * The labor warranty the technician gives by default (PO 10/10/2026). Each
+   * accepted order snapshots it: the service's own value first, then this.
+   * applyToAllServices also overwrites every service they offer.
+   */
+  async setDefaultLaborWarranty(
+    userId: string,
+    dto: { days: number; applyToAllServices?: boolean },
+  ): Promise<{ defaultLaborWarrantyDays: number; servicesUpdated: number }> {
+    await this.assertWarrantyWithinMax(dto.days);
+    const profile = await this.getMyProfile(userId);
+    await this.profileRepo.update(profile.id, { defaultLaborWarrantyDays: dto.days });
+    let servicesUpdated = 0;
+    if (dto.applyToAllServices) {
+      const result = await this.skillRepo.update({ technicianId: profile.id }, { typicalWarrantyDays: dto.days });
+      servicesUpdated = result.affected ?? 0;
+    }
+    return { defaultLaborWarrantyDays: dto.days, servicesUpdated };
+  }
+
+  private async assertWarrantyWithinMax(days: number): Promise<void> {
+    const manager = this.profileRepo.manager;
+    if (!manager) return;
+    const max = await maxLaborWarrantyDays(manager);
+    if (days > max) throw new BadRequestException(`Bảo hành công tối đa ${max} ngày`);
   }
 
   /** Keep the last good GPS fix; a fix worse than 1 km is too coarse to match on. */
@@ -225,8 +254,12 @@ export class TechniciansService {
 
     if (dto.listedLaborPrice !== undefined)
       skill.listedLaborPrice = dto.listedLaborPrice;
+    if (dto.typicalWarrantyDays != null) await this.assertWarrantyWithinMax(dto.typicalWarrantyDays);
     if (dto.typicalWarrantyDays !== undefined)
       skill.typicalWarrantyDays = dto.typicalWarrantyDays;
+    // A new offering starts from the technician's own default rather than the column's 30.
+    else if (!skill.id && profile.defaultLaborWarrantyDays != null)
+      skill.typicalWarrantyDays = profile.defaultLaborWarrantyDays;
     if (dto.level !== undefined) skill.level = dto.level.trim();
     if (dto.isActive !== undefined) skill.isActive = dto.isActive;
 
