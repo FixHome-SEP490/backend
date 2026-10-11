@@ -82,6 +82,7 @@ export class ServiceOrdersController {
       page: query.page,
       limit: query.pageSize,
       status: query.status,
+      statuses: query.statuses,
       search: query.search,
     });
     return { data: result.data, meta: { total: result.total } };
@@ -99,7 +100,7 @@ export class ServiceOrdersController {
     const result = await this.serviceOrdersService.findMyOrders(
       req.user.id,
       req.user.role,
-      { page: query.page, limit: query.pageSize, status: query.status },
+      { page: query.page, limit: query.pageSize, status: query.status, statuses: query.statuses, search: query.search },
     );
     return { data: result.data, meta: { total: result.total } };
   }
@@ -510,7 +511,7 @@ export class ServiceOrdersController {
     const result = await this.serviceOrdersService.getRepairHistory(
       req.user.id,
       req.user.role,
-      { page: query.page, limit: query.pageSize, status: query.status },
+      { page: query.page, limit: query.pageSize, status: query.status, search: query.search },
     );
     return { data: result.data, meta: { total: result.total } };
   }
