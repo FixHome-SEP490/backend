@@ -1,6 +1,6 @@
 // src/modules/technicians/technicians.service.ts
 import { availabilityNow, type AvailabilityNow } from './availability-now';
-import { completedOrderEarnings, displayRating } from './technician-earnings';
+import { completedOrderEarnings, displayRating, vietnamDayStart } from './technician-earnings';
 import {
   BadRequestException,
   Injectable,
@@ -464,43 +464,68 @@ export class TechniciansService {
     return Number.isFinite(value) ? value : 1000;
   }
 
-  async getMyEarnings(userId: string) {
+  /**
+   * `from`/`to` are Vietnam calendar dates, both inclusive (PO 12/10/2026: day, week, month filters).
+   * Totals cover the whole range; `page`/`pageSize` only cut the list of orders.
+   */
+  async getMyEarnings(userId: string, query: { from?: string; to?: string; page?: number; pageSize?: number } = {}) {
     const profile = await this.getMyProfile(userId);
+    if (query.from && query.to && query.from > query.to) throw new BadRequestException('Ngày bắt đầu phải trước ngày kết thúc');
+    const range = {
+      from: query.from ? vietnamDayStart(query.from) : undefined,
+      to: query.to ? new Date(vietnamDayStart(query.to).getTime() + 86_400_000) : undefined,
+    };
 
     // #21: amounts come from the invoice snapshot, only for orders this
     // technician held to completion; parts never count as labour.
-    const earnings = await completedOrderEarnings(this.assignmentRepo.manager, userId);
+    const earnings = await completedOrderEarnings(this.assignmentRepo.manager, userId, range);
     const commissionDues = await this.commissionDueRepo.find({
       where: { technicianId: userId },
     });
 
     let totalGrossLabor = 0;
     let totalCommission = 0;
+    let totalOrderValue = 0;
+    let paidOrders = 0;
 
-    const payouts = earnings.map((row) => {
+    const allPayouts = earnings.map((row) => {
       totalGrossLabor += row.laborTotal;
       totalCommission += row.commission;
+      totalOrderValue += row.orderValue;
+      if (row.paid) paidOrders += 1;
       return {
         orderId: row.orderId,
         orderCode: row.code ?? `#ORD-${row.orderId.slice(0, 8)}`,
         date: row.completedAt ? formatVnDate(row.completedAt) : null,
+        completedAt: row.completedAt ? row.completedAt.toISOString() : null,
         customer: row.customerName ?? '',
+        serviceName: row.serviceName ?? '',
         gross: row.laborTotal,
         platformFee: row.commission,
         net: row.laborTotal - row.commission,
+        orderValue: row.orderValue,
+        paid: row.paid,
         status: 'COMPLETED',
       };
     });
+    const paged = query.page != null || query.pageSize != null;
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? (paged ? 20 : Math.max(allPayouts.length, 1));
+    const payouts = paged ? allPayouts.slice((page - 1) * pageSize, page * pageSize) : allPayouts;
     const commissionRateBps = await this.commissionRateBps();
 
     const pendingDues = commissionDues.filter((d) => d.status === CommissionDueStatus.PENDING);
     const pendingDueTotal = pendingDues.reduce((acc, cur) => acc + Number(cur.dueAmount || 0), 0);
 
     return {
-      totalCompletedOrders: payouts.length,
+      from: query.from ?? null,
+      to: query.to ?? null,
+      totalCompletedOrders: allPayouts.length,
       totalGross: totalGrossLabor,
       totalCommission,
       totalNet: totalGrossLabor - totalCommission,
+      totalOrderValue,
+      paidOrders,
       pendingDueCount: pendingDues.length,
       pendingDueAmount: pendingDueTotal,
       rating: displayRating(profile.averageRating, profile.ratingCount),
@@ -508,6 +533,9 @@ export class TechniciansService {
       reliability: profile.reliabilityScore ?? null,
       commissionRatePercent: commissionRateBps / 100,
       payouts,
+      page,
+      pageSize,
+      total: allPayouts.length,
     };
   }
 }
