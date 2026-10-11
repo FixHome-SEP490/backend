@@ -39,14 +39,16 @@ export class WarrantyClaimsTechnicianService {
     private readonly notifier: WarrantyNotifier,
   ) {}
 
-  async listMine(technician: OrderActor, status?: WarrantyClaimStatus): Promise<StaffWarrantyClaimDto[]> {
-    const claims = await this.claimRepo.find({
+  /** Newest first; without paging the first 100 as before (the app reads it that way). */
+  async listMine(technician: OrderActor, status?: WarrantyClaimStatus, page = 1, pageSize = 100): Promise<{ items: StaffWarrantyClaimDto[]; total: number }> {
+    const [claims, total] = await this.claimRepo.findAndCount({
       where: { technicianId: technician.id, ...(status ? { status } : {}) },
       relations: ['technician'],
       order: { submittedAt: 'DESC' },
-      take: 100,
+      skip: (page - 1) * pageSize,
+      take: pageSize,
     });
-    return this.reader.toStaffViews(claims);
+    return { items: await this.reader.toStaffViews(claims), total };
   }
 
   async accept(claimId: string, dto: AcceptWarrantyClaimDto, technician: OrderActor): Promise<StaffWarrantyClaimDto> {

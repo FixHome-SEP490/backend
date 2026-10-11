@@ -224,5 +224,29 @@ describe('TechniciansService', () => {
       expect(sql).toContain('ta.is_active = true');
       expect(sql).toContain('LEFT JOIN invoices i');
     });
+
+    it('limits to a Vietnam calendar period and pages the list, totals over the whole period (PO 12/10/2026)', async () => {
+      const rows = Array.from({ length: 25 }, (_, i) => ({
+        orderId: `o-${i}`, code: `FH-${i}`, completedAt: new Date('2026-10-08T03:00:00Z'), customerName: 'C', serviceName: 'Sửa quạt',
+        laborTotal: '100000', commission: '10000', orderValue: '150000', paid: i % 5 !== 0,
+      }));
+      mockAssignmentRepo.manager.query = vi.fn(async (sql: string) => (sql.includes('system_configs') ? [{ value: '1000' }] : rows));
+
+      const earnings = await service.getMyEarnings('user-tech-uuid', { from: '2026-10-06', to: '2026-10-12', page: 2, pageSize: 20 });
+
+      const [sql, params] = (mockAssignmentRepo.manager.query.mock.calls as unknown as Array<[string, unknown[]]>).find(([text]) => text.includes('technician_assignments'))!;
+      expect(sql).toContain('so.completed_at >= $3');
+      expect(sql).toContain('so.completed_at < $4');
+      // Monday 06/10 00:00 and Monday 13/10 00:00 in Vietnam time.
+      expect((params[2] as Date).toISOString()).toBe('2026-10-05T17:00:00.000Z');
+      expect((params[3] as Date).toISOString()).toBe('2026-10-12T17:00:00.000Z');
+      expect(earnings).toMatchObject({ from: '2026-10-06', to: '2026-10-12', totalCompletedOrders: 25, totalGross: 2500000, totalOrderValue: 3750000, paidOrders: 20, page: 2, pageSize: 20, total: 25 });
+      expect(earnings.payouts.map((p) => p.orderId)).toEqual(['o-20', 'o-21', 'o-22', 'o-23', 'o-24']);
+      expect(earnings.payouts[0]).toMatchObject({ serviceName: 'Sửa quạt', orderValue: 150000, paid: false });
+    });
+
+    it('refuses a period that ends before it starts', async () => {
+      await expect(service.getMyEarnings('user-tech-uuid', { from: '2026-10-12', to: '2026-10-06' })).rejects.toThrow();
+    });
   });
 });

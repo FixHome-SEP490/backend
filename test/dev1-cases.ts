@@ -319,6 +319,15 @@ export function registerDev1Cases(context: () => Context) {
       const yesterday = new Date(Date.now() + 7 * 3_600_000 - 86_400_000).toISOString().slice(0, 10);
       expect(unwrap((await get(`/admin/payments?search=${encodeURIComponent(orderCode)}&to=${yesterday}`, admin).expect(200)).body)).toEqual([]);
       for (const user of [manager, f.owner, f.tech]) denied(await get('/admin/payments', user));
+      // Earnings of a period, Vietnam days (PO 12/10/2026): today holds this order, yesterday does not.
+      const todayEarnings = unwrap((await get(`/technicians/me/earnings?from=${today}&to=${today}&page=1&pageSize=5`, f.tech).expect(200)).body);
+      expect(todayEarnings).toMatchObject({ from: today, to: today, totalCompletedOrders: 1, paidOrders: 1, totalOrderValue: total, page: 1, pageSize: 5, total: 1 });
+      expect(todayEarnings.payouts[0]).toMatchObject({ orderId: order.id, paid: true, orderValue: total });
+      expect(unwrap((await get(`/technicians/me/earnings?from=${yesterday}&to=${yesterday}`, f.tech).expect(200)).body).totalCompletedOrders).toBe(0);
+      denied(await get(`/technicians/me/earnings?from=${today}&to=${yesterday}`, f.tech));
+      denied(await get('/technicians/me/earnings?from=12-10-2026', f.tech));
+      const claims = await get('/warranty-claims/mine?page=1&pageSize=5', f.tech).expect(200);
+      expect(claims.body.meta).toMatchObject({ page: 1, pageSize: 5, total: 0 });
     });
 
     it('enforces ownership, valid GPS, file evidence, completion and cash gates end-to-end', async () => {

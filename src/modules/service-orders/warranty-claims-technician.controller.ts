@@ -12,7 +12,8 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiConflictResponse, ApiNotFoundResponse, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsEnum, IsOptional } from 'class-validator';
+import { IsEnum, IsInt, IsOptional, Max, Min } from 'class-validator';
+import { Type } from 'class-transformer';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionGuard } from '../../common/guards/permission.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -33,6 +34,12 @@ class QueryMyWarrantyClaimsDto {
   @IsOptional()
   @IsEnum(WarrantyClaimStatus)
   status?: WarrantyClaimStatus;
+
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(1_000_000)
+  page?: number;
+
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100)
+  pageSize?: number;
 }
 
 type Req = { user: { id: string; role: string } };
@@ -50,7 +57,10 @@ export class WarrantyClaimsTechnicianController {
   @ApiOperation({ summary: 'Technician: warranty claims assigned to me' })
   @ApiOkResponse({ type: StaffWarrantyClaimDto, isArray: true })
   async mine(@Query() query: QueryMyWarrantyClaimsDto, @Req() req: Req) {
-    return { data: await this.service.listMine(req.user, query.status) };
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 100;
+    const { items, total } = await this.service.listMine(req.user, query.status, page, pageSize);
+    return { data: items, meta: { page, pageSize, total } };
   }
 
   @Post(':claimId/accept')
