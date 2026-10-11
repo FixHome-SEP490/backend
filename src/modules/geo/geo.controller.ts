@@ -12,9 +12,10 @@ export class GeoController {
   constructor(private readonly geoService: GeoService) {}
 
   @Get('autocomplete')
-  @ApiOperation({ summary: 'Address suggestions for a partial input (MapTiler Geocoding)' })
+  @ApiOperation({ summary: 'Address and place suggestions for a partial input (OpenStreetMap via Photon, MapTiler as fallback), nearest to lat/lng first' })
   async autocomplete(@Query() query: AutocompleteQueryDto) {
-    const data = await this.geoService.autocomplete(query.input);
+    const near = query.lat != null && query.lng != null ? { lat: Number(query.lat), lng: Number(query.lng) } : undefined;
+    const data = await this.geoService.autocomplete(query.input, near);
     return { data };
   }
 

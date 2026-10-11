@@ -9,6 +9,23 @@ interface MapTilerContextEntry {
   text: string;
 }
 
+interface PhotonFeature {
+  geometry?: { coordinates?: [number, number] };
+  properties?: {
+    osm_type?: string;
+    osm_id?: number;
+    name?: string;
+    housenumber?: string;
+    street?: string;
+    locality?: string;
+    district?: string;
+    county?: string;
+    city?: string;
+    state?: string;
+    countrycode?: string;
+  };
+}
+
 interface MapTilerFeature {
   id: string;
   place_name: string;
@@ -27,6 +44,9 @@ export class GeoService {
   private readonly logger = new Logger(GeoService.name);
   private readonly baseUrl = 'https://api.maptiler.com/geocoding';
   private readonly requestTimeoutMs = 8000;
+  private readonly photonUrl = 'https://photon.komoot.io/api/';
+  /** TP Hồ Chí Minh: most bookings are there, so it is the default "look here first". */
+  private readonly defaultNear = { lat: 10.7769, lng: 106.7009 };
 
   constructor(
     private readonly httpService: HttpService,
@@ -69,11 +89,55 @@ export class GeoService {
   });
 
   /**
-   * Forward geocoding – returns place suggestions for a partial text input.
-   * MapTiler response is a GeoJSON FeatureCollection; each feature already carries
-   * coordinates + admin-area context, so the frontend never needs a follow-up lookup.
+   * Suggestions for a typed address or place name (PO 12/10/2026: "nhà văn hóa sinh viên" gave only
+   * other provinces). MapTiler knows streets but almost no Vietnamese places, so OpenStreetMap through
+   * Photon is asked first, nearest to `near` (TP HCM by default); MapTiler answers when Photon fails
+   * or finds nothing in Vietnam. OSM still names some areas by the pre-2025 provinces.
    */
-  async autocomplete(input: string): Promise<PlaceSuggestionDto[]> {
+  async autocomplete(input: string, near?: { lat: number; lng: number }): Promise<PlaceSuggestionDto[]> {
+    const places = await this.photonSearch(input, near ?? this.defaultNear).catch((error: unknown) => {
+      this.logger.warn(`Photon autocomplete failed: ${(error as Error)?.name || 'unknown'}`);
+      return [] as PlaceSuggestionDto[];
+    });
+    if (places.length) return places;
+    return this.maptilerSearch(input, near);
+  }
+
+  private async photonSearch(input: string, near: { lat: number; lng: number }): Promise<PlaceSuggestionDto[]> {
+    const response = await firstValueFrom(
+      this.httpService
+        .get(this.photonUrl, {
+          params: { q: input, lat: near.lat, lon: near.lng, limit: 10, lang: 'default' },
+          headers: { 'User-Agent': 'FixHome/1.0 (SEP490 student project)' },
+        })
+        .pipe(timeout(this.requestTimeoutMs)),
+    );
+    const features: PhotonFeature[] = Array.isArray(response.data?.features) ? response.data.features : [];
+    const seen = new Set<string>();
+    return features
+      .filter((f) => f.properties?.countrycode === 'VN' && Array.isArray(f.geometry?.coordinates) && f.geometry!.coordinates!.length >= 2)
+      .map((f) => this.mapPhoton(f))
+      .filter((s) => !seen.has(s.description) && seen.add(s.description))
+      .slice(0, 6);
+  }
+
+  private mapPhoton(f: PhotonFeature): PlaceSuggestionDto {
+    const p = f.properties ?? {};
+    const [lng, lat] = f.geometry!.coordinates!;
+    const street = [p.housenumber, p.street].filter(Boolean).join(' ');
+    const parts = [p.name, street, p.locality, p.district, p.county, p.city, p.state].filter((x): x is string => !!x);
+    return {
+      placeId: `osm:${p.osm_type ?? ''}${p.osm_id ?? `${lat},${lng}`}`,
+      description: parts.filter((x, i) => parts.indexOf(x) === i).join(', '),
+      lat,
+      lng,
+      ward: p.district || p.locality,
+      district: p.county || (p.state ? p.city : undefined),
+      province: p.state || p.city,
+    };
+  }
+
+  private async maptilerSearch(input: string, near?: { lat: number; lng: number }): Promise<PlaceSuggestionDto[]> {
     try {
       const response = await firstValueFrom(
         this.httpService
@@ -83,6 +147,7 @@ export class GeoService {
               language: 'vi',
               country: 'vn',
               limit: 5,
+              ...(near ? { proximity: `${near.lng},${near.lat}` } : {}),
             },
           })
           .pipe(timeout(this.requestTimeoutMs)),
