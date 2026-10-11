@@ -61,8 +61,8 @@ const KEY_VALIDATION: Record<string, KeyValidationRule> = {
   'matching.invitation_ttl_minutes':     { type: 'int', min: 5, max: 1440 },
   'order.departure_grace_minutes':       { type: 'int', min: 0, max: 240 },
   'order.departure_cancel_minutes':      { type: 'int', min: 1, max: 240 },
-  'geofence.radius_meters':             { type: 'int', min: 10, max: 5000 },
-  'geofence.min_gps_accuracy_meters':   { type: 'int', min: 5, max: 500 },
+  'geofence.radius_meters':             { type: 'int', min: 10, max: 10000 },
+  'geofence.min_gps_accuracy_meters':   { type: 'int', min: 5, max: 10000 },
   'evidence.before.min_count':          { type: 'int', min: 0, max: 10 },
   'evidence.after.min_count':           { type: 'int', min: 0, max: 10 },
   'evidence.max_file_mb':               { type: 'int', min: 1, max: 50 },
@@ -135,13 +135,10 @@ const KEY_EFFECT: Record<
     status: 'ACTIVE',
     evidence: null,
   },
-  // TO_WIRE: service-orders.service.ts reads value into local _geofenceRadius variable
-  // but that variable is NOT subsequently used for distance validation logic.
-  // The actual geofence check still uses a hard-coded or default threshold.
+  // ACTIVE: checkIn() compares the distance to the booking with this radius.
   'geofence.radius_meters': {
-    status: 'TO_WIRE',
-    evidence:
-      'src/modules/service-orders/service-orders.service.ts — value is loaded into _geofenceRadius but NOT used in the distance-validation branch; geofence check still uses a hard-coded threshold. Wire _geofenceRadius into the actual comparison to make this ACTIVE.',
+    status: 'ACTIVE',
+    evidence: null,
   },
   // ACTIVE: read and applied in check-in result determination
   'geofence.min_gps_accuracy_meters': {

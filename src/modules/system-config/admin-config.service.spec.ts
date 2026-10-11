@@ -110,11 +110,10 @@ describe('AdminConfigService', () => {
       expect(k?.effectStatus).toBe('ACTIVE');
     });
 
-    it('annotates geofence.radius_meters as TO_WIRE (_geofenceRadius read but not used in distance check)', async () => {
+    it('annotates geofence.radius_meters as ACTIVE (checkIn compares the distance with it)', async () => {
       const result = await adminConfigService.findAll();
       const k = result.find((r) => r.key === 'geofence.radius_meters');
-      expect(k?.effectStatus).toBe('TO_WIRE');
-      expect(k?.consumerEvidence).toContain('_geofenceRadius');
+      expect(k?.effectStatus).toBe('ACTIVE');
     });
 
     it('annotates ai.provider as TO_WIRE (env var, not BusinessConfigService)', async () => {

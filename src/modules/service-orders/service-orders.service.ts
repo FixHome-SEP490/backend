@@ -469,8 +469,10 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       if (booking.latitudeSnapshot == null || booking.longitudeSnapshot == null) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Repair address has no verified coordinates');
       const lat = Number(booking.latitudeSnapshot), lng = Number(booking.longitudeSnapshot);
       const distanceMeters = Math.round(haversineKm(lat, lng, body.lat, body.lng) * 1000);
-      const radius = await this.configService.getInt('geofence.radius_meters', 300);
-      const accuracy = await this.configService.getInt('geofence.min_gps_accuracy_meters', 100);
+      // PO 11/10/2026: browser GPS is often hundreds of metres off, so 5 km of distance and of
+      // reported error both pass by default.
+      const radius = await this.configService.getInt('geofence.radius_meters', 5000);
+      const accuracy = await this.configService.getInt('geofence.min_gps_accuracy_meters', 5000);
       const result = body.accuracyMeters > accuracy ? CheckInResult.LOW_ACCURACY : distanceMeters > radius ? CheckInResult.OUT_OF_GEOFENCE : CheckInResult.VALID;
       if (result === CheckInResult.VALID) {
         void this.notifyCustomerForOrder(
@@ -696,12 +698,18 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   async uploadEvidence(orderId: string, body: { type: EvidenceType; note?: string; capturedAt?: string }, actor: { id: string; role: string }, file?: EvidenceFile): Promise<RepairEvidence> {
     this.evidenceStorage.validate(file);
     if (body.capturedAt && new Date(body.capturedAt) > new Date()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Evidence timestamp cannot be in the future');
-    const expected = body.type === EvidenceType.BEFORE ? ServiceOrderStatus.EN_ROUTE : ServiceOrderStatus.UNDER_REPAIR;
+    // Check-in face and the before photo belong to the arrival (EN_ROUTE); the rest to the repair.
+    const atArrival = body.type === EvidenceType.BEFORE || body.type === EvidenceType.CHECKIN_FACE;
+    const expected = atArrival ? ServiceOrderStatus.EN_ROUTE : ServiceOrderStatus.UNDER_REPAIR;
     const max = await this.configService.getInt('evidence.max_count_per_type', 20);
     const checkEligible = async (manager: EntityManager): Promise<void> => {
       const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
       if (order.status !== expected || order.completionRequestedAt) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Evidence timing is invalid');
-      if (body.type === EvidenceType.BEFORE && !await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, result: CheckInResult.VALID })) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Valid arrival required before BEFORE evidence');
+      if (atArrival && !await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, result: CheckInResult.VALID })) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Valid arrival required before BEFORE evidence');
+      // PO 11/10/2026: check-in is the GPS fix plus the technician's face; the product photo comes after.
+      if (body.type === EvidenceType.BEFORE && !await manager.findOneBy(RepairEvidence, { serviceOrderId: orderId, uploaderId: actor.id, type: EvidenceType.CHECKIN_FACE })) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chụp ảnh khuôn mặt check-in trước khi chụp ảnh máy');
+      }
       const count = await manager.count(RepairEvidence, { where: { serviceOrderId: orderId, type: body.type } });
       if (count >= max) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Evidence limit exceeded');
     };
@@ -750,6 +758,9 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       if (!found) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Evidence not found');
       if (order.completionRequestedAt || [ServiceOrderStatus.COMPLETED, ServiceOrderStatus.CANCELLED].includes(order.status)) {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Cannot delete evidence after completion requested');
+      }
+      if (found.type === EvidenceType.CHECKIN_FACE) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Ảnh khuôn mặt check-in không xoá được');
       }
       if (found.type === EvidenceType.BEFORE && order.status !== ServiceOrderStatus.EN_ROUTE) {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Ảnh trước khi sửa đã dùng để bắt đầu sửa, không xoá được');
