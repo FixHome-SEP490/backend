@@ -18,7 +18,7 @@ export class OrderListQueryDto extends PageSizeQueryDto {
   @IsEnum(ServiceOrderStatus, { each: true })
   statuses?: ServiceOrderStatus[];
 
-  @ApiPropertyOptional({ description: 'Order code, service or customer name contains (accents ignored)' })
+  @ApiPropertyOptional({ description: 'Order code, service, customer or technician name contains (accents ignored)' })
   @IsOptional()
   @IsString()
   @MaxLength(100)

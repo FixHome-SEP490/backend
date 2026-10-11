@@ -96,7 +96,7 @@ export type StrikeListItem = CancellationStrike & {
   orderCode: string | null;
 };
 
-/** One state, several states, and a text search over the order code, the service and the customer's name. */
+/** One state, several states, and a text search over the order code, the service, the customer's and the technician's name. */
 function filterOrderList(
   qb: SelectQueryBuilder<ServiceOrder>,
   options: { status?: ServiceOrderStatus; statuses?: ServiceOrderStatus[]; search?: string },
@@ -104,8 +104,12 @@ function filterOrderList(
   if (options.status) qb.andWhere('o.status = :status', { status: options.status });
   if (options.statuses?.length) qb.andWhere('o.status IN (:...statuses)', { statuses: options.statuses });
   if (options.search?.trim()) {
-    qb.leftJoin('bookings', 'sb', 'sb.id = o.booking_id').leftJoin('users', 'scu', 'scu.id = sb.customer_id');
-    andWhereTextMatches(qb, ['o.code', 'sb.service_name_snapshot', 'scu.full_name'], options.search);
+    qb.leftJoin('bookings', 'sb', 'sb.id = o.booking_id')
+      .leftJoin('users', 'scu', 'scu.id = sb.customer_id')
+      // The technician holding the order now (a customer looks for "the order with Toàn").
+      .leftJoin('technician_assignments', 'sta', 'sta.service_order_id = o.id AND sta.is_active = true')
+      .leftJoin('users', 'stu', 'stu.id = sta.technician_id');
+    andWhereTextMatches(qb, ['o.code', 'sb.service_name_snapshot', 'scu.full_name', 'stu.full_name'], options.search);
   }
 }
 

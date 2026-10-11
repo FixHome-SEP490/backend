@@ -604,6 +604,9 @@ export function registerDev1Cases(context: () => Context) {
       const [{ code }] = await db.query('SELECT code FROM service_orders WHERE id = $1', [order.id]);
       expect(ids(await get(`/service-orders/my?search=${encodeURIComponent(code.slice(-6).toLowerCase())}`, f.owner).expect(200))).toEqual([order.id]);
       denied(await get('/service-orders/my?statuses=accepted,flying', f.owner));
+      // The customer finds the order by the technician's name, without accents.
+      await db.query("UPDATE users SET full_name = 'Phạm Đức Toàn' WHERE id = $1", [f.tech.user.id]);
+      expect(ids(await get('/service-orders/my?search=duc%20toan', f.owner).expect(200))).toEqual([order.id]);
       expect(unwrap((await get('/bookings/my?search=dieu%20hoa&statuses=matched,matching', f.owner).expect(200)).body).map((b: any) => b.id)).toEqual([booking.id]);
       // Staff board: the appointment two days ahead is not overdue; once it has passed it is.
       const manager = f.outsider;
