@@ -593,6 +593,29 @@ export function registerDev1Cases(context: () => Context) {
       expect(unwrap((await get(`/bookings/${booking.id}`, f.owner).expect(200)).body).status).toBe('matched');
     });
 
+    it('searches and filters lists on the server, accents ignored (PO 12/10/2026: every table pages)', async () => {
+      const f = await fixture(), db = context().db, { order, booking } = await accept(f);
+      await db.query("UPDATE bookings SET service_name_snapshot = 'Sửa điều hòa không mát' WHERE id = $1", [booking.id]);
+      const ids = (res: request.Response) => unwrap(res.body).map((o: any) => o.id);
+      expect(ids(await get('/service-orders/my?search=dieu%20hoa', f.owner).expect(200))).toEqual([order.id]);
+      expect(ids(await get('/service-orders/my?search=DIEU%20HOA&statuses=accepted,en_route', f.tech).expect(200))).toEqual([order.id]);
+      expect(ids(await get('/service-orders/my?statuses=completed,cancelled', f.owner).expect(200))).toEqual([]);
+      expect(ids(await get('/service-orders/my?search=khong%20co%20don%20nay', f.owner).expect(200))).toEqual([]);
+      const [{ code }] = await db.query('SELECT code FROM service_orders WHERE id = $1', [order.id]);
+      expect(ids(await get(`/service-orders/my?search=${encodeURIComponent(code.slice(-6).toLowerCase())}`, f.owner).expect(200))).toEqual([order.id]);
+      denied(await get('/service-orders/my?statuses=accepted,flying', f.owner));
+      expect(unwrap((await get('/bookings/my?search=dieu%20hoa&statuses=matched,matching', f.owner).expect(200)).body).map((b: any) => b.id)).toEqual([booking.id]);
+      // Staff board: the appointment two days ahead is not overdue; once it has passed it is.
+      const manager = f.outsider;
+      await db.query('UPDATE users SET role = $1 WHERE id = $2', ['service_manager', manager.user.id]);
+      const staffIds = async (query: string) => unwrap((await get(`/bookings?${query}`, manager).expect(200)).body).map((b: any) => b.id);
+      expect(await staffIds('overdue=false&search=dieu%20hoa')).toContain(booking.id);
+      expect(await staffIds('overdue=true&search=dieu%20hoa')).not.toContain(booking.id);
+      await db.query("UPDATE bookings SET preferred_start_at = now() - interval '1 hour' WHERE id = $1", [booking.id]);
+      expect(await staffIds('overdue=true&sort=appointment&search=dieu%20hoa')).toContain(booking.id);
+      denied(await get('/bookings?sort=random', manager));
+    });
+
     it.each([false, true])('keeps technician part warranty opt-in and outside labor commission: selected=%s', async selected => {
       const f = await fixture('inspection_required'), { order } = await accept(f), path = `/service-orders/${order.id}`;
       await arrived(order.id, f.tech);

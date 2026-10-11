@@ -1,3 +1,4 @@
+import { andWhereTextMatches } from '../../shared/utils/list-search';
 import { NO_DEPARTURE_CANCEL_REASON } from './no-departure';
 import { closeOrderPartRequests, assertPartsResolved, usedPartQuantities, holderPartRequests, releaseOutgoingTechnicianPartRequests } from '../part-requests/part-request-lifecycle';
 import { Payment } from '../finance/entities/payment.entity';
@@ -7,7 +8,7 @@ import { ReputationService } from '../reputation/reputation.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { randomUUID } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository, In } from 'typeorm';
+import { DataSource, Repository, In, SelectQueryBuilder } from 'typeorm';
 import { ServiceOrder } from './entities/service-order.entity';
 import { TechnicianAssignment } from './entities/technician-assignment.entity';
 import { OrderStatusHistory } from './entities/order-status-history.entity';
@@ -94,6 +95,19 @@ export type StrikeListItem = CancellationStrike & {
   serviceOrderId: string | null;
   orderCode: string | null;
 };
+
+/** One state, several states, and a text search over the order code, the service and the customer's name. */
+function filterOrderList(
+  qb: SelectQueryBuilder<ServiceOrder>,
+  options: { status?: ServiceOrderStatus; statuses?: ServiceOrderStatus[]; search?: string },
+): void {
+  if (options.status) qb.andWhere('o.status = :status', { status: options.status });
+  if (options.statuses?.length) qb.andWhere('o.status IN (:...statuses)', { statuses: options.statuses });
+  if (options.search?.trim()) {
+    qb.leftJoin('bookings', 'sb', 'sb.id = o.booking_id').leftJoin('users', 'scu', 'scu.id = sb.customer_id');
+    andWhereTextMatches(qb, ['o.code', 'sb.service_name_snapshot', 'scu.full_name'], options.search);
+  }
+}
 
 @Injectable()
 export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
@@ -253,6 +267,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     page?: number;
     limit?: number;
     status?: ServiceOrderStatus;
+    statuses?: ServiceOrderStatus[];
     search?: string;
   }): Promise<{ data: ServiceOrder[]; total: number }> {
     await this.cancelOverdueOrders();
@@ -261,12 +276,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
 
     const qb = this.orderRepo.createQueryBuilder('o');
 
-    if (options.status) {
-      qb.andWhere('o.status = :status', { status: options.status });
-    }
-    if (options.search) {
-      qb.andWhere('o.code ILIKE :search', { search: `%${options.search}%` });
-    }
+    filterOrderList(qb, options);
 
     qb.orderBy('o.createdAt', 'DESC')
       .skip((page - 1) * limit)
@@ -279,7 +289,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   async findMyOrders(
     userId: string,
     role: string,
-    options: { page?: number; limit?: number; status?: ServiceOrderStatus },
+    options: { page?: number; limit?: number; status?: ServiceOrderStatus; statuses?: ServiceOrderStatus[]; search?: string },
   ): Promise<{ data: (ServiceOrder | HistoricalOrderSummary)[]; total: number }> {
     await this.cancelOverdueOrders();
     const page = options.page || 1;
@@ -300,9 +310,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       throw new ForbiddenException('Order list access denied');
     }
 
-    if (options.status) {
-      qb.andWhere('o.status = :status', { status: options.status });
-    }
+    filterOrderList(qb, options);
 
     qb.orderBy('o.createdAt', 'DESC')
       .skip((page - 1) * limit)
@@ -1092,7 +1100,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   async getRepairHistory(
     userId: string,
     role: string,
-    options: { page?: number; limit?: number; status?: ServiceOrderStatus },
+    options: { page?: number; limit?: number; status?: ServiceOrderStatus; search?: string },
   ): Promise<{ data: Record<string, unknown>[]; total: number }> {
     const page = options.page || 1;
     const limit = Math.min(options.limit || 20, 100);
@@ -1114,6 +1122,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         // The last assignment is the technician who held the order at the end.
         .andWhere('ta.assigned_at = (SELECT MAX(x.assigned_at) FROM technician_assignments x WHERE x.service_order_id = o.id)');
     }
+    andWhereTextMatches(qb, ['o.code', 'b.service_name_snapshot'], options.search);
 
     qb.orderBy('o.completedAt', 'DESC')
       .skip((page - 1) * limit)
