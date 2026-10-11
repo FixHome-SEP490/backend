@@ -95,12 +95,30 @@ export class GeoService {
    * or finds nothing in Vietnam. OSM still names some areas by the pre-2025 provinces.
    */
   async autocomplete(input: string, near?: { lat: number; lng: number }): Promise<PlaceSuggestionDto[]> {
-    const places = await this.photonSearch(input, near ?? this.defaultNear).catch((error: unknown) => {
-      this.logger.warn(`Photon autocomplete failed: ${(error as Error)?.name || 'unknown'}`);
-      return [] as PlaceSuggestionDto[];
-    });
-    if (places.length) return places;
-    return this.maptilerSearch(input, near);
+    const point = near ?? this.defaultNear;
+    // Both are asked at once. A house number in front ("12 Lê Lợi") is a street address, where
+    // MapTiler is better and already uses the post-2025 ward names; a name is a place, where only
+    // OpenStreetMap has data. The better source leads, the other fills the list up to 6.
+    const [osm, maptiler] = await Promise.all([
+      this.photonSearch(input, point).catch((error: unknown) => {
+        this.logger.warn(`Photon autocomplete failed: ${(error as Error)?.name || 'unknown'}`);
+        return null;
+      }),
+      this.maptilerSearch(input, point).catch(() => null),
+    ]);
+    if (!osm && !maptiler) throw new ServiceUnavailableException('Address lookup is temporarily unavailable');
+    const streetAddress = /^\s*\d+[\w/-]*\s/.test(input);
+    const ordered = streetAddress ? [...(maptiler ?? []), ...(osm ?? [])] : [...(osm ?? []), ...(maptiler ?? [])];
+    const seen = new Set<string>();
+    return ordered
+      .filter((s) => {
+        // Same place from both sources: same name and within ~100 m.
+        const key = `${s.description.split(',')[0].trim().toLowerCase()}@${s.lat.toFixed(3)},${s.lng.toFixed(3)}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, 6);
   }
 
   private async photonSearch(input: string, near: { lat: number; lng: number }): Promise<PlaceSuggestionDto[]> {
