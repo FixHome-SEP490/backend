@@ -59,6 +59,8 @@ export class BookingsController {
       page: query.page,
       limit: query.pageSize,
       status: query.status,
+      statuses: query.statuses,
+      search: query.search,
     });
     return { data: result.data.map(toBookingResponse), meta: { total: result.total } };
   }
@@ -73,6 +75,10 @@ export class BookingsController {
       page: query.page,
       limit: query.pageSize,
       status: query.status,
+      statuses: query.statuses,
+      search: query.search,
+      overdue: query.overdue,
+      sort: query.sort,
     });
     return { data: result.data.map(toBookingResponse), meta: { total: result.total } };
   }

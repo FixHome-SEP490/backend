@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-10 02:40 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/technician-auto-accept
+> Cập nhật lần cuối: 2026-10-12 16:47 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/address-text
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -223,6 +223,13 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-12 16:47 (UTC+7) | ToanAltF4 | fix/address-text | Địa chỉ một dòng gọn: bỏ mã bưu chính, Việt Nam, phần lặp (tạo booking và đọc snapshot cũ)
+- 2026-10-12 01:22 (UTC+7) | ToanAltF4 | feat/search-by-technician | Tìm đơn (search) thêm tên kỹ thuật viên đang giữ đơn, để khách tìm được đơn theo tên thợ như trước khi chuyển sang phân trang trên server
+- 2026-10-12 01:02 (UTC+7) | ToanAltF4 | feat/list-search | Danh sách đơn và yêu cầu đặt lịch tìm và lọc trên server để web phân trang không mất tìm kiếm: search (mã đơn, tên dịch vụ, tên khách; không dấu, không phân biệt hoa thường), statuses nhiều trạng thái một lần; bảng booking của quản lý có overdue (đã quá giờ hẹn) và sort=appointment
+- 2026-10-12 00:40 (UTC+7) | ToanAltF4 | feat/geo-hybrid-search | Gợi ý địa chỉ hỏi song song OpenStreetMap (Photon) và MapTiler: gõ có số nhà ở đầu thì MapTiler đứng trước (tên phường sau sáp nhập), gõ tên địa điểm thì OpenStreetMap đứng trước; bỏ trùng cùng nơi, tối đa 6; một nguồn lỗi thì nguồn kia trả lời
+- 2026-10-12 00:22 (UTC+7) | ToanAltF4 | feat/earnings-period-paging | Thu nhập của thợ theo kỳ: GET /technicians/me/earnings nhận from/to (ngày lịch giờ VN, tính cả hai đầu) và page/pageSize, tổng tính trên cả kỳ (số đơn, tiền công, phí, thực nhận, giá trị đơn, số đơn đã thanh toán), danh sách đơn có tên dịch vụ, giá trị đơn, đã thanh toán chưa; không tham số thì như cũ. GET /warranty-claims/mine nhận page/pageSize và trả meta
+- 2026-10-12 00:11 (UTC+7) | ToanAltF4 | feat/geo-place-search | Gợi ý địa chỉ hỏi OpenStreetMap qua Photon trước (có dữ liệu địa điểm như Nhà Văn Hóa Sinh Viên), ưu tiên gần lat/lng người dùng gửi hoặc TP HCM, chỉ giữ kết quả ở Việt Nam; Photon lỗi hoặc không có kết quả thì MapTiler trả lời, cũng ưu tiên gần vị trí đó
+- 2026-10-11 23:39 (UTC+7) | ToanAltF4 | feat/checkin-face | Check-in gồm GPS và ảnh khuôn mặt thợ chụp bằng camera: ảnh bằng chứng loại mới checkin_face (migration 035 thêm giá trị enum), chỉ nộp khi EN_ROUTE đã check-in hợp lệ, không xoá được; ảnh trước sửa chỉ nhận khi đã có ảnh khuôn mặt; GPS qua khi cách địa chỉ không quá 5 km và sai số báo về không quá 5 km (geofence.radius_meters = geofence.min_gps_accuracy_meters = 5000, đã ACTIVE trong trang cấu hình)
 - 2026-10-10 02:40 (UTC+7) | ToanAltF4 | feat/technician-auto-accept | Thợ bật/tắt tự nhận việc (technician_profiles.auto_accept_invitations, migration 034, PATCH /technicians/me/profile autoAcceptInvitations): lời mời tới thợ đang bật được nhận thay qua respond(ACCEPT) sau khi commit (tạo shortlist, chuyển lời mời kế tiếp, vòng quét mỗi phút), nhận không được thì để thợ tự trả lời; thợ nhận thông báo INVITATION_AUTO_ACCEPTED, lịch sử đơn và audit ghi là tự nhận
 - 2026-10-10 02:09 (UTC+7) | ToanAltF4 | fix/booking-photo-seed-ids | Ảnh đặt lịch riêng tư không còn trả 404 cho tài khoản seed: kiểm id theo dạng uuid của PostgreSQL (shared/utils/db-uuid.ts) thay cho isUUID() vốn từ chối id không theo phiên bản RFC 4122
 - 2026-10-10 01:20 (UTC+7) | ToanAltF4 | feat/technician-default-warranty | Thợ đặt bảo hành công mặc định (PUT /technicians/me/warranty-default, áp cho tất cả dịch vụ tuỳ chọn); đơn chụp bảo hành công lúc giao thợ (service_orders.labor_warranty_days, migration 033); báo giá/chi phí phát sinh để trống ngày bảo hành công thì lấy mặc định, vượt warranty.max_days bị từ chối; hoá đơn giá cố định ghi bảo hành công theo đơn thay vì 0; thẻ ứng viên không còn hiện 30 ngày khi thợ chưa đặt; warranty.default_days và warranty.max_days chuyển ACTIVE

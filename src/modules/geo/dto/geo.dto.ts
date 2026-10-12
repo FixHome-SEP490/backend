@@ -1,11 +1,25 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsLatitude, IsLongitude, IsNotEmpty, IsString, MaxLength } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsLatitude, IsLongitude, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class AutocompleteQueryDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(200)
   input: string;
+
+  /** Where to look first (the user's position or map centre); TP Hồ Chí Minh when absent. */
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @Type(() => Number)
+  @IsLatitude()
+  lat?: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @Type(() => Number)
+  @IsLongitude()
+  lng?: number;
 }
 
 export class ReverseGeocodeQueryDto {

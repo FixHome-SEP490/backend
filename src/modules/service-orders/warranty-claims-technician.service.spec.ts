@@ -49,6 +49,7 @@ const makeService = (options: { claim?: unknown; visits?: unknown[] } = {}) => {
     findOne: vi.fn().mockResolvedValue('claim' in options ? options.claim : makeClaim()),
     findOneOrFail: vi.fn().mockResolvedValue(makeClaim()),
     find: vi.fn().mockResolvedValue([makeClaim()]),
+    findAndCount: vi.fn().mockResolvedValue([[makeClaim()], 1]),
     update: vi.fn().mockResolvedValue({ affected: 1 }),
     manager: {
       transaction: vi.fn(async (cb: any) =>
@@ -246,11 +247,19 @@ describe('technician warranty commands', () => {
 
     const result = await service.listMine(TECH, WarrantyClaimStatus.ACCEPTED);
 
-    expect(claimRepo.find).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { technicianId: TECH.id, status: WarrantyClaimStatus.ACCEPTED } }),
+    expect(claimRepo.findAndCount).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { technicianId: TECH.id, status: WarrantyClaimStatus.ACCEPTED }, skip: 0, take: 100 }),
     );
     expect(reader.toStaffViews).toHaveBeenCalled();
-    expect(result).toEqual([{ id: 'claim-1' }]);
+    expect(result).toEqual({ items: [{ id: 'claim-1' }], total: 1 });
+  });
+
+  it('pages the list when asked (PO 12/10/2026: every table has pages)', async () => {
+    const { service, claimRepo } = makeService();
+
+    await service.listMine(TECH, undefined, 3, 20);
+
+    expect(claimRepo.findAndCount).toHaveBeenCalledWith(expect.objectContaining({ where: { technicianId: TECH.id }, skip: 40, take: 20 }));
   });
 });
 

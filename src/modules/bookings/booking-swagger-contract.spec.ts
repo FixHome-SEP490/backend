@@ -63,7 +63,7 @@ describe('Booking Swagger contract: ordered invitations', () => {
     expect(evidenceBody && 'content' in evidenceBody ? evidenceBody.content?.['multipart/form-data']?.schema : undefined).toMatchObject({
       required: ['type', 'file'],
       properties: {
-        type: { enum: ['before', 'after', 'additional'] },
+        type: { enum: ['before', 'after', 'additional', 'checkin_face'] },
         file: { type: 'string', format: 'binary' },
       },
     });

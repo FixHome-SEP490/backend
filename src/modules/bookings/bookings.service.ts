@@ -1,4 +1,5 @@
 // src/modules/bookings/bookings.service.ts
+import { andWhereTextMatches } from '../../shared/utils/list-search';
 import { firstEligible } from './first-eligible';
 import { displayRating } from '../technicians/technician-earnings';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -8,7 +9,7 @@ import {
   Logger,
   NotFoundException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, EntityManager, In } from 'typeorm';
+import { Repository, DataSource, EntityManager, In, SelectQueryBuilder } from 'typeorm';
 import { isUUID } from 'class-validator';
 import { Booking } from './entities/booking.entity';
 import { BookingMedia } from './entities/booking-media.entity';
@@ -43,6 +44,7 @@ import {
 import { PrivateBookingPhotoClaimService } from '../media/private-booking-photo-claim.service';
 import { AiChatSession } from '../ai-diagnosis/entities/ai-chat-session.entity';
 import { AiBookingSummary, hasAdvice, toBookingSummary } from '../ai-diagnosis/ai-chat-summary';
+import { composeAddressText } from '../../shared/utils/address-text';
 
 export interface TechnicianCandidate {
   technicianId: string;
@@ -67,6 +69,30 @@ export interface TechnicianCandidate {
 const CANDIDATE_LIMIT = 20;
 /** Technicians whose eligibility is checked at once; stays under the database pool. */
 const ELIGIBILITY_BATCH = 8;
+
+type BookingListOptions = {
+  page?: number;
+  limit?: number;
+  status?: BookingStatus;
+  statuses?: BookingStatus[];
+  search?: string;
+  overdue?: boolean;
+  sort?: 'created' | 'appointment';
+};
+
+/**
+ * Filters shared by the customer's list and the staff board (PO 12/10/2026): several states, a
+ * text search, appointments already passed or not, newest first or earliest appointment first.
+ */
+function filterBookingList(qb: SelectQueryBuilder<Booking>, options: BookingListOptions): void {
+  if (options.status) qb.andWhere('b.status = :status', { status: options.status });
+  if (options.statuses?.length) qb.andWhere('b.status IN (:...statuses)', { statuses: options.statuses });
+  andWhereTextMatches(qb, ['b.service_name_snapshot', 'b.description'], options.search);
+  if (options.overdue === true) qb.andWhere('b.preferred_start_at < now()');
+  if (options.overdue === false) qb.andWhere('(b.preferred_start_at IS NULL OR b.preferred_start_at >= now())');
+  if (options.sort === 'appointment') qb.orderBy('b.preferredStartAt', 'ASC', 'NULLS LAST').addOrderBy('b.createdAt', 'DESC');
+  else qb.orderBy('b.createdAt', 'DESC');
+}
 
 @Injectable()
 export class BookingsService {
@@ -176,8 +202,7 @@ export class BookingsService {
         districtSnapshot = resolved.districtCode;
         provinceNameSnapshot = resolved.provinceName;
         districtNameSnapshot = resolved.districtName;
-        addressTextSnapshot = [address.line1, address.ward, address.district, address.province]
-          .filter(Boolean).join(', ');
+        addressTextSnapshot = composeAddressText([address.line1, address.ward, address.district, address.province]);
         latitudeSnapshot = address.lat != null ? Number(address.lat) : null;
         longitudeSnapshot = address.lng != null ? Number(address.lng) : null;
       }
@@ -320,7 +345,7 @@ export class BookingsService {
    */
   async findMyBookings(
     customerId: string,
-    options: { page?: number; limit?: number; status?: BookingStatus },
+    options: BookingListOptions,
   ): Promise<{ data: Booking[]; total: number }> {
     await this.closeOverdueBookings();
     const page = options.page || 1;
@@ -332,13 +357,8 @@ export class BookingsService {
       .leftJoinAndSelect('b.service', 'service')
       .leftJoinAndSelect('b.media', 'media');
 
-    if (options.status) {
-      qb.andWhere('b.status = :status', { status: options.status });
-    }
-
-    qb.orderBy('b.createdAt', 'DESC')
-      .skip((page - 1) * limit)
-      .take(limit);
+    filterBookingList(qb, options);
+    qb.skip((page - 1) * limit).take(limit);
 
     const [data, total] = await qb.getManyAndCount();
     return { data, total };
@@ -349,7 +369,7 @@ export class BookingsService {
    * Used to find bookings stuck in MATCHING for manual assignment.
    */
   async findAllForStaff(
-    options: { page?: number; limit?: number; status?: BookingStatus },
+    options: BookingListOptions,
   ): Promise<{ data: Booking[]; total: number }> {
     await this.closeOverdueBookings();
     const page = options.page || 1;
@@ -360,13 +380,8 @@ export class BookingsService {
       .leftJoinAndSelect('b.service', 'service')
       .leftJoinAndSelect('b.media', 'media');
 
-    if (options.status) {
-      qb.andWhere('b.status = :status', { status: options.status });
-    }
-
-    qb.orderBy('b.createdAt', 'DESC')
-      .skip((page - 1) * limit)
-      .take(limit);
+    filterBookingList(qb, options);
+    qb.skip((page - 1) * limit).take(limit);
 
     const [data, total] = await qb.getManyAndCount();
     return { data, total };

@@ -82,6 +82,7 @@ export class ServiceOrdersController {
       page: query.page,
       limit: query.pageSize,
       status: query.status,
+      statuses: query.statuses,
       search: query.search,
     });
     return { data: result.data, meta: { total: result.total } };
@@ -99,7 +100,7 @@ export class ServiceOrdersController {
     const result = await this.serviceOrdersService.findMyOrders(
       req.user.id,
       req.user.role,
-      { page: query.page, limit: query.pageSize, status: query.status },
+      { page: query.page, limit: query.pageSize, status: query.status, statuses: query.statuses, search: query.search },
     );
     return { data: result.data, meta: { total: result.total } };
   }
@@ -175,7 +176,7 @@ export class ServiceOrdersController {
   @ApiBody({ schema: {
     type: 'object', required: ['type', 'file'],
     properties: {
-      type: { type: 'string', enum: ['before', 'after', 'additional'], example: 'before' },
+      type: { type: 'string', enum: ['before', 'after', 'additional', 'checkin_face'], example: 'before' },
       file: { type: 'string', format: 'binary', description: 'One JPEG, PNG or WebP image up to 10 MB.' },
       note: { type: 'string', maxLength: 2000, description: 'Optional short evidence note.' },
       capturedAt: { type: 'string', format: 'date-time', description: 'Optional ISO 8601 capture timestamp.' },
@@ -510,7 +511,7 @@ export class ServiceOrdersController {
     const result = await this.serviceOrdersService.getRepairHistory(
       req.user.id,
       req.user.role,
-      { page: query.page, limit: query.pageSize, status: query.status },
+      { page: query.page, limit: query.pageSize, status: query.status, search: query.search },
     );
     return { data: result.data, meta: { total: result.total } };
   }

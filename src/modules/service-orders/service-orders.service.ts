@@ -1,3 +1,4 @@
+import { andWhereTextMatches } from '../../shared/utils/list-search';
 import { NO_DEPARTURE_CANCEL_REASON } from './no-departure';
 import { closeOrderPartRequests, assertPartsResolved, usedPartQuantities, holderPartRequests, releaseOutgoingTechnicianPartRequests } from '../part-requests/part-request-lifecycle';
 import { Payment } from '../finance/entities/payment.entity';
@@ -7,7 +8,7 @@ import { ReputationService } from '../reputation/reputation.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { randomUUID } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository, In } from 'typeorm';
+import { DataSource, Repository, In, SelectQueryBuilder } from 'typeorm';
 import { ServiceOrder } from './entities/service-order.entity';
 import { TechnicianAssignment } from './entities/technician-assignment.entity';
 import { OrderStatusHistory } from './entities/order-status-history.entity';
@@ -94,6 +95,23 @@ export type StrikeListItem = CancellationStrike & {
   serviceOrderId: string | null;
   orderCode: string | null;
 };
+
+/** One state, several states, and a text search over the order code, the service, the customer's and the technician's name. */
+function filterOrderList(
+  qb: SelectQueryBuilder<ServiceOrder>,
+  options: { status?: ServiceOrderStatus; statuses?: ServiceOrderStatus[]; search?: string },
+): void {
+  if (options.status) qb.andWhere('o.status = :status', { status: options.status });
+  if (options.statuses?.length) qb.andWhere('o.status IN (:...statuses)', { statuses: options.statuses });
+  if (options.search?.trim()) {
+    qb.leftJoin('bookings', 'sb', 'sb.id = o.booking_id')
+      .leftJoin('users', 'scu', 'scu.id = sb.customer_id')
+      // The technician holding the order now (a customer looks for "the order with Toàn").
+      .leftJoin('technician_assignments', 'sta', 'sta.service_order_id = o.id AND sta.is_active = true')
+      .leftJoin('users', 'stu', 'stu.id = sta.technician_id');
+    andWhereTextMatches(qb, ['o.code', 'sb.service_name_snapshot', 'scu.full_name', 'stu.full_name'], options.search);
+  }
+}
 
 @Injectable()
 export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
@@ -253,6 +271,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     page?: number;
     limit?: number;
     status?: ServiceOrderStatus;
+    statuses?: ServiceOrderStatus[];
     search?: string;
   }): Promise<{ data: ServiceOrder[]; total: number }> {
     await this.cancelOverdueOrders();
@@ -261,12 +280,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
 
     const qb = this.orderRepo.createQueryBuilder('o');
 
-    if (options.status) {
-      qb.andWhere('o.status = :status', { status: options.status });
-    }
-    if (options.search) {
-      qb.andWhere('o.code ILIKE :search', { search: `%${options.search}%` });
-    }
+    filterOrderList(qb, options);
 
     qb.orderBy('o.createdAt', 'DESC')
       .skip((page - 1) * limit)
@@ -279,7 +293,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   async findMyOrders(
     userId: string,
     role: string,
-    options: { page?: number; limit?: number; status?: ServiceOrderStatus },
+    options: { page?: number; limit?: number; status?: ServiceOrderStatus; statuses?: ServiceOrderStatus[]; search?: string },
   ): Promise<{ data: (ServiceOrder | HistoricalOrderSummary)[]; total: number }> {
     await this.cancelOverdueOrders();
     const page = options.page || 1;
@@ -300,9 +314,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       throw new ForbiddenException('Order list access denied');
     }
 
-    if (options.status) {
-      qb.andWhere('o.status = :status', { status: options.status });
-    }
+    filterOrderList(qb, options);
 
     qb.orderBy('o.createdAt', 'DESC')
       .skip((page - 1) * limit)
@@ -469,8 +481,10 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       if (booking.latitudeSnapshot == null || booking.longitudeSnapshot == null) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Repair address has no verified coordinates');
       const lat = Number(booking.latitudeSnapshot), lng = Number(booking.longitudeSnapshot);
       const distanceMeters = Math.round(haversineKm(lat, lng, body.lat, body.lng) * 1000);
-      const radius = await this.configService.getInt('geofence.radius_meters', 300);
-      const accuracy = await this.configService.getInt('geofence.min_gps_accuracy_meters', 100);
+      // PO 11/10/2026: browser GPS is often hundreds of metres off, so 5 km of distance and of
+      // reported error both pass by default.
+      const radius = await this.configService.getInt('geofence.radius_meters', 5000);
+      const accuracy = await this.configService.getInt('geofence.min_gps_accuracy_meters', 5000);
       const result = body.accuracyMeters > accuracy ? CheckInResult.LOW_ACCURACY : distanceMeters > radius ? CheckInResult.OUT_OF_GEOFENCE : CheckInResult.VALID;
       if (result === CheckInResult.VALID) {
         void this.notifyCustomerForOrder(
@@ -696,12 +710,18 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   async uploadEvidence(orderId: string, body: { type: EvidenceType; note?: string; capturedAt?: string }, actor: { id: string; role: string }, file?: EvidenceFile): Promise<RepairEvidence> {
     this.evidenceStorage.validate(file);
     if (body.capturedAt && new Date(body.capturedAt) > new Date()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Evidence timestamp cannot be in the future');
-    const expected = body.type === EvidenceType.BEFORE ? ServiceOrderStatus.EN_ROUTE : ServiceOrderStatus.UNDER_REPAIR;
+    // Check-in face and the before photo belong to the arrival (EN_ROUTE); the rest to the repair.
+    const atArrival = body.type === EvidenceType.BEFORE || body.type === EvidenceType.CHECKIN_FACE;
+    const expected = atArrival ? ServiceOrderStatus.EN_ROUTE : ServiceOrderStatus.UNDER_REPAIR;
     const max = await this.configService.getInt('evidence.max_count_per_type', 20);
     const checkEligible = async (manager: EntityManager): Promise<void> => {
       const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
       if (order.status !== expected || order.completionRequestedAt) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Evidence timing is invalid');
-      if (body.type === EvidenceType.BEFORE && !await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, result: CheckInResult.VALID })) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Valid arrival required before BEFORE evidence');
+      if (atArrival && !await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, result: CheckInResult.VALID })) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Valid arrival required before BEFORE evidence');
+      // PO 11/10/2026: check-in is the GPS fix plus the technician's face; the product photo comes after.
+      if (body.type === EvidenceType.BEFORE && !await manager.findOneBy(RepairEvidence, { serviceOrderId: orderId, uploaderId: actor.id, type: EvidenceType.CHECKIN_FACE })) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chụp ảnh khuôn mặt check-in trước khi chụp ảnh máy');
+      }
       const count = await manager.count(RepairEvidence, { where: { serviceOrderId: orderId, type: body.type } });
       if (count >= max) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Evidence limit exceeded');
     };
@@ -750,6 +770,9 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       if (!found) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Evidence not found');
       if (order.completionRequestedAt || [ServiceOrderStatus.COMPLETED, ServiceOrderStatus.CANCELLED].includes(order.status)) {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Cannot delete evidence after completion requested');
+      }
+      if (found.type === EvidenceType.CHECKIN_FACE) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Ảnh khuôn mặt check-in không xoá được');
       }
       if (found.type === EvidenceType.BEFORE && order.status !== ServiceOrderStatus.EN_ROUTE) {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Ảnh trước khi sửa đã dùng để bắt đầu sửa, không xoá được');
@@ -1081,7 +1104,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   async getRepairHistory(
     userId: string,
     role: string,
-    options: { page?: number; limit?: number; status?: ServiceOrderStatus },
+    options: { page?: number; limit?: number; status?: ServiceOrderStatus; search?: string },
   ): Promise<{ data: Record<string, unknown>[]; total: number }> {
     const page = options.page || 1;
     const limit = Math.min(options.limit || 20, 100);
@@ -1103,6 +1126,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         // The last assignment is the technician who held the order at the end.
         .andWhere('ta.assigned_at = (SELECT MAX(x.assigned_at) FROM technician_assignments x WHERE x.service_order_id = o.id)');
     }
+    andWhereTextMatches(qb, ['o.code', 'b.service_name_snapshot'], options.search);
 
     qb.orderBy('o.completedAt', 'DESC')
       .skip((page - 1) * limit)

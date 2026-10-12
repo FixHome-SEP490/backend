@@ -69,6 +69,8 @@ export function registerDev1Cases(context: () => Context) {
       await post(`/service-orders/${orderId}/en-route`, actor).expect(200);
       const result = unwrap((await post(`/service-orders/${orderId}/check-in`, actor, { lat: 10.77, lng: 106.69, accuracyMeters: 5 }).expect(200)).body);
       expect(result.result).toBe('valid');
+      // Check-in is the GPS fix plus the technician's face (PO 11/10/2026).
+      await evidence(orderId, actor, 'checkin_face').expect(201);
       await evidence(orderId, actor, 'before').expect(201);
     }
 
@@ -85,6 +87,21 @@ export function registerDev1Cases(context: () => Context) {
       expect(read.addressTextSnapshot).toContain('1 Test Street');
       denied(await get(`/bookings/${b.id}`, f.outsider));
       denied(await post(`/bookings/${b.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.tech.user.id] }));
+    });
+
+    it('writes one clean address line and reads old repeated lines back tidied (PO 12/10/2026)', async () => {
+      const f = await fixture();
+      // What the map search saved: postcode, country and the ward again inside line1.
+      await context().db.getRepository('Address').update(f.address.id, { line1: 'Đường Vành Đai KTX Khu B, 700000 Phường Đông Hòa, Việt Nam', ward: 'Phường Đông Hòa' });
+      const b = await f.create();
+      expect(b.addressTextSnapshot).toBe('Đường Vành Đai KTX Khu B, Phường Đông Hòa, D1, P1');
+      // A snapshot saved before the fix is not rewritten, only read back tidied.
+      const old = 'Đường Vành Đai KTX Khu B, 700000 Phường Đông Hòa, Việt Nam, Phường Đông Hòa, Phường Đông Hòa, TP. Hồ Chí Minh';
+      await context().db.query('UPDATE bookings SET address_text_snapshot = $1 WHERE id = $2', [old, b.id]);
+      const read = unwrap((await get(`/bookings/${b.id}`, f.owner).expect(200)).body);
+      expect(read.addressTextSnapshot).toBe('Đường Vành Đai KTX Khu B, Phường Đông Hòa, TP. Hồ Chí Minh');
+      const [stored] = await context().db.query('SELECT address_text_snapshot FROM bookings WHERE id = $1', [b.id]);
+      expect(stored.address_text_snapshot).toBe(old);
     });
 
     it('serializes duplicate Accept and rejects overlapping assignments across bookings', async () => {
@@ -226,6 +243,7 @@ export function registerDev1Cases(context: () => Context) {
       const f = await fixture(), db = context().db, { order } = await accept(f), path = `/service-orders/${order.id}`;
       await post(path + '/en-route', f.tech).expect(200);
       await post(path + '/check-in', f.tech, { lat: 10.77, lng: 106.69, accuracyMeters: 5 }).expect(200);
+      await evidence(order.id, f.tech, 'checkin_face').expect(201);
       await evidence(order.id, f.tech, 'before').expect(201);
       await evidence(order.id, f.tech, 'after').expect(201);
       // No customer acceptance (PO 09/10/2026): the technician's completion with the after photo is enough.
@@ -316,6 +334,15 @@ export function registerDev1Cases(context: () => Context) {
       const yesterday = new Date(Date.now() + 7 * 3_600_000 - 86_400_000).toISOString().slice(0, 10);
       expect(unwrap((await get(`/admin/payments?search=${encodeURIComponent(orderCode)}&to=${yesterday}`, admin).expect(200)).body)).toEqual([]);
       for (const user of [manager, f.owner, f.tech]) denied(await get('/admin/payments', user));
+      // Earnings of a period, Vietnam days (PO 12/10/2026): today holds this order, yesterday does not.
+      const todayEarnings = unwrap((await get(`/technicians/me/earnings?from=${today}&to=${today}&page=1&pageSize=5`, f.tech).expect(200)).body);
+      expect(todayEarnings).toMatchObject({ from: today, to: today, totalCompletedOrders: 1, paidOrders: 1, totalOrderValue: total, page: 1, pageSize: 5, total: 1 });
+      expect(todayEarnings.payouts[0]).toMatchObject({ orderId: order.id, paid: true, orderValue: total });
+      expect(unwrap((await get(`/technicians/me/earnings?from=${yesterday}&to=${yesterday}`, f.tech).expect(200)).body).totalCompletedOrders).toBe(0);
+      denied(await get(`/technicians/me/earnings?from=${today}&to=${yesterday}`, f.tech));
+      denied(await get('/technicians/me/earnings?from=12-10-2026', f.tech));
+      const claims = await get('/warranty-claims/mine?page=1&pageSize=5', f.tech).expect(200);
+      expect(claims.body.meta).toMatchObject({ page: 1, pageSize: 5, total: 0 });
     });
 
     it('enforces ownership, valid GPS, file evidence, completion and cash gates end-to-end', async () => {
@@ -337,9 +364,19 @@ export function registerDev1Cases(context: () => Context) {
       expect(withLocation.destination).toMatchObject({ lat: 10.77, lng: 106.69 });
       const far = unwrap((await post(path + '/check-in', f.tech, { lat: 20, lng: 105, accuracyMeters: 5 }).expect(200)).body);
       expect(far.result).not.toBe('valid');
+      denied(await evidence(order.id, f.tech, 'checkin_face'));
       denied(await evidence(order.id, f.tech, 'before'));
-      await post(path + '/check-in', f.tech, { lat: 10.77, lng: 106.69, accuracyMeters: 5 }).expect(200);
+      // PO 11/10/2026: 5 km of distance and of reported GPS error pass, beyond that they do not.
+      expect(unwrap((await post(path + '/check-in', f.tech, { lat: 10.824, lng: 106.69, accuracyMeters: 30 }).expect(200)).body).result).toBe('out_of_geofence');
+      expect(unwrap((await post(path + '/check-in', f.tech, { lat: 10.77, lng: 106.69, accuracyMeters: 6000 }).expect(200)).body).result).toBe('low_accuracy');
+      expect(unwrap((await post(path + '/check-in', f.tech, { lat: 10.797, lng: 106.69, accuracyMeters: 4000 }).expect(200)).body).result).toBe('valid');
       denied(await post(path + '/evidence', f.tech, { type: 'before', mediaUrl: 'https://example.test/fake.jpg' }));
+      // The product photo waits for the face taken at check-in.
+      const noFace = await evidence(order.id, f.tech, 'before');
+      expect(noFace.status, JSON.stringify(noFace.body)).toBe(409);
+      const face = unwrap((await evidence(order.id, f.tech, 'checkin_face').expect(201)).body);
+      expect(face.type).toBe('checkin_face');
+      denied(await request(context().app.getHttpServer()).delete(`/api/v1/service-orders/${order.id}/evidence/${face.id}`).set('Authorization', `Bearer ${f.tech.accessToken}`));
       await evidence(order.id, f.tech, 'before').expect(201);
       await post(path + '/start-repair', f.tech).expect(200);
       denied(await patch(path + '/location', f.tech, { lat: 10.77, lng: 106.69 }));
@@ -396,6 +433,7 @@ export function registerDev1Cases(context: () => Context) {
       const body = { technicianId: f.spare.user.id, reason: 'Việc ngoài kỹ năng của thợ trước' };
       await post(path + '/en-route', f.tech).expect(200);
       await post(path + '/check-in', f.tech, { lat: 10.77, lng: 106.69, accuracyMeters: 5 }).expect(200);
+      await evidence(order.id, f.tech, 'checkin_face').expect(201);
       await evidence(order.id, f.tech, 'before').expect(201);
       // Not without a report from the technician on site.
       denied(await post(path + '/replace-technician', manager, body));
@@ -568,6 +606,32 @@ export function registerDev1Cases(context: () => Context) {
       const notes = await db.query("SELECT 1 FROM notifications WHERE user_id = $1 AND type = 'INVITATION_AUTO_ACCEPTED' AND reference_id = $2", [f.tech.user.id, order.id]);
       expect(notes).toHaveLength(1);
       expect(unwrap((await get(`/bookings/${booking.id}`, f.owner).expect(200)).body).status).toBe('matched');
+    });
+
+    it('searches and filters lists on the server, accents ignored (PO 12/10/2026: every table pages)', async () => {
+      const f = await fixture(), db = context().db, { order, booking } = await accept(f);
+      await db.query("UPDATE bookings SET service_name_snapshot = 'Sửa điều hòa không mát' WHERE id = $1", [booking.id]);
+      const ids = (res: request.Response) => unwrap(res.body).map((o: any) => o.id);
+      expect(ids(await get('/service-orders/my?search=dieu%20hoa', f.owner).expect(200))).toEqual([order.id]);
+      expect(ids(await get('/service-orders/my?search=DIEU%20HOA&statuses=accepted,en_route', f.tech).expect(200))).toEqual([order.id]);
+      expect(ids(await get('/service-orders/my?statuses=completed,cancelled', f.owner).expect(200))).toEqual([]);
+      expect(ids(await get('/service-orders/my?search=khong%20co%20don%20nay', f.owner).expect(200))).toEqual([]);
+      const [{ code }] = await db.query('SELECT code FROM service_orders WHERE id = $1', [order.id]);
+      expect(ids(await get(`/service-orders/my?search=${encodeURIComponent(code.slice(-6).toLowerCase())}`, f.owner).expect(200))).toEqual([order.id]);
+      denied(await get('/service-orders/my?statuses=accepted,flying', f.owner));
+      // The customer finds the order by the technician's name, without accents.
+      await db.query("UPDATE users SET full_name = 'Phạm Đức Toàn' WHERE id = $1", [f.tech.user.id]);
+      expect(ids(await get('/service-orders/my?search=duc%20toan', f.owner).expect(200))).toEqual([order.id]);
+      expect(unwrap((await get('/bookings/my?search=dieu%20hoa&statuses=matched,matching', f.owner).expect(200)).body).map((b: any) => b.id)).toEqual([booking.id]);
+      // Staff board: the appointment two days ahead is not overdue; once it has passed it is.
+      const manager = f.outsider;
+      await db.query('UPDATE users SET role = $1 WHERE id = $2', ['service_manager', manager.user.id]);
+      const staffIds = async (query: string) => unwrap((await get(`/bookings?${query}`, manager).expect(200)).body).map((b: any) => b.id);
+      expect(await staffIds('overdue=false&search=dieu%20hoa')).toContain(booking.id);
+      expect(await staffIds('overdue=true&search=dieu%20hoa')).not.toContain(booking.id);
+      await db.query("UPDATE bookings SET preferred_start_at = now() - interval '1 hour' WHERE id = $1", [booking.id]);
+      expect(await staffIds('overdue=true&sort=appointment&search=dieu%20hoa')).toContain(booking.id);
+      denied(await get('/bookings?sort=random', manager));
     });
 
     it.each([false, true])('keeps technician part warranty opt-in and outside labor commission: selected=%s', async selected => {

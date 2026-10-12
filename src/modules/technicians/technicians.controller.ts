@@ -11,6 +11,7 @@ import {
   ParseUUIDPipe,
   UseGuards,
   Req,
+  Query,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -27,7 +28,8 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionGuard, RolesGuard } from '../../common/guards';
 import { RequirePermission, Roles } from '../../common/decorators';
 import { Role } from '../../shared/enums';
-import { IsBoolean, IsInt, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { IsBoolean, IsInt, IsNumber, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class UpdateTechnicianProfileDto {
   @IsOptional() @IsString() @MaxLength(2000) bio?: string;
@@ -35,6 +37,13 @@ export class UpdateTechnicianProfileDto {
   @IsOptional() @IsInt() @Min(0) @Max(80) yearsExperience?: number;
   @IsOptional() @IsNumber() @Min(1) @Max(40) serviceRadiusKm?: number;
   @IsOptional() @IsBoolean() autoAcceptInvitations?: boolean;
+}
+/** Earnings of a period (PO 12/10/2026): Vietnam calendar dates, inclusive; paging only cuts the list. */
+export class EarningsQueryDto {
+  @IsOptional() @Matches(/^\d{4}-\d{2}-\d{2}$/) from?: string;
+  @IsOptional() @Matches(/^\d{4}-\d{2}-\d{2}$/) to?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(1_000_000) page?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) pageSize?: number;
 }
 /** Labor warranty the technician gives by default; applyToAllServices also sets every service they offer. */
 export class DefaultLaborWarrantyDto {
@@ -251,9 +260,9 @@ export class TechniciansController {
   @Get('me/earnings')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get technician earnings and settlement breakdown' })
-  async getMyEarnings(@Req() req: { user: { id: string } }) {
-    const earnings = await this.techniciansService.getMyEarnings(req.user.id);
+  @ApiOperation({ summary: 'Get technician earnings and settlement breakdown', description: 'Optional from/to (Vietnam calendar dates, inclusive) limit the period; totals cover the period, page/pageSize cut the order list.' })
+  async getMyEarnings(@Req() req: { user: { id: string } }, @Query() query: EarningsQueryDto) {
+    const earnings = await this.techniciansService.getMyEarnings(req.user.id, query);
     return { data: earnings };
   }
 }
