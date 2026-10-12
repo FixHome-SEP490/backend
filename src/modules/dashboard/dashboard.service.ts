@@ -18,6 +18,7 @@ import {
   InvitationStatus,
   PaymentStatus,
 } from '../../shared/enums';
+import { tidyAddressText } from '../../shared/utils/address-text';
 
 @Injectable()
 export class DashboardService {
@@ -150,7 +151,7 @@ export class DashboardService {
         serviceTitle: first.b_service_name_snapshot || first.b_description || 'Dịch vụ sửa chữa FixHome',
         customerName: first.c_full_name || 'Khách hàng FixHome',
         customerPhone: first.c_phone_number || '',
-        address: first.b_address_text_snapshot || 'Địa chỉ khách hàng',
+        address: tidyAddressText(first.b_address_text_snapshot) || 'Địa chỉ khách hàng',
         createdAt: first.so_created_at,
       };
     }
