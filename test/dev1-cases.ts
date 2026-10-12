@@ -89,6 +89,21 @@ export function registerDev1Cases(context: () => Context) {
       denied(await post(`/bookings/${b.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.tech.user.id] }));
     });
 
+    it('writes one clean address line and reads old repeated lines back tidied (PO 12/10/2026)', async () => {
+      const f = await fixture();
+      // What the map search saved: postcode, country and the ward again inside line1.
+      await context().db.getRepository('Address').update(f.address.id, { line1: 'Đường Vành Đai KTX Khu B, 700000 Phường Đông Hòa, Việt Nam', ward: 'Phường Đông Hòa' });
+      const b = await f.create();
+      expect(b.addressTextSnapshot).toBe('Đường Vành Đai KTX Khu B, Phường Đông Hòa, D1, P1');
+      // A snapshot saved before the fix is not rewritten, only read back tidied.
+      const old = 'Đường Vành Đai KTX Khu B, 700000 Phường Đông Hòa, Việt Nam, Phường Đông Hòa, Phường Đông Hòa, TP. Hồ Chí Minh';
+      await context().db.query('UPDATE bookings SET address_text_snapshot = $1 WHERE id = $2', [old, b.id]);
+      const read = unwrap((await get(`/bookings/${b.id}`, f.owner).expect(200)).body);
+      expect(read.addressTextSnapshot).toBe('Đường Vành Đai KTX Khu B, Phường Đông Hòa, TP. Hồ Chí Minh');
+      const [stored] = await context().db.query('SELECT address_text_snapshot FROM bookings WHERE id = $1', [b.id]);
+      expect(stored.address_text_snapshot).toBe(old);
+    });
+
     it('serializes duplicate Accept and rejects overlapping assignments across bookings', async () => {
       const f = await fixture(), b = await f.create(), b2 = await f.create();
       for (const booking of [b, b2]) await post(`/bookings/${booking.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.spare.user.id] }).expect(201);

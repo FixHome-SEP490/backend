@@ -44,6 +44,7 @@ import {
 import { PrivateBookingPhotoClaimService } from '../media/private-booking-photo-claim.service';
 import { AiChatSession } from '../ai-diagnosis/entities/ai-chat-session.entity';
 import { AiBookingSummary, hasAdvice, toBookingSummary } from '../ai-diagnosis/ai-chat-summary';
+import { composeAddressText } from '../../shared/utils/address-text';
 
 export interface TechnicianCandidate {
   technicianId: string;
@@ -201,8 +202,7 @@ export class BookingsService {
         districtSnapshot = resolved.districtCode;
         provinceNameSnapshot = resolved.provinceName;
         districtNameSnapshot = resolved.districtName;
-        addressTextSnapshot = [address.line1, address.ward, address.district, address.province]
-          .filter(Boolean).join(', ');
+        addressTextSnapshot = composeAddressText([address.line1, address.ward, address.district, address.province]);
         latitudeSnapshot = address.lat != null ? Number(address.lat) : null;
         longitudeSnapshot = address.lng != null ? Number(address.lng) : null;
       }

@@ -15,6 +15,7 @@ import { BookingStatus, ServicePricingMode, UrgencyLevel } from '../../../shared
 import { BookingMedia } from './booking-media.entity';
 import { BookingInvitation } from './booking-invitation.entity';
 import type { AiBookingSummary } from '../../ai-diagnosis/ai-chat-summary';
+import { tidyAddressText } from '../../../shared/utils/address-text';
 
 @Entity('bookings')
 @Index('ix_bookings_customer', ['customerId', 'createdAt'])
@@ -42,7 +43,13 @@ export class Booking extends BaseEntity {
   address?: Address | null;
 
   // Spec v1.4: Address snapshot so history doesn't change if customer edits address book
-  @Column({ name: 'address_text_snapshot', type: 'text', nullable: true })
+  // Read back tidied (no postcode, country or repeated ward), PO 12/10/2026; stored text is left as saved.
+  @Column({
+    name: 'address_text_snapshot',
+    type: 'text',
+    nullable: true,
+    transformer: { to: (value?: string | null) => value, from: (value: string | null) => (value == null ? value : tidyAddressText(value)) },
+  })
   addressTextSnapshot?: string | null;
 
   @Column({ name: 'province_snapshot', type: 'varchar', length: 100, nullable: true })

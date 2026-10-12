@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-12 01:22 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/search-by-technician
+> Cập nhật lần cuối: 2026-10-12 16:47 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/address-text
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -223,6 +223,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-12 16:47 (UTC+7) | ToanAltF4 | fix/address-text | Địa chỉ một dòng gọn: bỏ mã bưu chính, Việt Nam, phần lặp (tạo booking và đọc snapshot cũ)
 - 2026-10-12 01:22 (UTC+7) | ToanAltF4 | feat/search-by-technician | Tìm đơn (search) thêm tên kỹ thuật viên đang giữ đơn, để khách tìm được đơn theo tên thợ như trước khi chuyển sang phân trang trên server
 - 2026-10-12 01:02 (UTC+7) | ToanAltF4 | feat/list-search | Danh sách đơn và yêu cầu đặt lịch tìm và lọc trên server để web phân trang không mất tìm kiếm: search (mã đơn, tên dịch vụ, tên khách; không dấu, không phân biệt hoa thường), statuses nhiều trạng thái một lần; bảng booking của quản lý có overdue (đã quá giờ hẹn) và sort=appointment
 - 2026-10-12 00:40 (UTC+7) | ToanAltF4 | feat/geo-hybrid-search | Gợi ý địa chỉ hỏi song song OpenStreetMap (Photon) và MapTiler: gõ có số nhà ở đầu thì MapTiler đứng trước (tên phường sau sáp nhập), gõ tên địa điểm thì OpenStreetMap đứng trước; bỏ trùng cùng nơi, tối đa 6; một nguồn lỗi thì nguồn kia trả lời
