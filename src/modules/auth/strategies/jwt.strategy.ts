@@ -49,8 +49,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('Invalid token payload');
     }
 
+    // Runs on every authenticated request: read only the columns used below
+    // (PO 14/10/2026: Supabase egress), not the whole user row.
     const user = await this.userRepository.findOne({
       where: { id: payload.sub },
+      select: { id: true, email: true, role: true, status: true, isActive: true, fullName: true },
     });
 
     if (!user) {
