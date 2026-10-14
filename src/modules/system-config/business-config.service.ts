@@ -99,7 +99,8 @@ export class BusinessConfigService implements OnModuleInit {
 
   private async refreshCache(): Promise<void> {
     try {
-      const configs = await this.configRepo.find();
+      // The cache keeps key -> value only; descriptions and audit columns are not read (PO 14/10/2026: egress).
+      const configs = await this.configRepo.find({ select: { key: true, value: true } });
       const newCache = new Map<string, string>();
       for (const c of configs) {
         newCache.set(c.key, c.value);

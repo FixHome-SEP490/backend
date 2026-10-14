@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-14 16:03 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/profile-cartesian-join
+> Cập nhật lần cuối: 2026-10-14 17:59 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/urgent-matching-and-reads
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -223,6 +223,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-14 17:59 (UTC+7) | ToanAltF4 | fix/urgent-matching-and-reads | Giảm egress thêm: kiểm token mỗi request chỉ đọc 6 cột user, cache cấu hình chỉ đọc key/value
 - 2026-10-14 16:03 (UTC+7) | ToanAltF4 | fix/profile-cartesian-join | Giảm egress Supabase: hồ sơ thợ đọc đúng quan hệ cần (không nhân dòng), chi tiết booking đọc ảnh/lời mời tách câu, danh sách hội thoại chỉ lấy cột cần, cache phân quyền chỉ đọc mã
 - 2026-10-14 15:55 (UTC+7) | ToanAltF4 | fix/profile-cartesian-join | Hồ sơ thợ đọc từng quan hệ bằng câu riêng (relationLoadStrategy query): tránh nhân dòng kỹ năng x khu vực x lịch làm egress Supabase tăng vọt
 - 2026-10-12 16:47 (UTC+7) | ToanAltF4 | fix/address-text | Địa chỉ một dòng gọn: bỏ mã bưu chính, Việt Nam, phần lặp (tạo booking và đọc snapshot cũ)
