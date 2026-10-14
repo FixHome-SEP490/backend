@@ -68,8 +68,11 @@ export class RbacService implements OnModuleInit {
 
   private async refreshCache(): Promise<void> {
     try {
+      // Only the two codes the map needs (PO 14/10/2026: Supabase egress), not
+      // every column of every role and permission on each refresh.
       const rows = await this.rpRepo.find({
         relations: ['role', 'permission'],
+        select: { roleId: true, permissionId: true, role: { id: true, code: true }, permission: { id: true, code: true } },
       });
 
       const newMap = new Map<string, Set<string>>();

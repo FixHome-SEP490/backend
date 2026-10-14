@@ -52,6 +52,9 @@ function assertScheduleWindows(schedules: ScheduleItemDto[]): void {
   }
 }
 
+/** Everything the profile screen shows. */
+const PROFILE_RELATIONS = ['skills', 'skills.service', 'serviceAreas', 'schedules', 'timeOffs'];
+
 @Injectable()
 export class TechniciansService {
   private readonly profileRepo: Repository<TechnicianProfile>;
@@ -117,7 +120,7 @@ export class TechniciansService {
 
   /** Receiving jobs now, from the weekly schedule, the manual switch and time off (PO 08/10/2026). */
   async getMyAvailability(userId: string): Promise<AvailabilityNow> {
-    const profile = await this.getMyProfile(userId);
+    const profile = await this.getMyProfile(userId, ['schedules', 'timeOffs']);
     return availabilityNow({
       manual: profile.isAvailable,
       schedules: profile.schedules ?? [],
@@ -125,10 +128,18 @@ export class TechniciansService {
     });
   }
 
-  async getMyProfile(userId: string): Promise<TechnicianProfile> {
+  /**
+   * The technician's profile with only the relations asked for (PO 14/10/2026: Supabase egress).
+   * Every technician request used to load skills, areas, schedules and time off joined in one
+   * statement; they multiply, so 34 skills x 22 areas x 7 schedule rows came back as 5,236 rows
+   * (~2.5 MB) even when only the id was needed. Relations now load one query each, and callers
+   * that need only the profile row pass [].
+   */
+  async getMyProfile(userId: string, relations: string[] = PROFILE_RELATIONS): Promise<TechnicianProfile> {
     let profile = await this.profileRepo.findOne({
       where: { userId },
-      relations: ['skills', 'skills.service', 'serviceAreas', 'schedules', 'timeOffs'],
+      relations,
+      relationLoadStrategy: 'query',
     });
 
     if (!profile) {
@@ -164,7 +175,7 @@ export class TechniciansService {
     dto: { days: number; applyToAllServices?: boolean },
   ): Promise<{ defaultLaborWarrantyDays: number; servicesUpdated: number }> {
     await this.assertWarrantyWithinMax(dto.days);
-    const profile = await this.getMyProfile(userId);
+    const profile = await this.getMyProfile(userId, []);
     await this.profileRepo.update(profile.id, { defaultLaborWarrantyDays: dto.days });
     let servicesUpdated = 0;
     if (dto.applyToAllServices) {
@@ -183,7 +194,7 @@ export class TechniciansService {
 
   /** Keep the last good GPS fix; a fix worse than 1 km is too coarse to match on. */
   async reportLocation(userId: string, dto: { lat: number; lng: number; accuracyMeters?: number }): Promise<{ recorded: boolean; at: string | null }> {
-    const profile = await this.getMyProfile(userId);
+    const profile = await this.getMyProfile(userId, []);
     if (dto.accuracyMeters != null && dto.accuracyMeters > 1000) {
       return { recorded: false, at: profile.lastLocationAt ? new Date(profile.lastLocationAt).toISOString() : null };
     }
@@ -195,7 +206,7 @@ export class TechniciansService {
   async getMySkills(
     userId: string,
   ): Promise<TechnicianServiceOfferingResponseDto[]> {
-    const profile = await this.getMyProfile(userId);
+    const profile = await this.getMyProfile(userId, []);
     const skills = await this.skillRepo.find({
       where: { technicianId: profile.id },
       relations: ['service'],
@@ -208,7 +219,7 @@ export class TechniciansService {
     serviceId: string,
     dto: UpdateSkillPricingDto,
   ): Promise<TechnicianServiceOfferingResponseDto> {
-    const profile = await this.getMyProfile(userId);
+    const profile = await this.getMyProfile(userId, []);
 
     // Canonical Service existence check (404 when missing).
     const service = await this.servicesService.findById(serviceId);
@@ -349,7 +360,7 @@ export class TechniciansService {
   }
 
   async getMySchedule(userId: string): Promise<TechnicianSchedule[]> {
-    const profile = await this.getMyProfile(userId);
+    const profile = await this.getMyProfile(userId, []);
     return this.scheduleRepo.find({
       where: { technicianId: profile.id },
       order: { dayOfWeek: 'ASC', startTime: 'ASC' },
@@ -357,7 +368,7 @@ export class TechniciansService {
   }
 
   async updateMySchedule(userId: string, schedules: ScheduleItemDto[]): Promise<TechnicianSchedule[]> {
-    const profile = await this.getMyProfile(userId);
+    const profile = await this.getMyProfile(userId, []);
 
     for (const s of schedules) {
       if (s.dayOfWeek < 0 || s.dayOfWeek > 6) {
@@ -385,7 +396,7 @@ export class TechniciansService {
   }
 
   async getMyTimeOff(userId: string): Promise<TechnicianTimeOff[]> {
-    const profile = await this.getMyProfile(userId);
+    const profile = await this.getMyProfile(userId, []);
     return this.timeOffRepo.find({
       where: { technicianId: profile.id },
       order: { startAt: 'DESC' },
@@ -396,7 +407,7 @@ export class TechniciansService {
     userId: string,
     dto: { startAt: string | Date; endAt: string | Date; reason?: string },
   ): Promise<TechnicianTimeOff> {
-    const profile = await this.getMyProfile(userId);
+    const profile = await this.getMyProfile(userId, []);
     const start = new Date(dto.startAt);
     const end = new Date(dto.endAt);
 
@@ -419,7 +430,7 @@ export class TechniciansService {
   }
 
   async deleteTimeOff(userId: string, timeOffId: string): Promise<{ success: boolean }> {
-    const profile = await this.getMyProfile(userId);
+    const profile = await this.getMyProfile(userId, []);
     const item = await this.timeOffRepo.findOne({
       where: { id: timeOffId, technicianId: profile.id },
     });
@@ -433,7 +444,7 @@ export class TechniciansService {
   }
 
   async getMyServiceAreas(userId: string): Promise<TechnicianServiceArea[]> {
-    const profile = await this.getMyProfile(userId);
+    const profile = await this.getMyProfile(userId, []);
     return this.areaRepo.find({
       where: { technicianId: profile.id },
     });
@@ -443,7 +454,7 @@ export class TechniciansService {
     userId: string,
     areas: ServiceAreaItemDto[],
   ): Promise<TechnicianServiceArea[]> {
-    const profile = await this.getMyProfile(userId);
+    const profile = await this.getMyProfile(userId, []);
 
     return this.areaRepo.manager.transaction(async (manager) => {
       const repo = manager.getRepository(TechnicianServiceArea);
@@ -469,7 +480,7 @@ export class TechniciansService {
    * Totals cover the whole range; `page`/`pageSize` only cut the list of orders.
    */
   async getMyEarnings(userId: string, query: { from?: string; to?: string; page?: number; pageSize?: number } = {}) {
-    const profile = await this.getMyProfile(userId);
+    const profile = await this.getMyProfile(userId, []);
     if (query.from && query.to && query.from > query.to) throw new BadRequestException('Ngày bắt đầu phải trước ngày kết thúc');
     const range = {
       from: query.from ? vietnamDayStart(query.from) : undefined,

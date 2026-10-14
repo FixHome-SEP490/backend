@@ -53,6 +53,28 @@ describe('Access tokens never carry a purpose', () => {
   });
 });
 
+describe('Access token check reads only what it needs (PO 14/10/2026: Supabase egress)', () => {
+  const base = { id: '11111111-1111-4111-8111-111111111111', email: 'a@b.c', role: 'customer', status: AccountStatus.ACTIVE, isActive: true, fullName: 'A' };
+  const make = (user: unknown) => {
+    const findOne = vi.fn(async () => user);
+    return { findOne, strategy: new JwtStrategy({ getOrThrow: () => 'access-secret' } as never, { findOne } as never) };
+  };
+
+  it('selects the six columns it returns or checks, never the whole row', async () => {
+    const { findOne, strategy } = make(base);
+    await expect(strategy.validate({ sub: base.id } as never)).resolves.toEqual({ id: base.id, sub: base.id, email: 'a@b.c', role: 'customer', status: AccountStatus.ACTIVE, fullName: 'A' });
+    expect(findOne).toHaveBeenCalledWith({ where: { id: base.id }, select: { id: true, email: true, role: true, status: true, isActive: true, fullName: true } });
+  });
+
+  it.each([
+    ['a locked account', { ...base, status: AccountStatus.LOCKED }],
+    ['a deactivated account', { ...base, isActive: false }],
+    ['a deleted account', null],
+  ])('still refuses %s', async (_label, user) => {
+    await expect(make(user).strategy.validate({ sub: base.id } as never)).rejects.toThrow(UnauthorizedException);
+  });
+});
+
 describe('Google hand-off code is spent once', () => {
   it('exchanges once, then refuses the same code', async () => {
     const jwtService = {

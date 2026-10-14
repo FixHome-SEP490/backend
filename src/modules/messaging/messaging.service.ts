@@ -57,6 +57,9 @@ const DEFAULT_PAGE_SIZE = 30;
 const PREVIEW_MAX_LENGTH = 255;
 const RETRACTED_PREVIEW = 'Tin nhắn đã được gỡ';
 
+/** The participant fields a thread shows (see toParticipantView). */
+const PARTICIPANT_COLUMNS = { id: true, fullName: true, avatarUrl: true, role: true } as const;
+
 @Injectable()
 export class MessagingService {
   private readonly logger = new Logger(MessagingService.name);
@@ -220,6 +223,14 @@ export class MessagingService {
     const conversations = await this.conversationRepo.find({
       where: [{ customerId: actor.id }, { technicianId: actor.id }],
       relations: ['customer', 'technician'],
+      // Only what the thread list shows (PO 14/10/2026: Supabase egress); the two
+      // users used to come back whole for every thread on every visit.
+      select: {
+        id: true, createdAt: true, bookingId: true, customerId: true, technicianId: true, serviceOrderId: true,
+        status: true, serviceNameSnapshot: true, lastMessageAt: true, lastMessagePreview: true,
+        customer: PARTICIPANT_COLUMNS,
+        technician: PARTICIPANT_COLUMNS,
+      },
       // Threads with recent messages first. PostgreSQL sorts NULL first under
       // DESC, which put every never-used thread above the live ones.
       order: { lastMessageAt: { direction: 'DESC', nulls: 'LAST' }, createdAt: 'DESC' },
