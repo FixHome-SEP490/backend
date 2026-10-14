@@ -134,7 +134,9 @@ export class ReputationService implements OnModuleInit, OnModuleDestroy {
   /** Back to 100 every reset period; locked accounts are left as they are. */
   async resetSweep(): Promise<number> {
     const months = await this.configService.getInt('reputation.reset_months', 2);
-    const rows: Array<{ id: string; before: number }> = await this.dataSource.query(
+    // For UPDATE ... RETURNING the Postgres driver answers [rows, rowCount], not the rows: reading it
+    // as rows made every sweep since 09/10/2026 write NaN and fail (PO 14/10/2026).
+    const result: unknown = await this.dataSource.query(
       `UPDATE "users" u SET "reputation_points" = 100, "reputation_period_start" = now()
          FROM (SELECT "id", "reputation_points" AS before FROM "users"
                 WHERE "role" IN ('customer', 'technician') AND "status" <> 'locked'
@@ -144,6 +146,7 @@ export class ReputationService implements OnModuleInit, OnModuleDestroy {
         RETURNING u."id", old.before`,
       [months],
     );
+    const rows = (Array.isArray(result) && Array.isArray(result[0]) ? result[0] : result) as Array<{ id: string; before: number }>;
     const changed = rows.filter((r) => Number(r.before) !== REPUTATION_START);
     for (const r of changed) {
       await this.eventRepo.save(this.eventRepo.create({

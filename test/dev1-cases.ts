@@ -125,6 +125,26 @@ export function registerDev1Cases(context: () => Context) {
       expect(theirs[0].counterpart).toMatchObject({ id: f.owner.user.id, fullName: 'Khách Trò Chuyện' });
     });
 
+    it('resets reputation every period on the real database, skipping recent and locked accounts (PO 14/10/2026)', async () => {
+      const { ReputationService } = runtimeRequire('./dist/modules/reputation/reputation.service.js');
+      const service = context().app.get(ReputationService);
+      const [due, recent, locked] = [await context().register(), await context().register(), await context().register()];
+      const db = context().db;
+      await db.query(`UPDATE users SET reputation_points = 60, reputation_period_start = now() - interval '3 months' WHERE id = $1`, [due.user.id]);
+      await db.query(`UPDATE users SET reputation_points = 70, reputation_period_start = now() - interval '10 days' WHERE id = $1`, [recent.user.id]);
+      await db.query(`UPDATE users SET reputation_points = 50, reputation_period_start = now() - interval '3 months', status = 'locked' WHERE id = $1`, [locked.user.id]);
+      // Before 14/10/2026 this threw "invalid input syntax for type integer: NaN" on every run.
+      await expect(service.resetSweep()).resolves.toBeGreaterThanOrEqual(1);
+      const points = async (id: string) => Number((await db.query('SELECT reputation_points FROM users WHERE id = $1', [id]))[0].reputation_points);
+      expect(await points(due.user.id)).toBe(100);
+      expect(await points(recent.user.id)).toBe(70);
+      expect(await points(locked.user.id)).toBe(50);
+      const [event] = await db.query(`SELECT kind, delta, points_after FROM reputation_events WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`, [due.user.id]);
+      expect(event).toMatchObject({ kind: 'reset', delta: 40, points_after: 100 });
+      // A second run finds nothing due and writes nothing.
+      await expect(service.resetSweep()).resolves.toBe(0);
+    });
+
     it('writes one clean address line and reads old repeated lines back tidied (PO 12/10/2026)', async () => {
       const f = await fixture();
       // What the map search saved: postcode, country and the ward again inside line1.

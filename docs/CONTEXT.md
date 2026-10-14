@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-14 21:56 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/ai-session-history
+> Cập nhật lần cuối: 2026-10-14 22:17 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/reputation-reset-sweep
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -224,6 +224,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-14 22:17 (UTC+7) | ToanAltF4 | fix/reputation-reset-sweep | Sửa job làm mới điểm uy tín: đọc đúng kết quả UPDATE RETURNING ([rows, rowCount]) nên không còn ghi NaN mỗi phút
 - 2026-10-14 21:56 (UTC+7) | ToanAltF4 | feat/ai-session-history | Ghi việc gửi history cho ai-service từ bản ghi phiên của backend để dựng lại phiên AI đã mất
 - 2026-10-14 17:59 (UTC+7) | ToanAltF4 | fix/urgent-matching-and-reads | Giảm egress thêm: kiểm token mỗi request chỉ đọc 6 cột user, cache cấu hình chỉ đọc key/value
 - 2026-10-14 16:03 (UTC+7) | ToanAltF4 | fix/profile-cartesian-join | Giảm egress Supabase: hồ sơ thợ đọc đúng quan hệ cần (không nhân dòng), chi tiết booking đọc ảnh/lời mời tách câu, danh sách hội thoại chỉ lấy cột cần, cache phân quyền chỉ đọc mã
