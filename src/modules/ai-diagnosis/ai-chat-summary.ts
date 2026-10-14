@@ -34,6 +34,9 @@ export interface AiTurnInput {
   photoCount?: number;
 }
 
+/** What the AI Service accepts in `history`: at most this many turns, each this long. */
+export const AI_HISTORY_LIMITS = { turns: 20, chars: 2000 } as const;
+
 export const AI_SUMMARY_LIMITS = {
   customerText: 1000,
   conclusion: 600,
@@ -140,6 +143,26 @@ export function mergeTurn(
   if (answer && (faults.length || !next.conclusion)) next.conclusion = answer;
 
   return next;
+}
+
+/**
+ * The customer's earlier messages, oldest first, recovered from the summary.
+ *
+ * Sent to the AI Service as `history` so it can rebuild a conversation it no
+ * longer holds - it restarted, or the session sat idle past the hour - instead
+ * of answering "vậy giờ là bị gì" as if it were the first message. Built only
+ * from what this server recorded, never from anything a client sends.
+ */
+export function historyFromSummary(summary: Pick<AiChatSummaryState, 'customerText'> | null | undefined): string[] {
+  const text = summary?.customerText;
+  if (!text) return [];
+  return text
+    .replace(/^…/, '')
+    .split(' / ')
+    .map((turn) => turn.trim())
+    .filter((turn) => turn.length > 0)
+    .map((turn) => turn.slice(0, AI_HISTORY_LIMITS.chars))
+    .slice(-AI_HISTORY_LIMITS.turns);
 }
 
 /** True when the conversation produced something worth telling the technician. */

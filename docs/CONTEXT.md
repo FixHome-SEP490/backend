@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-14 17:59 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/urgent-matching-and-reads
+> Cập nhật lần cuối: 2026-10-14 21:56 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/ai-session-history
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -165,6 +165,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - Route phía client: `POST /ai/diagnoses`, `POST /ai/chat/ask`, `GET /ai/chat/acknowledgements`, `GET /ai/health`, `GET /ai/diagnoses/:id`.
 - Giới hạn khớp schema của `ai-service`: mô tả 2000 ký tự, câu hỏi 1000, `sessionId` và gợi ý 64, tối đa 3 ảnh. Hai route ảnh nhận body tới 40 MB.
 - AI lỗi thì trả HTTP 200 với `aiAvailable: false` và câu trả lời dự phòng; không bao giờ chặn đặt lịch.
+- Giữ ngữ cảnh khi `ai-service` mất phiên (khởi động lại, hết hạn): khi client gửi `sessionId`, `backend` đọc `ai_chat_sessions.summary.customerText` của phiên đó (chỉ khi phiên không thuộc khách khác) và gửi kèm `history` (tối đa 20 lượt, mỗi lượt 2000 ký tự). Client không gửi được `history`. `ai-service` cũ trả 422 với trường này thì `backend` gửi lại một lần không kèm. Khi `ai-service` trả `sessionId` mới thay cho phiên đã mất, tóm tắt của phiên cũ được chép sang phiên mới (cùng chủ).
 
 ### Biến môi trường (chỉ tên, xem `.env.example`)
 
@@ -223,6 +224,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-14 21:56 (UTC+7) | ToanAltF4 | feat/ai-session-history | Ghi việc gửi history cho ai-service từ bản ghi phiên của backend để dựng lại phiên AI đã mất
 - 2026-10-14 17:59 (UTC+7) | ToanAltF4 | fix/urgent-matching-and-reads | Giảm egress thêm: kiểm token mỗi request chỉ đọc 6 cột user, cache cấu hình chỉ đọc key/value
 - 2026-10-14 16:03 (UTC+7) | ToanAltF4 | fix/profile-cartesian-join | Giảm egress Supabase: hồ sơ thợ đọc đúng quan hệ cần (không nhân dòng), chi tiết booking đọc ảnh/lời mời tách câu, danh sách hội thoại chỉ lấy cột cần, cache phân quyền chỉ đọc mã
 - 2026-10-14 15:55 (UTC+7) | ToanAltF4 | fix/profile-cartesian-join | Hồ sơ thợ đọc từng quan hệ bằng câu riêng (relationLoadStrategy query): tránh nhân dòng kỹ năng x khu vực x lịch làm egress Supabase tăng vọt

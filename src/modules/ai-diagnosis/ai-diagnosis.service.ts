@@ -7,7 +7,7 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom, timeout } from 'rxjs';
 import { AiDiagnosis } from './entities/ai-diagnosis.entity';
 import { AiChatSession } from './entities/ai-chat-session.entity';
-import { AiTurnInput, emptySummary, mergeTurn } from './ai-chat-summary';
+import { AiTurnInput, emptySummary, historyFromSummary, mergeTurn } from './ai-chat-summary';
 import { Service } from '../services/entities/service.entity';
 import { Booking } from '../bookings/entities/booking.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
@@ -126,20 +126,16 @@ export class AiDiagnosisService {
 
     let payload: Record<string, unknown>;
     try {
-      const response = await firstValueFrom(
-        this.httpService
-          .post<Record<string, unknown>>(
-            `${this.aiServiceUrl}/api/v1/diagnosis/analyze`,
-            {
-              description: dto.description ?? '',
-              images,
-              sessionId: dto.sessionId,
-              categoryHint: dto.categoryHint,
-            },
-          )
-          .pipe(timeout(this.requestTimeoutMs)),
+      payload = await this.postToAi(
+        '/api/v1/diagnosis/analyze',
+        {
+          description: dto.description ?? '',
+          images,
+          sessionId: dto.sessionId,
+          categoryHint: dto.categoryHint,
+        },
+        await this.historyFor(dto.sessionId, actor),
       );
-      payload = response.data || {};
     } catch (error) {
       this.logger.warn(`AI analyze unavailable: ${this.reason(error)}`);
       return this.unavailable(dto.sessionId);
@@ -148,7 +144,7 @@ export class AiDiagnosisService {
     const latencyMs = Date.now() - startedAt;
     const enriched = await this.attachServiceIds(payload);
     await this.persistIfBooked(dto, enriched, latencyMs);
-    await this.recordTurn(actor, { text: dto.description, photoCount: images.length }, enriched);
+    await this.recordTurn(actor, { text: dto.description, photoCount: images.length }, enriched, dto.sessionId);
     return { ...enriched, aiAvailable: true, latencyMs };
   }
 
@@ -157,21 +153,72 @@ export class AiDiagnosisService {
   /** A question with no photo. Answers are prose; `answerVi` is always filled. */
   async ask(dto: AskDto, actor?: { id: string; role: string }): Promise<Record<string, unknown>> {
     try {
-      const response = await firstValueFrom(
-        this.httpService
-          .post<Record<string, unknown>>(`${this.aiServiceUrl}/api/v1/chat/ask`, {
-            question: dto.question,
-            sessionId: dto.sessionId,
-            deviceType: dto.deviceType,
-          })
-          .pipe(timeout(this.requestTimeoutMs)),
+      const data = await this.postToAi(
+        '/api/v1/chat/ask',
+        { question: dto.question, sessionId: dto.sessionId, deviceType: dto.deviceType },
+        await this.historyFor(dto.sessionId, actor),
       );
-      const enriched = await this.attachServiceIds(response.data || {});
-      await this.recordTurn(actor, { text: dto.question }, enriched);
+      const enriched = await this.attachServiceIds(data);
+      await this.recordTurn(actor, { text: dto.question }, enriched, dto.sessionId);
       return { ...enriched, aiAvailable: true };
     } catch (error) {
       this.logger.warn(`AI ask unavailable: ${this.reason(error)}`);
       return this.unavailable(dto.sessionId);
+    }
+  }
+
+  // ------------------------------------------------------- session history
+
+  /**
+   * POST to the AI Service, with the conversation so far when there is one.
+   *
+   * `history` is only read by the AI when it no longer holds the session, and
+   * an AI Service older than the field rejects it with 422. That one case is
+   * retried without it, so the two can be deployed in either order.
+   */
+  private async postToAi(
+    path: string,
+    body: Record<string, unknown>,
+    history: string[],
+  ): Promise<Record<string, unknown>> {
+    const send = async (payload: Record<string, unknown>) => {
+      const response = await firstValueFrom(
+        this.httpService
+          .post<Record<string, unknown>>(`${this.aiServiceUrl}${path}`, payload)
+          .pipe(timeout(this.requestTimeoutMs)),
+      );
+      return response.data || {};
+    };
+    if (!history.length) return send(body);
+    try {
+      return await send({ ...body, history });
+    } catch (error) {
+      const status = (error as { response?: { status?: number } })?.response?.status;
+      if (status !== 422) throw error;
+      return send(body);
+    }
+  }
+
+  /**
+   * What the customer said earlier in this session, from this server's own
+   * record. Nothing for a session another customer holds, and nothing when the
+   * record cannot be read: history only helps, so it never fails a turn.
+   */
+  private async historyFor(
+    sessionId: string | undefined,
+    actor?: { id: string; role: string },
+  ): Promise<string[]> {
+    const id = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (!this.sessionRepo || !id || id.length > 128) return [];
+    try {
+      const row = await this.sessionRepo.findOneBy({ sessionId: id });
+      if (!row) return [];
+      const customerId = actor?.role === Role.CUSTOMER ? actor.id : null;
+      if (row.customerId && row.customerId !== customerId) return [];
+      return historyFromSummary(row.summary);
+    } catch (error) {
+      this.logger.warn(`AI session history not read: ${this.reason(error)}`);
+      return [];
     }
   }
 
@@ -188,6 +235,7 @@ export class AiDiagnosisService {
     actor: { id: string; role: string } | undefined,
     input: AiTurnInput,
     reply: Record<string, unknown>,
+    requestedSessionId?: string,
   ): Promise<void> {
     const sessionId = typeof reply.sessionId === 'string' ? reply.sessionId.trim() : '';
     if (!this.sessionRepo || !sessionId || sessionId.length > 128) return;
@@ -195,7 +243,19 @@ export class AiDiagnosisService {
     try {
       const existing = await this.sessionRepo.findOneBy({ sessionId });
       if (existing?.customerId && existing.customerId !== customerId) return;
-      const summary = mergeTurn(existing?.summary ?? emptySummary(), input, reply);
+      // The AI handed back a new id because it had lost the old session. The
+      // conversation is the same one, so its summary carries over - otherwise
+      // the next loss would have nothing to rebuild from, and a booking made
+      // now would forget everything said before the restart.
+      let base = existing?.summary;
+      const previousId = typeof requestedSessionId === 'string' ? requestedSessionId.trim() : '';
+      if (!existing && previousId && previousId !== sessionId && previousId.length <= 128) {
+        const previous = await this.sessionRepo.findOneBy({ sessionId: previousId });
+        if (previous && (!previous.customerId || previous.customerId === customerId)) {
+          base = previous.summary;
+        }
+      }
+      const summary = mergeTurn(base ?? emptySummary(), input, reply);
       if (existing) {
         await this.sessionRepo.update(existing.id, { summary, customerId: existing.customerId ?? customerId });
       } else {
