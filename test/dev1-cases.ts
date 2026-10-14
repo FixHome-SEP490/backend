@@ -89,6 +89,42 @@ export function registerDev1Cases(context: () => Context) {
       denied(await post(`/bookings/${b.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.tech.user.id] }));
     });
 
+    it('reads a technician profile with each relation in its own query, complete and without duplicates (PO 14/10/2026)', async () => {
+      const f = await fixture();
+      const profile = await context().db.getRepository('TechnicianProfile').findOneByOrFail({ userId: f.tech.user.id });
+      const category = await save('ServiceCategory', { name: 'Join fixture', code: randomUUID() });
+      for (let i = 0; i < 2; i++) {
+        const extra = await save('Service', { categoryId: category.id, name: `Join ${i}`, code: randomUUID(), pricingMode: 'fixed_price', fixedPrice: 100000, scopeDescription: 'x', unit: 'job' });
+        await save('TechnicianSkill', { technicianId: profile.id, serviceId: extra.id, listedLaborPrice: 100000, verificationStatus: 'verified' });
+      }
+      for (let i = 0; i < 4; i++) await save('TechnicianServiceArea', { technicianId: profile.id, provinceCode: 'P1', districtCode: `D${i}` });
+      for (let i = 0; i < 2; i++) await save('TechnicianTimeOff', { technicianId: profile.id, startAt: new Date(Date.now() + (i + 10) * 86400000), endAt: new Date(Date.now() + (i + 10.5) * 86400000), reason: `off ${i}` });
+      // Joined in one statement this would be 3 skills x 4 areas x 7 schedule rows x 2 days off = 168 rows.
+      const read = unwrap((await get('/technicians/me/profile', f.tech).expect(200)).body);
+      expect(read.skills).toHaveLength(3);
+      expect(read.skills.every((s: any) => s.service?.id)).toBe(true);
+      expect(read.serviceAreas.map((a: any) => a.districtCode).sort()).toEqual(['D0', 'D1', 'D2', 'D3']);
+      expect(read.schedules).toHaveLength(7);
+      expect(read.timeOffs).toHaveLength(2);
+    });
+
+    it('lists conversations with only the counterpart fields the thread list shows (PO 14/10/2026)', async () => {
+      const f = await fixture();
+      const b = await f.create();
+      await context().db.getRepository('User').update(f.tech.user.id, { fullName: 'Thợ Trò Chuyện' });
+      await context().db.getRepository('User').update(f.owner.user.id, { fullName: 'Khách Trò Chuyện' });
+      const older = await save('Conversation', { bookingId: b.id, customerId: f.owner.user.id, technicianId: f.tech.user.id, serviceNameSnapshot: 'Repair fixture', lastMessageAt: new Date(Date.now() - 60000), lastMessagePreview: 'cũ' });
+      const newer = await save('Conversation', { bookingId: b.id, customerId: f.owner.user.id, technicianId: f.spare.user.id, serviceNameSnapshot: 'Repair fixture', lastMessageAt: new Date(), lastMessagePreview: 'mới' });
+      const mine = unwrap((await get('/conversations', f.owner).expect(200)).body);
+      expect(mine.map((c: any) => c.id)).toEqual([newer.id, older.id]);
+      expect(mine[1]).toMatchObject({ bookingId: b.id, serviceName: 'Repair fixture', lastMessagePreview: 'cũ', status: 'active', canSend: true });
+      expect(mine[1].counterpart).toEqual({ id: f.tech.user.id, fullName: 'Thợ Trò Chuyện', avatarUrl: null, role: 'technician' });
+      expect(JSON.stringify(mine)).not.toMatch(/email|phone|password/i);
+      const theirs = unwrap((await get('/conversations', f.tech).expect(200)).body);
+      expect(theirs).toHaveLength(1);
+      expect(theirs[0].counterpart).toMatchObject({ id: f.owner.user.id, fullName: 'Khách Trò Chuyện' });
+    });
+
     it('writes one clean address line and reads old repeated lines back tidied (PO 12/10/2026)', async () => {
       const f = await fixture();
       // What the map search saved: postcode, country and the ward again inside line1.

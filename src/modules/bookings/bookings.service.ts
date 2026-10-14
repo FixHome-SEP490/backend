@@ -449,6 +449,8 @@ export class BookingsService {
       }
       const fullBooking = await manager.findOne(Booking, {
         where: { id }, relations: ['service', 'address', 'media', 'invitations'],
+        // Photos and invitations would multiply if joined together (PO 14/10/2026: Supabase egress).
+        relationLoadStrategy: 'query',
       });
       if (!fullBooking || fullBooking.status !== BookingStatus.MATCHED) {
         throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
@@ -461,6 +463,7 @@ export class BookingsService {
     const booking = await this.bookingRepo.findOne({
       where: { id },
       relations: ['service', 'address', 'media', 'invitations'],
+      relationLoadStrategy: 'query',
     });
     if (!booking) {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');

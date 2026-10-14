@@ -378,3 +378,36 @@ describe('Technician service controller envelope', () => {
     expect(wrapped).toMatchObject({ success: true, data: single });
   });
 });
+
+describe('technician profile read size (PO 14/10/2026: Supabase egress)', () => {
+  it('loads each relation in its own query so skills x areas x schedules never multiply', async () => {
+    const { service, profileRepo } = makeService(fixedPriceService) as unknown as {
+      service: TechniciansService;
+      profileRepo: { findOne: ReturnType<typeof vi.fn> };
+    };
+    await service.getMyProfile('user-1');
+    expect(profileRepo.findOne).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: 'user-1' }, relationLoadStrategy: 'query' }),
+    );
+  });
+
+  it('reads only the profile row when a request needs just the id', async () => {
+    const { service, profileRepo } = makeService(fixedPriceService) as unknown as {
+      service: TechniciansService;
+      profileRepo: { findOne: ReturnType<typeof vi.fn>; update?: ReturnType<typeof vi.fn> };
+    };
+    (profileRepo as Record<string, unknown>).update = vi.fn();
+    await service.reportLocation('user-1', { lat: 10.77, lng: 106.7, accuracyMeters: 20 });
+    await service.getMySkills('user-1').catch(() => undefined);
+    for (const [options] of profileRepo.findOne.mock.calls) expect(options).toMatchObject({ relations: [] });
+  });
+
+  it('reads schedules and time off, not skills or areas, to say whether the technician is taking jobs', async () => {
+    const { service, profileRepo } = makeService(fixedPriceService) as unknown as {
+      service: TechniciansService;
+      profileRepo: { findOne: ReturnType<typeof vi.fn> };
+    };
+    await service.getMyAvailability('user-1');
+    expect(profileRepo.findOne).toHaveBeenCalledWith(expect.objectContaining({ relations: ['schedules', 'timeOffs'] }));
+  });
+});

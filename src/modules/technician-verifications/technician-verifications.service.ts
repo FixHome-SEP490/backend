@@ -227,6 +227,8 @@ export class TechnicianVerificationsService {
       .findOne({
         where: { userId: verification.technicianId },
         relations: ['skills', 'skills.service', 'serviceAreas'],
+        // Separate queries: skills x areas joined together multiply the rows (see TechniciansService.getMyProfile).
+        relationLoadStrategy: 'query',
       });
 
     return toTechnicianVerificationResponse(verification, profile ?? undefined);
