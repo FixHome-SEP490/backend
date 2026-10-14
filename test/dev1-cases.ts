@@ -707,4 +707,52 @@ export function registerDev1Cases(context: () => Context) {
       }
     });
   });
+
+  describe('AI assistant keeps the conversation across a lost AI session', () => {
+    // Real HTTP, JWT and Postgres; only the AI Service transport is replaced, so
+    // what is checked is what the backend sends and records.
+    it('rebuilds a lost session from the recorded turns, for the owner only', async () => {
+      const { AiDiagnosisService } = runtimeRequire('./dist/modules/ai-diagnosis/ai-diagnosis.service.js');
+      const { of } = runtimeRequire('rxjs');
+      // The HttpService instance this module was given; other modules have their own.
+      const http = (context().app.get(AiDiagnosisService) as any).httpService;
+      const sent: Array<Record<string, any>> = [];
+      let next = 0;
+      const ids = [`ai-${randomUUID()}`, `ai-${randomUUID()}`, `ai-${randomUUID()}`];
+      const spy = vi.spyOn(http, 'post').mockImplementation(((_url: string, body: Record<string, any>) => {
+        sent.push(body);
+        return of({ data: { sessionId: ids[next++], status: 'ok', answerVi: 'Dạ.', messageVi: 'Dạ.', suspectedFaults: [], recommendedServices: [] } });
+      }) as any);
+      try {
+        const owner = await context().register();
+        const other = await context().register();
+        const ask = (session: Session, question: string, sessionId?: string) =>
+          request(context().app.getHttpServer()).post('/api/v1/ai/chat/ask')
+            .set('Authorization', `Bearer ${session.accessToken}`)
+            .send({ question, ...(sessionId ? { sessionId } : {}) });
+
+        await ask(owner, 'máy lạnh không mát').expect(200);
+        expect(sent[0]).not.toHaveProperty('history');
+        // The AI lost ids[0] and answers under ids[1]; the backend must have sent
+        // what was said before, from its own record.
+        await ask(owner, 'mới vệ sinh rồi', ids[0]).expect(200);
+        expect(sent[1].history).toEqual(['máy lạnh không mát']);
+        const [row] = await context().db.query('SELECT customer_id, summary FROM ai_chat_sessions WHERE session_id = $1', [ids[1]]);
+        expect(row.customer_id).toBe(owner.user.id);
+        expect(row.summary.customerText).toBe('máy lạnh không mát / mới vệ sinh rồi');
+        expect(row.summary.turnCount).toBe(2);
+
+        // Someone else holding the id gets no history and writes nothing into it.
+        await ask(other, 'vậy giờ là bị gì', ids[1]).expect(200);
+        expect(sent[2]).not.toHaveProperty('history');
+        const [after] = await context().db.query('SELECT customer_id, summary FROM ai_chat_sessions WHERE session_id = $1', [ids[1]]);
+        expect(after.summary.turnCount).toBe(2);
+        const [stranger] = await context().db.query('SELECT customer_id, summary FROM ai_chat_sessions WHERE session_id = $1', [ids[2]]);
+        expect(stranger.customer_id).toBe(other.user.id);
+        expect(stranger.summary.customerText).toBe('vậy giờ là bị gì');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
 }

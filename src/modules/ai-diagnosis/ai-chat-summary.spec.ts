@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AI_SUMMARY_LIMITS, emptySummary, hasAdvice, mergeTurn, toBookingSummary } from './ai-chat-summary';
+import { AI_HISTORY_LIMITS, AI_SUMMARY_LIMITS, emptySummary, hasAdvice, historyFromSummary, mergeTurn, toBookingSummary } from './ai-chat-summary';
 
 const diagnosis = {
   status: 'ok',
@@ -84,5 +84,31 @@ describe('AI chat summary', () => {
     const copy = toBookingSummary(mergeTurn(emptySummary(), { text: 'a' }, diagnosis), new Date('2026-10-01T00:00:00Z'));
     expect(copy).not.toHaveProperty('turnCount');
     expect(copy.recordedAt).toBe('2026-10-01T00:00:00.000Z');
+  });
+});
+
+describe('historyFromSummary', () => {
+  it('splits the recorded customer text back into turns, oldest first', () => {
+    expect(historyFromSummary({ customerText: 'máy lạnh không mát / mới vệ sinh rồi' })).toEqual([
+      'máy lạnh không mát',
+      'mới vệ sinh rồi',
+    ]);
+  });
+
+  it('drops the ellipsis left where older turns were cut, and empty pieces', () => {
+    expect(historyFromSummary({ customerText: '…n rồi /  / còn kêu to' })).toEqual(['n rồi', 'còn kêu to']);
+  });
+
+  it('is empty for no summary', () => {
+    expect(historyFromSummary(null)).toEqual([]);
+    expect(historyFromSummary({ customerText: null })).toEqual([]);
+  });
+
+  it('stays within what the AI Service accepts', () => {
+    const many = Array.from({ length: 30 }, (_, i) => `lượt ${i}`).join(' / ');
+    const turns = historyFromSummary({ customerText: many });
+    expect(turns).toHaveLength(AI_HISTORY_LIMITS.turns);
+    expect(turns[turns.length - 1]).toBe('lượt 29');
+    expect(historyFromSummary({ customerText: 'x'.repeat(3000) })[0]).toHaveLength(AI_HISTORY_LIMITS.chars);
   });
 });
