@@ -17,12 +17,12 @@ export interface CustomerWalletEntry {
   description?: string | null;
 }
 
-const INCOMING: CustomerWalletTransactionType[] = ['top_up', 'refund', 'adjustment_credit'];
+const INCOMING: CustomerWalletTransactionType[] = ['top_up', 'refund', 'adjustment_credit', 'withdrawal_refund'];
 
 /**
  * The customer wallet ledger (PO 08/10/2026). Money comes in by top-up or
- * refund and goes out only to pay the customer's own invoices; there is no
- * withdrawal. Every change locks the wallet row and appends one transaction
+ * refund and goes out to pay the customer's own invoices or, after an
+ * approved identity check, to their own bank account (PO 14/10/2026). Every change locks the wallet row and appends one transaction
  * whose idempotency key makes a retry return the first result.
  */
 @Injectable()
@@ -58,7 +58,9 @@ export class CustomerWalletService {
     if (after < 0) {
       const message = entry.type === 'adjustment_debit'
         ? 'Số dư ví khách không đủ để trừ số tiền này'
-        : 'Số dư ví không đủ để thanh toán, vui lòng nạp thêm';
+        : entry.type === 'withdrawal'
+          ? 'Số dư ví không đủ để rút số tiền này'
+          : 'Số dư ví không đủ để thanh toán, vui lòng nạp thêm';
       throw new BusinessException(ErrorCodes.VALIDATION_FAILED, message, {
         balance: before,
         required: entry.amount,

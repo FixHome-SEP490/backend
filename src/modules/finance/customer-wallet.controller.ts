@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, forwardRef, Get, HttpCode, HttpStatus, Inject, Param, ParseUUIDPipe, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -10,14 +10,16 @@ import { ErrorCodes } from '../../shared/constants/error-codes';
 import { PaymentMode, Role } from '../../shared/enums';
 import { TopUpRequestDto } from '../wallet/dto/top-up.dto';
 import { CustomerWalletService } from '../customer-wallet/customer-wallet.service';
+import { CustomerWithdrawalPayoutService } from '../wallet/customer-withdrawal-payout.service';
 import { FinanceService } from './finance.service';
 
 type Req = { user: { id: string; role: string }; ip?: string; headers?: Record<string, string> };
 
 /**
  * Customer wallet (PO 08/10/2026): see the balance and history, top up
- * through VNPay, pay an invoice from the balance. There is deliberately no
- * withdrawal: customers have no KYC.
+ * through VNPay, pay an invoice from the balance. Withdrawing to a bank
+ * account (PO 14/10/2026, after an approved identity check) lives in
+ * CustomerWalletWithdrawalController; the summary carries its conditions.
  */
 @ApiTags('Customer wallet')
 @Controller()
@@ -28,13 +30,19 @@ export class CustomerWalletController {
   constructor(
     private readonly wallet: CustomerWalletService,
     private readonly finance: FinanceService,
+    @Inject(forwardRef(() => CustomerWithdrawalPayoutService))
+    private readonly withdrawals: CustomerWithdrawalPayoutService,
   ) {}
 
   @Get('customer/wallet')
   @RequirePermission('profile:read_own')
-  @ApiOperation({ summary: 'Customer: wallet balance and transactions, newest first' })
-  summary(@Req() req: Req, @Query('page') page?: string, @Query('pageSize') pageSize?: string) {
-    return this.wallet.summary(req.user.id, Number(page) || 1, Number(pageSize) || 20);
+  @ApiOperation({ summary: 'Customer: wallet balance and transactions, newest first, plus the withdrawal conditions (withdrawal)' })
+  async summary(@Req() req: Req, @Query('page') page?: string, @Query('pageSize') pageSize?: string) {
+    const [summary, withdrawal] = await Promise.all([
+      this.wallet.summary(req.user.id, Number(page) || 1, Number(pageSize) || 20),
+      this.withdrawals.info(req.user.id),
+    ]);
+    return { ...summary, withdrawal };
   }
 
   @Post('customer/wallet/top-up')

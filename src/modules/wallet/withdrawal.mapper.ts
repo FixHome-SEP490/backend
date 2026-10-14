@@ -46,13 +46,14 @@ export function toWithdrawalResponse(
 
 /**
  * One sentence saying where a payout ended up, worded for whoever reads it:
- * the technician who asked, or the manager tracking the money.
+ * the technician or customer who asked, or the manager tracking the money.
  */
 export function payoutMessage(
   status: WithdrawalStatus,
-  audience: 'technician' | 'manager',
+  audience: 'technician' | 'customer' | 'manager',
 ): string {
-  const forTechnician = audience === 'technician';
+  // The sentences for the one who asked read the same for a customer.
+  const forTechnician = audience !== 'manager';
   switch (status) {
     case WithdrawalStatus.SUCCESS:
       return forTechnician
