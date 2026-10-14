@@ -1,7 +1,7 @@
 import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
 import { bigintTransformer } from '../../wallet/entities/wallet.entity';
 
-/** A customer's wallet (PO 08/10/2026): top up, pay invoices, receive refunds; never withdraw. */
+/** A customer's wallet (PO 08/10/2026): top up, pay invoices, receive refunds; withdraw after KYC (PO 14/10/2026). */
 @Entity('customer_wallets')
 export class CustomerWallet {
   @PrimaryGeneratedColumn('uuid')

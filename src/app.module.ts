@@ -30,6 +30,7 @@ import { MediaModule } from './modules/media/media.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { HealthModule } from './modules/health/health.module';
 import { TechnicianVerificationsModule } from './modules/technician-verifications/technician-verifications.module';
+import { CustomerVerificationsModule } from './modules/customer-verifications/customer-verifications.module';
 import { TechnicianSkillVerificationsModule } from './modules/technician-skill-verifications/technician-skill-verifications.module';
 import { PartsCatalogModule } from './modules/parts-catalog/parts-catalog.module';
 import { SupportCasesModule } from './modules/support-cases/support-cases.module';
@@ -80,6 +81,7 @@ import { WalletModule } from './modules/wallet/wallet.module';
     DashboardModule,
     HealthModule,
     TechnicianVerificationsModule,
+    CustomerVerificationsModule,
     TechnicianSkillVerificationsModule,
     PartsCatalogModule,
     SupportCasesModule,

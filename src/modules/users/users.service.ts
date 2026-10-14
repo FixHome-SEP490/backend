@@ -11,11 +11,14 @@ import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
 import { User } from './entities/user.entity';
 import { RefreshToken } from '../auth/entities/refresh-token.entity';
-import { AccountStatus, Role } from '../../shared/enums';
+import { AccountStatus, Role, VerificationStatus } from '../../shared/enums';
 import { normalizePhone } from '../../shared/validation/input.transforms';
 import { PaginationMeta } from '../../shared/dto';
 import { UpdateProfileDto, QueryUsersDto, UpdateUserStatusDto, CreateTechnicianDto } from './dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import { CustomerVerification } from '../customer-verifications/entities/customer-verification.entity';
+import { BusinessException } from '../../common/exceptions/business.exception';
+import { ErrorCodes } from '../../shared/constants';
 
 @Injectable()
 export class UsersService {
@@ -23,6 +26,8 @@ export class UsersService {
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     private readonly auditLogService: AuditLogService,
+    @InjectRepository(CustomerVerification)
+    private readonly customerVerificationRepo: Repository<CustomerVerification>,
   ) {}
 
   async getProfile(userId: string): Promise<User> {
@@ -54,7 +59,11 @@ export class UsersService {
     }
 
     if (dto.fullName) {
-      user.fullName = dto.fullName.trim();
+      const fullName = dto.fullName.trim();
+      if (fullName !== user.fullName) {
+        await this.assertIdentityEditable(user);
+      }
+      user.fullName = fullName;
     }
 
     if (dto.avatarUrl !== undefined) {
@@ -67,6 +76,24 @@ export class UsersService {
       avatarUrl: user.avatarUrl,
     });
     return this.getProfile(userId);
+  }
+
+  /**
+   * PO 14/10/2026: once a customer's identity is verified, the full name and
+   * date of birth on the profile are the ones checked against the ID card and
+   * can no longer be changed (re-sending the same value is fine).
+   */
+  private async assertIdentityEditable(user: User): Promise<void> {
+    if (user.role !== Role.CUSTOMER) return;
+    const verified = await this.customerVerificationRepo.exists({
+      where: { customerId: user.id, status: VerificationStatus.VERIFIED },
+    });
+    if (verified) {
+      throw new BusinessException(
+        ErrorCodes.VALIDATION_FAILED,
+        'Họ tên và ngày sinh đã được xác minh theo CCCD nên không thể thay đổi. Vui lòng liên hệ FixHome nếu thông tin bị sai.',
+      );
+    }
   }
 
   async findUsers(

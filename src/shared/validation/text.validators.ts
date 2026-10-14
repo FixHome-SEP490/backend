@@ -97,3 +97,33 @@ export function IsPersonName(
     validationOptions,
   );
 }
+
+/**
+ * Luật ký tự cho một dòng địa chỉ như in trên CCCD: chữ cái (có dấu), chữ số,
+ * khoảng trắng và các dấu thường gặp trong địa chỉ (phẩy, chấm, gạch chéo,
+ * gạch nối, nháy, ngoặc, #, &, :, ;). Loại emoji, ký hiệu trang trí, thẻ HTML
+ * và ký tự điều khiển hay vô hình.
+ */
+const ADDRESS_ALLOWED = /^[\p{L}\p{M}\p{N}][\p{L}\p{M}\p{N} ,./'’()#&:;-]*$/u;
+
+export function IsAddressText(
+  validationOptions?: ValidationOptions,
+): PropertyDecorator {
+  return ValidateBy(
+    {
+      name: 'isAddressText',
+      validator: {
+        validate: (value: unknown): boolean =>
+          typeof value === 'string' &&
+          !containsUnsafeText(value) &&
+          ADDRESS_ALLOWED.test(value),
+        defaultMessage: buildMessage(
+          (eachPrefix) =>
+            `${eachPrefix}$property may only contain letters, digits, spaces and common address punctuation`,
+          validationOptions,
+        ),
+      },
+    },
+    validationOptions,
+  );
+}

@@ -1,7 +1,16 @@
 import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
 import { bigintTransformer } from '../../wallet/entities/wallet.entity';
 
-export type CustomerWalletTransactionType = 'top_up' | 'invoice_payment' | 'refund' | 'adjustment_credit' | 'adjustment_debit';
+export type CustomerWalletTransactionType =
+  | 'top_up'
+  | 'invoice_payment'
+  | 'refund'
+  | 'adjustment_credit'
+  | 'adjustment_debit'
+  /** Sent to the customer's bank (PO 14/10/2026). */
+  | 'withdrawal'
+  /** A withdrawal the bank did not take, returned to the wallet. */
+  | 'withdrawal_refund';
 
 /** One balance change, never edited afterwards; the idempotency key makes a retry a no-op. */
 @Entity('customer_wallet_transactions')

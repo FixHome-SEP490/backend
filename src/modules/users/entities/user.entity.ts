@@ -97,6 +97,13 @@ export class User extends BaseEntity {
   @Column({ name: 'citizen_id_number', type: 'varchar', length: 20, nullable: true })
   citizenIdNumber?: string | null;
 
+  /**
+   * Địa chỉ thường trú như trên CCCD, khách hàng xác nhận khi xác minh danh
+   * tính để rút tiền (PO 14/10/2026). Thợ giữ địa chỉ ở technician_profiles.
+   */
+  @Column({ name: 'full_address', type: 'varchar', length: 500, nullable: true })
+  fullAddress?: string | null;
+
   @OneToMany(() => RefreshToken, (token) => token.user)
   refreshTokens: RefreshToken[];
 }

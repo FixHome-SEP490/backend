@@ -1,6 +1,8 @@
 import { forwardRef, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuditLogModule } from '../audit-log/audit-log.module';
+import { CustomerVerificationsModule } from '../customer-verifications/customer-verifications.module';
+import { CustomerWalletModule } from '../customer-wallet/customer-wallet.module';
 import { FinanceModule } from '../finance/finance.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { SystemConfigModule } from '../system-config/system-config.module';
@@ -8,7 +10,12 @@ import { TechnicianVerification } from '../technician-verifications/entities/tec
 import { User } from '../users/entities/user.entity';
 import { AdminWalletController } from './admin-wallet.controller';
 import { BankAccountService } from './bank-account.service';
+import { CustomerBankAccountService } from './customer-bank-account.service';
+import { CustomerWalletWithdrawalController } from './customer-wallet-withdrawal.controller';
+import { CustomerWithdrawalPayoutService } from './customer-withdrawal-payout.service';
 import {
+  CustomerBankAccount,
+  CustomerWithdrawalRequest,
   TechnicianBankAccount,
   Wallet,
   WalletTransaction,
@@ -30,8 +37,12 @@ import { WithdrawalPayoutService } from './withdrawal-payout.service';
       TechnicianBankAccount,
       TechnicianVerification,
       User,
+      CustomerBankAccount,
+      CustomerWithdrawalRequest,
     ]),
     SystemConfigModule,
+    CustomerWalletModule,
+    CustomerVerificationsModule,
     AuditLogModule,
     NotificationsModule,
     forwardRef(() => FinanceModule),
@@ -40,14 +51,17 @@ import { WithdrawalPayoutService } from './withdrawal-payout.service';
     TechnicianWalletController,
     ServiceManagerWalletController,
     AdminWalletController,
+    CustomerWalletWithdrawalController,
   ],
   providers: [
     WalletService,
     SettlementService,
     BankAccountService,
     WithdrawalPayoutService,
+    CustomerBankAccountService,
+    CustomerWithdrawalPayoutService,
     payoutProviderFactory,
   ],
-  exports: [WalletService, SettlementService],
+  exports: [WalletService, SettlementService, CustomerWithdrawalPayoutService],
 })
 export class WalletModule {}
