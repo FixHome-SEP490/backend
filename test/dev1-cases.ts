@@ -939,6 +939,11 @@ export function registerDev1Cases(context: () => Context) {
         expect(quality.totals.markedWrong).toBeGreaterThanOrEqual(1);
         expect(quality.recentWrong.some((r: any) => r.sessionId === sessionId && r.note === 'em đã nói vệ sinh rồi')).toBe(true);
         expect(quality.perDay.length).toBeGreaterThanOrEqual(1);
+        const week = unwrap((await get('/admin/ai-quality?days=7', stranger).expect(200)).body);
+        const todayVn = new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
+        expect(week.perDay).toHaveLength(7);
+        expect(week.perDay.at(-1).day).toBe(todayVn);
+        expect(week.perDay.at(-1).sessions).toBeGreaterThanOrEqual(1);
         const [row] = await context().db.query('SELECT summary FROM ai_chat_sessions WHERE session_id = $1', [sessionId]);
         expect(row.summary.feedback).toHaveLength(1);
       } finally {

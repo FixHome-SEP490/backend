@@ -7,7 +7,7 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom, timeout } from 'rxjs';
 import { AiDiagnosis } from './entities/ai-diagnosis.entity';
 import { AiChatSession } from './entities/ai-chat-session.entity';
-import { AiTurnInput, addFeedback, emptySummary, historyFromSummary, mergeTurn } from './ai-chat-summary';
+import { AiTurnInput, addFeedback, emptySummary, historyFromSummary, mergeTurn, vnDaysWindowStart } from './ai-chat-summary';
 import { AI_PAST_JOBS_LIMITS, AiPastJob, pastJobsFromBookings } from './ai-past-jobs';
 import { Service } from '../services/entities/service.entity';
 import { Booking } from '../bookings/entities/booking.entity';
@@ -286,7 +286,7 @@ export class AiDiagnosisService {
    */
   async quality(days = 7): Promise<Record<string, unknown>> {
     if (!this.sessionRepo) return { days, totals: null, perDay: [], recentWrong: [] };
-    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const since = vnDaysWindowStart(days);
     const wrong = `EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(s.summary->'feedback', '[]'::jsonb)) f WHERE f->>'verdict' = 'wrong')`;
     const right = `EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(s.summary->'feedback', '[]'::jsonb)) f WHERE f->>'verdict' = 'right')`;
     const [totals] = await this.sessionRepo.query(
@@ -302,17 +302,19 @@ export class AiDiagnosisService {
       `SELECT count(*)::int AS "bookings" FROM bookings WHERE ai_summary IS NOT NULL AND created_at >= $1`,
       [since],
     );
+    // Day boundaries are Vietnam midnights, computed here rather than by the
+    // database session's time zone; one row per day of the window, today last.
     const perDay = await this.sessionRepo.query(
-      `SELECT to_char(d::date, 'YYYY-MM-DD') AS "day",
+      `SELECT to_char(d AT TIME ZONE 'Asia/Ho_Chi_Minh', 'YYYY-MM-DD') AS "day",
               (SELECT count(*)::int FROM ai_chat_sessions s
                  WHERE s.created_at >= d AND s.created_at < d + interval '1 day') AS "sessions",
               (SELECT count(*)::int FROM bookings b
                  WHERE b.ai_summary IS NOT NULL AND b.created_at >= d AND b.created_at < d + interval '1 day') AS "bookings",
               (SELECT count(*)::int FROM ai_chat_sessions s
                  WHERE s.created_at >= d AND s.created_at < d + interval '1 day' AND ${wrong}) AS "markedWrong"
-         FROM generate_series(date_trunc('day', $1::timestamptz), date_trunc('day', now()), interval '1 day') d
+         FROM generate_series($1::timestamptz, $1::timestamptz + ($2::int - 1) * interval '1 day', interval '1 day') d
         ORDER BY d`,
-      [since],
+      [since, days],
     );
     const recentWrong = await this.sessionRepo.query(
       `SELECT s.session_id AS "sessionId", f->>'at' AS "at", f->>'note' AS "note", f->>'reply' AS "reply",

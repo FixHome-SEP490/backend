@@ -237,3 +237,16 @@ export function toBookingSummary(state: AiChatSummaryState, now = new Date()): A
   void _feedback;
   return { ...summary, recordedAt: now.toISOString() };
 }
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+/**
+ * "The last n days" for the admin, in Vietnam: from midnight n-1 days ago to
+ * now, so 7 days is today and the six before it - seven rows, whatever the
+ * server's or the database's time zone.
+ */
+export function vnDaysWindowStart(days: number, now = Date.now()): Date {
+  const todayStart = Math.floor((now + VN_OFFSET_MS) / DAY_MS) * DAY_MS - VN_OFFSET_MS;
+  return new Date(todayStart - (Math.max(1, Math.floor(days)) - 1) * DAY_MS);
+}
