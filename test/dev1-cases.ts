@@ -74,6 +74,34 @@ export function registerDev1Cases(context: () => Context) {
       await evidence(orderId, actor, 'before').expect(201);
     }
 
+    it("tells the AI a signed-in customer's own earlier repairs, and nobody else's", async () => {
+      const { AiDiagnosisService } = runtimeRequire('./dist/modules/ai-diagnosis/ai-diagnosis.service.js');
+      const { of } = runtimeRequire('rxjs');
+      const http = (context().app.get(AiDiagnosisService) as any).httpService;
+      const sent: Array<Record<string, any>> = [];
+      const spy = vi.spyOn(http, 'post').mockImplementation(((_url: string, body: Record<string, any>) => {
+        sent.push(body);
+        return of({ data: { sessionId: `ai-${randomUUID()}`, status: 'ok', answerVi: 'Dạ.', recommendedServices: [] } });
+      }) as any);
+      try {
+        const f = await fixture();
+        const { booking } = await accept(f);
+        await f.create(); // still waiting for a technician: not a repair yet
+        const vnDay = new Date(new Date(booking.preferredStartAt).getTime() + 7 * 3600000).toISOString().slice(0, 10);
+        await post('/ai/chat/ask', f.owner, { question: 'máy lạnh không mát' }).expect(200);
+        expect(sent[0].pastJobs).toEqual([{ serviceVi: 'Repair fixture', date: vnDay }]);
+        await post('/ai/diagnoses', f.owner, { description: 'máy lạnh không mát' }).expect(200);
+        expect(sent[1].pastJobs).toEqual([{ serviceVi: 'Repair fixture', date: vnDay }]);
+        expect(JSON.stringify(sent[0])).not.toContain('1 Test Street');
+        await post('/ai/chat/ask', f.outsider, { question: 'máy lạnh không mát' }).expect(200);
+        expect(sent[2]).not.toHaveProperty('pastJobs');
+        await post('/ai/chat/ask', f.tech, { question: 'máy lạnh không mát' }).expect(200);
+        expect(sent[3]).not.toHaveProperty('pastJobs');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it('validates booking DTO, address ownership, snapshots and creates no pre-Accept order', async () => {
       const f = await fixture();
       for (const changes of [{ preferredEndAt: undefined }, { quantity: 0 }, { quantity: 1.5 }, { preferredStartAt: '2020-01-01T00:00:00Z' }, { description: '  ' }, { status: 'matched' }]) denied(await post('/bookings', f.owner, { ...f.body, ...changes }));

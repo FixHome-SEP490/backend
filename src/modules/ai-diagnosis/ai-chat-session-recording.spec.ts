@@ -88,6 +88,45 @@ describe('AI session recording', () => {
     await service.ask({ question: 'hỏi' }, { id: 'sm-1', role: 'service_manager' });
     expect(sessions.insert.mock.calls.every(([row]: [{ customerId: string | null }]) => row.customerId === null)).toBe(true);
   });
+  // ------------------------------------------------ earlier repairs
+
+  const BOOKING = { serviceNameSnapshot: 'Sửa điều hòa', createdAt: new Date('2026-08-03T03:00:00Z'), aiSummary: { deviceName: 'Máy lạnh', suspectedFaults: [] } };
+
+  function withBookings(find: any) {
+    const diagnosisRepo = { manager: { findOneBy: vi.fn(), find } };
+    const config = { get: vi.fn().mockReturnValue('http://ai.test') };
+    return new AiDiagnosisService(diagnosisRepo as any, { find: vi.fn().mockResolvedValue([]) } as any, http, config as any, sessions);
+  }
+
+  it("sends a signed-in customer's own earlier repairs, and only theirs", async () => {
+    const find = vi.fn().mockResolvedValue([BOOKING]);
+    await withBookings(find).ask({ question: 'máy lạnh không mát' }, CUSTOMER);
+    expect(http.post.mock.calls[0][1].pastJobs).toEqual([{ serviceVi: 'Sửa điều hòa', deviceVi: 'Máy lạnh', date: '2026-08-03' }]);
+    expect(find.mock.calls[0][1]).toMatchObject({ where: { customerId: 'customer-a', status: 'matched' }, take: 5 });
+  });
+
+  it('sends none for a visitor or staff, without reading bookings', async () => {
+    const find = vi.fn().mockResolvedValue([BOOKING]);
+    const svc = withBookings(find);
+    await svc.ask({ question: 'hỏi' });
+    await svc.analyze({ description: 'hỏi' }, { id: 'tech-1', role: 'technician' });
+    expect(find).not.toHaveBeenCalled();
+    expect(http.post.mock.calls.every(([, body]: [string, object]) => !('pastJobs' in body))).toBe(true);
+  });
+
+  it('still answers when bookings cannot be read, or an older AI Service rejects the field', async () => {
+    await withBookings(vi.fn().mockRejectedValue(new Error('db down'))).ask({ question: 'x' }, CUSTOMER);
+    expect(http.post.mock.calls[0][1]).not.toHaveProperty('pastJobs');
+    http.post.mockReset();
+    http.post
+      .mockReturnValueOnce(throwError(() => ({ response: { status: 422 } })))
+      .mockReturnValue(of({ data: structuredClone(REPLY) }));
+    const reply = await withBookings(vi.fn().mockResolvedValue([BOOKING])).ask({ question: 'x' }, CUSTOMER);
+    expect(http.post.mock.calls[0][1]).toHaveProperty('pastJobs');
+    expect(http.post.mock.calls[1][1]).not.toHaveProperty('pastJobs');
+    expect(reply).toMatchObject({ aiAvailable: true });
+  });
+
   // ------------------------------------------------ rebuilding a lost session
 
   const SUMMARY = {
