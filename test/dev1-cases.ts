@@ -861,6 +861,32 @@ export function registerDev1Cases(context: () => Context) {
     });
   });
 
+  describe('AI assistant is rate limited per customer', () => {
+    it('stops one customer at the limit without touching another', async () => {
+      const { AiDiagnosisService } = runtimeRequire('./dist/modules/ai-diagnosis/ai-diagnosis.service.js');
+      const { AI_ASK_PER_MINUTE } = runtimeRequire('./dist/modules/ai-diagnosis/ai-throttler.guard.js');
+      const { of } = runtimeRequire('rxjs');
+      const http = (context().app.get(AiDiagnosisService) as any).httpService;
+      const spy = vi.spyOn(http, 'post').mockImplementation((() =>
+        of({ data: { sessionId: `ai-${randomUUID()}`, status: 'ok', answerVi: 'Dạ.', recommendedServices: [] } })) as any);
+      try {
+        const busy = await context().register();
+        const other = await context().register();
+        const ask = (session: Session) =>
+          request(context().app.getHttpServer()).post('/api/v1/ai/chat/ask')
+            .set('Authorization', `Bearer ${session.accessToken}`)
+            .send({ question: 'máy lạnh không mát' });
+        for (let i = 0; i < AI_ASK_PER_MINUTE; i += 1) {
+          await ask(busy).expect(200);
+        }
+        await ask(busy).expect(429);
+        await ask(other).expect(200);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
   describe('AI assistant keeps the conversation across a lost AI session', () => {
     // Real HTTP, JWT and Postgres; only the AI Service transport is replaced, so
     // what is checked is what the backend sends and records.
