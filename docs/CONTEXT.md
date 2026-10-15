@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-16 00:14 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/staff-customer-withdrawals
+> Cập nhật lần cuối: 2026-10-16 02:17 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/ai-rate-limit
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -174,6 +174,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - Route phía client: `POST /ai/diagnoses`, `POST /ai/chat/ask`, `GET /ai/chat/acknowledgements`, `GET /ai/health`, `GET /ai/diagnoses/:id`.
 - Giới hạn khớp schema của `ai-service`: mô tả 2000 ký tự, câu hỏi 1000, `sessionId` và gợi ý 64, tối đa 3 ảnh. Hai route ảnh nhận body tới 40 MB.
 - AI lỗi thì trả HTTP 200 với `aiAvailable: false` và câu trả lời dự phòng; không bao giờ chặn đặt lịch.
+- Giới hạn tần suất gọi AI (`AiThrottlerGuard`): `POST /ai/diagnoses` (và alias cũ) 20 lần/phút, `POST /ai/chat/ask` 30 lần/phút, tính theo tài khoản khách khi đã đăng nhập, theo IP khi ẩn danh; vượt thì 429. Đo 16/10/2026: một GPU phục vụ khoảng 50 người cùng lúc.
 - Giữ ngữ cảnh khi `ai-service` mất phiên (khởi động lại, hết hạn): khi client gửi `sessionId`, `backend` đọc `ai_chat_sessions.summary.customerText` của phiên đó (chỉ khi phiên không thuộc khách khác) và gửi kèm `history` (tối đa 20 lượt, mỗi lượt 2000 ký tự). Client không gửi được `history`. `ai-service` cũ trả 422 với trường này thì `backend` gửi lại một lần không kèm. Khi `ai-service` trả `sessionId` mới thay cho phiên đã mất, tóm tắt của phiên cũ được chép sang phiên mới (cùng chủ).
 
 ### Biến môi trường (chỉ tên, xem `.env.example`)
@@ -234,6 +235,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-16 02:17 (UTC+7) | ToanAltF4 | feat/ai-rate-limit | Giới hạn tần suất gọi AI theo khách hoặc IP
 - 2026-10-16 00:14 (UTC+7) | ToanAltF4 | feat/staff-customer-withdrawals | SM/Admin xem lệnh rút tiền của khách tách riêng với thợ: danh sách có tìm kiếm, tổng quan, hỏi lại payOS (/service-manager/customer-withdrawals)
 - 2026-10-15 13:40 (UTC+7) | Hgnv11 | dev | Thanh toán hoá đơn VNPay chia hai nhánh trả về: mobile (header x-client-platform) về app qua fixhome://app/order-payment, web vẫn FRONTEND_URL; CHƯA KIỂM CHỨNG trên máy thật
 - 2026-10-14 23:11 (UTC+7) | ToanAltF4 | feat/customer-withdrawal-kyc | Khách rút ví về ngân hàng qua payOS sau khi admin duyệt CCCD; bảng KYC, tài khoản, lệnh rút của khách (migration 036)
@@ -273,4 +275,3 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - 2026-10-08 21:53 (UTC+7) | ToanAltF4 | fix/strike-role | Xác nhận vi phạm ghi role vào cancellation_strikes (cột bắt buộc), trước đây insert lỗi trên DB thật.
 - 2026-10-07 21:27 (UTC+7) | ToanAltF4 | fix/fixed-price-and-waive-reason | Dịch vụ giá cố định bắt buộc có giá > 0; miễn vi phạm khi xét huỷ đơn bắt buộc có lý do, kiểm trước khi ghi.
 - 2026-10-07 21:17 (UTC+7) | ToanAltF4 | fix/time-off-and-review-guards | Chặn khai báo ngày nghỉ đã qua; đánh giá trùng trả CONFLICT với câu tiếng Việt.
-- 2026-10-07 21:03 (UTC+7) | ToanAltF4 | fix/order-completed-notices | Hoàn tất đơn qua tiền mặt hoặc VNPay giờ cũng gửi thông báo ORDER_COMPLETED; gom bảo hành và thông báo về applyOrderCompletionEffects.
