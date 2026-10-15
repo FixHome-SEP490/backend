@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AI_FEEDBACK_LIMITS, AI_HISTORY_LIMITS, AI_SUMMARY_LIMITS, addFeedback, emptySummary, hasAdvice, historyFromSummary, mergeTurn, toBookingSummary } from './ai-chat-summary';
+import { AI_FEEDBACK_LIMITS, AI_HISTORY_LIMITS, AI_SUMMARY_LIMITS, addFeedback, emptySummary, hasAdvice, historyFromSummary, mergeTurn, toBookingSummary, vnDaysWindowStart } from './ai-chat-summary';
 
 const diagnosis = {
   status: 'ok',
@@ -150,5 +150,17 @@ describe('conversation notes', () => {
   it('keeps earlier notes when a reply says nothing about them', () => {
     const first = mergeTurn(emptySummary(), {}, { status: 'ok', notesVi: ['Khách nghi thiếu gas.'] });
     expect(mergeTurn(first, {}, { status: 'ok' }).notes).toEqual(['Khách nghi thiếu gas.']);
+  });
+});
+
+describe('admin quality window', () => {
+  it('starts at Vietnam midnight, days - 1 days back', () => {
+    // 04:58 on 16/10 in Vietnam is 21:58 on 15/10 UTC
+    const now = Date.parse('2026-10-15T21:58:00Z');
+    expect(vnDaysWindowStart(7, now).toISOString()).toBe('2026-10-09T17:00:00.000Z'); // 00:00 10/10 VN
+    expect(vnDaysWindowStart(1, now).toISOString()).toBe('2026-10-15T17:00:00.000Z'); // 00:00 16/10 VN
+    // 23:30 on 16/10 in Vietnam is still 16/10
+    expect(vnDaysWindowStart(1, Date.parse('2026-10-16T16:30:00Z')).toISOString()).toBe('2026-10-15T17:00:00.000Z');
+    expect(vnDaysWindowStart(0, now).toISOString()).toBe('2026-10-15T17:00:00.000Z');
   });
 });

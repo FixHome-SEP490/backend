@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-16 04:16 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/ai-past-jobs
+> Cập nhật lần cuối: 2026-10-16 05:06 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/ai-quality-days
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -174,7 +174,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - Route phía client: `POST /ai/diagnoses`, `POST /ai/chat/ask`, `GET /ai/chat/acknowledgements`, `GET /ai/health`, `GET /ai/diagnoses/:id`.
 - Giới hạn khớp schema của `ai-service`: mô tả 2000 ký tự, câu hỏi 1000, `sessionId` và gợi ý 64, tối đa 3 ảnh. Hai route ảnh nhận body tới 40 MB.
 - AI lỗi thì trả HTTP 200 với `aiAvailable: false` và câu trả lời dự phòng; không bao giờ chặn đặt lịch.
-- Phản hồi của khách về câu trả lời AI: `POST /ai/feedback` `{ sessionId, verdict: wrong|right, note?, reply? }` (10 lần/phút), lưu vào `ai_chat_sessions.summary.feedback` (tối đa 20 mục, không chép sang tóm tắt của booking); 404 nếu phiên không do backend ghi hoặc thuộc khách khác. Admin xem `GET /admin/ai-quality?days=1..90`: số cuộc trò chuyện, số lượt, số cuộc bị báo sai/đúng, số đơn đặt từ trợ lý và tỉ lệ, theo ngày, 20 câu trả lời bị báo sai gần nhất kèm lời khách. Không thêm bảng, không migration.
+- Phản hồi của khách về câu trả lời AI: `POST /ai/feedback` `{ sessionId, verdict: wrong|right, note?, reply? }` (10 lần/phút), lưu vào `ai_chat_sessions.summary.feedback` (tối đa 20 mục, không chép sang tóm tắt của booking); 404 nếu phiên không do backend ghi hoặc thuộc khách khác. Admin xem `GET /admin/ai-quality?days=1..90` (khung ngày theo giờ Việt Nam: từ 0 giờ của n-1 ngày trước tới hiện tại, `perDay` đúng n dòng, hôm nay cuối): số cuộc trò chuyện, số lượt, số cuộc bị báo sai/đúng, số đơn đặt từ trợ lý và tỉ lệ, theo ngày, 20 câu trả lời bị báo sai gần nhất kèm lời khách. Không thêm bảng, không migration.
 - Ghi chú hội thoại của AI: `notesVi` trong phản hồi ai-service (khách đã thử gì, đã loại lỗi nào, đang nghi gì, có dấu hiệu nguy hiểm) được ghi đè mỗi lượt vào `ai_chat_sessions.summary.notes` (tối đa 6 dòng), chép sang tóm tắt của booking, và lời chào khi thợ nhận đơn thêm dòng "Anh/chị đã cho biết: …" để khách không phải kể lại. Phiên cũ không có `notes` vẫn đọc được.
 - Đơn cũ của khách cho AI: khi khách đã đăng nhập hỏi trợ lý (`ai/diagnoses`, `ai/chat/ask`), backend gửi kèm `pastJobs` (tối đa 5 booking `matched` của chính khách trong 365 ngày, mới nhất trước; mỗi mục `serviceVi`, `deviceVi?`, `faultVi?` lấy từ `aiSummary`, `date` theo ngày Việt Nam). Không gửi địa chỉ, thợ, tiền; khách vãng lai và nhân viên không có. Đọc lỗi thì bỏ qua; ai-service cũ trả 422 thì gửi lại không kèm `history`/`pastJobs` (`ai-past-jobs.ts`, `postToAi`).
 - Giới hạn tần suất gọi AI (`AiThrottlerGuard`): `POST /ai/diagnoses` (và alias cũ) 20 lần/phút, `POST /ai/chat/ask` 30 lần/phút, tính theo tài khoản khách khi đã đăng nhập, theo IP khi ẩn danh; vượt thì 429. Đo 16/10/2026: một GPU phục vụ khoảng 50 người cùng lúc.
@@ -238,6 +238,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-16 05:06 (UTC+7) | ToanAltF4 | fix/ai-quality-days | Trang chất lượng trợ lý AI: 7 ngày là đúng 7 ngày theo giờ Việt Nam (trước đây ra 8 ngày, ranh giới ngày theo múi giờ DB)
 - 2026-10-16 04:16 (UTC+7) | ToanAltF4 | feat/ai-past-jobs | Gửi pastJobs (đơn đã có thợ nhận của chính khách, 1 năm, tối đa 5) cho AI để trợ lý nhắc lần sửa trước
 - 2026-10-16 03:54 (UTC+7) | ToanAltF4 | feat/ai-notes | Tóm tắt trợ lý AI giữ ghi chú khách đã thử/đã loại (notesVi) và đưa vào lời chào khi thợ nhận đơn
 - 2026-10-16 02:38 (UTC+7) | ToanAltF4 | feat/ai-feedback-quality | Phản hồi đúng/sai của khách về câu trả lời AI và trang chất lượng AI cho admin
@@ -277,4 +278,3 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - 2026-10-09 15:11 (UTC+7) | ToanAltF4 | feat/auto-reputation-only | Bỏ xác nhận vi phạm thủ công, huỷ đơn tự trừ điểm; danh sách huỷ đơn có số điểm đã trừ
 - 2026-10-09 10:06 (UTC+7) | ToanAltF4 | feat/reputation-points | Điểm uy tín khách và thợ: trừ khi huỷ đơn đã có thợ, khoá theo mức điểm, reset 2 tháng, SM xem và điều chỉnh; vi phạm cũ không còn tự khoá; migration 030
 - 2026-10-08 23:52 (UTC+7) | ToanAltF4 | feat/order-steps-photos | Thợ: tự chuyển đang sửa khi đủ điều kiện, ảnh đóng dấu giờ và mã đơn, case cần thay đổi thợ sau check-in.
-- 2026-10-08 23:32 (UTC+7) | ToanAltF4 | feat/booking-sessions | Đặt lịch theo buổi sáng/chiều, đơn vãng lai theo GPS, đổi lịch chặn buổi thợ bận, buổi còn trống, đặt lại thợ cũ, xuất phát sớm 1 giờ, vị trí thợ.
