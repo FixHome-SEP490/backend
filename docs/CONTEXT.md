@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-16 02:38 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/ai-feedback-quality
+> Cập nhật lần cuối: 2026-10-16 03:54 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/ai-notes
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -175,6 +175,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - Giới hạn khớp schema của `ai-service`: mô tả 2000 ký tự, câu hỏi 1000, `sessionId` và gợi ý 64, tối đa 3 ảnh. Hai route ảnh nhận body tới 40 MB.
 - AI lỗi thì trả HTTP 200 với `aiAvailable: false` và câu trả lời dự phòng; không bao giờ chặn đặt lịch.
 - Phản hồi của khách về câu trả lời AI: `POST /ai/feedback` `{ sessionId, verdict: wrong|right, note?, reply? }` (10 lần/phút), lưu vào `ai_chat_sessions.summary.feedback` (tối đa 20 mục, không chép sang tóm tắt của booking); 404 nếu phiên không do backend ghi hoặc thuộc khách khác. Admin xem `GET /admin/ai-quality?days=1..90`: số cuộc trò chuyện, số lượt, số cuộc bị báo sai/đúng, số đơn đặt từ trợ lý và tỉ lệ, theo ngày, 20 câu trả lời bị báo sai gần nhất kèm lời khách. Không thêm bảng, không migration.
+- Ghi chú hội thoại của AI: `notesVi` trong phản hồi ai-service (khách đã thử gì, đã loại lỗi nào, đang nghi gì, có dấu hiệu nguy hiểm) được ghi đè mỗi lượt vào `ai_chat_sessions.summary.notes` (tối đa 6 dòng), chép sang tóm tắt của booking, và lời chào khi thợ nhận đơn thêm dòng "Anh/chị đã cho biết: …" để khách không phải kể lại. Phiên cũ không có `notes` vẫn đọc được.
 - Giới hạn tần suất gọi AI (`AiThrottlerGuard`): `POST /ai/diagnoses` (và alias cũ) 20 lần/phút, `POST /ai/chat/ask` 30 lần/phút, tính theo tài khoản khách khi đã đăng nhập, theo IP khi ẩn danh; vượt thì 429. Đo 16/10/2026: một GPU phục vụ khoảng 50 người cùng lúc.
 - Giữ ngữ cảnh khi `ai-service` mất phiên (khởi động lại, hết hạn): khi client gửi `sessionId`, `backend` đọc `ai_chat_sessions.summary.customerText` của phiên đó (chỉ khi phiên không thuộc khách khác) và gửi kèm `history` (tối đa 20 lượt, mỗi lượt 2000 ký tự). Client không gửi được `history`. `ai-service` cũ trả 422 với trường này thì `backend` gửi lại một lần không kèm. Khi `ai-service` trả `sessionId` mới thay cho phiên đã mất, tóm tắt của phiên cũ được chép sang phiên mới (cùng chủ).
 
@@ -236,6 +237,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-16 03:54 (UTC+7) | ToanAltF4 | feat/ai-notes | Tóm tắt trợ lý AI giữ ghi chú khách đã thử/đã loại (notesVi) và đưa vào lời chào khi thợ nhận đơn
 - 2026-10-16 02:38 (UTC+7) | ToanAltF4 | feat/ai-feedback-quality | Phản hồi đúng/sai của khách về câu trả lời AI và trang chất lượng AI cho admin
 - 2026-10-16 02:17 (UTC+7) | ToanAltF4 | feat/ai-rate-limit | Giới hạn tần suất gọi AI theo khách hoặc IP
 - 2026-10-16 00:14 (UTC+7) | ToanAltF4 | feat/staff-customer-withdrawals | SM/Admin xem lệnh rút tiền của khách tách riêng với thợ: danh sách có tìm kiếm, tổng quan, hỏi lại payOS (/service-manager/customer-withdrawals)
@@ -275,4 +277,3 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - 2026-10-08 23:52 (UTC+7) | ToanAltF4 | feat/order-steps-photos | Thợ: tự chuyển đang sửa khi đủ điều kiện, ảnh đóng dấu giờ và mã đơn, case cần thay đổi thợ sau check-in.
 - 2026-10-08 23:32 (UTC+7) | ToanAltF4 | feat/booking-sessions | Đặt lịch theo buổi sáng/chiều, đơn vãng lai theo GPS, đổi lịch chặn buổi thợ bận, buổi còn trống, đặt lại thợ cũ, xuất phát sớm 1 giờ, vị trí thợ.
 - 2026-10-08 21:53 (UTC+7) | ToanAltF4 | fix/strike-role | Xác nhận vi phạm ghi role vào cancellation_strikes (cột bắt buộc), trước đây insert lỗi trên DB thật.
-- 2026-10-07 21:27 (UTC+7) | ToanAltF4 | fix/fixed-price-and-waive-reason | Dịch vụ giá cố định bắt buộc có giá > 0; miễn vi phạm khi xét huỷ đơn bắt buộc có lý do, kiểm trước khi ghi.

@@ -134,3 +134,21 @@ describe('addFeedback', () => {
     expect(toBookingSummary(state)).not.toHaveProperty('feedback');
   });
 });
+
+describe('conversation notes', () => {
+  it('keeps the AI notes, replaced each turn and bounded', () => {
+    const reply = { status: 'ok', notesVi: ['Khách đã vệ sinh rồi, đã loại bẩn lưới lọc và dàn lạnh.', '', 'Khách nghi thiếu gas, xì gas.'] };
+    const first = mergeTurn(emptySummary(), { text: 'mới vệ sinh rồi' }, reply);
+    expect(first.notes).toEqual(['Khách đã vệ sinh rồi, đã loại bẩn lưới lọc và dàn lạnh.', 'Khách nghi thiếu gas, xì gas.']);
+    const second = mergeTurn(first, { text: 'à nhầm chưa vệ sinh' }, { status: 'ok', notesVi: [] });
+    expect(second.notes).toEqual([]);
+    const many = mergeTurn(emptySummary(), {}, { status: 'ok', notesVi: Array.from({ length: 10 }, (_, i) => `Ghi chú ${i}`) });
+    expect(many.notes).toHaveLength(AI_SUMMARY_LIMITS.notes);
+    expect(hasAdvice({ ...emptySummary(), notes: ['Khách nghi thiếu gas.'] })).toBe(true);
+  });
+
+  it('keeps earlier notes when a reply says nothing about them', () => {
+    const first = mergeTurn(emptySummary(), {}, { status: 'ok', notesVi: ['Khách nghi thiếu gas.'] });
+    expect(mergeTurn(first, {}, { status: 'ok' }).notes).toEqual(['Khách nghi thiếu gas.']);
+  });
+});

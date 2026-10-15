@@ -21,6 +21,12 @@ export interface AiChatSummaryState {
   recommendedServiceName: string | null;
   photoCount: number;
   turnCount: number;
+  /**
+   * What the conversation established beyond the symptom, from the AI's
+   * notesVi: what the customer already tried or ruled out, what they suspect.
+   * Optional: summaries recorded before it existed have none.
+   */
+  notes?: string[];
   /** What the customer said about the answers, for the team to learn from. Never copied to a booking. */
   feedback?: AiFeedbackEntry[];
 }
@@ -60,6 +66,7 @@ export const AI_SUMMARY_LIMITS = {
   conclusion: 600,
   item: 200,
   items: 3,
+  notes: 6,
   name: 200,
 } as const;
 
@@ -79,6 +86,7 @@ export function emptySummary(): AiChatSummaryState {
     recommendedServiceName: null,
     photoCount: 0,
     turnCount: 0,
+    notes: [],
   };
 }
 
@@ -136,6 +144,15 @@ export function mergeTurn(
 
   const device = reply.device as Record<string, unknown> | undefined;
   next.deviceName = clean(device?.nameVi, AI_SUMMARY_LIMITS.name) ?? next.deviceName;
+
+  // Replaced, not appended: the AI sends the whole picture every turn, and a
+  // fault the customer brought back ("à nhầm, chưa vệ sinh") must drop out.
+  if (Array.isArray(reply.notesVi)) {
+    next.notes = (reply.notesVi as unknown[])
+      .map((note) => clean(note, AI_SUMMARY_LIMITS.item))
+      .filter((note): note is string => !!note)
+      .slice(0, AI_SUMMARY_LIMITS.notes);
+  }
 
   const faults = names(reply.suspectedFaults, 'nameVi');
   if (faults.length) next.suspectedFaults = faults;
@@ -204,7 +221,13 @@ export function addFeedback(
 
 /** True when the conversation produced something worth telling the technician. */
 export function hasAdvice(summary: AiChatSummaryState | AiBookingSummary): boolean {
-  return !!(summary.deviceName || summary.suspectedFaults.length || summary.conclusion || summary.priceMin != null);
+  return !!(
+    summary.deviceName ||
+    summary.suspectedFaults.length ||
+    summary.conclusion ||
+    summary.priceMin != null ||
+    summary.notes?.length
+  );
 }
 
 export function toBookingSummary(state: AiChatSummaryState, now = new Date()): AiBookingSummary {
