@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-15 13:40 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
+> Cập nhật lần cuối: 2026-10-16 00:14 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/staff-customer-withdrawals
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -234,6 +234,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-16 00:14 (UTC+7) | ToanAltF4 | feat/staff-customer-withdrawals | SM/Admin xem lệnh rút tiền của khách tách riêng với thợ: danh sách có tìm kiếm, tổng quan, hỏi lại payOS (/service-manager/customer-withdrawals)
 - 2026-10-15 13:40 (UTC+7) | Hgnv11 | dev | Thanh toán hoá đơn VNPay chia hai nhánh trả về: mobile (header x-client-platform) về app qua fixhome://app/order-payment, web vẫn FRONTEND_URL; CHƯA KIỂM CHỨNG trên máy thật
 - 2026-10-14 23:11 (UTC+7) | ToanAltF4 | feat/customer-withdrawal-kyc | Khách rút ví về ngân hàng qua payOS sau khi admin duyệt CCCD; bảng KYC, tài khoản, lệnh rút của khách (migration 036)
 - 2026-10-14 22:17 (UTC+7) | ToanAltF4 | fix/reputation-reset-sweep | Sửa job làm mới điểm uy tín: đọc đúng kết quả UPDATE RETURNING ([rows, rowCount]) nên không còn ghi NaN mỗi phút
@@ -273,4 +274,3 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - 2026-10-07 21:27 (UTC+7) | ToanAltF4 | fix/fixed-price-and-waive-reason | Dịch vụ giá cố định bắt buộc có giá > 0; miễn vi phạm khi xét huỷ đơn bắt buộc có lý do, kiểm trước khi ghi.
 - 2026-10-07 21:17 (UTC+7) | ToanAltF4 | fix/time-off-and-review-guards | Chặn khai báo ngày nghỉ đã qua; đánh giá trùng trả CONFLICT với câu tiếng Việt.
 - 2026-10-07 21:03 (UTC+7) | ToanAltF4 | fix/order-completed-notices | Hoàn tất đơn qua tiền mặt hoặc VNPay giờ cũng gửi thông báo ORDER_COMPLETED; gom bảo hành và thông báo về applyOrderCompletionEffects.
-- 2026-10-07 19:15 (UTC+7) | ToanAltF4 | fix/remaining-bugs-and-fake-data | Ghi các lỗi còn lại đã sửa, quy định không dữ liệu giả, vi phạm do quản lý xác nhận, thu nhập theo hoá đơn và migration 027
