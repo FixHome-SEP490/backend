@@ -18,10 +18,12 @@ import { Roles } from '../../common/decorators';
 import { JwtAuthGuard, RolesGuard } from '../../common/guards';
 import { Role } from '../../shared/enums';
 import {
+  QueryCustomerWithdrawalsDto,
   QueryWalletsDto,
   QueryWalletTransactionsDto,
   QueryWithdrawalsDto,
 } from './dto';
+import { CustomerWithdrawalPayoutService } from './customer-withdrawal-payout.service';
 import { WalletService } from './wallet.service';
 import { payoutMessage, toWithdrawalResponse } from './withdrawal.mapper';
 import { WithdrawalPayoutService } from './withdrawal-payout.service';
@@ -42,6 +44,7 @@ export class ServiceManagerWalletController {
   constructor(
     private readonly walletService: WalletService,
     private readonly payoutService: WithdrawalPayoutService,
+    private readonly customerPayouts: CustomerWithdrawalPayoutService,
   ) {}
 
   @Get('wallets')
@@ -124,6 +127,31 @@ export class ServiceManagerWalletController {
     const result = await this.payoutService.reconcile(id);
     return {
       ...toWithdrawalResponse(result),
+      message: payoutMessage(result.status, 'manager'),
+    };
+  }
+
+  // ── Customer withdrawals (PO 16/10/2026): their own list and totals, never mixed with technicians'.
+
+  @Get('customer-withdrawals')
+  @ApiOperation({ summary: 'SM/Admin: Lệnh rút tiền của khách hàng (tách riêng với kỹ thuật viên)' })
+  listCustomerWithdrawals(@Query() query: QueryCustomerWithdrawalsDto) {
+    return this.customerPayouts.listForStaff(query);
+  }
+
+  @Get('customer-withdrawals/payout-overview')
+  @ApiOperation({ summary: 'SM/Admin: Tổng tiền đã chi, đang chuyển, không thành công của khách hàng' })
+  customerOverview() {
+    return this.customerPayouts.overview();
+  }
+
+  @Post('customer-withdrawals/:id/reconcile')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'SM/Admin: Hỏi lại payOS kết quả của một lệnh rút của khách đang chuyển' })
+  async reconcileCustomerWithdrawal(@Param('id', ParseUUIDPipe) id: string) {
+    const result = await this.customerPayouts.reconcile(id);
+    return {
+      ...(await this.customerPayouts.staffView(result)),
       message: payoutMessage(result.status, 'manager'),
     };
   }

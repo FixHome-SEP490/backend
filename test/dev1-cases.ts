@@ -835,6 +835,25 @@ export function registerDev1Cases(context: () => Context) {
         const history = unwrap((await get('/customer/wallet/withdrawals?page=1&limit=10', customer).expect(200)).body);
         expect(history.map((w: any) => w.status)).toEqual(['FAILED', 'SUCCESS']);
         denied(await get('/customer/wallet/withdrawals', admin));
+
+        // Staff see customer withdrawals on their own list, never mixed with technicians' (PO 16/10/2026).
+        for (const staff of [manager, admin]) {
+          const mine = unwrap((await get('/service-manager/customer-withdrawals?page=1&limit=20', staff).expect(200)).body)
+            .filter((w: any) => w.customer?.id === customer.user.id);
+          expect(mine.map((w: any) => w.status)).toEqual(['FAILED', 'SUCCESS']);
+          expect(mine[0]).toMatchObject({ amount: 60000, bankAccountNumber: '••••6789', failureReason: 'Tài khoản nhận không hợp lệ', customer: { fullName: 'Nguyễn Văn Khách' } });
+          const technicianIds = unwrap((await get('/service-manager/withdrawals?page=1&limit=100', staff).expect(200)).body).map((w: any) => w.id);
+          expect(technicianIds).not.toContain(done.id);
+          expect(technicianIds).not.toContain(failed.id);
+        }
+        const searched = unwrap((await get(`/service-manager/customer-withdrawals?status=FAILED&search=${encodeURIComponent('nguyen van khach')}`, manager).expect(200)).body);
+        expect(searched.map((w: any) => w.id)).toEqual([failed.id]);
+        const totals = unwrap((await get('/service-manager/customer-withdrawals/payout-overview', manager).expect(200)).body);
+        expect(totals).toMatchObject({ sourceBalance: 100_000_000 });
+        expect(totals.paidOut.amount).toBeGreaterThanOrEqual(150000);
+        expect(totals.failed.count).toBeGreaterThanOrEqual(1);
+        expect(unwrap((await post(`/service-manager/customer-withdrawals/${done.id}/reconcile`, manager).expect(200)).body)).toMatchObject({ id: done.id, status: 'SUCCESS', customer: { id: customer.user.id } });
+        denied(await get('/service-manager/customer-withdrawals', customer));
       } finally {
         spies.forEach((spy) => spy.mockRestore());
         Object.defineProperty(provider, 'name', { value: originalName, configurable: true, writable: true });
