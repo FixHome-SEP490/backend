@@ -1,13 +1,14 @@
 // src/modules/ai-diagnosis/ai-diagnosis.service.ts
 import { Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { MoreThan, Repository } from 'typeorm';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom, timeout } from 'rxjs';
 import { AiDiagnosis } from './entities/ai-diagnosis.entity';
 import { AiChatSession } from './entities/ai-chat-session.entity';
 import { AiTurnInput, addFeedback, emptySummary, historyFromSummary, mergeTurn } from './ai-chat-summary';
+import { AI_PAST_JOBS_LIMITS, AiPastJob, pastJobsFromBookings } from './ai-past-jobs';
 import { Service } from '../services/entities/service.entity';
 import { Booking } from '../bookings/entities/booking.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
@@ -135,7 +136,7 @@ export class AiDiagnosisService {
           sessionId: dto.sessionId,
           categoryHint: dto.categoryHint,
         },
-        await this.historyFor(dto.sessionId, actor),
+        await this.contextFor(dto.sessionId, actor),
       );
     } catch (error) {
       this.logger.warn(`AI analyze unavailable: ${this.reason(error)}`);
@@ -157,7 +158,7 @@ export class AiDiagnosisService {
       const data = await this.postToAi(
         '/api/v1/chat/ask',
         { question: dto.question, sessionId: dto.sessionId, deviceType: dto.deviceType },
-        await this.historyFor(dto.sessionId, actor),
+        await this.contextFor(dto.sessionId, actor),
       );
       const enriched = await this.attachServiceIds(data);
       await this.recordTurn(actor, { text: dto.question }, enriched, dto.sessionId);
@@ -171,16 +172,16 @@ export class AiDiagnosisService {
   // ------------------------------------------------------- session history
 
   /**
-   * POST to the AI Service, with the conversation so far when there is one.
+   * POST to the AI Service, with what it may use beyond the message: the
+   * conversation so far and the customer's earlier repairs, when there are any.
    *
-   * `history` is only read by the AI when it no longer holds the session, and
-   * an AI Service older than the field rejects it with 422. That one case is
-   * retried without it, so the two can be deployed in either order.
+   * An AI Service older than those fields rejects them with 422. That one case
+   * is retried without them, so the two can be deployed in either order.
    */
   private async postToAi(
     path: string,
     body: Record<string, unknown>,
-    history: string[],
+    context: { history?: string[]; pastJobs?: AiPastJob[] },
   ): Promise<Record<string, unknown>> {
     const send = async (payload: Record<string, unknown>) => {
       const response = await firstValueFrom(
@@ -190,13 +191,46 @@ export class AiDiagnosisService {
       );
       return response.data || {};
     };
-    if (!history.length) return send(body);
+    const extras: Record<string, unknown> = {};
+    if (context.history?.length) extras.history = context.history;
+    if (context.pastJobs?.length) extras.pastJobs = context.pastJobs;
+    if (!Object.keys(extras).length) return send(body);
     try {
-      return await send({ ...body, history });
+      return await send({ ...body, ...extras });
     } catch (error) {
       const status = (error as { response?: { status?: number } })?.response?.status;
       if (status !== 422) throw error;
       return send(body);
+    }
+  }
+
+  private async contextFor(
+    sessionId: string | undefined,
+    actor?: { id: string; role: string },
+  ): Promise<{ history: string[]; pastJobs: AiPastJob[] }> {
+    const [history, pastJobs] = await Promise.all([this.historyFor(sessionId, actor), this.pastJobsFor(actor)]);
+    return { history, pastJobs };
+  }
+
+  /**
+   * The signed-in customer's own bookings a technician took in the last year,
+   * newest first. Nobody else's, nothing for staff or a visitor, and nothing
+   * when they cannot be read: like history, this only helps.
+   */
+  private async pastJobsFor(actor?: { id: string; role: string }): Promise<AiPastJob[]> {
+    if (actor?.role !== Role.CUSTOMER || !actor.id) return [];
+    try {
+      const since = new Date(Date.now() - AI_PAST_JOBS_LIMITS.days * 24 * 60 * 60 * 1000);
+      const rows = await this.diagnosisRepo.manager.find(Booking, {
+        where: { customerId: actor.id, status: BookingStatus.MATCHED, createdAt: MoreThan(since) },
+        relations: { service: true },
+        order: { createdAt: 'DESC' },
+        take: AI_PAST_JOBS_LIMITS.jobs,
+      });
+      return pastJobsFromBookings(rows);
+    } catch (error) {
+      this.logger.warn(`Past bookings not read for the AI: ${this.reason(error)}`);
+      return [];
     }
   }
 
