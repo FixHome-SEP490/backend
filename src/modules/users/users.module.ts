@@ -10,9 +10,10 @@ import { AddressesService } from './addresses.service';
 import { User } from './entities/user.entity';
 import { Address } from './entities/address.entity';
 import { RefreshToken } from '../auth/entities/refresh-token.entity';
+import { CustomerVerification } from '../customer-verifications/entities/customer-verification.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([User, Address, RefreshToken])],
+  imports: [TypeOrmModule.forFeature([User, Address, RefreshToken, CustomerVerification])],
   controllers: [
     MeController,
     AddressesController,

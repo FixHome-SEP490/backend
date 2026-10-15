@@ -14,6 +14,7 @@ describe('UsersService', () => {
   let usersService: UsersService;
   let userRepository: any;
   let refreshTokenRepository: any;
+  let customerVerificationRepository: any;
 
   const createMockUser = (): User => ({
     id: 'user-123',
@@ -68,7 +69,8 @@ describe('UsersService', () => {
       log: vi.fn().mockResolvedValue(undefined),
       logWithManager: vi.fn().mockResolvedValue(undefined),
     };
-    usersService = new UsersService(userRepository, auditLogService as any);
+    customerVerificationRepository = { exists: vi.fn().mockResolvedValue(false) };
+    usersService = new UsersService(userRepository, auditLogService as any, customerVerificationRepository);
   });
 
   describe('getProfile', () => {
@@ -114,6 +116,42 @@ describe('UsersService', () => {
           phoneNumber: '0987654321',
         }),
       ).rejects.toThrow(ConflictException);
+    });
+
+    it('refuses a new name once the customer identity is verified (PO 14/10/2026)', async () => {
+      userRepository.findOne.mockResolvedValueOnce(createMockUser());
+      customerVerificationRepository.exists.mockResolvedValueOnce(true);
+      await expect(
+        usersService.updateProfile('user-123', { fullName: 'Ten Khac Hoan Toan' }),
+      ).rejects.toThrow('không thể thay đổi');
+      expect(customerVerificationRepository.exists).toHaveBeenCalledWith({
+        where: { customerId: 'user-123', status: 'verified' },
+      });
+      expect(userRepository.update).not.toHaveBeenCalled();
+    });
+
+    it('lets a verified customer send the same name again, or change the avatar', async () => {
+      userRepository.findOne.mockResolvedValueOnce(createMockUser());
+      customerVerificationRepository.exists.mockResolvedValue(true);
+      const updated = await usersService.updateProfile('user-123', {
+        fullName: '  Nguyen Van A ',
+        avatarUrl: 'https://cdn.example.test/a.jpg',
+      });
+      expect(updated.fullName).toBe('Nguyen Van A');
+      expect(customerVerificationRepository.exists).not.toHaveBeenCalled();
+    });
+
+    it('lets a customer change the name while the identity is not verified yet', async () => {
+      userRepository.findOne.mockResolvedValueOnce(createMockUser());
+      customerVerificationRepository.exists.mockResolvedValueOnce(false);
+      const updated = await usersService.updateProfile('user-123', { fullName: 'Nguyen Van Moi' });
+      expect(updated.fullName).toBe('Nguyen Van Moi');
+    });
+
+    it('does not apply the customer lock to other roles', async () => {
+      userRepository.findOne.mockResolvedValueOnce({ ...createMockUser(), role: Role.TECHNICIAN });
+      await usersService.updateProfile('user-123', { fullName: 'Tho Moi' });
+      expect(customerVerificationRepository.exists).not.toHaveBeenCalled();
     });
   });
 

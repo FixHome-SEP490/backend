@@ -88,4 +88,78 @@ describe('AI session recording', () => {
     await service.ask({ question: 'hỏi' }, { id: 'sm-1', role: 'service_manager' });
     expect(sessions.insert.mock.calls.every(([row]: [{ customerId: string | null }]) => row.customerId === null)).toBe(true);
   });
+  // ------------------------------------------------ rebuilding a lost session
+
+  const SUMMARY = {
+    deviceName: 'Máy lạnh', customerText: 'máy lạnh không mát / mới vệ sinh tuần trước rồi', suspectedFaults: [],
+    suggestedActions: [], conclusion: null, priceMin: null, priceMax: null, requiresAssessment: null,
+    recommendedServiceName: null, photoCount: 0, turnCount: 2,
+  };
+
+  it('sends the AI what the customer said earlier, from the recorded session', async () => {
+    sessions.findOneBy.mockResolvedValue({ id: 'row', sessionId: 'sess-1', customerId: 'customer-a', summary: SUMMARY });
+    await service.ask({ question: 'vậy giờ là bị gì', sessionId: 'sess-1' }, CUSTOMER);
+    expect(http.post).toHaveBeenCalledWith('http://ai.test/api/v1/chat/ask', expect.objectContaining({
+      sessionId: 'sess-1',
+      history: ['máy lạnh không mát', 'mới vệ sinh tuần trước rồi'],
+    }));
+  });
+
+  it("never sends another customer's conversation as history", async () => {
+    sessions.findOneBy.mockResolvedValue({ id: 'row', sessionId: 'sess-1', customerId: 'customer-b', summary: SUMMARY });
+    await service.analyze({ description: 'vậy giờ là bị gì', sessionId: 'sess-1' }, CUSTOMER);
+    expect(http.post.mock.calls[0][1]).not.toHaveProperty('history');
+  });
+
+  it('sends no history for a new conversation or when the record cannot be read', async () => {
+    await service.ask({ question: 'máy lạnh không mát' }, CUSTOMER);
+    expect(http.post.mock.calls[0][1]).not.toHaveProperty('history');
+    sessions.findOneBy.mockRejectedValueOnce(new Error('db down'));
+    const reply = await service.ask({ question: 'x', sessionId: 'sess-1' }, CUSTOMER);
+    expect(http.post.mock.calls[1][1]).not.toHaveProperty('history');
+    expect(reply).toMatchObject({ aiAvailable: true });
+  });
+
+  it('retries without history when an older AI Service rejects the field', async () => {
+    sessions.findOneBy.mockResolvedValue({ id: 'row', sessionId: 'sess-1', customerId: 'customer-a', summary: SUMMARY });
+    http.post
+      .mockReturnValueOnce(throwError(() => ({ message: 'Unprocessable', response: { status: 422 } })))
+      .mockReturnValueOnce(of({ data: structuredClone(REPLY) }));
+    const reply = await service.analyze({ description: 'vậy giờ là bị gì', sessionId: 'sess-1' }, CUSTOMER);
+    expect(http.post).toHaveBeenCalledTimes(2);
+    expect(http.post.mock.calls[0][1]).toHaveProperty('history');
+    expect(http.post.mock.calls[1][1]).not.toHaveProperty('history');
+    expect(reply).toMatchObject({ aiAvailable: true });
+  });
+
+  it('does not retry other failures, and still answers that the AI is unavailable', async () => {
+    sessions.findOneBy.mockResolvedValue({ id: 'row', sessionId: 'sess-1', customerId: 'customer-a', summary: SUMMARY });
+    http.post.mockReturnValue(throwError(() => ({ message: 'boom', response: { status: 500 } })));
+    const reply = await service.ask({ question: 'x', sessionId: 'sess-1' }, CUSTOMER);
+    expect(http.post).toHaveBeenCalledTimes(1);
+    expect(reply).toMatchObject({ aiAvailable: false });
+  });
+
+  it('carries the summary over when the AI starts a new session in place of a lost one', async () => {
+    sessions.findOneBy.mockImplementation(async ({ sessionId }: { sessionId: string }) =>
+      sessionId === 'old-id' ? { id: 'old-row', sessionId: 'old-id', customerId: 'customer-a', summary: SUMMARY } : null);
+    await service.ask({ question: 'vậy giờ là bị gì', sessionId: 'old-id' }, CUSTOMER);
+    expect(sessions.insert).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'sess-1',
+      customerId: 'customer-a',
+      summary: expect.objectContaining({
+        customerText: 'máy lạnh không mát / mới vệ sinh tuần trước rồi / vậy giờ là bị gì',
+        turnCount: 3,
+      }),
+    }));
+  });
+
+  it('does not carry over a lost session another customer held', async () => {
+    sessions.findOneBy.mockImplementation(async ({ sessionId }: { sessionId: string }) =>
+      sessionId === 'old-id' ? { id: 'old-row', sessionId: 'old-id', customerId: 'customer-b', summary: SUMMARY } : null);
+    await service.ask({ question: 'hỏi', sessionId: 'old-id' }, CUSTOMER);
+    expect(sessions.insert).toHaveBeenCalledWith(expect.objectContaining({
+      summary: expect.objectContaining({ customerText: 'hỏi', turnCount: 1 }),
+    }));
+  });
 });

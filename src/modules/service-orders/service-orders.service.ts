@@ -822,8 +822,9 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     invoiceId: string,
     actor: FinanceActor,
     ipAddr: string,
+    platform: 'web' | 'mobile' = 'web',
   ): Promise<{ paymentUrl: string }> {
-    return this.financeService.createVnpayPaymentUrl(invoiceId, actor, ipAddr);
+    return this.financeService.createVnpayPaymentUrl(invoiceId, actor, ipAddr, platform);
   }
 
 

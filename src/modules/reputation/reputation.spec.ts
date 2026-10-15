@@ -147,13 +147,21 @@ describe('ReputationService.adjust', () => {
 describe('ReputationService.resetSweep', () => {
   it('logs a reset only for users whose score actually moved', async () => {
     const s = setup({});
-    s.dataSource.query.mockResolvedValue([{ id: 'c1', before: 60 }, { id: 'c2', before: 100 }]);
+    // What the Postgres driver really returns for UPDATE ... RETURNING: [rows, rowCount].
+    s.dataSource.query.mockResolvedValue([[{ id: 'c1', before: 60 }, { id: 'c2', before: 100 }], 2]);
     expect(await s.service.resetSweep()).toBe(1);
     expect(s.eventRepo.save).toHaveBeenCalledTimes(1);
     expect(s.eventRepo.create).toHaveBeenCalledWith(expect.objectContaining({ userId: 'c1', kind: 'reset', delta: 40, pointsAfter: 100 }));
     const [sql, params] = s.dataSource.query.mock.calls[0];
     expect(sql).toContain(`"status" <> 'locked'`);
     expect(params).toEqual([2]);
+  });
+
+  it('does nothing and writes nothing when no score is due', async () => {
+    const s = setup({});
+    s.dataSource.query.mockResolvedValue([[], 0]);
+    expect(await s.service.resetSweep()).toBe(0);
+    expect(s.eventRepo.save).not.toHaveBeenCalled();
   });
 
 });

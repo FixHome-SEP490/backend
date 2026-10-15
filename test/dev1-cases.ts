@@ -125,6 +125,26 @@ export function registerDev1Cases(context: () => Context) {
       expect(theirs[0].counterpart).toMatchObject({ id: f.owner.user.id, fullName: 'Khách Trò Chuyện' });
     });
 
+    it('resets reputation every period on the real database, skipping recent and locked accounts (PO 14/10/2026)', async () => {
+      const { ReputationService } = runtimeRequire('./dist/modules/reputation/reputation.service.js');
+      const service = context().app.get(ReputationService);
+      const [due, recent, locked] = [await context().register(), await context().register(), await context().register()];
+      const db = context().db;
+      await db.query(`UPDATE users SET reputation_points = 60, reputation_period_start = now() - interval '3 months' WHERE id = $1`, [due.user.id]);
+      await db.query(`UPDATE users SET reputation_points = 70, reputation_period_start = now() - interval '10 days' WHERE id = $1`, [recent.user.id]);
+      await db.query(`UPDATE users SET reputation_points = 50, reputation_period_start = now() - interval '3 months', status = 'locked' WHERE id = $1`, [locked.user.id]);
+      // Before 14/10/2026 this threw "invalid input syntax for type integer: NaN" on every run.
+      await expect(service.resetSweep()).resolves.toBeGreaterThanOrEqual(1);
+      const points = async (id: string) => Number((await db.query('SELECT reputation_points FROM users WHERE id = $1', [id]))[0].reputation_points);
+      expect(await points(due.user.id)).toBe(100);
+      expect(await points(recent.user.id)).toBe(70);
+      expect(await points(locked.user.id)).toBe(50);
+      const [event] = await db.query(`SELECT kind, delta, points_after FROM reputation_events WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`, [due.user.id]);
+      expect(event).toMatchObject({ kind: 'reset', delta: 40, points_after: 100 });
+      // A second run finds nothing due and writes nothing.
+      await expect(service.resetSweep()).resolves.toBe(0);
+    });
+
     it('writes one clean address line and reads old repeated lines back tidied (PO 12/10/2026)', async () => {
       const f = await fixture();
       // What the map search saved: postcode, country and the ward again inside line1.
@@ -704,6 +724,168 @@ export function registerDev1Cases(context: () => Context) {
         expect(warranties).toHaveLength(2);
       } else {
         expect(await context().db.getRepository('CommissionDue').count({ where: { serviceOrderId: order.id } })).toBe(0);
+      }
+    });
+
+    it('lets a customer withdraw the wallet after an admin-approved CCCD check, paid out at once (PO 14/10/2026)', async () => {
+      const { db, app } = context();
+      const customer = await context().register();
+      const admin = await context().register();
+      const manager = await context().register();
+      await db.query('UPDATE users SET role = $1 WHERE id = $2', ['admin', admin.user.id]);
+      await db.query('UPDATE users SET role = $1 WHERE id = $2', ['service_manager', manager.user.id]);
+      const put = (path: string, session: Session, body: object) => request(app.getHttpServer()).put(`/api/v1${path}`).set('Authorization', `Bearer ${session.accessToken}`).send(body);
+      const expectStatus = (response: request.Response, status: number) => expect(response.status, JSON.stringify(response.body)).toBe(status);
+      // payOS is never called: the payout provider is faked on the running app.
+      const payoutModule = runtimeRequire('./dist/modules/wallet/payout/payout-provider.js');
+      const provider = app.get(payoutModule.PAYOUT_PROVIDER, { strict: false });
+      const originalName = provider.name;
+      Object.defineProperty(provider, 'name', { value: 'payos', configurable: true, writable: true });
+      const createPayout = vi.spyOn(provider, 'createPayout');
+      const spies = [
+        createPayout,
+        vi.spyOn(provider, 'getSourceBalance').mockResolvedValue(100_000_000),
+        vi.spyOn(provider, 'estimateCredit').mockImplementation(async (instruction: any) => instruction.amount),
+        vi.spyOn(provider, 'findPayoutByReference').mockResolvedValue(null),
+      ];
+      try {
+        const adjust = (amount: number) => post(`/admin/customer-wallets/${customer.user.id}/adjustments`, admin, { type: 'CREDIT', amount, reason: 'Nạp thử cho kịch bản rút tiền' }).expect(201);
+        await adjust(150000);
+
+        // No KYC yet: the wallet says so, a bank account and a withdrawal are refused.
+        const before = unwrap((await get('/customer/wallet', customer).expect(200)).body);
+        expect(before.withdrawal).toMatchObject({ kycStatus: 'none', hasBankAccount: false, minimumAmount: 10000, canWithdraw: false });
+        expectStatus(await post('/customer/wallet/withdrawals', customer, { amount: 50000 }), 422);
+        expectStatus(await put('/customer/wallet/bank-account', customer, { bankBin: '970436', accountNumber: '0123456789', accountName: 'NGUYEN VAN KHACH' }), 422);
+        expect(createPayout).not.toHaveBeenCalled();
+
+        // Submit KYC: card front and back only, details as on the card.
+        const cccd = String(Date.now()).slice(-12);
+        const kyc = {
+          fullName: 'Nguyễn Văn Khách', dateOfBirth: '1990-05-20', gender: 'male', citizenIdNumber: cccd,
+          address: '12 Nguyễn Trãi, Phường Bến Thành, TP. Hồ Chí Minh',
+          documents: [
+            { documentType: 'citizen_id_front', storageObjectPath: `kyc/${customer.user.id}/front.jpg`, fileName: 'mat-truoc.jpg', fileSize: 2048, mimeType: 'image/jpeg' },
+            { documentType: 'citizen_id_back', storageObjectPath: `kyc/${customer.user.id}/back.jpg`, fileName: 'mat-sau.jpg', fileSize: 2048, mimeType: 'image/jpeg' },
+          ],
+        };
+        expectStatus(await post('/customer/verification', customer, { ...kyc, fullName: 'Khách 😀' }), 400);
+        expectStatus(await post('/customer/verification', customer, { ...kyc, citizenIdNumber: '12345' }), 400);
+        expectStatus(await post('/customer/verification', customer, { ...kyc, documents: [kyc.documents[0], { ...kyc.documents[1], mimeType: 'application/pdf', fileName: 'mat-sau.pdf' }] }), 400);
+        expectStatus(await post('/customer/verification', customer, { ...kyc, documents: [kyc.documents[0], { ...kyc.documents[1], storageObjectPath: `kyc/${admin.user.id}/back.jpg` }] }), 422);
+        expectStatus(await post('/customer/verification', customer, { ...kyc, documents: [kyc.documents[0]] }), 400);
+        const submitted = unwrap((await post('/customer/verification', customer, kyc).expect(201)).body);
+        expect(submitted).toMatchObject({ status: 'pending', verification: { fullName: 'Nguyễn Văn Khách', citizenIdNumber: cccd, dateOfBirth: '1990-05-20' } });
+        const [profile] = await db.query('SELECT full_name, date_of_birth::text AS dob, gender, citizen_id_number, full_address FROM users WHERE id = $1', [customer.user.id]);
+        expect(profile).toMatchObject({ full_name: 'Nguyễn Văn Khách', dob: '1990-05-20', gender: 'male', citizen_id_number: cccd, full_address: kyc.address });
+        denied(await post('/customer/verification', customer, kyc));
+        // Pending: still no withdrawal.
+        const pending = await post('/customer/wallet/withdrawals', customer, { amount: 50000 });
+        expectStatus(pending, 422);
+        expect(JSON.stringify(pending.body)).toContain('chờ duyệt');
+
+        // Only an admin reviews; the customer and a service manager cannot.
+        const id = submitted.verification.id;
+        for (const user of [manager, customer]) {
+          denied(await get('/admin/customer-verifications', user));
+          denied(await patch(`/admin/customer-verifications/${id}/approve`, user));
+          denied(await patch(`/admin/customer-verifications/${id}/reject`, user, { rejectionReason: 'Không có quyền duyệt' }));
+        }
+        const found = async (search: string) => unwrap((await get(`/admin/customer-verifications?status=pending&search=${encodeURIComponent(search)}`, admin).expect(200)).body).map((v: any) => v.id);
+        expect(await found(cccd.slice(0, 8))).toContain(id);
+        expect(await found('nguyen van khach')).toContain(id);
+        expect(unwrap((await get(`/admin/customer-verifications/${id}`, admin).expect(200)).body)).toMatchObject({
+          customer: { id: customer.user.id }, documents: [{ documentType: 'citizen_id_front' }, { documentType: 'citizen_id_back' }],
+        });
+        expectStatus(await patch(`/admin/customer-verifications/${id}/reject`, admin, { rejectionReason: 'abc' }), 400);
+        expect(unwrap((await patch(`/admin/customer-verifications/${id}/approve`, admin).expect(200)).body)).toMatchObject({ status: 'verified', verifiedFullName: 'Nguyễn Văn Khách' });
+        denied(await patch(`/admin/customer-verifications/${id}/approve`, admin));
+        const [decision] = await db.query("SELECT actor_user_id FROM audit_logs WHERE action = 'CUSTOMER_KYC_APPROVED' AND resource_id = $1", [id]);
+        expect(decision.actor_user_id).toBe(admin.user.id);
+
+        // Approved: the name is locked on the profile, the same value is still accepted.
+        expectStatus(await patch('/me', customer, { fullName: 'Tên Khác Hẳn' }), 422);
+        await patch('/me', customer, { fullName: 'Nguyễn Văn Khách' }).expect(200);
+        const [locked] = await db.query('SELECT full_name FROM users WHERE id = $1', [customer.user.id]);
+        expect(locked.full_name).toBe('Nguyễn Văn Khách');
+
+        // Bank account in the verified name only.
+        expectStatus(await put('/customer/wallet/bank-account', customer, { bankBin: '970436', accountNumber: '0123456789', accountName: 'TRAN THI KHAC' }), 422);
+        expect(unwrap((await put('/customer/wallet/bank-account', customer, { bankBin: '970436', accountNumber: '0123456789', accountName: 'nguyen van khach' }).expect(200)).body)).toMatchObject({ bankName: 'Vietcombank', accountName: 'NGUYEN VAN KHACH' });
+
+        // Withdraw the whole balance; below the minimum and above the balance are refused.
+        expectStatus(await post('/customer/wallet/withdrawals', customer, { amount: 9999 }), 400);
+        expectStatus(await post('/customer/wallet/withdrawals', customer, { amount: 150001 }), 422);
+        createPayout.mockResolvedValueOnce({ payoutId: 'po_e2e', outcome: 'SUCCEEDED', providerState: 'SUCCEEDED', bankReference: 'FT-E2E', failureReason: null });
+        const done = unwrap((await post('/customer/wallet/withdrawals', customer, { amount: 150000 }).expect(201)).body);
+        expect(done).toMatchObject({ status: 'SUCCESS', amount: 150000, bankAccountNumber: '••••6789', payoutBankReference: 'FT-E2E' });
+        expect(createPayout.mock.calls[0][0]).toMatchObject({ amount: 150000, toBin: '970436', toAccountNumber: '0123456789', referenceId: done.id.replace(/-/g, '') });
+        const emptied = unwrap((await get('/customer/wallet', customer).expect(200)).body);
+        expect(emptied.balance).toBe(0);
+        expect(emptied.transactions[0]).toMatchObject({ type: 'withdrawal', amount: 150000 });
+
+        // A refused payout returns the money exactly once.
+        await adjust(60000);
+        createPayout.mockRejectedValueOnce(new payoutModule.PayoutRejectedError('Tài khoản nhận không hợp lệ'));
+        const failed = unwrap((await post('/customer/wallet/withdrawals', customer, { amount: 60000 }).expect(201)).body);
+        expect(failed).toMatchObject({ status: 'FAILED', failureReason: 'Tài khoản nhận không hợp lệ' });
+        expect(unwrap((await get('/customer/wallet', customer).expect(200)).body).balance).toBe(60000);
+        const refunds = await db.query("SELECT amount FROM customer_wallet_transactions WHERE type = 'withdrawal_refund' AND reference_id = $1", [failed.id]);
+        expect(refunds.map((r: any) => Number(r.amount))).toEqual([60000]);
+        const history = unwrap((await get('/customer/wallet/withdrawals?page=1&limit=10', customer).expect(200)).body);
+        expect(history.map((w: any) => w.status)).toEqual(['FAILED', 'SUCCESS']);
+        denied(await get('/customer/wallet/withdrawals', admin));
+      } finally {
+        spies.forEach((spy) => spy.mockRestore());
+        Object.defineProperty(provider, 'name', { value: originalName, configurable: true, writable: true });
+      }
+    });
+  });
+
+  describe('AI assistant keeps the conversation across a lost AI session', () => {
+    // Real HTTP, JWT and Postgres; only the AI Service transport is replaced, so
+    // what is checked is what the backend sends and records.
+    it('rebuilds a lost session from the recorded turns, for the owner only', async () => {
+      const { AiDiagnosisService } = runtimeRequire('./dist/modules/ai-diagnosis/ai-diagnosis.service.js');
+      const { of } = runtimeRequire('rxjs');
+      // The HttpService instance this module was given; other modules have their own.
+      const http = (context().app.get(AiDiagnosisService) as any).httpService;
+      const sent: Array<Record<string, any>> = [];
+      let next = 0;
+      const ids = [`ai-${randomUUID()}`, `ai-${randomUUID()}`, `ai-${randomUUID()}`];
+      const spy = vi.spyOn(http, 'post').mockImplementation(((_url: string, body: Record<string, any>) => {
+        sent.push(body);
+        return of({ data: { sessionId: ids[next++], status: 'ok', answerVi: 'Dạ.', messageVi: 'Dạ.', suspectedFaults: [], recommendedServices: [] } });
+      }) as any);
+      try {
+        const owner = await context().register();
+        const other = await context().register();
+        const ask = (session: Session, question: string, sessionId?: string) =>
+          request(context().app.getHttpServer()).post('/api/v1/ai/chat/ask')
+            .set('Authorization', `Bearer ${session.accessToken}`)
+            .send({ question, ...(sessionId ? { sessionId } : {}) });
+
+        await ask(owner, 'máy lạnh không mát').expect(200);
+        expect(sent[0]).not.toHaveProperty('history');
+        // The AI lost ids[0] and answers under ids[1]; the backend must have sent
+        // what was said before, from its own record.
+        await ask(owner, 'mới vệ sinh rồi', ids[0]).expect(200);
+        expect(sent[1].history).toEqual(['máy lạnh không mát']);
+        const [row] = await context().db.query('SELECT customer_id, summary FROM ai_chat_sessions WHERE session_id = $1', [ids[1]]);
+        expect(row.customer_id).toBe(owner.user.id);
+        expect(row.summary.customerText).toBe('máy lạnh không mát / mới vệ sinh rồi');
+        expect(row.summary.turnCount).toBe(2);
+
+        // Someone else holding the id gets no history and writes nothing into it.
+        await ask(other, 'vậy giờ là bị gì', ids[1]).expect(200);
+        expect(sent[2]).not.toHaveProperty('history');
+        const [after] = await context().db.query('SELECT customer_id, summary FROM ai_chat_sessions WHERE session_id = $1', [ids[1]]);
+        expect(after.summary.turnCount).toBe(2);
+        const [stranger] = await context().db.query('SELECT customer_id, summary FROM ai_chat_sessions WHERE session_id = $1', [ids[2]]);
+        expect(stranger.customer_id).toBe(other.user.id);
+        expect(stranger.summary.customerText).toBe('vậy giờ là bị gì');
+      } finally {
+        spy.mockRestore();
       }
     });
   });
