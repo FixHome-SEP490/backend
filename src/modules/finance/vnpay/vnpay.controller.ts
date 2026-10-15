@@ -51,6 +51,8 @@ export class VnpayController {
     const params = new URLSearchParams({ payment: isSuccess });
     if (result.invoiceId) params.set('invoiceId', result.invoiceId);
     if (result.serviceOrderId) params.set('orderId', result.serviceOrderId);
-    res.redirect(`${frontendUrl}/vnpay-return?${params.toString()}`);
+    const isMobileApp = result.orderInfo?.includes('mobile') || query.app === 'mobile' || query.platform === 'mobile';
+    // Web is not deployed yet: FRONTEND_URL stays on localhost until it is.
+    res.redirect(isMobileApp ? `fixhome://app/order-payment?${params.toString()}` : `${frontendUrl}/vnpay-return?${params.toString()}`);
   }
 }

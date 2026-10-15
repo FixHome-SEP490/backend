@@ -226,6 +226,7 @@ export class FinanceService {
     invoiceId: string,
     actor: FinanceActor,
     ipAddr: string,
+    platform: 'web' | 'mobile' = 'web',
   ): Promise<{ paymentUrl: string }> {
     if (actor.role !== Role.CUSTOMER) {
       throw new BusinessException(
@@ -305,7 +306,8 @@ export class FinanceService {
         hashSecret,
         amount: Number(payment.amount),
         txnRef: payment.idempotencyKey,
-        orderInfo: `Thanh toan hoa don ${payment.invoiceId}`,
+        // The "mobile" marker survives the VNPay round trip so the return leg can deep-link back to the app.
+        orderInfo: `Thanh toan hoa don ${payment.invoiceId}${platform === 'mobile' ? ' mobile' : ''}`,
         returnUrl,
         ipAddr,
       }),

@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-14 23:11 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/customer-withdrawal-kyc
+> Cập nhật lần cuối: 2026-10-15 13:40 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -103,7 +103,7 @@ Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức c
 3. Kỹ thuật viên nhận (`POST /invitations/:id/respond`) thì trong một transaction tạo `ServiceOrder` ở trạng thái `accepted` và `TechnicianAssignment`; sau đó gửi tin chào trong chat kèm tóm tắt AI. ServiceOrder không bao giờ được tạo lúc khách gửi booking.
 4. `ServiceOrderStateMachine`: `accepted → en_route → under_repair → completed`; `cancelled` từ ba trạng thái đầu. Mọi đổi trạng thái phải đi qua state machine.
 5. Hoá đơn snapshot tỉ lệ hoa hồng (`commission.rate_bps`, mặc định 10% trên tiền công, linh kiện không tính hoa hồng).
-6. Online: VNPay (`POST invoices/:id/vnpay-url`, IPN `GET /api/v1/finance/vnpay/ipn`) khi `payment.mode` là `LIVE`. Tiền mặt: thợ khai, khách xác nhận; lệch thì mở support case cho quản lý xử lý.
+6. Online: VNPay (`POST invoices/:id/vnpay-url`, header `x-client-platform: mobile` làm trang trả về chuyển hướng `fixhome://app/order-payment` thay vì `FRONTEND_URL/vnpay-return`; web chưa deploy nên `FRONTEND_URL` tạm để localhost, IPN `GET /api/v1/finance/vnpay/ipn`) khi `payment.mode` là `LIVE`. Tiền mặt: thợ khai, khách xác nhận; lệch thì mở support case cho quản lý xử lý.
 7. Quyết toán (`SettlementService.trySettleOrder`): tiền mặt thì trừ phí nền tảng (hoa hồng + linh kiện FixHome + phí giao) vào ví thợ và đóng `PlatformDue`; online thì cộng thu nhập ròng vào ví.
 
 ### Thay đổi gần nhất (07/10/2026)
@@ -234,6 +234,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-15 13:40 (UTC+7) | Hgnv11 | dev | Thanh toán hoá đơn VNPay chia hai nhánh trả về: mobile (header x-client-platform) về app qua fixhome://app/order-payment, web vẫn FRONTEND_URL; CHƯA KIỂM CHỨNG trên máy thật
 - 2026-10-14 23:11 (UTC+7) | ToanAltF4 | feat/customer-withdrawal-kyc | Khách rút ví về ngân hàng qua payOS sau khi admin duyệt CCCD; bảng KYC, tài khoản, lệnh rút của khách (migration 036)
 - 2026-10-14 22:17 (UTC+7) | ToanAltF4 | fix/reputation-reset-sweep | Sửa job làm mới điểm uy tín: đọc đúng kết quả UPDATE RETURNING ([rows, rowCount]) nên không còn ghi NaN mỗi phút
 - 2026-10-14 21:56 (UTC+7) | ToanAltF4 | feat/ai-session-history | Ghi việc gửi history cho ai-service từ bản ghi phiên của backend để dựng lại phiên AI đã mất
@@ -273,4 +274,3 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - 2026-10-07 21:17 (UTC+7) | ToanAltF4 | fix/time-off-and-review-guards | Chặn khai báo ngày nghỉ đã qua; đánh giá trùng trả CONFLICT với câu tiếng Việt.
 - 2026-10-07 21:03 (UTC+7) | ToanAltF4 | fix/order-completed-notices | Hoàn tất đơn qua tiền mặt hoặc VNPay giờ cũng gửi thông báo ORDER_COMPLETED; gom bảo hành và thông báo về applyOrderCompletionEffects.
 - 2026-10-07 19:15 (UTC+7) | ToanAltF4 | fix/remaining-bugs-and-fake-data | Ghi các lỗi còn lại đã sửa, quy định không dữ liệu giả, vi phạm do quản lý xác nhận, thu nhập theo hoá đơn và migration 027
-- 2026-10-07 18:53 (UTC+7) | ToanAltF4 | fix/order-timing-and-matching | Thêm luật quá giờ hẹn BRX-063, tác vụ nền, mã lỗi mới, quyết định PO ngày 07/10 và cập nhật việc đang dở

@@ -381,12 +381,15 @@ export class ServiceOrdersController {
   @ApiServiceUnavailableResponse({ description: 'VNPay is not configured or not LIVE' })
   async createInvoiceVnpayUrl(
     @Param('id', ParseUUIDPipe) id: string,
-    @Req() req: { user: { id: string; role: string }; ip: string },
+    @Req() req: { user: { id: string; role: string }; ip: string; headers?: Record<string, string | undefined> },
   ) {
+    const ua = req.headers?.['user-agent']?.toLowerCase() ?? '';
+    const isMobile = req.headers?.['x-client-platform'] === 'mobile' || ua.includes('okhttp') || ua.includes('cfnetwork');
     const result = await this.serviceOrdersService.createInvoiceVnpayUrl(
       id,
       req.user,
       req.ip,
+      isMobile ? 'mobile' : 'web',
     );
     return { data: result };
   }
