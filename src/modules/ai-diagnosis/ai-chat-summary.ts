@@ -21,10 +21,28 @@ export interface AiChatSummaryState {
   recommendedServiceName: string | null;
   photoCount: number;
   turnCount: number;
+  /** What the customer said about the answers, for the team to learn from. Never copied to a booking. */
+  feedback?: AiFeedbackEntry[];
 }
 
+export type AiFeedbackVerdict = 'wrong' | 'right';
+
+export interface AiFeedbackEntry {
+  at: string;
+  verdict: AiFeedbackVerdict;
+  /** What the customer added, if anything. */
+  note: string | null;
+  /** The reply the verdict is about, as the customer saw it. */
+  reply: string | null;
+  /** Which turn of the conversation it came after. */
+  turn: number;
+}
+
+/** Kept per session; the oldest go first. */
+export const AI_FEEDBACK_LIMITS = { entries: 20, note: 300, reply: 1000 } as const;
+
 /** The copy frozen onto a Booking when it is created from an AI conversation. */
-export interface AiBookingSummary extends Omit<AiChatSummaryState, 'turnCount'> {
+export interface AiBookingSummary extends Omit<AiChatSummaryState, 'turnCount' | 'feedback'> {
   recordedAt: string;
 }
 
@@ -165,6 +183,25 @@ export function historyFromSummary(summary: Pick<AiChatSummaryState, 'customerTe
     .slice(-AI_HISTORY_LIMITS.turns);
 }
 
+/** Append one verdict to the summary, keeping the newest AI_FEEDBACK_LIMITS.entries. */
+export function addFeedback(
+  previous: AiChatSummaryState,
+  verdict: AiFeedbackVerdict,
+  note: string | null | undefined,
+  reply: string | null | undefined,
+  now = new Date(),
+): AiChatSummaryState {
+  const entry: AiFeedbackEntry = {
+    at: now.toISOString(),
+    verdict,
+    note: clean(note, AI_FEEDBACK_LIMITS.note),
+    reply: clean(reply, AI_FEEDBACK_LIMITS.reply),
+    turn: previous.turnCount,
+  };
+  const feedback = [...(previous.feedback ?? []), entry].slice(-AI_FEEDBACK_LIMITS.entries);
+  return { ...previous, feedback };
+}
+
 /** True when the conversation produced something worth telling the technician. */
 export function hasAdvice(summary: AiChatSummaryState | AiBookingSummary): boolean {
   return !!(summary.deviceName || summary.suspectedFaults.length || summary.conclusion || summary.priceMin != null);
@@ -172,7 +209,8 @@ export function hasAdvice(summary: AiChatSummaryState | AiBookingSummary): boole
 
 export function toBookingSummary(state: AiChatSummaryState, now = new Date()): AiBookingSummary {
   // turnCount stays with the session; the booking keeps only what was learned.
-  const { turnCount: _turns, ...summary } = state;
+  const { turnCount: _turns, feedback: _feedback, ...summary } = state;
   void _turns;
+  void _feedback;
   return { ...summary, recordedAt: now.toISOString() };
 }

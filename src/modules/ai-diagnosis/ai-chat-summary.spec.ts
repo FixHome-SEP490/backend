@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AI_HISTORY_LIMITS, AI_SUMMARY_LIMITS, emptySummary, hasAdvice, historyFromSummary, mergeTurn, toBookingSummary } from './ai-chat-summary';
+import { AI_FEEDBACK_LIMITS, AI_HISTORY_LIMITS, AI_SUMMARY_LIMITS, addFeedback, emptySummary, hasAdvice, historyFromSummary, mergeTurn, toBookingSummary } from './ai-chat-summary';
 
 const diagnosis = {
   status: 'ok',
@@ -110,5 +110,27 @@ describe('historyFromSummary', () => {
     expect(turns).toHaveLength(AI_HISTORY_LIMITS.turns);
     expect(turns[turns.length - 1]).toBe('lượt 29');
     expect(historyFromSummary({ customerText: 'x'.repeat(3000) })[0]).toHaveLength(AI_HISTORY_LIMITS.chars);
+  });
+});
+
+describe('addFeedback', () => {
+  it('keeps the verdict with the turn it came after', () => {
+    const state = { ...emptySummary(), turnCount: 3 };
+    const next = addFeedback(state, 'wrong', '  em đã nói vệ sinh rồi ', 'Dạ khả năng cao là bẩn lưới lọc.', new Date('2026-10-16T00:00:00Z'));
+    expect(next.feedback).toEqual([
+      { at: '2026-10-16T00:00:00.000Z', verdict: 'wrong', note: 'em đã nói vệ sinh rồi', reply: 'Dạ khả năng cao là bẩn lưới lọc.', turn: 3 },
+    ]);
+  });
+
+  it('keeps only the newest entries and bounded text', () => {
+    let state = emptySummary();
+    for (let i = 0; i < AI_FEEDBACK_LIMITS.entries + 5; i += 1) state = addFeedback(state, 'right', 'x'.repeat(500), null);
+    expect(state.feedback).toHaveLength(AI_FEEDBACK_LIMITS.entries);
+    expect(state.feedback![0].note!.length).toBeLessThanOrEqual(AI_FEEDBACK_LIMITS.note);
+  });
+
+  it('never reaches the booking summary the technician reads', () => {
+    const state = addFeedback({ ...emptySummary(), deviceName: 'Máy lạnh' }, 'wrong', 'sai', null);
+    expect(toBookingSummary(state)).not.toHaveProperty('feedback');
   });
 });

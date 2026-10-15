@@ -885,6 +885,38 @@ export function registerDev1Cases(context: () => Context) {
         spy.mockRestore();
       }
     });
+
+    it('keeps a customer\'s verdict on their own conversation and shows it to an admin', async () => {
+      const { AiDiagnosisService } = runtimeRequire('./dist/modules/ai-diagnosis/ai-diagnosis.service.js');
+      const { of } = runtimeRequire('rxjs');
+      const http = (context().app.get(AiDiagnosisService) as any).httpService;
+      const sessionId = `ai-${randomUUID()}`;
+      const spy = vi.spyOn(http, 'post').mockImplementation((() =>
+        of({ data: { sessionId, status: 'ok', answerVi: 'Dạ khả năng cao là thiếu gas.', recommendedServices: [] } })) as any);
+      const post = (path: string, session: Session, body: object = {}) => request(context().app.getHttpServer()).post(`/api/v1${path}`).set('Authorization', `Bearer ${session.accessToken}`).send(body);
+      const get = (path: string, session: Session) => request(context().app.getHttpServer()).get(`/api/v1${path}`).set('Authorization', `Bearer ${session.accessToken}`);
+      const denied = (response: request.Response) => expect(response.status, JSON.stringify(response.body)).toBeGreaterThanOrEqual(400);
+      try {
+        const owner = await context().register();
+        const stranger = await context().register();
+        await post('/ai/chat/ask', owner, { question: 'máy lạnh không mát, mới vệ sinh rồi' }).expect(200);
+        const verdict = { sessionId, verdict: 'wrong', note: 'em đã nói vệ sinh rồi', reply: 'Dạ khả năng cao là thiếu gas.' };
+        await post('/ai/feedback', stranger, verdict).expect(404);
+        await post('/ai/feedback', owner, verdict).expect(200);
+        await post('/ai/feedback', owner, { ...verdict, verdict: 'maybe' }).expect(400);
+        await post('/ai/feedback', owner, { sessionId: 'never-recorded', verdict: 'wrong' }).expect(404);
+        denied(await get('/admin/ai-quality', owner));
+        await context().db.query('UPDATE users SET role = $1 WHERE id = $2', ['admin', stranger.user.id]);
+        const quality = unwrap((await get('/admin/ai-quality?days=1', stranger).expect(200)).body);
+        expect(quality.totals.markedWrong).toBeGreaterThanOrEqual(1);
+        expect(quality.recentWrong.some((r: any) => r.sessionId === sessionId && r.note === 'em đã nói vệ sinh rồi')).toBe(true);
+        expect(quality.perDay.length).toBeGreaterThanOrEqual(1);
+        const [row] = await context().db.query('SELECT summary FROM ai_chat_sessions WHERE session_id = $1', [sessionId]);
+        expect(row.summary.feedback).toHaveLength(1);
+      } finally {
+        spy.mockRestore();
+      }
+    });
   });
 
   describe('AI assistant keeps the conversation across a lost AI session', () => {

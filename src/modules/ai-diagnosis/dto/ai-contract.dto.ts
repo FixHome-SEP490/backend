@@ -12,14 +12,18 @@
 // we send base64 as JSON - so nothing here needs snake_case.
 
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
+  IsIn,
+  IsInt,
   IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
-  MaxLength, Matches } from 'class-validator';
+  Max,
+  MaxLength, Matches, Min } from 'class-validator';
 
 /**
  * Hard ceilings enforced by the AI Service (app/schemas/diagnosis.py and
@@ -103,6 +107,40 @@ export class AskDto {
   @IsString()
   @MaxLength(AI_MAX_HINT)
   deviceType?: string;
+}
+
+export class AiFeedbackDto {
+  @ApiProperty({ description: 'The session the verdict is about, as the assistant returned it.' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(AI_MAX_SESSION_ID)
+  sessionId: string;
+
+  @ApiProperty({ enum: ['wrong', 'right'], description: 'Whether the last answer was right.' })
+  @IsIn(['wrong', 'right'])
+  verdict: 'wrong' | 'right';
+
+  @ApiPropertyOptional({ description: 'What the customer wants to add, up to 300 characters.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  note?: string;
+
+  @ApiPropertyOptional({ description: 'The reply the verdict is about, as shown.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  reply?: string;
+}
+
+export class AiQualityQueryDto {
+  @ApiPropertyOptional({ description: 'Days back from today, 1 to 90.', default: 7 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(90)
+  days?: number;
 }
 
 export interface AiDetectedDevice {

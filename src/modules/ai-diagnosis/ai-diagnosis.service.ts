@@ -7,13 +7,14 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom, timeout } from 'rxjs';
 import { AiDiagnosis } from './entities/ai-diagnosis.entity';
 import { AiChatSession } from './entities/ai-chat-session.entity';
-import { AiTurnInput, emptySummary, historyFromSummary, mergeTurn } from './ai-chat-summary';
+import { AiTurnInput, addFeedback, emptySummary, historyFromSummary, mergeTurn } from './ai-chat-summary';
 import { Service } from '../services/entities/service.entity';
 import { Booking } from '../bookings/entities/booking.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { BookingStatus, Role, ServiceOrderStatus } from '../../shared/enums';
 import {
+  AiFeedbackDto,
   AnalyzeDto,
   AskDto,
   AiRecommendedService,
@@ -220,6 +221,86 @@ export class AiDiagnosisService {
       this.logger.warn(`AI session history not read: ${this.reason(error)}`);
       return [];
     }
+  }
+
+  // -------------------------------------------------------------- feedback
+
+  /**
+   * "Trả lời này chưa đúng" from the customer, kept on the session so the team
+   * can read what went wrong and add it to the AI's test set. Only for a
+   * session this server recorded, and never into another customer's.
+   */
+  async recordFeedback(
+    dto: AiFeedbackDto,
+    actor?: { id: string; role: string },
+  ): Promise<{ recorded: true }> {
+    const sessionId = dto.sessionId.trim();
+    const row = this.sessionRepo ? await this.sessionRepo.findOneBy({ sessionId }) : null;
+    const customerId = actor?.role === Role.CUSTOMER ? actor.id : null;
+    if (!row || (row.customerId && row.customerId !== customerId)) {
+      throw new NotFoundException('Conversation not found');
+    }
+    const summary = addFeedback(row.summary ?? emptySummary(), dto.verdict, dto.note, dto.reply);
+    await this.sessionRepo!.update(row.id, { summary });
+    return { recorded: true };
+  }
+
+  /**
+   * How the assistant is doing, for the admin page: conversations, how many a
+   * customer said were wrong, how many ended in a booking, day by day, and the
+   * latest answers marked wrong with what the customer had said.
+   */
+  async quality(days = 7): Promise<Record<string, unknown>> {
+    if (!this.sessionRepo) return { days, totals: null, perDay: [], recentWrong: [] };
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const wrong = `EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(s.summary->'feedback', '[]'::jsonb)) f WHERE f->>'verdict' = 'wrong')`;
+    const right = `EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(s.summary->'feedback', '[]'::jsonb)) f WHERE f->>'verdict' = 'right')`;
+    const [totals] = await this.sessionRepo.query(
+      `SELECT count(*)::int AS "sessions",
+              coalesce(sum((s.summary->>'turnCount')::int), 0)::int AS "turns",
+              count(*) FILTER (WHERE s.customer_id IS NOT NULL)::int AS "signedIn",
+              count(*) FILTER (WHERE ${wrong})::int AS "markedWrong",
+              count(*) FILTER (WHERE ${right})::int AS "markedRight"
+         FROM ai_chat_sessions s WHERE s.created_at >= $1`,
+      [since],
+    );
+    const [booked] = await this.sessionRepo.query(
+      `SELECT count(*)::int AS "bookings" FROM bookings WHERE ai_summary IS NOT NULL AND created_at >= $1`,
+      [since],
+    );
+    const perDay = await this.sessionRepo.query(
+      `SELECT to_char(d::date, 'YYYY-MM-DD') AS "day",
+              (SELECT count(*)::int FROM ai_chat_sessions s
+                 WHERE s.created_at >= d AND s.created_at < d + interval '1 day') AS "sessions",
+              (SELECT count(*)::int FROM bookings b
+                 WHERE b.ai_summary IS NOT NULL AND b.created_at >= d AND b.created_at < d + interval '1 day') AS "bookings",
+              (SELECT count(*)::int FROM ai_chat_sessions s
+                 WHERE s.created_at >= d AND s.created_at < d + interval '1 day' AND ${wrong}) AS "markedWrong"
+         FROM generate_series(date_trunc('day', $1::timestamptz), date_trunc('day', now()), interval '1 day') d
+        ORDER BY d`,
+      [since],
+    );
+    const recentWrong = await this.sessionRepo.query(
+      `SELECT s.session_id AS "sessionId", f->>'at' AS "at", f->>'note' AS "note", f->>'reply' AS "reply",
+              left(s.summary->>'customerText', 400) AS "customerText", s.summary->>'deviceName' AS "deviceName"
+         FROM ai_chat_sessions s, jsonb_array_elements(coalesce(s.summary->'feedback', '[]'::jsonb)) f
+        WHERE f->>'verdict' = 'wrong' AND s.created_at >= $1
+        ORDER BY f->>'at' DESC LIMIT 20`,
+      [since],
+    );
+    const sessions = totals?.sessions ?? 0;
+    const bookings = booked?.bookings ?? 0;
+    return {
+      days,
+      totals: {
+        ...totals,
+        bookings,
+        bookingRate: sessions ? Math.round((1000 * bookings) / sessions) / 10 : null,
+        wrongRate: sessions ? Math.round((1000 * (totals?.markedWrong ?? 0)) / sessions) / 10 : null,
+      },
+      perDay,
+      recentWrong,
+    };
   }
 
   // ------------------------------------------------------- session summary
