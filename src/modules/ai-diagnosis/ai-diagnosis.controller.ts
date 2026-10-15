@@ -11,7 +11,7 @@ import {
   Req, ParseUUIDPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { AiDiagnosisService } from './ai-diagnosis.service';
-import { AnalyzeDto, AskDto } from './dto/ai-contract.dto';
+import { AiFeedbackDto, AnalyzeDto, AskDto } from './dto/ai-contract.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AiDiagnosisBookingAuthGuard } from './ai-diagnosis-booking-auth.guard';
 import { AiThrottlerGuard, AI_ANALYZE_PER_MINUTE, AI_ASK_PER_MINUTE } from './ai-throttler.guard';
@@ -65,6 +65,19 @@ export class AiDiagnosisController {
   })
   async ask(@Body() dto: AskDto, @Req() req: { user?: { id: string; role: string } }) {
     return this.aiDiagnosisService.ask(dto, req?.user);
+  }
+
+  @Post('ai/feedback')
+  @UseGuards(AiDiagnosisBookingAuthGuard, AiThrottlerGuard)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Tell the team an answer was right or wrong',
+    description:
+      'Kept on the conversation for the AI test set. 404 for a session this server did not record or that another customer holds.',
+  })
+  async feedback(@Body() dto: AiFeedbackDto, @Req() req: { user?: { id: string; role: string } }) {
+    return this.aiDiagnosisService.recordFeedback(dto, req?.user);
   }
 
   @Get('ai/chat/acknowledgements')
