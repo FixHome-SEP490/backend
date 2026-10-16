@@ -750,6 +750,11 @@ export function registerDev1Cases(context: () => Context) {
       if (selected) {
         const warranties = unwrap((await get(path + '/warranties', f.owner).expect(200)).body);
         expect(warranties).toHaveLength(2);
+        // Each coverage names the invoice line it covers, so the customer knows what to claim.
+        expect(warranties.map((w: any) => [w.itemType, w.itemDescription, w.warrantyDaysSnapshot]).sort()).toEqual([
+          ['labor', 'Repair labor', 30],
+          ['parts_equipment', 'Technician part', 90],
+        ]);
       } else {
         expect(await context().db.getRepository('CommissionDue').count({ where: { serviceOrderId: order.id } })).toBe(0);
       }

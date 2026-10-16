@@ -97,6 +97,12 @@ export type StrikeListItem = CancellationStrike & {
 };
 
 /** One state, several states, and a text search over the order code, the service, the customer's and the technician's name. */
+/** A coverage with the invoice line it covers (null on coverages without one). */
+export type WarrantyCoverageView = WarrantyCoverage & {
+  itemType: CostItemType | null;
+  itemDescription: string | null;
+};
+
 function filterOrderList(
   qb: SelectQueryBuilder<ServiceOrder>,
   options: { status?: ServiceOrderStatus; statuses?: ServiceOrderStatus[]; search?: string },
@@ -310,6 +316,10 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         'ta',
         'ta.service_order_id = o.id',
       ).where('ta.technician_id = :userId', { userId });
+      // A job someone has stepped off (withdrew, was replaced) is history for them: it stays
+      // under "all" and "cancelled", but no longer counts as work to travel to or do.
+      const asked = options.statuses?.length ? options.statuses : options.status ? [options.status] : [];
+      if (asked.length && !asked.includes(ServiceOrderStatus.CANCELLED)) qb.andWhere('ta.is_active = true');
     } else {
       throw new ForbiddenException('Order list access denied');
     }
@@ -829,11 +839,22 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   }
 
 
-  async getWarranties(orderId: string, actor: { id: string; role: string }): Promise<WarrantyCoverage[]> {
+  /**
+   * Each coverage says what it covers: the labor or the part on the invoice line it came
+   * from, so a customer can tell which item to claim.
+   */
+  async getWarranties(orderId: string, actor: { id: string; role: string }): Promise<WarrantyCoverageView[]> {
     await authorizeOrder(this.dataSource.manager, orderId, actor);
-    return this.warrantyRepo.find({
+    const coverages = await this.warrantyRepo.find({
       where: { serviceOrderId: orderId },
       order: { expiresAt: 'ASC' },
+    });
+    const itemIds = coverages.map(c => c.invoiceItemId).filter((id): id is string => !!id);
+    const items = itemIds.length ? await this.dataSource.manager.findBy(InvoiceItem, { id: In(itemIds) }) : [];
+    const byId = new Map(items.map(item => [item.id, item]));
+    return coverages.map(coverage => {
+      const item = coverage.invoiceItemId ? byId.get(coverage.invoiceItemId) : undefined;
+      return { ...coverage, itemType: item?.type ?? null, itemDescription: item?.description ?? null };
     });
   }
 
