@@ -379,6 +379,40 @@ describe('FinanceService money-state invariants', () => {
   });
 });
 
+describe('VNPay return goes back to the web that started the payment', () => {
+  const setupTopUp = () => {
+    const setup = makeFinanceService({});
+    setup.nestConfigService.get.mockImplementation((key: string) => {
+      if (key === 'VNPAY_TMN_CODE') return 'TEST_TMN';
+      if (key === 'VNPAY_HASH_SECRET') return 'SECRET1234567890SECRET1234567890';
+      if (key === 'VNPAY_PAYMENT_URL') return 'https://sandbox.vnpayment.vn/vpcpay.html';
+      if (key === 'VNPAY_RETURN_URL') return 'https://api.fixhome.sbs/api/v1/finance/vnpay/return';
+      return null;
+    });
+    setup.paymentRepository.findOne = vi.fn().mockResolvedValue(null);
+    setup.paymentRepository.create = vi.fn().mockImplementation((val) => val);
+    setup.paymentRepository.save = vi.fn().mockResolvedValue({ id: 'pay-1', idempotencyKey: 'IDEMP_1', amount: 100000 });
+    return setup;
+  };
+  const returnUrlOf = (paymentUrl: string) => new URL(new URL(paymentUrl).searchParams.get('vnp_ReturnUrl')!);
+
+  it('marks a web top-up with the origin it came from', async () => {
+    const setup = setupTopUp();
+    const { paymentUrl } = await setup.service.createWalletTopUpVnpayUrl('cust-1', 100000, '127.0.0.1', 'IDEMP_1', 'web', 'customer', 'http://localhost:5173');
+    const back = returnUrlOf(paymentUrl);
+    expect(back.origin + back.pathname).toBe('https://api.fixhome.sbs/api/v1/finance/vnpay/return');
+    expect(back.searchParams.get('web')).toBe('http://localhost:5173');
+  });
+
+  it('adds no marker for the app or when the browser sent no origin', async () => {
+    const setup = setupTopUp();
+    const mobile = await setup.service.createWalletTopUpVnpayUrl('cust-1', 100000, '127.0.0.1', 'IDEMP_1', 'mobile', 'customer', 'http://localhost:5173');
+    expect(returnUrlOf(mobile.paymentUrl).searchParams.has('web')).toBe(false);
+    const noOrigin = await setup.service.createWalletTopUpVnpayUrl('cust-1', 100000, '127.0.0.1', 'IDEMP_1', 'web', 'customer');
+    expect(returnUrlOf(noOrigin.paymentUrl).searchParams.has('web')).toBe(false);
+  });
+});
+
 describe('Dues follow the invoice formula', () => {
   const settle = async (invoiceOverrides: Partial<Invoice>, settlement: CashSettlement | null) => {
     const invoice = { ...makeInvoice(), ...invoiceOverrides } as Invoice;

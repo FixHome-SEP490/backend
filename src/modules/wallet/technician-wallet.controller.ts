@@ -131,6 +131,8 @@ export class TechnicianWalletController {
         req.ip || '127.0.0.1',
         idempotencyKey,
         isMobile ? 'mobile' : 'web',
+        'technician',
+        req.headers?.origin,
       );
       return {
         success: true,

@@ -58,7 +58,7 @@ export class CustomerWalletController {
     const isMobile = req.headers?.['x-client-platform'] === 'mobile' || ua.includes('okhttp') || ua.includes('cfnetwork');
     const key = dto.idempotencyKey?.trim()
       || `CTOPUP_${req.user.id.substring(0, 8)}_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-    const vnpay = await this.finance.createWalletTopUpVnpayUrl(req.user.id, dto.amount, req.ip || '127.0.0.1', key, isMobile ? 'mobile' : 'web', 'customer');
+    const vnpay = await this.finance.createWalletTopUpVnpayUrl(req.user.id, dto.amount, req.ip || '127.0.0.1', key, isMobile ? 'mobile' : 'web', 'customer', req.headers?.origin);
     return { paymentId: vnpay.paymentId, paymentUrl: vnpay.paymentUrl };
   }
 

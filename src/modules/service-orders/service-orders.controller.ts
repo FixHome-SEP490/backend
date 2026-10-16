@@ -390,6 +390,7 @@ export class ServiceOrdersController {
       req.user,
       req.ip,
       isMobile ? 'mobile' : 'web',
+      req.headers?.origin,
     );
     return { data: result };
   }
