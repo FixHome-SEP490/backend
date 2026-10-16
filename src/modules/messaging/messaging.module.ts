@@ -10,6 +10,7 @@ import { MessagingService } from './messaging.service';
 import { MessagingGateway } from './messaging.gateway';
 import { CallRegistryService } from './call-registry.service';
 import { AcceptGreetingPublisher } from './accept-greeting.publisher';
+import { NotificationsModule } from '../notifications/notifications.module';
 import {
   ConversationsController,
   MessagesController,
@@ -18,6 +19,7 @@ import {
 @Module({
   imports: [
     TypeOrmModule.forFeature([Conversation, Message, User]),
+    NotificationsModule,
     // Same access secret as the HTTP guard: one identity, two transports.
     JwtModule.registerAsync({
       imports: [ConfigModule],
