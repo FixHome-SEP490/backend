@@ -18,6 +18,7 @@ import { User } from '../users/entities/user.entity';
 import { AccountStatus, Role } from '../../shared/enums';
 import { ChatActor, MessageView, MessagingService } from './messaging.service';
 import { CallRegistryService } from './call-registry.service';
+import { buildIceServers, hasTurn, IceServer } from './ice-servers';
 import {
   CALL_CLIENT_EVENTS,
   CALL_SERVER_EVENTS,
@@ -103,7 +104,7 @@ export class MessagingGateway
     client.emit('connect:ready', {
       userId: actor.id,
       conversationIds,
-      iceServers: this.iceServers(),
+      iceServers: this.iceServers(actor.id),
     });
   }
 
@@ -175,19 +176,23 @@ export class MessagingGateway
   }
 
   /**
-   * STUN only, and optional at that. On a single Wi-Fi network both peers
-   * already know an address the other can reach, so an empty list still
-   * connects. Set WEBRTC_ICE_URLS to an empty string to switch STUN off
-   * entirely, or to a TURN url list if the deployment ever leaves the LAN.
+   * STUN plus, when WEBRTC_TURN_URLS and WEBRTC_TURN_SECRET are both set, our
+   * own TURN relay with a login made for this user that expires on its own.
+   * On a single Wi-Fi network STUN alone connects; across networks (4G, strict
+   * NAT) only the relay gets the audio through. Set WEBRTC_ICE_URLS to an
+   * empty string to switch STUN off.
    */
-  private iceServers(): { urls: string[] }[] {
-    const raw =
-      this.configService.get<string>('WEBRTC_ICE_URLS') ?? DEFAULT_ICE_URLS;
-    const urls = raw
-      .split(',')
-      .map((url) => url.trim())
-      .filter(Boolean);
-    return urls.length > 0 ? [{ urls }] : [];
+  private iceServers(userId: string): IceServer[] {
+    const settings = {
+      stunUrls: this.configService.get<string>('WEBRTC_ICE_URLS') ?? DEFAULT_ICE_URLS,
+      turnUrls: this.configService.get<string>('WEBRTC_TURN_URLS'),
+      turnSecret: this.configService.get<string>('WEBRTC_TURN_SECRET'),
+      turnTtlSeconds: Number(this.configService.get<string>('WEBRTC_TURN_TTL_SECONDS')) || undefined,
+    };
+    if (!hasTurn(settings) && (settings.turnUrls?.trim() || settings.turnSecret?.trim())) {
+      this.logger.warn('TURN is half configured (needs both WEBRTC_TURN_URLS and WEBRTC_TURN_SECRET); calls fall back to STUN only');
+    }
+    return buildIceServers(settings, userId);
   }
 
   // ------------------------------------------------------------ client events
