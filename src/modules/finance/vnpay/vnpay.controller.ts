@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import type { Response } from 'express';
 import { PaymentPurpose } from '../../../shared/enums';
 import { FinanceService } from '../finance.service';
+import { pickWebOrigin } from './vnpay.util';
 
 /**
  * Public endpoints called directly by VNPay (no JWT — the browser or VNPay's
@@ -26,7 +27,13 @@ export class VnpayController {
   @Get('return')
   async returnUrl(@Query() query: Record<string, string>, @Res() res: Response) {
     const result = await this.financeService.handleVnpayReturn(query);
-    const frontendUrl = this.config.get<string>('FRONTEND_URL', 'http://localhost:5173');
+    // Back to the site that started the payment (local dev or the deployed
+    // web share this backend), but only if it is one of the CORS origins.
+    const frontendUrl = pickWebOrigin(
+      query.web,
+      this.config.get<string>('CORS_ORIGIN', ''),
+      this.config.get<string>('FRONTEND_URL', 'http://localhost:5173'),
+    );
     const isSuccess = result.ok ? 'success' : 'failed';
 
     if (result.purpose === PaymentPurpose.WALLET_TOP_UP) {
@@ -52,7 +59,6 @@ export class VnpayController {
     if (result.invoiceId) params.set('invoiceId', result.invoiceId);
     if (result.serviceOrderId) params.set('orderId', result.serviceOrderId);
     const isMobileApp = result.orderInfo?.includes('mobile') || query.app === 'mobile' || query.platform === 'mobile';
-    // Web is not deployed yet: FRONTEND_URL stays on localhost until it is.
     res.redirect(isMobileApp ? `fixhome://app/order-payment?${params.toString()}` : `${frontendUrl}/vnpay-return?${params.toString()}`);
   }
 }

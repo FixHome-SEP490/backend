@@ -54,6 +54,8 @@ describe('TechnicianWalletController', () => {
       '1.2.3.4',
       'IDEMP_VNP_99',
       'mobile',
+      'technician',
+      undefined,
     );
     expect(res).toEqual({
       success: true,
@@ -62,5 +64,15 @@ describe('TechnicianWalletController', () => {
       balanceAfter: null,
       message: 'Khởi tạo cổng thanh toán VNPay thành công',
     });
+  });
+
+  it('passes the web origin on so VNPay brings the browser back to the same site', async () => {
+    const finance = {
+      getPaymentMode: vi.fn().mockResolvedValue('LIVE'),
+      createWalletTopUpVnpayUrl: vi.fn().mockResolvedValue({ paymentId: 'p', paymentUrl: 'https://sandbox.vnpayment.vn/pay?x=1' }),
+    };
+    const controller = new TechnicianWalletController(mockWalletService, {} as BankAccountService, {} as WithdrawalPayoutService, finance as never);
+    await controller.topUp(mockUser, { amount: 100000, idempotencyKey: 'K' }, { ip: '1.2.3.4', headers: { origin: 'http://localhost:5173' } } as any);
+    expect(finance.createWalletTopUpVnpayUrl).toHaveBeenCalledWith('tech-user-123', 100000, '1.2.3.4', 'K', 'web', 'technician', 'http://localhost:5173');
   });
 });
