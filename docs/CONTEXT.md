@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-16 05:06 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/ai-quality-days
+> Cập nhật lần cuối: 2026-10-16 13:34 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/turn-credentials
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -238,6 +238,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-16 13:34 (UTC+7) | ToanAltF4 | feat/turn-credentials | Gọi thoại khác mạng: connect:ready gửi thêm TURN riêng (coturn use-auth-secret) với login hết hạn theo người dùng khi đặt WEBRTC_TURN_URLS + WEBRTC_TURN_SECRET; không đặt thì như cũ chỉ STUN
 - 2026-10-16 05:06 (UTC+7) | ToanAltF4 | fix/ai-quality-days | Trang chất lượng trợ lý AI: 7 ngày là đúng 7 ngày theo giờ Việt Nam (trước đây ra 8 ngày, ranh giới ngày theo múi giờ DB)
 - 2026-10-16 04:16 (UTC+7) | ToanAltF4 | feat/ai-past-jobs | Gửi pastJobs (đơn đã có thợ nhận của chính khách, 1 năm, tối đa 5) cho AI để trợ lý nhắc lần sửa trước
 - 2026-10-16 03:54 (UTC+7) | ToanAltF4 | feat/ai-notes | Tóm tắt trợ lý AI giữ ghi chú khách đã thử/đã loại (notesVi) và đưa vào lời chào khi thợ nhận đơn
@@ -277,4 +278,3 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - 2026-10-09 16:57 (UTC+7) | ToanAltF4 | feat/customer-booking-sessions | Xem trước lời mời có buổi hẹn (bookingMode, slot), không lộ ghi chú của khách
 - 2026-10-09 15:11 (UTC+7) | ToanAltF4 | feat/auto-reputation-only | Bỏ xác nhận vi phạm thủ công, huỷ đơn tự trừ điểm; danh sách huỷ đơn có số điểm đã trừ
 - 2026-10-09 10:06 (UTC+7) | ToanAltF4 | feat/reputation-points | Điểm uy tín khách và thợ: trừ khi huỷ đơn đã có thợ, khoá theo mức điểm, reset 2 tháng, SM xem và điều chỉnh; vi phạm cũ không còn tự khoá; migration 030
-- 2026-10-08 23:52 (UTC+7) | ToanAltF4 | feat/order-steps-photos | Thợ: tự chuyển đang sửa khi đủ điều kiện, ảnh đóng dấu giờ và mã đơn, case cần thay đổi thợ sau check-in.
