@@ -19,8 +19,14 @@ const CONVERSATION_ID = 'conv1';
 
 type Emit = { room: string; event: string; payload: Record<string, unknown> };
 
-function makeSocket(user: { id: string; role: Role }) {
-  return { data: { user } } as never;
+function makeSocket(user: { id: string; role: Role }, roomEmits?: Emit[]) {
+  // `to` mirrors socket.to(room): it reaches the room minus this socket.
+  return {
+    data: { user },
+    to: (room: string) => ({
+      emit: (event: string, payload: Record<string, unknown>) => roomEmits?.push({ room: `${room} (except sender)`, event, payload }),
+    }),
+  } as never;
 }
 
 describe('MessagingGateway voice call signalling', () => {
@@ -29,6 +35,9 @@ describe('MessagingGateway voice call signalling', () => {
   let emits: Emit[];
   /** Conversations the customer and technician share, keyed by id. */
   let peerOf: ReturnType<typeof vi.fn>;
+  /** Users with at least one socket connected. */
+  let online: Set<string>;
+  let notifications: { createNotification: ReturnType<typeof vi.fn> };
 
   /** Every emit the gateway makes, so we can assert on the destination room. */
   const emitsTo = (room: string) => emits.filter((e) => e.room === room);
@@ -37,6 +46,8 @@ describe('MessagingGateway voice call signalling', () => {
   beforeEach(() => {
     emits = [];
     registry = new CallRegistryService();
+    online = new Set([CUSTOMER.id, TECHNICIAN.id, OUTSIDER.id]);
+    notifications = { createNotification: vi.fn(async () => ({})) };
 
     peerOf = vi.fn(async (conversationId: string, userId: string) => {
       if (conversationId !== CONVERSATION_ID) return null;
@@ -50,7 +61,8 @@ describe('MessagingGateway voice call signalling', () => {
       registry,
       {} as never,
       { get: () => undefined, getOrThrow: () => 'secret' } as never,
-      {} as never,
+      { findOne: async ({ where }: { where: { id: string } }) => ({ id: where.id, fullName: where.id === CUSTOMER.id ? 'Khách Một' : 'Thợ Một' }) } as never,
+      notifications as never,
     );
 
     gateway.server = {
@@ -59,7 +71,7 @@ describe('MessagingGateway voice call signalling', () => {
           emits.push({ room, event, payload });
         },
       }),
-      in: () => ({ fetchSockets: async () => [] }),
+      in: (room: string) => ({ fetchSockets: async () => (online.has(room.replace('user:', '')) ? [{ id: 'socket' }] : []) }),
     } as never;
   });
 
@@ -322,6 +334,7 @@ describe('MessagingGateway voice call signalling', () => {
     it('ends the call for the peer when the last socket of one side drops', async () => {
       await answeredCall();
 
+      online.delete(CUSTOMER.id);
       await gateway.handleDisconnect(makeSocket(CUSTOMER));
 
       const ended = eventsNamed(CALL_SERVER_EVENTS.ENDED);
@@ -361,7 +374,101 @@ describe('MessagingGateway voice call signalling', () => {
       });
 
       expect(result).toEqual({ ok: false, reason: 'busy' });
-      expect(emitsTo(`user:${TECHNICIAN.id}`)).toHaveLength(0);
+      // The busy technician is not rung, only told someone tried.
+      const toTechnician = emitsTo(`user:${TECHNICIAN.id}`);
+      expect(toTechnician.map((e) => e.event)).toEqual([CALL_SERVER_EVENTS.MISSED]);
+      expect(toTechnician[0].payload).toMatchObject({ conversationId: 'conv2', fromUserId: OUTSIDER.id, reason: 'busy' });
+      await vi.waitFor(() => expect(notifications.createNotification).toHaveBeenCalledWith(expect.objectContaining({
+        userId: TECHNICIAN.id, type: 'CALL_MISSED', referenceId: 'conv2', message: expect.stringContaining('lúc bạn đang trong cuộc gọi khác'),
+      })));
+    });
+
+    it('tells a caller who is already on a call that it is their own line that is busy', async () => {
+      await placeCall();
+      peerOf.mockImplementation(async () => OUTSIDER.id);
+
+      const result = await gateway.onCallInvite(makeSocket(CUSTOMER), { conversationId: 'conv3' });
+
+      expect(result).toEqual({ ok: false, reason: 'self_busy' });
+    });
+  });
+
+  describe('a smarter call', () => {
+    it('refuses at once when the other person has nothing connected, and leaves a missed call', async () => {
+      online.delete(TECHNICIAN.id);
+
+      const result = await gateway.onCallInvite(makeSocket(CUSTOMER), { conversationId: CONVERSATION_ID });
+
+      expect(result).toEqual({ ok: false, reason: 'offline' });
+      expect(eventsNamed(CALL_SERVER_EVENTS.INCOMING)).toHaveLength(0);
+      expect(registry.findByUser(CUSTOMER.id)).toBeUndefined();
+      await vi.waitFor(() => expect(notifications.createNotification).toHaveBeenCalledWith(expect.objectContaining({
+        userId: TECHNICIAN.id, title: 'Cuộc gọi nhỡ', message: expect.stringContaining('Khách Một đã gọi cho bạn lúc bạn không mở ứng dụng'),
+      })));
+    });
+
+    it('lets the caller know the callee\'s device is ringing', async () => {
+      const callId = await placeCall();
+      emits = [];
+
+      expect(gateway.onCallRinging(makeSocket(TECHNICIAN), { callId })).toEqual({ ok: true });
+
+      expect(emits).toEqual([{ room: `user:${CUSTOMER.id}`, event: CALL_SERVER_EVENTS.RINGING, payload: { callId, conversationId: CONVERSATION_ID } }]);
+    });
+
+    it('accepts the ringing signal only from the person being rung, and only while it rings', async () => {
+      const callId = await placeCall();
+      expect(gateway.onCallRinging(makeSocket(CUSTOMER), { callId })).toEqual({ ok: false });
+      expect(gateway.onCallRinging(makeSocket(OUTSIDER), { callId })).toEqual({ ok: false });
+      gateway.onCallAccept(makeSocket(TECHNICIAN), { callId });
+      expect(gateway.onCallRinging(makeSocket(TECHNICIAN), { callId })).toEqual({ ok: false });
+    });
+
+    it('stops the ringing on the callee\'s other devices once one of them picks up', async () => {
+      const callId = await placeCall();
+      const roomEmits: Emit[] = [];
+
+      gateway.onCallAccept(makeSocket(TECHNICIAN, roomEmits), { callId });
+
+      expect(roomEmits).toEqual([{ room: `user:${TECHNICIAN.id} (except sender)`, event: CALL_SERVER_EVENTS.ENDED, payload: { callId, conversationId: CONVERSATION_ID, reason: 'answered_elsewhere' } }]);
+    });
+
+    it('leaves a missed call when the caller gives up while it rings', async () => {
+      const callId = await placeCall();
+
+      gateway.onCallCancel(makeSocket(CUSTOMER), { callId });
+
+      await vi.waitFor(() => expect(notifications.createNotification).toHaveBeenCalledWith(expect.objectContaining({
+        userId: TECHNICIAN.id, type: 'CALL_MISSED', referenceType: 'conversation', referenceId: CONVERSATION_ID,
+      })));
+    });
+
+    it('leaves a missed call when nobody picks up in time', async () => {
+      vi.useFakeTimers();
+      try {
+        await placeCall();
+        vi.advanceTimersByTime(45_000);
+        expect(eventsNamed(CALL_SERVER_EVENTS.ENDED).map((e) => e.payload.reason)).toEqual(['timeout', 'timeout']);
+        await vi.waitFor(() => expect(notifications.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: TECHNICIAN.id, type: 'CALL_MISSED' })));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a declined or finished call is not a missed call', async () => {
+      const callId = await placeCall();
+      gateway.onCallReject(makeSocket(TECHNICIAN), { callId });
+      const second = await placeCall();
+      gateway.onCallAccept(makeSocket(TECHNICIAN), { callId: second });
+      gateway.onCallEnd(makeSocket(CUSTOMER), { callId: second });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(notifications.createNotification).not.toHaveBeenCalled();
+    });
+
+    it('a failing notification never breaks the call signalling', async () => {
+      notifications.createNotification.mockRejectedValueOnce(new Error('db down'));
+      online.delete(TECHNICIAN.id);
+      await expect(gateway.onCallInvite(makeSocket(CUSTOMER), { conversationId: CONVERSATION_ID })).resolves.toEqual({ ok: false, reason: 'offline' });
     });
   });
 });

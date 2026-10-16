@@ -6,14 +6,17 @@
  *
  * Scope note: calls are peer-to-peer over WebRTC and are deliberately *not*
  * persisted. A call only exists while it is happening, so the server keeps its
- * state in memory and forgets it the moment the call ends. Nothing here writes
- * to the database.
+ * state in memory and forgets it the moment the call ends. The one thing that
+ * outlives a call is a missed call: it becomes a notification for the person
+ * who was rung, so a call nobody saw is not lost.
  */
 
 /** Events the client sends to the server. */
 export const CALL_CLIENT_EVENTS = {
   /** Start ringing the other participant of a conversation. */
   INVITE: 'call:invite',
+  /** The callee's device is showing the call (it rings there). */
+  RINGING: 'call:ringing',
   /** Callee picks up. */
   ACCEPT: 'call:accept',
   /** Callee declines. */
@@ -34,8 +37,12 @@ export const CALL_CLIENT_EVENTS = {
 export const CALL_SERVER_EVENTS = {
   /** Someone is calling you. */
   INCOMING: 'call:incoming',
+  /** The callee's device is ringing — the caller hears the ringback tone. */
+  RINGING: 'call:ringing',
   /** Your callee picked up — the caller now creates the offer. */
   ACCEPTED: 'call:accepted',
+  /** Someone tried to call you and could not get through (you were busy). */
+  MISSED: 'call:missed',
   /** The call is over, for whatever reason. */
   ENDED: 'call:ended',
   OFFER: 'call:offer',
@@ -50,7 +57,20 @@ export type CallEndReason =
   | 'ended'
   | 'timeout'
   | 'disconnected'
-  | 'busy';
+  | 'busy'
+  /** Picked up on another of the callee's devices; this one just stops ringing. */
+  | 'answered_elsewhere';
+
+/** Why the server would not ring anyone. */
+export type CallInviteRefusal =
+  | 'invalid'
+  | 'forbidden'
+  /** The other person is in another call. */
+  | 'busy'
+  /** You are already in a call yourself. */
+  | 'self_busy'
+  /** The other person has no device connected, so nothing can ring. */
+  | 'offline';
 
 export type CallState = 'ringing' | 'connected';
 

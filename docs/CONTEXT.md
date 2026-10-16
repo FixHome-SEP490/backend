@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-16 13:56 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/vnpay-return-origin
+> Cập nhật lần cuối: 2026-10-16 16:57 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/smart-voice-call
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -238,6 +238,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-16 16:57 (UTC+7) | ToanAltF4 | feat/smart-voice-call | Gọi thoại thông minh: người nhận không mở app thì báo offline ngay; callee báo đang đổ chuông (call:ringing) cho bên gọi; máy bận tách busy/self_busy, người bận nhận call:missed; nghe máy ở một thiết bị thì thiết bị khác thôi reo (answered_elsewhere); cuộc gọi nhỡ (hết giờ, huỷ, bận, offline) thành thông báo CALL_MISSED
 - 2026-10-16 13:56 (UTC+7) | ToanAltF4 | fix/vnpay-return-origin | VNPay trả về đúng web đã bắt đầu thanh toán (local hoặc web triển khai dùng chung backend): link trả về mang ?web=<origin>, chỉ nhận origin nằm trong CORS_ORIGIN, còn lại về FRONTEND_URL; kiểm chữ ký chỉ xét trường vnp_
 - 2026-10-16 13:34 (UTC+7) | ToanAltF4 | feat/turn-credentials | Gọi thoại khác mạng: connect:ready gửi thêm TURN riêng (coturn use-auth-secret) với login hết hạn theo người dùng khi đặt WEBRTC_TURN_URLS + WEBRTC_TURN_SECRET; không đặt thì như cũ chỉ STUN
 - 2026-10-16 05:06 (UTC+7) | ToanAltF4 | fix/ai-quality-days | Trang chất lượng trợ lý AI: 7 ngày là đúng 7 ngày theo giờ Việt Nam (trước đây ra 8 ngày, ranh giới ngày theo múi giờ DB)
@@ -277,4 +278,3 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - 2026-10-09 18:12 (UTC+7) | ToanAltF4 | feat/customer-wallet | Ví khách: nạp VNPay, trả hoá đơn bằng ví, hoàn tiền vào ví qua khiếu nại; migration 031
 - 2026-10-09 17:13 (UTC+7) | ToanAltF4 | feat/reschedule-notify | Đổi lịch đơn đã có thợ thì báo cho thợ; e2e đổi lịch theo buổi
 - 2026-10-09 16:57 (UTC+7) | ToanAltF4 | feat/customer-booking-sessions | Xem trước lời mời có buổi hẹn (bookingMode, slot), không lộ ghi chú của khách
-- 2026-10-09 15:11 (UTC+7) | ToanAltF4 | feat/auto-reputation-only | Bỏ xác nhận vi phạm thủ công, huỷ đơn tự trừ điểm; danh sách huỷ đơn có số điểm đã trừ
