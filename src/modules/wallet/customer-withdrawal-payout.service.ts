@@ -30,6 +30,8 @@ import {
   QueryWithdrawalsDto,
 } from './dto';
 import { CustomerBankAccount, CustomerWithdrawalRequest } from './entities';
+import { User } from '../users/entities/user.entity';
+import { andWhereTextMatches } from '../../shared/utils/list-search';
 import {
   PAYOUT_PROVIDER,
   PayoutInstruction,
@@ -38,7 +40,7 @@ import {
   PayoutRejectedError,
   PayoutResult,
 } from './payout/payout-provider';
-import { PAYOUT_NOT_FOUND_GRACE_MS } from './withdrawal-payout.service';
+import { PAYOUT_NOT_FOUND_GRACE_MS, PayoutOverview } from './withdrawal-payout.service';
 
 const DEFAULT_RECONCILE_INTERVAL_MS = 60_000;
 const RECONCILE_BATCH_SIZE = 20;
@@ -151,6 +153,74 @@ export class CustomerWithdrawalPayoutService implements OnModuleInit, OnModuleDe
       data: rows.map(toCustomerWithdrawalResponse),
       meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
     };
+  }
+
+  // ------------------------------------------------------------------ staff
+
+  /**
+   * What Service Managers and Admins see (PO 16/10/2026): customer withdrawals
+   * only, from their own table, so they never mix with technicians'. Search
+   * covers the customer's name (accents ignored), email and phone.
+   */
+  async listForStaff(query: QueryWithdrawalsDto & { search?: string }): Promise<{
+    data: CustomerStaffWithdrawal[];
+    meta: { page: number; limit: number; total: number; totalPages: number };
+  }> {
+    const page = query.page || 1;
+    const limit = query.limit || 20;
+    const qb = this.withdrawalRepo.createQueryBuilder('w').innerJoin(User, 'u', 'u.id = w.customer_id');
+    if (query.status) qb.andWhere('w.status = :status', { status: query.status });
+    andWhereTextMatches(qb, ['u.full_name', 'u.email', 'u.phone_number'], query.search);
+    const [rows, total] = await qb
+      .orderBy('w.requestedAt', 'DESC')
+      .addOrderBy('w.id', 'ASC')
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getManyAndCount();
+    const ids = [...new Set(rows.map((w) => w.customerId))];
+    const users = ids.length
+      ? await this.dataSource.getRepository(User).find({
+          where: { id: In(ids) },
+          select: { id: true, fullName: true, email: true, phoneNumber: true },
+        })
+      : [];
+    const byId = new Map(users.map((u) => [u.id, u]));
+    return {
+      data: rows.map((w) => toStaffCustomerWithdrawalResponse(w, byId.get(w.customerId))),
+      meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
+  /** Customer totals by outcome, and the payout channel's balance (shared with technicians). */
+  async overview(): Promise<PayoutOverview> {
+    const rows = await this.withdrawalRepo
+      .createQueryBuilder('w')
+      .select('w.status', 'status')
+      .addSelect('COUNT(*)', 'count')
+      .addSelect('COALESCE(SUM(w.amount), 0)', 'amount')
+      .groupBy('w.status')
+      .getRawMany<{ status: WithdrawalStatus; count: string; amount: string }>();
+    const bucket = (status: WithdrawalStatus) => {
+      const row = rows.find((r) => r.status === status);
+      return { count: Number(row?.count ?? 0), amount: Number(row?.amount ?? 0) };
+    };
+    return {
+      provider: this.provider.name,
+      sourceBalance: await this.provider.getSourceBalance(),
+      paidOut: bucket(WithdrawalStatus.SUCCESS),
+      processing: bucket(WithdrawalStatus.PROCESSING),
+      pending: bucket(WithdrawalStatus.PENDING),
+      failed: bucket(WithdrawalStatus.FAILED),
+    };
+  }
+
+  /** One withdrawal for staff after a reconcile, with the customer's contact. */
+  async staffView(withdrawal: CustomerWithdrawalRequest): Promise<CustomerStaffWithdrawal> {
+    const user = await this.dataSource.getRepository(User).findOne({
+      where: { id: withdrawal.customerId },
+      select: { id: true, fullName: true, email: true, phoneNumber: true },
+    });
+    return toStaffCustomerWithdrawalResponse(withdrawal, user ?? undefined);
   }
 
   // ----------------------------------------------------------------- withdraw
@@ -502,5 +572,26 @@ export function toCustomerWithdrawalResponse(w: CustomerWithdrawalRequest): Cust
     failureReason: w.status === WithdrawalStatus.FAILED ? (w.failureReason ?? null) : null,
     refundTransactionId: w.refundTransactionId ?? null,
     updatedAt: w.updatedAt,
+  };
+}
+
+export type CustomerStaffWithdrawal = CustomerWithdrawalResponseDto & {
+  payoutState: string | null;
+  customer: { id: string; fullName: string; email: string; phoneNumber: string | null } | null;
+};
+
+/**
+ * The staff view keeps the provider's raw reason even while PROCESSING (support
+ * needs it); the customer view hides it until the payout has really failed.
+ */
+export function toStaffCustomerWithdrawalResponse(
+  w: CustomerWithdrawalRequest,
+  user?: Pick<User, 'id' | 'fullName' | 'email' | 'phoneNumber'>,
+): CustomerStaffWithdrawal {
+  return {
+    ...toCustomerWithdrawalResponse(w),
+    failureReason: w.failureReason ?? null,
+    payoutState: w.payoutState ?? null,
+    customer: user ? { id: user.id, fullName: user.fullName, email: user.email, phoneNumber: user.phoneNumber ?? null } : null,
   };
 }

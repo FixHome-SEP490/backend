@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-15 13:40 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
+> Cập nhật lần cuối: 2026-10-16 23:50 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/job-feedback
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -174,6 +174,10 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - Route phía client: `POST /ai/diagnoses`, `POST /ai/chat/ask`, `GET /ai/chat/acknowledgements`, `GET /ai/health`, `GET /ai/diagnoses/:id`.
 - Giới hạn khớp schema của `ai-service`: mô tả 2000 ký tự, câu hỏi 1000, `sessionId` và gợi ý 64, tối đa 3 ảnh. Hai route ảnh nhận body tới 40 MB.
 - AI lỗi thì trả HTTP 200 với `aiAvailable: false` và câu trả lời dự phòng; không bao giờ chặn đặt lịch.
+- Phản hồi của khách về câu trả lời AI: `POST /ai/feedback` `{ sessionId, verdict: wrong|right, note?, reply? }` (10 lần/phút), lưu vào `ai_chat_sessions.summary.feedback` (tối đa 20 mục, không chép sang tóm tắt của booking); 404 nếu phiên không do backend ghi hoặc thuộc khách khác. Admin xem `GET /admin/ai-quality?days=1..90` (khung ngày theo giờ Việt Nam: từ 0 giờ của n-1 ngày trước tới hiện tại, `perDay` đúng n dòng, hôm nay cuối): số cuộc trò chuyện, số lượt, số cuộc bị báo sai/đúng, số đơn đặt từ trợ lý và tỉ lệ, theo ngày, 20 câu trả lời bị báo sai gần nhất kèm lời khách. Không thêm bảng, không migration.
+- Ghi chú hội thoại của AI: `notesVi` trong phản hồi ai-service (khách đã thử gì, đã loại lỗi nào, đang nghi gì, có dấu hiệu nguy hiểm) được ghi đè mỗi lượt vào `ai_chat_sessions.summary.notes` (tối đa 6 dòng), chép sang tóm tắt của booking, và lời chào khi thợ nhận đơn thêm dòng "Anh/chị đã cho biết: …" để khách không phải kể lại. Phiên cũ không có `notes` vẫn đọc được.
+- Đơn cũ của khách cho AI: khi khách đã đăng nhập hỏi trợ lý (`ai/diagnoses`, `ai/chat/ask`), backend gửi kèm `pastJobs` (tối đa 5 booking `matched` của chính khách trong 365 ngày, mới nhất trước; mỗi mục `serviceVi`, `deviceVi?`, `faultVi?` lấy từ `aiSummary`, `date` theo ngày Việt Nam). Không gửi địa chỉ, thợ, tiền; khách vãng lai và nhân viên không có. Đọc lỗi thì bỏ qua; ai-service cũ trả 422 thì gửi lại không kèm `history`/`pastJobs` (`ai-past-jobs.ts`, `postToAi`).
+- Giới hạn tần suất gọi AI (`AiThrottlerGuard`): `POST /ai/diagnoses` (và alias cũ) 20 lần/phút, `POST /ai/chat/ask` 30 lần/phút, tính theo tài khoản khách khi đã đăng nhập, theo IP khi ẩn danh; vượt thì 429. Đo 16/10/2026: một GPU phục vụ khoảng 50 người cùng lúc.
 - Giữ ngữ cảnh khi `ai-service` mất phiên (khởi động lại, hết hạn): khi client gửi `sessionId`, `backend` đọc `ai_chat_sessions.summary.customerText` của phiên đó (chỉ khi phiên không thuộc khách khác) và gửi kèm `history` (tối đa 20 lượt, mỗi lượt 2000 ký tự). Client không gửi được `history`. `ai-service` cũ trả 422 với trường này thì `backend` gửi lại một lần không kèm. Khi `ai-service` trả `sessionId` mới thay cho phiên đã mất, tóm tắt của phiên cũ được chép sang phiên mới (cùng chủ).
 
 ### Biến môi trường (chỉ tên, xem `.env.example`)
@@ -234,6 +238,16 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-16 23:50 (UTC+7) | ToanAltF4 | fix/job-feedback | Danh sách việc của thợ: tab theo trạng thái đang làm (Cần di chuyển, Đang sửa chữa, Hoàn thành) chỉ tính đơn thợ còn phụ trách, đơn đã rút chỉ còn ở Tất cả và Đã huỷ; GET /service-orders/:id/warranties trả thêm itemType và itemDescription của dòng hoá đơn mà bảo hành che
+- 2026-10-16 16:57 (UTC+7) | ToanAltF4 | feat/smart-voice-call | Gọi thoại thông minh: người nhận không mở app thì báo offline ngay; callee báo đang đổ chuông (call:ringing) cho bên gọi; máy bận tách busy/self_busy, người bận nhận call:missed; nghe máy ở một thiết bị thì thiết bị khác thôi reo (answered_elsewhere); cuộc gọi nhỡ (hết giờ, huỷ, bận, offline) thành thông báo CALL_MISSED
+- 2026-10-16 13:56 (UTC+7) | ToanAltF4 | fix/vnpay-return-origin | VNPay trả về đúng web đã bắt đầu thanh toán (local hoặc web triển khai dùng chung backend): link trả về mang ?web=<origin>, chỉ nhận origin nằm trong CORS_ORIGIN, còn lại về FRONTEND_URL; kiểm chữ ký chỉ xét trường vnp_
+- 2026-10-16 13:34 (UTC+7) | ToanAltF4 | feat/turn-credentials | Gọi thoại khác mạng: connect:ready gửi thêm TURN riêng (coturn use-auth-secret) với login hết hạn theo người dùng khi đặt WEBRTC_TURN_URLS + WEBRTC_TURN_SECRET; không đặt thì như cũ chỉ STUN
+- 2026-10-16 05:06 (UTC+7) | ToanAltF4 | fix/ai-quality-days | Trang chất lượng trợ lý AI: 7 ngày là đúng 7 ngày theo giờ Việt Nam (trước đây ra 8 ngày, ranh giới ngày theo múi giờ DB)
+- 2026-10-16 04:16 (UTC+7) | ToanAltF4 | feat/ai-past-jobs | Gửi pastJobs (đơn đã có thợ nhận của chính khách, 1 năm, tối đa 5) cho AI để trợ lý nhắc lần sửa trước
+- 2026-10-16 03:54 (UTC+7) | ToanAltF4 | feat/ai-notes | Tóm tắt trợ lý AI giữ ghi chú khách đã thử/đã loại (notesVi) và đưa vào lời chào khi thợ nhận đơn
+- 2026-10-16 02:38 (UTC+7) | ToanAltF4 | feat/ai-feedback-quality | Phản hồi đúng/sai của khách về câu trả lời AI và trang chất lượng AI cho admin
+- 2026-10-16 02:17 (UTC+7) | ToanAltF4 | feat/ai-rate-limit | Giới hạn tần suất gọi AI theo khách hoặc IP
+- 2026-10-16 00:14 (UTC+7) | ToanAltF4 | feat/staff-customer-withdrawals | SM/Admin xem lệnh rút tiền của khách tách riêng với thợ: danh sách có tìm kiếm, tổng quan, hỏi lại payOS (/service-manager/customer-withdrawals)
 - 2026-10-15 13:40 (UTC+7) | Hgnv11 | dev | Thanh toán hoá đơn VNPay chia hai nhánh trả về: mobile (header x-client-platform) về app qua fixhome://app/order-payment, web vẫn FRONTEND_URL; CHƯA KIỂM CHỨNG trên máy thật
 - 2026-10-14 23:11 (UTC+7) | ToanAltF4 | feat/customer-withdrawal-kyc | Khách rút ví về ngân hàng qua payOS sau khi admin duyệt CCCD; bảng KYC, tài khoản, lệnh rút của khách (migration 036)
 - 2026-10-14 22:17 (UTC+7) | ToanAltF4 | fix/reputation-reset-sweep | Sửa job làm mới điểm uy tín: đọc đúng kết quả UPDATE RETURNING ([rows, rowCount]) nên không còn ghi NaN mỗi phút
@@ -264,13 +278,3 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - 2026-10-09 18:50 (UTC+7) | ToanAltF4 | feat/replace-after-report | SM đổi thợ sau khi thợ báo cần thay; thợ rút chỉ tính check-in của chính mình
 - 2026-10-09 18:12 (UTC+7) | ToanAltF4 | feat/customer-wallet | Ví khách: nạp VNPay, trả hoá đơn bằng ví, hoàn tiền vào ví qua khiếu nại; migration 031
 - 2026-10-09 17:13 (UTC+7) | ToanAltF4 | feat/reschedule-notify | Đổi lịch đơn đã có thợ thì báo cho thợ; e2e đổi lịch theo buổi
-- 2026-10-09 16:57 (UTC+7) | ToanAltF4 | feat/customer-booking-sessions | Xem trước lời mời có buổi hẹn (bookingMode, slot), không lộ ghi chú của khách
-- 2026-10-09 15:11 (UTC+7) | ToanAltF4 | feat/auto-reputation-only | Bỏ xác nhận vi phạm thủ công, huỷ đơn tự trừ điểm; danh sách huỷ đơn có số điểm đã trừ
-- 2026-10-09 10:06 (UTC+7) | ToanAltF4 | feat/reputation-points | Điểm uy tín khách và thợ: trừ khi huỷ đơn đã có thợ, khoá theo mức điểm, reset 2 tháng, SM xem và điều chỉnh; vi phạm cũ không còn tự khoá; migration 030
-- 2026-10-08 23:52 (UTC+7) | ToanAltF4 | feat/order-steps-photos | Thợ: tự chuyển đang sửa khi đủ điều kiện, ảnh đóng dấu giờ và mã đơn, case cần thay đổi thợ sau check-in.
-- 2026-10-08 23:32 (UTC+7) | ToanAltF4 | feat/booking-sessions | Đặt lịch theo buổi sáng/chiều, đơn vãng lai theo GPS, đổi lịch chặn buổi thợ bận, buổi còn trống, đặt lại thợ cũ, xuất phát sớm 1 giờ, vị trí thợ.
-- 2026-10-08 21:53 (UTC+7) | ToanAltF4 | fix/strike-role | Xác nhận vi phạm ghi role vào cancellation_strikes (cột bắt buộc), trước đây insert lỗi trên DB thật.
-- 2026-10-07 21:27 (UTC+7) | ToanAltF4 | fix/fixed-price-and-waive-reason | Dịch vụ giá cố định bắt buộc có giá > 0; miễn vi phạm khi xét huỷ đơn bắt buộc có lý do, kiểm trước khi ghi.
-- 2026-10-07 21:17 (UTC+7) | ToanAltF4 | fix/time-off-and-review-guards | Chặn khai báo ngày nghỉ đã qua; đánh giá trùng trả CONFLICT với câu tiếng Việt.
-- 2026-10-07 21:03 (UTC+7) | ToanAltF4 | fix/order-completed-notices | Hoàn tất đơn qua tiền mặt hoặc VNPay giờ cũng gửi thông báo ORDER_COMPLETED; gom bảo hành và thông báo về applyOrderCompletionEffects.
-- 2026-10-07 19:15 (UTC+7) | ToanAltF4 | fix/remaining-bugs-and-fake-data | Ghi các lỗi còn lại đã sửa, quy định không dữ liệu giả, vi phạm do quản lý xác nhận, thu nhập theo hoá đơn và migration 027

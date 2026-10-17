@@ -11,9 +11,11 @@ import {
   Req, ParseUUIDPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { AiDiagnosisService } from './ai-diagnosis.service';
-import { AnalyzeDto, AskDto } from './dto/ai-contract.dto';
+import { AiFeedbackDto, AnalyzeDto, AskDto } from './dto/ai-contract.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AiDiagnosisBookingAuthGuard } from './ai-diagnosis-booking-auth.guard';
+import { AiThrottlerGuard, AI_ANALYZE_PER_MINUTE, AI_ASK_PER_MINUTE } from './ai-throttler.guard';
+import { Throttle } from '@nestjs/throttler';
 
 /**
  * The app's single door to the AI.
@@ -35,7 +37,8 @@ export class AiDiagnosisController {
   constructor(private readonly aiDiagnosisService: AiDiagnosisService) {}
 
   @Post('ai/diagnoses')
-  @UseGuards(AiDiagnosisBookingAuthGuard)
+  @UseGuards(AiDiagnosisBookingAuthGuard, AiThrottlerGuard)
+  @Throttle({ default: { limit: AI_ANALYZE_PER_MINUTE, ttl: 60000 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Diagnose from a description and up to three photos (advisory only)',
@@ -52,7 +55,8 @@ export class AiDiagnosisController {
   }
 
   @Post('ai/chat/ask')
-  @UseGuards(AiDiagnosisBookingAuthGuard)
+  @UseGuards(AiDiagnosisBookingAuthGuard, AiThrottlerGuard)
+  @Throttle({ default: { limit: AI_ASK_PER_MINUTE, ttl: 60000 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Ask the assistant a question with no photo',
@@ -61,6 +65,19 @@ export class AiDiagnosisController {
   })
   async ask(@Body() dto: AskDto, @Req() req: { user?: { id: string; role: string } }) {
     return this.aiDiagnosisService.ask(dto, req?.user);
+  }
+
+  @Post('ai/feedback')
+  @UseGuards(AiDiagnosisBookingAuthGuard, AiThrottlerGuard)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Tell the team an answer was right or wrong',
+    description:
+      'Kept on the conversation for the AI test set. 404 for a session this server did not record or that another customer holds.',
+  })
+  async feedback(@Body() dto: AiFeedbackDto, @Req() req: { user?: { id: string; role: string } }) {
+    return this.aiDiagnosisService.recordFeedback(dto, req?.user);
   }
 
   @Get('ai/chat/acknowledgements')
@@ -97,7 +114,8 @@ export class AiDiagnosisController {
    * Older path kept alive because it is already in use elsewhere. Same handler.
    */
   @Post('ai-diagnosis/analyze')
-  @UseGuards(AiDiagnosisBookingAuthGuard)
+  @UseGuards(AiDiagnosisBookingAuthGuard, AiThrottlerGuard)
+  @Throttle({ default: { limit: AI_ANALYZE_PER_MINUTE, ttl: 60000 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Deprecated alias for POST ai/diagnoses' })
   async analyzeLegacy(@Body() dto: AnalyzeDto, @Req() req: { user?: { id: string; role: string } }) {

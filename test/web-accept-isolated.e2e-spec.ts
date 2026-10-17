@@ -214,6 +214,10 @@ describe('WEB-ACCEPT isolated real HTTP/JWT/PostgreSQL (three synthetic actors)'
     expect(list.status).toBe(200);
     expect(list.body.data).toHaveLength(1);
     expect(list.body.data[0]).toMatchObject({ id: serviceOrder.id, historical: true });
+    // Off the job, it is not work to travel to: the active tabs leave it out, "all" keeps it.
+    const travelling = await get('/service-orders/my?statuses=accepted,en_route', winner);
+    expect(travelling.status).toBe(200);
+    expect(travelling.body.data).toHaveLength(0);
     expect(JSON.stringify(list.body.data)).not.toMatch(/PRIVATE_SYNTHETIC_ADDRESS_123|customerPhone|addressSummary|destination|bookingId|media|diagnosis/i);
   }, 60000);
 

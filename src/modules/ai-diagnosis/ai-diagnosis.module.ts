@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { HttpModule } from '@nestjs/axios';
 import { ConfigModule } from '@nestjs/config';
 import { AiDiagnosisController } from './ai-diagnosis.controller';
+import { AdminAiQualityController } from './admin-ai-quality.controller';
 import { AiDiagnosisService } from './ai-diagnosis.service';
 import { AiDiagnosis } from './entities/ai-diagnosis.entity';
 import { AiChatSession } from './entities/ai-chat-session.entity';
@@ -17,7 +18,7 @@ import { Service } from '../services/entities/service.entity';
     }),
     ConfigModule,
   ],
-  controllers: [AiDiagnosisController],
+  controllers: [AiDiagnosisController, AdminAiQualityController],
   providers: [AiDiagnosisService],
   exports: [AiDiagnosisService],
 })

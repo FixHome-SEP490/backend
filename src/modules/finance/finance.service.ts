@@ -52,7 +52,7 @@ import {
 } from './dto';
 import { PaymentVerificationPort, PAYMENT_VERIFICATION_PORT } from './payment-verification.port';
 import { SupportCasesService } from '../support-cases/support-cases.service';
-import { buildPaymentUrl, buildQueryDrRequest, verifySignature } from './vnpay/vnpay.util';
+import { buildPaymentUrl, buildQueryDrRequest, verifySignature, withWebOrigin } from './vnpay/vnpay.util';
 import { SettlementService } from '../wallet/settlement.service';
 import { WalletService } from '../wallet/wallet.service';
 
@@ -227,6 +227,7 @@ export class FinanceService {
     actor: FinanceActor,
     ipAddr: string,
     platform: 'web' | 'mobile' = 'web',
+    webOrigin?: string,
   ): Promise<{ paymentUrl: string }> {
     if (actor.role !== Role.CUSTOMER) {
       throw new BusinessException(
@@ -308,7 +309,7 @@ export class FinanceService {
         txnRef: payment.idempotencyKey,
         // The "mobile" marker survives the VNPay round trip so the return leg can deep-link back to the app.
         orderInfo: `Thanh toan hoa don ${payment.invoiceId}${platform === 'mobile' ? ' mobile' : ''}`,
-        returnUrl,
+        returnUrl: platform === 'web' ? withWebOrigin(returnUrl, webOrigin) : returnUrl,
         ipAddr,
       }),
     };
@@ -321,6 +322,7 @@ export class FinanceService {
     idempotencyKey?: string,
     platform: 'web' | 'mobile' = 'web',
     owner: 'technician' | 'customer' = 'technician',
+    webOrigin?: string,
   ): Promise<{ paymentId: string; paymentUrl: string }> {
     const wholeAmount = this.requireWholeVnd(amount, 'Top up amount');
     if (wholeAmount < 10000 || wholeAmount > 50000000) {
@@ -394,7 +396,7 @@ export class FinanceService {
         amount: Number(payment.amount),
         txnRef: payment.idempotencyKey,
         orderInfo,
-        returnUrl,
+        returnUrl: platform === 'web' ? withWebOrigin(returnUrl, webOrigin) : returnUrl,
         ipAddr: ipAddr || '127.0.0.1',
       }),
     };

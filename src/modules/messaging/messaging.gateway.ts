@@ -1,5 +1,5 @@
 // src/modules/messaging/messaging.gateway.ts
-import { Logger } from '@nestjs/common';
+import { Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -18,13 +18,19 @@ import { User } from '../users/entities/user.entity';
 import { AccountStatus, Role } from '../../shared/enums';
 import { ChatActor, MessageView, MessagingService } from './messaging.service';
 import { CallRegistryService } from './call-registry.service';
+import { buildIceServers, hasTurn, IceServer } from './ice-servers';
 import {
   CALL_CLIENT_EVENTS,
   CALL_SERVER_EVENTS,
   CallEndReason,
+  CallInviteRefusal,
   CallSession,
   CallSignalPayload,
 } from './call.types';
+import { NotificationsService } from '../notifications/notifications.service';
+
+/** Why a call did not get through to the person it rang. */
+type MissedReason = 'no_answer' | 'cancelled' | 'busy' | 'offline';
 
 interface ChatSocket extends Socket {
   data: { user?: ChatActor };
@@ -77,6 +83,7 @@ export class MessagingGateway
     private readonly configService: ConfigService,
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   // ---------------------------------------------------------------- lifecycle
@@ -103,7 +110,7 @@ export class MessagingGateway
     client.emit('connect:ready', {
       userId: actor.id,
       conversationIds,
-      iceServers: this.iceServers(),
+      iceServers: this.iceServers(actor.id),
     });
   }
 
@@ -175,19 +182,23 @@ export class MessagingGateway
   }
 
   /**
-   * STUN only, and optional at that. On a single Wi-Fi network both peers
-   * already know an address the other can reach, so an empty list still
-   * connects. Set WEBRTC_ICE_URLS to an empty string to switch STUN off
-   * entirely, or to a TURN url list if the deployment ever leaves the LAN.
+   * STUN plus, when WEBRTC_TURN_URLS and WEBRTC_TURN_SECRET are both set, our
+   * own TURN relay with a login made for this user that expires on its own.
+   * On a single Wi-Fi network STUN alone connects; across networks (4G, strict
+   * NAT) only the relay gets the audio through. Set WEBRTC_ICE_URLS to an
+   * empty string to switch STUN off.
    */
-  private iceServers(): { urls: string[] }[] {
-    const raw =
-      this.configService.get<string>('WEBRTC_ICE_URLS') ?? DEFAULT_ICE_URLS;
-    const urls = raw
-      .split(',')
-      .map((url) => url.trim())
-      .filter(Boolean);
-    return urls.length > 0 ? [{ urls }] : [];
+  private iceServers(userId: string): IceServer[] {
+    const settings = {
+      stunUrls: this.configService.get<string>('WEBRTC_ICE_URLS') ?? DEFAULT_ICE_URLS,
+      turnUrls: this.configService.get<string>('WEBRTC_TURN_URLS'),
+      turnSecret: this.configService.get<string>('WEBRTC_TURN_SECRET'),
+      turnTtlSeconds: Number(this.configService.get<string>('WEBRTC_TURN_TTL_SECONDS')) || undefined,
+    };
+    if (!hasTurn(settings) && (settings.turnUrls?.trim() || settings.turnSecret?.trim())) {
+      this.logger.warn('TURN is half configured (needs both WEBRTC_TURN_URLS and WEBRTC_TURN_SECRET); calls fall back to STUN only');
+    }
+    return buildIceServers(settings, userId);
   }
 
   // ------------------------------------------------------------ client events
@@ -256,7 +267,7 @@ export class MessagingGateway
   async onCallInvite(
     @ConnectedSocket() client: ChatSocket,
     @MessageBody() body: { conversationId?: string },
-  ): Promise<{ ok: boolean; callId?: string; reason?: string }> {
+  ): Promise<{ ok: boolean; callId?: string; reason?: CallInviteRefusal }> {
     const actor = client.data?.user;
     const conversationId = body?.conversationId;
     if (!actor || !conversationId) return { ok: false, reason: 'invalid' };
@@ -267,17 +278,42 @@ export class MessagingGateway
     );
     if (!peerId) return { ok: false, reason: 'forbidden' };
 
+    // Nothing of theirs is connected, so nothing can ring: say so at once
+    // instead of letting the caller listen to 45 seconds of nothing, and leave
+    // them a missed call to find when they come back.
+    if (!(await this.isOnline(peerId))) {
+      void this.recordMissedCall(peerId, actor.id, conversationId, 'offline');
+      return { ok: false, reason: 'offline' };
+    }
+
     const created = this.callRegistry.create(
       conversationId,
       actor.id,
       peerId,
-      (expired) =>
+      (expired) => {
         this.notifyCallEnded(expired, 'timeout', [
           expired.callerId,
           expired.calleeId,
-        ]),
+        ]);
+        void this.recordMissedCall(expired.calleeId, expired.callerId, expired.conversationId, 'no_answer');
+      },
     );
-    if ('busyUserId' in created) return { ok: false, reason: 'busy' };
+    if ('busyUserId' in created) {
+      if (created.busyUserId !== peerId) {
+        // Calling back in the thread that is already ringing is the same call, not another one.
+        const own = this.callRegistry.findByUser(actor.id);
+        return { ok: false, reason: own && own.conversationId !== conversationId ? 'self_busy' : 'busy' };
+      }
+      // They are on another call: the caller hears "busy", and the person they
+      // wanted learns someone tried, right away and in their notifications.
+      this.server?.to(userRoom(peerId)).emit(CALL_SERVER_EVENTS.MISSED, {
+        conversationId,
+        fromUserId: actor.id,
+        reason: 'busy',
+      });
+      void this.recordMissedCall(peerId, actor.id, conversationId, 'busy');
+      return { ok: false, reason: 'busy' };
+    }
 
     const { call } = created;
     // Sent to the personal room, not the conversation room, so it reaches the
@@ -288,6 +324,25 @@ export class MessagingGateway
       fromUserId: actor.id,
     });
     return { ok: true, callId: call.id };
+  }
+
+  /**
+   * The callee's device is showing the call. Only then does the caller hear a
+   * ringback tone and read "Đang đổ chuông": the call reached a screen.
+   */
+  @SubscribeMessage(CALL_CLIENT_EVENTS.RINGING)
+  onCallRinging(
+    @ConnectedSocket() client: ChatSocket,
+    @MessageBody() body: { callId?: string },
+  ): { ok: boolean } {
+    const actor = client.data?.user;
+    const call = body?.callId ? this.callRegistry.get(body.callId) : undefined;
+    if (!actor || !call || call.calleeId !== actor.id || call.state !== 'ringing') return { ok: false };
+    this.server?.to(userRoom(call.callerId)).emit(CALL_SERVER_EVENTS.RINGING, {
+      callId: call.id,
+      conversationId: call.conversationId,
+    });
+    return { ok: true };
   }
 
   /** Pick up. Only the person being rung can do this. */
@@ -306,6 +361,12 @@ export class MessagingGateway
     this.server?.to(userRoom(call.callerId)).emit(CALL_SERVER_EVENTS.ACCEPTED, {
       callId: call.id,
       conversationId: call.conversationId,
+    });
+    // The callee's other tabs and devices stop ringing; this socket is left out.
+    client.to?.(userRoom(call.calleeId)).emit(CALL_SERVER_EVENTS.ENDED, {
+      callId: call.id,
+      conversationId: call.conversationId,
+      reason: 'answered_elsewhere',
     });
     return { ok: true };
   }
@@ -394,7 +455,44 @@ export class MessagingGateway
 
     this.callRegistry.remove(call.id);
     this.notifyCallEnded(call, reason, [call.callerId, call.calleeId]);
+    if (reason === 'cancelled') {
+      void this.recordMissedCall(call.calleeId, call.callerId, call.conversationId, 'cancelled');
+    }
     return { ok: true };
+  }
+
+  /** Online = at least one socket of theirs is connected. Unsure counts as online, so a call is never refused by mistake. */
+  private async isOnline(userId: string): Promise<boolean> {
+    if (!this.server) return true;
+    try {
+      const sockets = await this.server.in(userRoom(userId)).fetchSockets();
+      return sockets.length > 0;
+    } catch {
+      return true;
+    }
+  }
+
+  /**
+   * A call that did not get through becomes a notification for the person who
+   * was rung. Best effort: signalling never waits on it or fails because of it.
+   */
+  private async recordMissedCall(calleeId: string, callerId: string, conversationId: string, why: MissedReason): Promise<void> {
+    if (!this.notifications) return;
+    try {
+      const caller = await this.userRepo.findOne({ where: { id: callerId }, select: { id: true, fullName: true } });
+      const name = caller?.fullName?.trim() || 'Một người';
+      const detail = why === 'busy' ? ' lúc bạn đang trong cuộc gọi khác' : why === 'offline' ? ' lúc bạn không mở ứng dụng' : '';
+      await this.notifications.createNotification({
+        userId: calleeId,
+        title: 'Cuộc gọi nhỡ',
+        message: `${name} đã gọi cho bạn${detail}. Mở tin nhắn để gọi lại.`,
+        type: 'CALL_MISSED',
+        referenceId: conversationId,
+        referenceType: 'conversation',
+      });
+    } catch (error) {
+      this.logger.warn(`Could not record a missed call for ${calleeId}: ${(error as Error)?.message}`);
+    }
   }
 
   /**

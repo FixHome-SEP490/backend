@@ -74,6 +74,34 @@ export function registerDev1Cases(context: () => Context) {
       await evidence(orderId, actor, 'before').expect(201);
     }
 
+    it("tells the AI a signed-in customer's own earlier repairs, and nobody else's", async () => {
+      const { AiDiagnosisService } = runtimeRequire('./dist/modules/ai-diagnosis/ai-diagnosis.service.js');
+      const { of } = runtimeRequire('rxjs');
+      const http = (context().app.get(AiDiagnosisService) as any).httpService;
+      const sent: Array<Record<string, any>> = [];
+      const spy = vi.spyOn(http, 'post').mockImplementation(((_url: string, body: Record<string, any>) => {
+        sent.push(body);
+        return of({ data: { sessionId: `ai-${randomUUID()}`, status: 'ok', answerVi: 'Dạ.', recommendedServices: [] } });
+      }) as any);
+      try {
+        const f = await fixture();
+        const { booking } = await accept(f);
+        await f.create(); // still waiting for a technician: not a repair yet
+        const vnDay = new Date(new Date(booking.preferredStartAt).getTime() + 7 * 3600000).toISOString().slice(0, 10);
+        await post('/ai/chat/ask', f.owner, { question: 'máy lạnh không mát' }).expect(200);
+        expect(sent[0].pastJobs).toEqual([{ serviceVi: 'Repair fixture', date: vnDay }]);
+        await post('/ai/diagnoses', f.owner, { description: 'máy lạnh không mát' }).expect(200);
+        expect(sent[1].pastJobs).toEqual([{ serviceVi: 'Repair fixture', date: vnDay }]);
+        expect(JSON.stringify(sent[0])).not.toContain('1 Test Street');
+        await post('/ai/chat/ask', f.outsider, { question: 'máy lạnh không mát' }).expect(200);
+        expect(sent[2]).not.toHaveProperty('pastJobs');
+        await post('/ai/chat/ask', f.tech, { question: 'máy lạnh không mát' }).expect(200);
+        expect(sent[3]).not.toHaveProperty('pastJobs');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it('validates booking DTO, address ownership, snapshots and creates no pre-Accept order', async () => {
       const f = await fixture();
       for (const changes of [{ preferredEndAt: undefined }, { quantity: 0 }, { quantity: 1.5 }, { preferredStartAt: '2020-01-01T00:00:00Z' }, { description: '  ' }, { status: 'matched' }]) denied(await post('/bookings', f.owner, { ...f.body, ...changes }));
@@ -722,6 +750,11 @@ export function registerDev1Cases(context: () => Context) {
       if (selected) {
         const warranties = unwrap((await get(path + '/warranties', f.owner).expect(200)).body);
         expect(warranties).toHaveLength(2);
+        // Each coverage names the invoice line it covers, so the customer knows what to claim.
+        expect(warranties.map((w: any) => [w.itemType, w.itemDescription, w.warrantyDaysSnapshot]).sort()).toEqual([
+          ['labor', 'Repair labor', 30],
+          ['parts_equipment', 'Technician part', 90],
+        ]);
       } else {
         expect(await context().db.getRepository('CommissionDue').count({ where: { serviceOrderId: order.id } })).toBe(0);
       }
@@ -835,9 +868,91 @@ export function registerDev1Cases(context: () => Context) {
         const history = unwrap((await get('/customer/wallet/withdrawals?page=1&limit=10', customer).expect(200)).body);
         expect(history.map((w: any) => w.status)).toEqual(['FAILED', 'SUCCESS']);
         denied(await get('/customer/wallet/withdrawals', admin));
+
+        // Staff see customer withdrawals on their own list, never mixed with technicians' (PO 16/10/2026).
+        for (const staff of [manager, admin]) {
+          const mine = unwrap((await get('/service-manager/customer-withdrawals?page=1&limit=20', staff).expect(200)).body)
+            .filter((w: any) => w.customer?.id === customer.user.id);
+          expect(mine.map((w: any) => w.status)).toEqual(['FAILED', 'SUCCESS']);
+          expect(mine[0]).toMatchObject({ amount: 60000, bankAccountNumber: '••••6789', failureReason: 'Tài khoản nhận không hợp lệ', customer: { fullName: 'Nguyễn Văn Khách' } });
+          const technicianIds = unwrap((await get('/service-manager/withdrawals?page=1&limit=100', staff).expect(200)).body).map((w: any) => w.id);
+          expect(technicianIds).not.toContain(done.id);
+          expect(technicianIds).not.toContain(failed.id);
+        }
+        const searched = unwrap((await get(`/service-manager/customer-withdrawals?status=FAILED&search=${encodeURIComponent('nguyen van khach')}`, manager).expect(200)).body);
+        expect(searched.map((w: any) => w.id)).toEqual([failed.id]);
+        const totals = unwrap((await get('/service-manager/customer-withdrawals/payout-overview', manager).expect(200)).body);
+        expect(totals).toMatchObject({ sourceBalance: 100_000_000 });
+        expect(totals.paidOut.amount).toBeGreaterThanOrEqual(150000);
+        expect(totals.failed.count).toBeGreaterThanOrEqual(1);
+        expect(unwrap((await post(`/service-manager/customer-withdrawals/${done.id}/reconcile`, manager).expect(200)).body)).toMatchObject({ id: done.id, status: 'SUCCESS', customer: { id: customer.user.id } });
+        denied(await get('/service-manager/customer-withdrawals', customer));
       } finally {
         spies.forEach((spy) => spy.mockRestore());
         Object.defineProperty(provider, 'name', { value: originalName, configurable: true, writable: true });
+      }
+    });
+  });
+
+  describe('AI assistant is rate limited per customer', () => {
+    it('stops one customer at the limit without touching another', async () => {
+      const { AiDiagnosisService } = runtimeRequire('./dist/modules/ai-diagnosis/ai-diagnosis.service.js');
+      const { AI_ASK_PER_MINUTE } = runtimeRequire('./dist/modules/ai-diagnosis/ai-throttler.guard.js');
+      const { of } = runtimeRequire('rxjs');
+      const http = (context().app.get(AiDiagnosisService) as any).httpService;
+      const spy = vi.spyOn(http, 'post').mockImplementation((() =>
+        of({ data: { sessionId: `ai-${randomUUID()}`, status: 'ok', answerVi: 'Dạ.', recommendedServices: [] } })) as any);
+      try {
+        const busy = await context().register();
+        const other = await context().register();
+        const ask = (session: Session) =>
+          request(context().app.getHttpServer()).post('/api/v1/ai/chat/ask')
+            .set('Authorization', `Bearer ${session.accessToken}`)
+            .send({ question: 'máy lạnh không mát' });
+        for (let i = 0; i < AI_ASK_PER_MINUTE; i += 1) {
+          await ask(busy).expect(200);
+        }
+        await ask(busy).expect(429);
+        await ask(other).expect(200);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('keeps a customer\'s verdict on their own conversation and shows it to an admin', async () => {
+      const { AiDiagnosisService } = runtimeRequire('./dist/modules/ai-diagnosis/ai-diagnosis.service.js');
+      const { of } = runtimeRequire('rxjs');
+      const http = (context().app.get(AiDiagnosisService) as any).httpService;
+      const sessionId = `ai-${randomUUID()}`;
+      const spy = vi.spyOn(http, 'post').mockImplementation((() =>
+        of({ data: { sessionId, status: 'ok', answerVi: 'Dạ khả năng cao là thiếu gas.', recommendedServices: [] } })) as any);
+      const post = (path: string, session: Session, body: object = {}) => request(context().app.getHttpServer()).post(`/api/v1${path}`).set('Authorization', `Bearer ${session.accessToken}`).send(body);
+      const get = (path: string, session: Session) => request(context().app.getHttpServer()).get(`/api/v1${path}`).set('Authorization', `Bearer ${session.accessToken}`);
+      const denied = (response: request.Response) => expect(response.status, JSON.stringify(response.body)).toBeGreaterThanOrEqual(400);
+      try {
+        const owner = await context().register();
+        const stranger = await context().register();
+        await post('/ai/chat/ask', owner, { question: 'máy lạnh không mát, mới vệ sinh rồi' }).expect(200);
+        const verdict = { sessionId, verdict: 'wrong', note: 'em đã nói vệ sinh rồi', reply: 'Dạ khả năng cao là thiếu gas.' };
+        await post('/ai/feedback', stranger, verdict).expect(404);
+        await post('/ai/feedback', owner, verdict).expect(200);
+        await post('/ai/feedback', owner, { ...verdict, verdict: 'maybe' }).expect(400);
+        await post('/ai/feedback', owner, { sessionId: 'never-recorded', verdict: 'wrong' }).expect(404);
+        denied(await get('/admin/ai-quality', owner));
+        await context().db.query('UPDATE users SET role = $1 WHERE id = $2', ['admin', stranger.user.id]);
+        const quality = unwrap((await get('/admin/ai-quality?days=1', stranger).expect(200)).body);
+        expect(quality.totals.markedWrong).toBeGreaterThanOrEqual(1);
+        expect(quality.recentWrong.some((r: any) => r.sessionId === sessionId && r.note === 'em đã nói vệ sinh rồi')).toBe(true);
+        expect(quality.perDay.length).toBeGreaterThanOrEqual(1);
+        const week = unwrap((await get('/admin/ai-quality?days=7', stranger).expect(200)).body);
+        const todayVn = new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
+        expect(week.perDay).toHaveLength(7);
+        expect(week.perDay.at(-1).day).toBe(todayVn);
+        expect(week.perDay.at(-1).sessions).toBeGreaterThanOrEqual(1);
+        const [row] = await context().db.query('SELECT summary FROM ai_chat_sessions WHERE session_id = $1', [sessionId]);
+        expect(row.summary.feedback).toHaveLength(1);
+      } finally {
+        spy.mockRestore();
       }
     });
   });

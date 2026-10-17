@@ -58,3 +58,23 @@ jobs:
           JWT_ACCESS_SECRET: ci-only-access-secret-at-least-32-characters
           JWT_REFRESH_SECRET: ci-only-refresh-secret-at-least-32-characters
           MAIL_TRANSPORT: json
+
+  deploy:
+    name: Deploy to VPS
+    needs: backend
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency: deploy-vps
+    steps:
+      - uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+            cd ~/backend
+            git pull --ff-only
+            docker compose -f docker-compose.prod.yml up -d --build backend
+            docker image prune -f

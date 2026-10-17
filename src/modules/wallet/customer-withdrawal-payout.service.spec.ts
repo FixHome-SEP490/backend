@@ -6,7 +6,7 @@ import { WithdrawalStatus } from '../../shared/enums';
 import { CustomerWalletService } from '../customer-wallet/customer-wallet.service';
 import { CustomerWallet } from '../customer-wallet/entities/customer-wallet.entity';
 import { CustomerWalletTransaction } from '../customer-wallet/entities/customer-wallet-transaction.entity';
-import { CustomerWithdrawalPayoutService } from './customer-withdrawal-payout.service';
+import { CustomerWithdrawalPayoutService, toCustomerWithdrawalResponse, toStaffCustomerWithdrawalResponse } from './customer-withdrawal-payout.service';
 import { MIN_WITHDRAWAL_AMOUNT } from './dto';
 import { PayoutRejectedError, PayoutResult, PayoutUnknownError } from './payout/payout-provider';
 import { PAYOUT_NOT_FOUND_GRACE_MS } from './withdrawal-payout.service';
@@ -303,5 +303,24 @@ describe('CustomerWithdrawalPayoutService', () => {
     const listed = await service.listMine(CUSTOMER_ID, { page: 1, limit: 20 });
     expect(listed.meta.total).toBe(1);
     expect(listed.data[0]).toMatchObject({ status: 'PROCESSING', failureReason: null, bankAccountNumber: '••••6789' });
+  });
+});
+
+describe('customer withdrawals as staff see them (PO 16/10/2026)', () => {
+  const row = {
+    id: '11111111-1111-4111-8111-111111111111', walletId: 'w', customerId: 'c1', amount: 50000, bankBin: '970436', bankName: 'Vietcombank',
+    bankAccountNumber: '0123456789', bankAccountName: 'NGUYEN VAN A', status: 'PROCESSING', requestedAt: new Date(), payoutState: 'UNKNOWN',
+    failureReason: 'Chưa xác nhận được với payOS: timeout', updatedAt: new Date(),
+  } as never;
+
+  it('keeps the raw provider reason and the customer contact for staff, masks the account', () => {
+    const view = toStaffCustomerWithdrawalResponse(row, { id: 'c1', fullName: 'Nguyễn Văn A', email: 'a@b.c', phoneNumber: '0900000000' } as never);
+    expect(view).toMatchObject({ bankAccountNumber: '••••6789', payoutState: 'UNKNOWN', failureReason: 'Chưa xác nhận được với payOS: timeout', customer: { id: 'c1', fullName: 'Nguyễn Văn A' } });
+    // The customer's own view still hides it while the payout is in flight.
+    expect(toCustomerWithdrawalResponse(row).failureReason).toBeNull();
+  });
+
+  it('shows no contact rather than failing when the account is gone', () => {
+    expect(toStaffCustomerWithdrawalResponse(row).customer).toBeNull();
   });
 });

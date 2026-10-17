@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildAcceptGreeting, formatAppointment, formatVnd, GREETING_MAX_LENGTH } from './accept-greeting';
-import type { AiBookingSummary } from '../ai-diagnosis/ai-chat-summary';
+import { emptySummary, type AiBookingSummary } from '../ai-diagnosis/ai-chat-summary';
 
 const base = {
   technicianName: 'Nguyễn Văn An',
@@ -91,5 +91,14 @@ describe('accept greeting line breaks', () => {
   it('never splits an amount from its currency symbol', () => {
     expect(formatVnd(1210000)).not.toMatch(/ ₫/);
     expect(formatVnd(1210000)).toBe('1.210.000\u00A0₫');
+  });
+
+  it('tells the customer what the technician already knows they tried', () => {
+    const text = buildAcceptGreeting({
+      ...base,
+      aiSummary: { ...emptySummary(), deviceName: 'Máy lạnh', notes: ['Khách đã vệ sinh rồi, đã loại bẩn lưới lọc và dàn lạnh.', 'Khách nghi thiếu gas, xì gas.'], recordedAt: '2026-10-16T00:00:00Z' },
+    });
+    expect(text).toContain('Anh/chị đã cho biết: đã vệ sinh rồi, đã loại bẩn lưới lọc và dàn lạnh; nghi thiếu gas, xì gas');
+    expect(text).not.toContain('Khách ');
   });
 });

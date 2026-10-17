@@ -21,10 +21,34 @@ export interface AiChatSummaryState {
   recommendedServiceName: string | null;
   photoCount: number;
   turnCount: number;
+  /**
+   * What the conversation established beyond the symptom, from the AI's
+   * notesVi: what the customer already tried or ruled out, what they suspect.
+   * Optional: summaries recorded before it existed have none.
+   */
+  notes?: string[];
+  /** What the customer said about the answers, for the team to learn from. Never copied to a booking. */
+  feedback?: AiFeedbackEntry[];
 }
 
+export type AiFeedbackVerdict = 'wrong' | 'right';
+
+export interface AiFeedbackEntry {
+  at: string;
+  verdict: AiFeedbackVerdict;
+  /** What the customer added, if anything. */
+  note: string | null;
+  /** The reply the verdict is about, as the customer saw it. */
+  reply: string | null;
+  /** Which turn of the conversation it came after. */
+  turn: number;
+}
+
+/** Kept per session; the oldest go first. */
+export const AI_FEEDBACK_LIMITS = { entries: 20, note: 300, reply: 1000 } as const;
+
 /** The copy frozen onto a Booking when it is created from an AI conversation. */
-export interface AiBookingSummary extends Omit<AiChatSummaryState, 'turnCount'> {
+export interface AiBookingSummary extends Omit<AiChatSummaryState, 'turnCount' | 'feedback'> {
   recordedAt: string;
 }
 
@@ -42,6 +66,7 @@ export const AI_SUMMARY_LIMITS = {
   conclusion: 600,
   item: 200,
   items: 3,
+  notes: 6,
   name: 200,
 } as const;
 
@@ -61,6 +86,7 @@ export function emptySummary(): AiChatSummaryState {
     recommendedServiceName: null,
     photoCount: 0,
     turnCount: 0,
+    notes: [],
   };
 }
 
@@ -119,6 +145,15 @@ export function mergeTurn(
   const device = reply.device as Record<string, unknown> | undefined;
   next.deviceName = clean(device?.nameVi, AI_SUMMARY_LIMITS.name) ?? next.deviceName;
 
+  // Replaced, not appended: the AI sends the whole picture every turn, and a
+  // fault the customer brought back ("à nhầm, chưa vệ sinh") must drop out.
+  if (Array.isArray(reply.notesVi)) {
+    next.notes = (reply.notesVi as unknown[])
+      .map((note) => clean(note, AI_SUMMARY_LIMITS.item))
+      .filter((note): note is string => !!note)
+      .slice(0, AI_SUMMARY_LIMITS.notes);
+  }
+
   const faults = names(reply.suspectedFaults, 'nameVi');
   if (faults.length) next.suspectedFaults = faults;
 
@@ -165,14 +200,53 @@ export function historyFromSummary(summary: Pick<AiChatSummaryState, 'customerTe
     .slice(-AI_HISTORY_LIMITS.turns);
 }
 
+/** Append one verdict to the summary, keeping the newest AI_FEEDBACK_LIMITS.entries. */
+export function addFeedback(
+  previous: AiChatSummaryState,
+  verdict: AiFeedbackVerdict,
+  note: string | null | undefined,
+  reply: string | null | undefined,
+  now = new Date(),
+): AiChatSummaryState {
+  const entry: AiFeedbackEntry = {
+    at: now.toISOString(),
+    verdict,
+    note: clean(note, AI_FEEDBACK_LIMITS.note),
+    reply: clean(reply, AI_FEEDBACK_LIMITS.reply),
+    turn: previous.turnCount,
+  };
+  const feedback = [...(previous.feedback ?? []), entry].slice(-AI_FEEDBACK_LIMITS.entries);
+  return { ...previous, feedback };
+}
+
 /** True when the conversation produced something worth telling the technician. */
 export function hasAdvice(summary: AiChatSummaryState | AiBookingSummary): boolean {
-  return !!(summary.deviceName || summary.suspectedFaults.length || summary.conclusion || summary.priceMin != null);
+  return !!(
+    summary.deviceName ||
+    summary.suspectedFaults.length ||
+    summary.conclusion ||
+    summary.priceMin != null ||
+    summary.notes?.length
+  );
 }
 
 export function toBookingSummary(state: AiChatSummaryState, now = new Date()): AiBookingSummary {
   // turnCount stays with the session; the booking keeps only what was learned.
-  const { turnCount: _turns, ...summary } = state;
+  const { turnCount: _turns, feedback: _feedback, ...summary } = state;
   void _turns;
+  void _feedback;
   return { ...summary, recordedAt: now.toISOString() };
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+/**
+ * "The last n days" for the admin, in Vietnam: from midnight n-1 days ago to
+ * now, so 7 days is today and the six before it - seven rows, whatever the
+ * server's or the database's time zone.
+ */
+export function vnDaysWindowStart(days: number, now = Date.now()): Date {
+  const todayStart = Math.floor((now + VN_OFFSET_MS) / DAY_MS) * DAY_MS - VN_OFFSET_MS;
+  return new Date(todayStart - (Math.max(1, Math.floor(days)) - 1) * DAY_MS);
 }

@@ -84,6 +84,11 @@ export function buildAcceptGreeting(input: AcceptGreetingInput): string {
   } else if (summary.conclusion) {
     lines.push(`Trợ lý nhận xét: ${clip(summary.conclusion, 300)}`);
   }
+  // Written by the AI about "Khách"; said here to the customer.
+  if (summary.notes?.length) {
+    const told = summary.notes.slice(0, 4).map((note) => clip(note.replace(/^Khách /, ''), 160).replace(/\.$/, ''));
+    lines.push(`Anh/chị đã cho biết: ${told.join('; ')}`);
+  }
   const price = priceLine(summary);
   if (price) lines.push(price);
   if (summary.photoCount > 0) lines.push(`Anh/chị đã gửi ${summary.photoCount} ảnh cho trợ lý.`);

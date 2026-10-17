@@ -1,7 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { MAX_PAGE } from '../../../shared/dto/page-size-query.dto';
 import { Type } from 'class-transformer';
-import { IsEnum, IsInt, IsOptional, Max, Min } from 'class-validator';
+import { IsEnum, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { WithdrawalStatus } from '../../../shared/enums';
 
 /** PO decision (29/09/2026): the smallest withdrawal is 10.000 ₫. */
@@ -121,4 +121,13 @@ export class WithdrawalResponseDto {
     email?: string | null;
     avatarUrl?: string | null;
   };
+}
+
+/** Staff list of customer withdrawals (PO 16/10/2026): the technician filters plus a search. */
+export class QueryCustomerWithdrawalsDto extends QueryWithdrawalsDto {
+  @ApiPropertyOptional({ description: "Customer's name (accents ignored), email or phone" })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  search?: string;
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AI_HISTORY_LIMITS, AI_SUMMARY_LIMITS, emptySummary, hasAdvice, historyFromSummary, mergeTurn, toBookingSummary } from './ai-chat-summary';
+import { AI_FEEDBACK_LIMITS, AI_HISTORY_LIMITS, AI_SUMMARY_LIMITS, addFeedback, emptySummary, hasAdvice, historyFromSummary, mergeTurn, toBookingSummary, vnDaysWindowStart } from './ai-chat-summary';
 
 const diagnosis = {
   status: 'ok',
@@ -110,5 +110,57 @@ describe('historyFromSummary', () => {
     expect(turns).toHaveLength(AI_HISTORY_LIMITS.turns);
     expect(turns[turns.length - 1]).toBe('lượt 29');
     expect(historyFromSummary({ customerText: 'x'.repeat(3000) })[0]).toHaveLength(AI_HISTORY_LIMITS.chars);
+  });
+});
+
+describe('addFeedback', () => {
+  it('keeps the verdict with the turn it came after', () => {
+    const state = { ...emptySummary(), turnCount: 3 };
+    const next = addFeedback(state, 'wrong', '  em đã nói vệ sinh rồi ', 'Dạ khả năng cao là bẩn lưới lọc.', new Date('2026-10-16T00:00:00Z'));
+    expect(next.feedback).toEqual([
+      { at: '2026-10-16T00:00:00.000Z', verdict: 'wrong', note: 'em đã nói vệ sinh rồi', reply: 'Dạ khả năng cao là bẩn lưới lọc.', turn: 3 },
+    ]);
+  });
+
+  it('keeps only the newest entries and bounded text', () => {
+    let state = emptySummary();
+    for (let i = 0; i < AI_FEEDBACK_LIMITS.entries + 5; i += 1) state = addFeedback(state, 'right', 'x'.repeat(500), null);
+    expect(state.feedback).toHaveLength(AI_FEEDBACK_LIMITS.entries);
+    expect(state.feedback![0].note!.length).toBeLessThanOrEqual(AI_FEEDBACK_LIMITS.note);
+  });
+
+  it('never reaches the booking summary the technician reads', () => {
+    const state = addFeedback({ ...emptySummary(), deviceName: 'Máy lạnh' }, 'wrong', 'sai', null);
+    expect(toBookingSummary(state)).not.toHaveProperty('feedback');
+  });
+});
+
+describe('conversation notes', () => {
+  it('keeps the AI notes, replaced each turn and bounded', () => {
+    const reply = { status: 'ok', notesVi: ['Khách đã vệ sinh rồi, đã loại bẩn lưới lọc và dàn lạnh.', '', 'Khách nghi thiếu gas, xì gas.'] };
+    const first = mergeTurn(emptySummary(), { text: 'mới vệ sinh rồi' }, reply);
+    expect(first.notes).toEqual(['Khách đã vệ sinh rồi, đã loại bẩn lưới lọc và dàn lạnh.', 'Khách nghi thiếu gas, xì gas.']);
+    const second = mergeTurn(first, { text: 'à nhầm chưa vệ sinh' }, { status: 'ok', notesVi: [] });
+    expect(second.notes).toEqual([]);
+    const many = mergeTurn(emptySummary(), {}, { status: 'ok', notesVi: Array.from({ length: 10 }, (_, i) => `Ghi chú ${i}`) });
+    expect(many.notes).toHaveLength(AI_SUMMARY_LIMITS.notes);
+    expect(hasAdvice({ ...emptySummary(), notes: ['Khách nghi thiếu gas.'] })).toBe(true);
+  });
+
+  it('keeps earlier notes when a reply says nothing about them', () => {
+    const first = mergeTurn(emptySummary(), {}, { status: 'ok', notesVi: ['Khách nghi thiếu gas.'] });
+    expect(mergeTurn(first, {}, { status: 'ok' }).notes).toEqual(['Khách nghi thiếu gas.']);
+  });
+});
+
+describe('admin quality window', () => {
+  it('starts at Vietnam midnight, days - 1 days back', () => {
+    // 04:58 on 16/10 in Vietnam is 21:58 on 15/10 UTC
+    const now = Date.parse('2026-10-15T21:58:00Z');
+    expect(vnDaysWindowStart(7, now).toISOString()).toBe('2026-10-09T17:00:00.000Z'); // 00:00 10/10 VN
+    expect(vnDaysWindowStart(1, now).toISOString()).toBe('2026-10-15T17:00:00.000Z'); // 00:00 16/10 VN
+    // 23:30 on 16/10 in Vietnam is still 16/10
+    expect(vnDaysWindowStart(1, Date.parse('2026-10-16T16:30:00Z')).toISOString()).toBe('2026-10-15T17:00:00.000Z');
+    expect(vnDaysWindowStart(0, now).toISOString()).toBe('2026-10-15T17:00:00.000Z');
   });
 });

@@ -59,7 +59,10 @@ export function verifySignature(
 ): boolean {
   const { vnp_SecureHash, vnp_SecureHashType: _ignored, ...rest } = query;
   if (!vnp_SecureHash) return false;
-  const expected = sign(rest, hashSecret);
+  // VNPay signs only its own vnp_* fields; anything else on the return URL
+  // (our `web` marker) is ours and must not take part in the check.
+  const signed = Object.fromEntries(Object.entries(rest).filter(([key]) => key.startsWith('vnp_')));
+  const expected = sign(signed, hashSecret);
   return expected.toLowerCase() === vnp_SecureHash.toLowerCase();
 }
 
@@ -109,4 +112,35 @@ export function buildQueryDrRequest(input: VnpayQueryDrInput): Record<string, st
     vnp_IpAddr: input.ipAddr,
     vnp_SecureHash: secureHash,
   };
+}
+
+/**
+ * Carries the web origin that started the payment through VNPay, so the return
+ * leg can send the browser back to that same site (a local dev server and the
+ * deployed site can share one backend). It is only a hint: the return leg
+ * accepts it solely when it is one of the CORS origins.
+ */
+export function withWebOrigin(returnUrl: string, webOrigin?: string): string {
+  if (!webOrigin) return returnUrl;
+  const url = new URL(returnUrl);
+  url.searchParams.set('web', webOrigin);
+  return url.toString();
+}
+
+/**
+ * The site to send the browser back to: the payment's own web origin when it
+ * is exactly one of the allowed origins, otherwise the configured default.
+ * Never an arbitrary address, so the return leg cannot become an open redirect.
+ */
+export function pickWebOrigin(candidate: string | undefined, allowedOrigins: string, fallback: string): string {
+  if (!candidate) return fallback;
+  let origin: string;
+  try {
+    origin = new URL(candidate).origin;
+  } catch {
+    return fallback;
+  }
+  if (origin !== candidate.replace(/\/+$/, '')) return fallback;
+  const allowed = allowedOrigins.split(',').map((o) => o.trim().replace(/\/+$/, '')).filter(Boolean);
+  return allowed.includes(origin) ? origin : fallback;
 }
