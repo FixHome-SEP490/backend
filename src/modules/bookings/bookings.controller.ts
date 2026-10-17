@@ -98,14 +98,17 @@ export class BookingsController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOkResponse({
-    description: 'Validated private Booking photo bytes',
+    description: 'Validated private Booking photo or video bytes',
     content: {
       'image/jpeg': { schema: { type: 'string', format: 'binary' } },
       'image/png': { schema: { type: 'string', format: 'binary' } },
       'image/webp': { schema: { type: 'string', format: 'binary' } },
+      'video/mp4': { schema: { type: 'string', format: 'binary' } },
+      'video/quicktime': { schema: { type: 'string', format: 'binary' } },
+      'video/webm': { schema: { type: 'string', format: 'binary' } },
     },
   })
-  @ApiOperation({ summary: 'Read private Booking photo content' })
+  @ApiOperation({ summary: 'Read private Booking photo or video content (owner, staff, the technician holding the order, or the technician invited right now)' })
   async getPrivateMediaContent(
     @Param('bookingId', ParseUUIDPipe) bookingId: string,
     @Param('mediaId', ParseUUIDPipe) mediaId: string,

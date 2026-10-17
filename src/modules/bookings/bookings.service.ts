@@ -27,6 +27,7 @@ export { CreateBookingDto } from './booking.dto';
 import { AttachBookingMediaDto, CreateBookingDto, RebookDto, ScheduleBookingDto } from './booking.dto';
 import { BOOKING_SLOTS, resolveBookingWindow, slotWindow, vnDate, type BookingSlot } from './booking-slots';
 import { distanceToBooking, servesArea, technicianOrigin } from './technician-location';
+import { technicianDistances } from './technician-distance';
 import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
 import { technicianEligibility } from './technician-eligibility';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
@@ -41,7 +42,7 @@ import {
   TechnicianBookingPreviewDto,
   toTechnicianBookingPreview,
 } from './booking-privacy.dto';
-import { PrivateBookingPhotoClaimService } from '../media/private-booking-photo-claim.service';
+import { MAX_BOOKING_MEDIA_UPLOADS, PrivateBookingPhotoClaimService } from '../media/private-booking-photo-claim.service';
 import { AiChatSession } from '../ai-diagnosis/entities/ai-chat-session.entity';
 import { AiBookingSummary, hasAdvice, toBookingSummary } from '../ai-diagnosis/ai-chat-summary';
 import { composeAddressText } from '../../shared/utils/address-text';
@@ -307,13 +308,13 @@ export class BookingsService {
       const ids = dto.photoUploadIds;
       if (
         !Array.isArray(ids) ||
-        ids.length > 5 ||
+        ids.length > MAX_BOOKING_MEDIA_UPLOADS ||
         ids.some((id) => typeof id !== 'string' || !isUUID(id)) ||
         new Set(ids.map((id) => id.toLowerCase())).size !== ids.length
       ) {
         throw new BusinessException(
           ErrorCodes.VALIDATION_FAILED,
-          'Provide at most five distinct valid Booking photo upload IDs',
+          'Provide at most five photos and two videos as distinct valid Booking upload IDs',
         );
       }
     }
@@ -430,7 +431,10 @@ export class BookingsService {
           item.expiresAt != null && item.expiresAt > new Date(),
       );
       if (current.status === BookingStatus.MATCHING && hasLiveInvitation) {
-        return toTechnicianBookingPreview(current);
+        // PO 18/10/2026: photos, videos and the description help the technician decide.
+        current.media = await manager.find(BookingMedia, { where: { bookingId: id } });
+        const distances = await technicianDistances(manager, actor.id, [current]);
+        return toTechnicianBookingPreview(current, { distanceKm: distances.get(id) ?? null });
       }
       // The active assignment below is what proves the technician holds the
       // job; an accepted invitation is not required, because a technician

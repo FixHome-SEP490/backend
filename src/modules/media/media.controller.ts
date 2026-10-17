@@ -17,6 +17,7 @@ import { CurrentUser, Roles } from '../../common/decorators';
 import { Role } from '../../shared/enums';
 import { PrivateBookingPhotoUploadService } from './private-booking-photo-upload.service';
 import { PrivateBookingPhotoFile } from './private-booking-photo-storage.service';
+import { VIDEO_MAX_BYTES } from '../../shared/utils/media-signature';
 
 @ApiTags('Media')
 @Controller('media')
@@ -48,6 +49,27 @@ export class MediaController {
       ownerUserId,
       file,
     );
+    return { data: result };
+  }
+
+  @Post('booking-video-upload')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.CUSTOMER)
+  @ApiBearerAuth()
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: VIDEO_MAX_BYTES, files: 1 },
+    }),
+  )
+  @ApiConsumes('multipart/form-data')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Customer: Upload a private Booking video (mp4, mov or webm, up to 50 MB; not analysed by AI)' })
+  async uploadBookingVideo(
+    @CurrentUser('id') ownerUserId: string,
+    @CurrentUser('role') role: Role,
+    @UploadedFile() file?: PrivateBookingPhotoFile,
+  ) {
+    const result = await this.privateBookingPhotoUploadService.uploadVideo(role, ownerUserId, file);
     return { data: result };
   }
 

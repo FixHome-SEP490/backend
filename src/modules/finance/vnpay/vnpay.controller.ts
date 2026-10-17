@@ -19,9 +19,19 @@ export class VnpayController {
     private readonly config: ConfigService,
   ) {}
 
+  /**
+   * VNPay reads {"RspCode","Message"} at the top of the body. Returned through the
+   * global envelope it came back as {success, data: {RspCode...}}, which VNPay
+   * counts as an unconfirmed IPN and keeps retrying; so it is written as is.
+   */
   @Get('ipn')
-  async ipn(@Query() query: Record<string, string>) {
-    return this.financeService.handleVnpayIpn(query);
+  async ipn(@Query() query: Record<string, string>, @Res() res: Response) {
+    try {
+      res.status(200).json(await this.financeService.handleVnpayIpn(query));
+    } catch {
+      // VNPay retries an IPN answered 99; nothing about the failure is exposed to it.
+      res.status(200).json({ RspCode: '99', Message: 'Unknown error' });
+    }
   }
 
   @Get('return')

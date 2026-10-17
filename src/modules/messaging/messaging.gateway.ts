@@ -42,6 +42,7 @@ export const CHAT_EVENTS = {
   MESSAGE_DELETED: 'message:deleted',
   CONVERSATION_UPDATED: 'conversation:updated',
   TYPING: 'typing',
+  ORDER_UPDATED: 'order:updated',
 } as const;
 
 const DEFAULT_ICE_URLS = 'stun:stun.l.google.com:19302';
@@ -571,4 +572,22 @@ export class MessagingGateway
         .emit(CHAT_EVENTS.CONVERSATION_UPDATED, { conversationId });
     }
   }
+
+  /**
+   * An order changed (status, invoice, quotation, warranty...), sent after the
+   * write committed to the customer and every technician who held it, so open
+   * job and order screens reload without polling (PO 18/10/2026). The payload
+   * only names the order; screens read the details over REST with their own rights.
+   */
+  emitOrderUpdated(userIds: string[], payload: OrderUpdatedPayload): void {
+    for (const userId of new Set(userIds)) {
+      this.server?.to(userRoom(userId)).emit(CHAT_EVENTS.ORDER_UPDATED, payload);
+    }
+  }
+}
+
+export interface OrderUpdatedPayload {
+  serviceOrderId: string;
+  bookingId: string;
+  status: string;
 }

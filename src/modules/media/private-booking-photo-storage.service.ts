@@ -4,6 +4,14 @@ import { randomUUID } from 'crypto';
 import axios from 'axios';
 import { CLOUDINARY } from '../../shared/cloudinary';
 import type { CloudinaryInstance, UploadApiResponse } from '../../shared/cloudinary';
+import {
+  detectImageMimeType,
+  detectMediaMimeType,
+  detectVideoMimeType,
+  VIDEO_MAX_BYTES,
+  type ImageMimeType,
+  type VideoMimeType,
+} from '../../shared/utils/media-signature';
 
 export type PrivateBookingPhotoFile = {
   buffer: Buffer;
@@ -13,11 +21,14 @@ export type PrivateBookingPhotoFile = {
 
 export type PrivateBookingPhotoContent = {
   buffer: Buffer;
-  mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+  mimeType: ImageMimeType | VideoMimeType;
 };
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const PHOTO_REF_PREFIX = 'cloudinary://booking-photos/';
+/** Short videos of the problem (PO 18/10/2026), kept private beside the photos. */
+const VIDEO_REF_PREFIX = 'cloudinary://booking-videos/';
 
 @Injectable()
 export class PrivateBookingPhotoStorage {
@@ -39,6 +50,43 @@ export class PrivateBookingPhotoStorage {
     const detectedMimeType = this.detectMimeType(file.buffer);
     if (!detectedMimeType || detectedMimeType !== file.mimetype) {
       throw new BadRequestException('Invalid booking photo');
+    }
+  }
+
+  /**
+   * A video of the problem: mp4, mov or webm by its bytes, up to 50 MB. Returns the
+   * type to store, which is the one the bytes show rather than the one the browser sent.
+   */
+  validateVideo(file?: PrivateBookingPhotoFile): VideoMimeType {
+    if (
+      !file ||
+      !Buffer.isBuffer(file.buffer) ||
+      file.buffer.length === 0 ||
+      file.size !== file.buffer.length ||
+      file.size > VIDEO_MAX_BYTES
+    ) {
+      throw new BadRequestException('Invalid booking video');
+    }
+    const detected = detectMediaMimeType(file.buffer, file.mimetype);
+    if (!detected || detected.kind !== 'video') throw new BadRequestException('Invalid booking video');
+    return detected.mimeType as VideoMimeType;
+  }
+
+  async uploadVideo(ownerId: string, file: PrivateBookingPhotoFile): Promise<string> {
+    this.validateVideo(file);
+    const normalizedOwnerId = this.normalizeOwnerId(ownerId);
+    const cld = this.getCloudinary();
+    const publicId = `fixhome/booking-videos/${normalizedOwnerId}/${randomUUID()}`;
+    try {
+      await this.uploadToCloudinary(cld, file.buffer, {
+        public_id: publicId,
+        resource_type: 'video',
+        type: 'authenticated',
+        overwrite: false,
+      });
+      return `${VIDEO_REF_PREFIX}${publicId}`;
+    } catch {
+      throw new ServiceUnavailableException('Private booking video storage is unavailable');
     }
   }
 
@@ -64,34 +112,36 @@ export class PrivateBookingPhotoStorage {
 
   async download(reference: string, expectedOwnerId: string): Promise<PrivateBookingPhotoContent> {
     const cld = this.getCloudinary();
+    const isVideo = typeof reference === 'string' && reference.startsWith(VIDEO_REF_PREFIX);
     const publicId = this.getOwnedPublicId(reference, expectedOwnerId);
+    const maxBytes = isVideo ? VIDEO_MAX_BYTES : MAX_FILE_SIZE;
 
     try {
-      // Generate a short-lived signed URL to download the image
+      // Generate a short-lived signed URL to download the file
       const expiresAt = Math.floor(Date.now() / 1000) + 300;
       const signedUrl = cld.url(publicId, {
         type: 'authenticated',
         sign_url: true,
-        resource_type: 'image',
+        resource_type: isVideo ? 'video' : 'image',
         secure: true,
         expires_at: expiresAt,
       });
 
       const response = await axios.get(signedUrl, {
         responseType: 'arraybuffer',
-        maxContentLength: MAX_FILE_SIZE,
+        maxContentLength: maxBytes,
         maxRedirects: 0,
-        timeout: 15000,
+        timeout: isVideo ? 60000 : 15000,
       });
 
       const buffer = Buffer.from(response.data);
-      if (buffer.length === 0 || buffer.length > MAX_FILE_SIZE) {
-        throw new Error('Invalid booking photo response');
+      if (buffer.length === 0 || buffer.length > maxBytes) {
+        throw new Error('Invalid booking media response');
       }
 
-      const mimeType = this.detectMimeType(buffer);
+      const mimeType = isVideo ? detectVideoMimeType(buffer) : this.detectMimeType(buffer);
       if (!mimeType) {
-        throw new Error('Invalid booking photo response');
+        throw new Error('Invalid booking media response');
       }
 
       return { buffer, mimeType };
@@ -110,18 +160,19 @@ export class PrivateBookingPhotoStorage {
   private getOwnedPublicId(reference: string, expectedOwnerId: string): string {
     const ownerId = this.normalizeOwnerId(expectedOwnerId);
 
-    if (typeof reference !== 'string' || !reference.startsWith('cloudinary://booking-photos/')) {
+    const isVideo = typeof reference === 'string' && reference.startsWith(VIDEO_REF_PREFIX);
+    if (typeof reference !== 'string' || (!reference.startsWith(PHOTO_REF_PREFIX) && !isVideo)) {
       throw new BadRequestException('Invalid booking photo reference');
     }
 
-    const fullPrefix = 'cloudinary://booking-photos/';
+    const fullPrefix = isVideo ? VIDEO_REF_PREFIX : PHOTO_REF_PREFIX;
     const publicId = reference.slice(fullPrefix.length);
-    // publicId should be fixhome/booking-photos/{ownerId}/{uuid}
+    // publicId should be fixhome/booking-photos/{ownerId}/{uuid} (booking-videos for a video)
     const segments = publicId.split('/');
     if (
       segments.length !== 4 ||
       segments[0] !== 'fixhome' ||
-      segments[1] !== 'booking-photos' ||
+      segments[1] !== (isVideo ? 'booking-videos' : 'booking-photos') ||
       !UUID_PATTERN.test(segments[2]) ||
       !UUID_PATTERN.test(segments[3]) ||
       segments[2] !== ownerId
@@ -138,20 +189,8 @@ export class PrivateBookingPhotoStorage {
     return this.cloudinary;
   }
 
-  private detectMimeType(buffer: Buffer): PrivateBookingPhotoContent['mimeType'] | undefined {
-    if (buffer.length >= 3 && buffer.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))) {
-      return 'image/jpeg';
-    }
-    if (
-      buffer.length >= 8 &&
-      buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
-    ) {
-      return 'image/png';
-    }
-    if (buffer.length >= 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') {
-      return 'image/webp';
-    }
-    return undefined;
+  private detectMimeType(buffer: Buffer): ImageMimeType | undefined {
+    return detectImageMimeType(buffer);
   }
 
   private uploadToCloudinary(

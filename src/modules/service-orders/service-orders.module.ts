@@ -37,6 +37,7 @@ import { CustomerServiceConfirmation } from './entities/customer-service-confirm
 import { FinanceModule } from '../finance/finance.module';
 import { WalletModule } from '../wallet/wallet.module';
 import { ReputationModule } from '../reputation/reputation.module';
+import { MessagingModule } from '../messaging/messaging.module';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { ReputationModule } from '../reputation/reputation.module';
     NotificationsModule,
     SupportCasesModule,
     ReputationModule,
+    MessagingModule,
     TypeOrmModule.forFeature([
       ServiceOrder,
       TechnicianAssignment,

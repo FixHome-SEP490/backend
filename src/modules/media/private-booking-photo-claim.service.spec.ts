@@ -17,6 +17,10 @@ const UPLOAD_IDS = [
   '65b11d61-7c97-4a29-a53b-97ca76ac3435',
   '75b11d61-7c97-4a29-a53b-97ca76ac3435',
 ] as const;
+const EXTRA_IDS = [
+  '85b11d61-7c97-4a29-a53b-97ca76ac3435',
+  '95b11d61-7c97-4a29-a53b-97ca76ac3435',
+] as const;
 const OBJECT_REF = `storage://booking-private/${OWNER_ID}/2debcf6f-1df5-488d-ae63-48ecbe44af45`;
 const FIXED_NOW = new Date('2026-09-21T12:00:00.000Z');
 
@@ -270,16 +274,42 @@ describe('PrivateBookingPhotoClaimService', () => {
     expect(db.update).not.toHaveBeenCalled();
   });
 
-  it('rejects more than five upload IDs before querying', async () => {
+  it('rejects more than seven upload IDs (five photos and two videos) before querying', async () => {
     const db = createMockManager([]);
 
     await expectBusinessError(
-      service.claim(db.manager, OWNER_ID, BOOKING_ID, [...UPLOAD_IDS]),
+      service.claim(db.manager, OWNER_ID, BOOKING_ID, [...UPLOAD_IDS, ...EXTRA_IDS]),
       ErrorCodes.VALIDATION_FAILED,
     );
 
     expect(db.findOne).not.toHaveBeenCalled();
     expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('claims five photos and two videos together (PO 18/10/2026)', async () => {
+    const ids = [...UPLOAD_IDS.slice(0, 5), ...EXTRA_IDS.slice(0, 2)];
+    const db = createMockManager(ids.map((id, index) => uploadRow(id, { mimeType: index < 5 ? 'image/jpeg' : 'video/mp4' })));
+
+    const result = await service.claim(db.manager, OWNER_ID, BOOKING_ID, ids);
+
+    expect(result).toHaveLength(7);
+    expect(result.filter((upload) => upload.mimeType === 'video/mp4')).toHaveLength(2);
+    expect(db.update).toHaveBeenCalledTimes(7);
+  });
+
+  it.each([
+    ['a sixth photo', [...UPLOAD_IDS].map((id) => uploadRow(id))],
+    ['a third video', [...UPLOAD_IDS.slice(0, 3)].map((id) => uploadRow(id, { mimeType: 'video/webm' }))],
+  ])('rejects %s after locking and claims nothing', async (_label, rows) => {
+    const db = createMockManager(rows);
+
+    await expectBusinessError(
+      service.claim(db.manager, OWNER_ID, BOOKING_ID, rows.map((row) => row.id)),
+      ErrorCodes.VALIDATION_FAILED,
+    );
+
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.rows.every((row) => row.claimedBookingId === null)).toBe(true);
   });
 
   it('rejects non-UUID upload IDs before querying', async () => {

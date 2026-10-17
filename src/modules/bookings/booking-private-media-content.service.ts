@@ -1,8 +1,8 @@
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
-import { DataSource } from 'typeorm';
+import { DataSource, MoreThan } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
-import { BookingStatus, Role, ServiceOrderStatus } from '../../shared/enums';
+import { BookingStatus, InvitationStatus, Role, ServiceOrderStatus } from '../../shared/enums';
 import { PrivateBookingPhotoStorage } from '../media/private-booking-photo-storage.service';
 import { PrivateBookingPhotoUpload } from '../media/entities/private-booking-photo-upload.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
@@ -10,13 +10,14 @@ import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { isDbUuid } from '../../shared/utils/db-uuid';
 import { BookingMedia } from './entities/booking-media.entity';
 import { Booking } from './entities/booking.entity';
+import { BookingInvitation } from './entities/booking-invitation.entity';
+import { maxBytesFor, mediaKindOf, type ImageMimeType, type VideoMimeType } from '../../shared/utils/media-signature';
 
-const MAX_PRIVATE_IMAGE_BYTES = 10 * 1024 * 1024;
-const SAFE_IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const SAFE_MEDIA_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/quicktime', 'video/webm']);
 
 export interface PrivateBookingImageContent {
   buffer: Buffer;
-  mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+  mimeType: ImageMimeType | VideoMimeType;
 }
 
 @Injectable()
@@ -46,7 +47,13 @@ export class BookingPrivateMediaContentService {
 
       const isStaff = actor.role === Role.ADMIN || actor.role === Role.SERVICE_MANAGER;
       const isOwner = actor.role === Role.CUSTOMER && actor.id === booking.customerId;
-      if (!isStaff && !isOwner) {
+      // PO 18/10/2026: the technician the booking is offered to right now sees its photos and videos to decide.
+      const isInvited = !isStaff && !isOwner && actor.role === Role.TECHNICIAN &&
+        booking.status === BookingStatus.MATCHING &&
+        !!(await manager.findOne(BookingInvitation, {
+          where: { bookingId: booking.id, technicianId: actor.id, status: InvitationStatus.PENDING, expiresAt: MoreThan(new Date()) },
+        }));
+      if (!isStaff && !isOwner && !isInvited) {
         if (actor.role !== Role.TECHNICIAN || booking.status !== BookingStatus.MATCHED) this.notFound();
 
         const order = await manager.findOne(ServiceOrder, {
@@ -81,7 +88,7 @@ export class BookingPrivateMediaContentService {
         this.notFound();
       }
 
-      return { objectRef: upload.objectRef, ownerUserId: upload.ownerUserId };
+      return { objectRef: upload.objectRef, ownerUserId: upload.ownerUserId, kind: mediaKindOf(upload.mimeType) };
     });
 
     // The DB authorization snapshot is committed before provider I/O. A reassignment or
@@ -96,8 +103,9 @@ export class BookingPrivateMediaContentService {
         !content ||
         !Buffer.isBuffer(content.buffer) ||
         content.buffer.length === 0 ||
-        content.buffer.length > MAX_PRIVATE_IMAGE_BYTES ||
-        !SAFE_IMAGE_MIME_TYPES.has(content.mimeType)
+        content.buffer.length > maxBytesFor(authorizedObject.kind) ||
+        !SAFE_MEDIA_MIME_TYPES.has(content.mimeType) ||
+        mediaKindOf(content.mimeType) !== authorizedObject.kind
       ) {
         throw new Error('Invalid private Booking image content');
       }

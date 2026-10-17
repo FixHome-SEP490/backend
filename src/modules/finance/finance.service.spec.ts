@@ -20,6 +20,7 @@ import { CashSettlementConfirmationDto, CashSettlementDeclarationDto, InitiatePa
 import { Payment } from './entities/payment.entity';
 import { PlatformDue } from './entities/platform-due.entity';
 import { FinanceService } from './finance.service';
+import { formatVnpayDate } from './vnpay/vnpay.util';
 
 const actor = (id: string, role: Role) => ({ id, role });
 
@@ -410,6 +411,16 @@ describe('VNPay return goes back to the web that started the payment', () => {
     expect(returnUrlOf(mobile.paymentUrl).searchParams.has('web')).toBe(false);
     const noOrigin = await setup.service.createWalletTopUpVnpayUrl('cust-1', 100000, '127.0.0.1', 'IDEMP_1', 'web', 'customer');
     expect(returnUrlOf(noOrigin.paymentUrl).searchParams.has('web')).toBe(false);
+  });
+
+  it('opens the payment with the create date querydr will look it up by (PO 18/10/2026)', async () => {
+    const setup = setupTopUp();
+    // Saved at 23:59:59.9 Vietnam time: a fresh clock would already read the next second, or the next day.
+    const requestedAt = new Date('2026-10-18T16:59:59.900Z');
+    setup.paymentRepository.save = vi.fn().mockResolvedValue({ id: 'pay-1', idempotencyKey: 'IDEMP_1', amount: 100000, requestedAt });
+    const { paymentUrl } = await setup.service.createWalletTopUpVnpayUrl('cust-1', 100000, '127.0.0.1', 'IDEMP_1', 'web', 'customer');
+    expect(new URL(paymentUrl).searchParams.get('vnp_CreateDate')).toBe('20261018235959');
+    expect(new URL(paymentUrl).searchParams.get('vnp_CreateDate')).toBe(formatVnpayDate(requestedAt));
   });
 });
 

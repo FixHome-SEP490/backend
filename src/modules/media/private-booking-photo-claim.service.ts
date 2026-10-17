@@ -5,9 +5,13 @@ import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import { PrivateBookingPhotoUpload } from './entities/private-booking-photo-upload.entity';
 import { DB_UUID } from '../../shared/utils/db-uuid';
+import { mediaKindOf } from '../../shared/utils/media-signature';
 
 const MAX_BOOKING_PHOTO_UPLOADS = 5;
-
+/** A booking carries up to five photos and up to two short videos (PO 18/10/2026). */
+export const MAX_BOOKING_VIDEO_UPLOADS = 2;
+export const MAX_BOOKING_MEDIA_UPLOADS = MAX_BOOKING_PHOTO_UPLOADS + MAX_BOOKING_VIDEO_UPLOADS;
+const TOO_MANY = 'Provide at most five photos and two videos as distinct valid Booking upload IDs';
 
 export type PrivateBookingPhotoClaimMetadata = {
   uploadId: string;
@@ -40,12 +44,12 @@ export class PrivateBookingPhotoClaimService {
       typeof bookingId !== 'string' ||
       !DB_UUID.test(bookingId) ||
       !Array.isArray(uploadIds) ||
-      uploadIds.length > MAX_BOOKING_PHOTO_UPLOADS ||
+      uploadIds.length > MAX_BOOKING_MEDIA_UPLOADS ||
       uploadIds.some((uploadId) => typeof uploadId !== 'string' || !isUUID(uploadId))
     ) {
       throw new BusinessException(
         ErrorCodes.VALIDATION_FAILED,
-        'Provide at most five distinct valid Booking photo upload IDs',
+        TOO_MANY,
       );
     }
 
@@ -55,7 +59,7 @@ export class PrivateBookingPhotoClaimService {
     if (new Set(normalizedUploadIds).size !== normalizedUploadIds.length) {
       throw new BusinessException(
         ErrorCodes.VALIDATION_FAILED,
-        'Provide at most five distinct valid Booking photo upload IDs',
+        TOO_MANY,
       );
     }
 
@@ -86,6 +90,11 @@ export class PrivateBookingPhotoClaimService {
         })
       ) {
         this.throwUploadUnavailable();
+      }
+
+      const videos = lockedUploads.filter((upload) => mediaKindOf(upload.mimeType) === 'video').length;
+      if (videos > MAX_BOOKING_VIDEO_UPLOADS || lockedUploads.length - videos > MAX_BOOKING_PHOTO_UPLOADS) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, TOO_MANY);
       }
 
       for (const upload of lockedUploads) {

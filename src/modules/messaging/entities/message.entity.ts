@@ -57,4 +57,20 @@ export class Message extends BaseEntity {
    */
   @Column({ name: 'is_automated', type: 'boolean', default: false })
   isAutomated: boolean;
+
+  /**
+   * One photo or short video sent with the message (PO 18/10/2026), stored
+   * privately; clients read the bytes through GET /messages/:id/attachment.
+   */
+  @Column({ name: 'attachment_kind', type: 'varchar', length: 10, nullable: true })
+  attachmentKind?: 'image' | 'video' | null;
+
+  @Column({ name: 'attachment_ref', type: 'varchar', length: 500, nullable: true, select: false })
+  attachmentRef?: string | null;
+
+  @Column({ name: 'attachment_mime', type: 'varchar', length: 30, nullable: true })
+  attachmentMime?: string | null;
+
+  @Column({ name: 'attachment_size', type: 'int', nullable: true })
+  attachmentSize?: number | null;
 }

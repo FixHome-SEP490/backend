@@ -32,6 +32,23 @@ export class SendMessageDto {
   clientMessageId?: string;
 }
 
+/** Multipart fields that travel with a chat photo or video; the caption may be empty. */
+export class SendAttachmentDto {
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(MESSAGE_MAX_LENGTH)
+  content?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  @Matches(/^[A-Za-z0-9_-]+$/, {
+    message: 'clientMessageId must be alphanumeric, dash or underscore',
+  })
+  clientMessageId?: string;
+}
+
 export class EditMessageDto {
   @Transform(trim)
   @IsString()
