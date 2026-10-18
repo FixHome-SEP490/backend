@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { QueryFailedError } from 'typeorm';
+import { logPath } from '../../shared/utils/log-path';
 
 /**
  * Lỗi do middleware của Express ném ra trước khi request chạm tới Nest.
@@ -117,7 +118,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
     }
     if (status >= 500) {
       this.logger.error(
-        `Request failed: ${request.method} ${request.path || request.url.split('?')[0]} (${status})`,
+        `Request failed: ${request.method} ${logPath(request.path || request.url.split('?')[0])} (${status})`,
         exception instanceof Error ? exception.stack : String(exception),
       );
       message =
@@ -130,7 +131,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
       }
     } else {
       this.logger.warn(
-        `Request warning: ${request.method} ${request.path || request.url.split('?')[0]} (${status}) - ${message}`,
+        `Request warning: ${request.method} ${logPath(request.path || request.url.split('?')[0])} (${status}) - ${message}`,
       );
     }
 
@@ -143,7 +144,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
         ...(details ? { details } : {}),
       },
       timestamp: new Date().toISOString(),
-      path: request.path || request.url.split('?')[0],
+      path: logPath(request.path || request.url.split('?')[0]),
     });
   }
 

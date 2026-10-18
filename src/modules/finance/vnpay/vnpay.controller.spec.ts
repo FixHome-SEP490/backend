@@ -30,3 +30,24 @@ describe('VNPay return sends the browser back to its own site', () => {
     expect(await returnTo('https://evil.example')).toBe('https://fixhome.sbs/app/wallet?payment=success&amount=100000');
   });
 });
+
+describe('VNPay IPN answer', () => {
+  it('is written as the bare {RspCode, Message} VNPay reads, not inside the API envelope', async () => {
+    const finance = { handleVnpayIpn: vi.fn().mockResolvedValue({ RspCode: '00', Message: 'Confirm Success' }) };
+    const controller = new VnpayController(finance as never, { get: () => undefined } as never);
+    const res = { status: vi.fn().mockReturnThis(), json: vi.fn() };
+    await controller.ipn({ vnp_TxnRef: 'T1' }, res as never);
+    expect(finance.handleVnpayIpn).toHaveBeenCalledWith({ vnp_TxnRef: 'T1' });
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({ RspCode: '00', Message: 'Confirm Success' });
+  });
+
+  it('answers 99 when handling the notification fails, so VNPay sends it again', async () => {
+    const finance = { handleVnpayIpn: vi.fn().mockRejectedValue(new Error('database down')) };
+    const controller = new VnpayController(finance as never, { get: () => undefined } as never);
+    const res = { status: vi.fn().mockReturnThis(), json: vi.fn() };
+    await controller.ipn({ vnp_TxnRef: 'T1' }, res as never);
+    expect(res.json).toHaveBeenCalledWith({ RspCode: '99', Message: 'Unknown error' });
+    expect(JSON.stringify(res.json.mock.calls)).not.toContain('database');
+  });
+});

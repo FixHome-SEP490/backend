@@ -47,7 +47,9 @@ function makeBooking(
     serviceNameSnapshot: 'Synthetic plumbing repair',
     latitudeSnapshot: 10.1234567,
     longitudeSnapshot: 106.1234567,
-    description: 'PRIVATE_DESCRIPTION_SENTINEL',
+    // PO 18/10/2026: the problem description is part of the invitation preview; the
+    // address, the coordinates' text, the customer note and the customer stay private.
+    description: 'Synthetic description: water drips under the sink',
     preferredStartAt,
     preferredEndAt,
     bookingMode: 'scheduled',
@@ -308,11 +310,19 @@ describe('BE-PRIVACY-A synthetic booking reads', () => {
           preferredEndAt: preferredEndAt.toISOString(),
           bookingMode: 'scheduled',
           slot: 'morning',
+          description: 'Synthetic description: water drips under the sink',
+          aiSummary: null,
+          media: [{ url: null, mimeType: 'image/jpeg', sizeBytes: null, isPrivate: false, legacyInsecure: true }],
+          pricingMode: null,
+          fixedUnitPrice: null,
+          distanceBand: null,
         },
       }],
     });
     expect(stringify(serialized)).not.toContain('PRIVATE_');
     expect(stringify(serialized)).not.toContain('PRIVATE_OTHER_TECHNICIAN_SENTINEL');
+    expect(stringify(serialized)).not.toContain('gate code');
+    expect(stringify(serialized)).not.toMatch(/latitude|longitude|addressText|customerNote|customerId/);
   });
 
   it('does not return a stale pending invitation after the booking is already matched', async () => {
@@ -374,9 +384,17 @@ describe('BE-PRIVACY-A synthetic booking reads', () => {
         preferredEndAt: preferredEndAt.toISOString(),
         bookingMode: 'scheduled',
         slot: 'morning',
+        description: 'Synthetic description: water drips under the sink',
+        aiSummary: null,
+        media: [],
+        pricingMode: null,
+        fixedUnitPrice: null,
+        distanceBand: null,
       },
     });
     expect(stringify(serialized)).not.toContain('PRIVATE_');
+    expect(stringify(serialized)).not.toContain('gate code');
+    expect(stringify(serialized)).not.toMatch(/latitude|longitude|addressText|customerNote|customerId/);
     expect(manager.findOneBy).not.toHaveBeenCalled();
     expect(manager.findOne).not.toHaveBeenCalledWith(AiDiagnosis, expect.anything());
   });

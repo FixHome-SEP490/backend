@@ -892,6 +892,301 @@ export function registerDev1Cases(context: () => Context) {
         Object.defineProperty(provider, 'name', { value: originalName, configurable: true, writable: true });
       }
     });
+
+    // PO 18/10/2026 ------------------------------------------------------------------------------
+    const mp4 = Buffer.concat([Buffer.from([0, 0, 0, 0x20]), Buffer.from('ftypisom'), Buffer.alloc(24)]);
+    const upload = (path: string, session: Session, file: Buffer, filename: string, contentType: string) =>
+      request(context().app.getHttpServer()).post(`/api/v1${path}`).set('Authorization', `Bearer ${session.accessToken}`).attach('file', file, { filename, contentType });
+    const mockBookingMediaStorage = () => {
+      const { PrivateBookingPhotoStorage } = runtimeRequire('./dist/modules/media/private-booking-photo-storage.service.js');
+      const media = context().app.get(PrivateBookingPhotoStorage);
+      return [
+        vi.spyOn(media, 'upload').mockImplementation(async () => `cloudinary://booking-photos/test/${randomUUID()}`),
+        vi.spyOn(media, 'uploadVideo').mockImplementation(async (owner: any) => `cloudinary://booking-videos/fixhome/booking-videos/${owner}/${randomUUID()}?r=mp4`),
+        vi.spyOn(media, 'download').mockImplementation(async (ref: any) => String(ref).includes('booking-videos') ? { buffer: mp4, mimeType: 'video/mp4' } : { buffer: png, mimeType: 'image/png' }),
+      ];
+    };
+    /** A completed order paid from the customer wallet, the technician's labor warranty on it. */
+    async function completedOrder(f: Awaited<ReturnType<typeof fixture>>) {
+      const put = (path: string, session: Session, body: object) => request(context().app.getHttpServer()).put(`/api/v1${path}`).set('Authorization', `Bearer ${session.accessToken}`).send(body);
+      await context().db.getRepository('TechnicianSkill').update({ serviceId: f.service.id }, { typicalWarrantyDays: null });
+      await put('/technicians/me/warranty-default', f.tech, { days: 30 }).expect(200);
+      const { order, booking } = await accept(f), path = `/service-orders/${order.id}`;
+      await arrived(order.id, f.tech);
+      await evidence(order.id, f.tech, 'after').expect(201);
+      await post(path + '/request-completion', f.tech).expect(200);
+      const invoice = unwrap((await get(path + '/invoice', f.owner).expect(200)).body);
+      return { order, booking, invoice, path };
+    }
+
+    it('shows the invited technician the problem, photos, videos and how far it is, never the address (PO 18/10/2026)', async () => {
+      const spies = mockBookingMediaStorage();
+      try {
+        const f = await fixture();
+        // Upload rules: a customer only; a video must be a video by its bytes.
+        denied(await upload('/media/booking-video-upload', f.tech, mp4, 'clip.mp4', 'video/mp4'));
+        expect((await upload('/media/booking-video-upload', f.owner, png, 'clip.mp4', 'video/mp4')).status).toBe(400);
+        // Found live 18/10/2026: a clip over a minute came back as 503 instead of the customer's 422.
+        const { BusinessException } = runtimeRequire('./dist/common/exceptions/business.exception.js');
+        spies[1].mockRejectedValueOnce(new BusinessException('VIDEO_TOO_LONG', 'Video is longer than 60 seconds'));
+        const tooLong = await upload('/media/booking-video-upload', f.owner, mp4, 'long.mp4', 'video/mp4');
+        expect(tooLong.status, JSON.stringify(tooLong.body)).toBe(422);
+        expect(tooLong.body.error.code).toBe('VIDEO_TOO_LONG');
+        const photo = unwrap((await upload('/media/booking-photo-upload', f.owner, png, 'leak.png', 'image/png').expect(201)).body);
+        const video = unwrap((await upload('/media/booking-video-upload', f.owner, mp4, 'leak.mov', 'video/quicktime').expect(201)).body);
+        expect(video).toMatchObject({ mimeType: 'video/mp4', sizeBytes: mp4.length });
+        const created = await post('/bookings', f.owner, { ...f.body, description: 'Vòi rửa chén rỉ nước dưới chân 💧, cần gấp gọi 0912 345 678', customerNote: 'Mã cổng 4321, gọi 0909123456', photoUploadIds: [photo.uploadId, video.uploadId] });
+        expect(created.status, JSON.stringify(created.body)).toBe(201);
+        const booking = unwrap(created.body);
+        await post(`/bookings/${booking.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.spare.user.id] }).expect(201);
+
+        const [invitation] = unwrap((await get('/invitations/my', f.tech).expect(200)).body);
+        // The number typed into the description is hidden; the distance is a coarse band (same spot: under 1 km).
+        expect(invitation.booking).toMatchObject({ id: booking.id, description: 'Vòi rửa chén rỉ nước dưới chân 💧, cần gấp gọi [số điện thoại ẩn]', district: expect.any(String), distanceBand: { minKm: 0, maxKm: 1 } });
+        expect(JSON.stringify(invitation)).not.toContain('345 678');
+        expect(invitation.booking.media.map((m: any) => [m.mimeType, m.isPrivate, m.url])).toEqual(expect.arrayContaining([['image/png', true, null], ['video/mp4', true, null]]));
+        const preview = unwrap((await get(`/bookings/${booking.id}`, f.tech).expect(200)).body);
+        expect(preview.media).toHaveLength(2);
+        expect(preview.media.every((m: any) => m.isPrivate === true && m.legacyInsecure === false)).toBe(true);
+        for (const body of [invitation, preview]) {
+          const text = JSON.stringify(body);
+          expect(text).not.toContain('1 Test Street');
+          expect(text).not.toContain('4321');
+          expect(text).not.toContain('0909123456');
+          expect(text).not.toMatch(/latitude|longitude|addressText|customerId|phone/i);
+        }
+
+        const videoMedia = preview.media.find((m: any) => m.mimeType === 'video/mp4');
+        const content = await get(`/bookings/${booking.id}/media/${videoMedia.id}/content`, f.tech).expect(200);
+        expect(content.headers['content-type']).toBe('video/mp4');
+        expect(content.headers['cache-control']).toContain('no-store');
+
+        // Watching streams through a short viewing link with byte ranges, the playable copy while it is made.
+        const { PrivateVideoService } = runtimeRequire('./dist/shared/cloudinary/private-video.service.js');
+        const { Readable } = runtimeRequire('stream');
+        const videoService = context().app.get(PrivateVideoService);
+        const opened: unknown[][] = [];
+        (spies as Array<{ mockRestore(): void }>).push(
+          vi.spyOn(videoService, 'configured', 'get').mockReturnValue(true),
+          vi.spyOn(videoService, 'open').mockImplementation(async (...args: unknown[]) => {
+            opened.push(args);
+            return { status: 206, headers: { 'content-range': 'bytes 0-3/40', 'content-length': '4', 'accept-ranges': 'bytes', 'content-type': 'video/mp4' }, body: Readable.from([Buffer.from('abcd')]), processing: true };
+          }),
+        );
+        const link = unwrap((await get(`/bookings/${booking.id}/media/${videoMedia.id}/stream`, f.tech).expect(200)).body);
+        expect(link.url).toMatch(/^\/bookings\/media\/stream\//);
+        const binary = (res: any, done: any) => { const chunks: Buffer[] = []; res.on('data', (c: Buffer) => chunks.push(c)); res.on('end', () => done(null, Buffer.concat(chunks))); };
+        // No Authorization header: the link itself is the right to watch.
+        const streamed = await request(context().app.getHttpServer()).get(`/api/v1${link.url}`).set('Range', 'bytes=0-3').buffer(true).parse(binary);
+        expect(streamed.status).toBe(206);
+        expect(streamed.headers).toMatchObject({ 'content-range': 'bytes 0-3/40', 'accept-ranges': 'bytes', 'content-type': 'video/mp4', 'x-video-processing': '1', 'x-content-type-options': 'nosniff' });
+        expect(streamed.headers['cache-control']).toBe('private, max-age=600');
+        expect(Buffer.from(streamed.body).toString()).toBe('abcd');
+        expect(opened[0]).toEqual([expect.stringMatching(/^fixhome\/booking-videos\//), 'mp4', 'video/mp4', 'bytes=0-3']);
+        await request(context().app.getHttpServer()).get('/api/v1/bookings/media/stream/forged.link').expect(404);
+        await request(context().app.getHttpServer()).get(`/api/v1${link.url.replace(/.$/, link.url.endsWith('A') ? 'B' : 'A')}`).expect(404);
+        // No link for a photo, nor for the technician not invited yet.
+        const photoMedia = preview.media.find((m: any) => m.mimeType === 'image/png');
+        await get(`/bookings/${booking.id}/media/${photoMedia.id}/stream`, f.tech).expect(404);
+        await get(`/bookings/${booking.id}/media/${videoMedia.id}/stream`, f.spare).expect(404);
+        // The technician waiting on standby is not invited yet: nothing.
+        await get(`/bookings/${booking.id}/media/${videoMedia.id}/content`, f.spare).expect(404);
+        await get(`/bookings/${booking.id}`, f.spare).expect(404);
+        expect(unwrap((await get('/invitations/my', f.spare).expect(200)).body)).toEqual([]);
+
+        // Once they decline, the photos close for them and open for the next one invited.
+        await post(`/invitations/${invitation.id}/respond`, f.tech, { action: 'DECLINE' }).expect(200);
+        await get(`/bookings/${booking.id}/media/${videoMedia.id}/content`, f.tech).expect(404);
+        await get(`/bookings/${booking.id}`, f.tech).expect(404);
+        const [next] = unwrap((await get('/invitations/my', f.spare).expect(200)).body);
+        expect(next.booking.id).toBe(booking.id);
+        await get(`/bookings/${booking.id}/media/${videoMedia.id}/content`, f.spare).expect(200);
+        // A third video is refused at booking time.
+        const videos = [];
+        for (let i = 0; i < 3; i++) videos.push(unwrap((await upload('/media/booking-video-upload', f.owner, mp4, `v${i}.mp4`, 'video/mp4').expect(201)).body).uploadId);
+        const third = await post('/bookings', f.owner, { ...f.body, photoUploadIds: videos });
+        expect(third.status, JSON.stringify(third.body)).toBe(422);
+        expect(third.body.error.code).toBe('VALIDATION_FAILED');
+      } finally {
+        spies.forEach((spy) => spy.mockRestore());
+      }
+    });
+
+    it('closes the chat when the order is completed and opens it again while a warranty claim is open (PO 18/10/2026)', async () => {
+      const f = await fixture(), db = context().db;
+      const { ChatAttachmentStorage } = runtimeRequire('./dist/modules/messaging/chat-attachment-storage.service.js');
+      const chatStorage = context().app.get(ChatAttachmentStorage);
+      const spies = [
+        vi.spyOn(chatStorage, 'upload').mockImplementation(async (conversationId: any, kind: any) => `cloudinary://chat-media/${kind}/fixhome/chat-media/${conversationId}/${randomUUID()}`),
+        vi.spyOn(chatStorage, 'download').mockImplementation(async () => ({ buffer: png, mimeType: 'image/png' })),
+      ];
+      try {
+        const { order, invoice } = await completedOrder(f);
+        const thread = async (session: Session) => unwrap((await get('/conversations', session).expect(200)).body).find((c: any) => c.serviceOrderId === order.id);
+        const conversation = await thread(f.owner);
+        expect(conversation).toMatchObject({ canSend: true, closedReason: null });
+
+        // Photos and videos go into the thread while the job runs.
+        const sent = await request(context().app.getHttpServer()).post(`/api/v1/conversations/${conversation.id}/attachments`).set('Authorization', `Bearer ${f.owner.accessToken}`)
+          .field('content', 'Chỗ rò đây ạ').field('clientMessageId', 'att-1').attach('file', png, { filename: 'leak.png', contentType: 'image/png' });
+        expect(sent.status, JSON.stringify(sent.body)).toBe(201);
+        const message = unwrap(sent.body);
+        expect(message).toMatchObject({ content: 'Chỗ rò đây ạ', attachment: { kind: 'image', mimeType: 'image/png' } });
+        expect(JSON.stringify(sent.body)).not.toContain('cloudinary://');
+        const clip = await request(context().app.getHttpServer()).post(`/api/v1/conversations/${conversation.id}/attachments`).set('Authorization', `Bearer ${f.tech.accessToken}`)
+          .attach('file', mp4, { filename: 'clip.mp4', contentType: 'video/mp4' });
+        expect(clip.status, JSON.stringify(clip.body)).toBe(201);
+        expect(unwrap(clip.body).attachment.kind).toBe('video');
+        const notMedia = await request(context().app.getHttpServer()).post(`/api/v1/conversations/${conversation.id}/attachments`).set('Authorization', `Bearer ${f.owner.accessToken}`)
+          .attach('file', Buffer.from('%PDF-1.7'), { filename: 'a.pdf', contentType: 'application/pdf' });
+        expect(notMedia.status).toBe(400);
+        const extra = await request(context().app.getHttpServer()).post(`/api/v1/conversations/${conversation.id}/attachments`).set('Authorization', `Bearer ${f.owner.accessToken}`)
+          .field('isAutomated', 'true').attach('file', png, { filename: 'leak.png', contentType: 'image/png' });
+        expect(extra.status).toBe(400); // a field the route does not take is refused by the whitelist
+        const bytes = await get(`/messages/${message.id}/attachment`, f.tech).expect(200);
+        expect(bytes.headers['content-type']).toBe('image/png');
+        await get(`/messages/${message.id}/attachment`, f.outsider).expect(404);
+        expect((await request(context().app.getHttpServer()).post(`/api/v1/conversations/${conversation.id}/attachments`).set('Authorization', `Bearer ${f.outsider.accessToken}`).attach('file', png, { filename: 'x.png', contentType: 'image/png' })).status).toBe(404);
+        const listed = unwrap((await get(`/conversations/${conversation.id}/messages`, f.tech).expect(200)).body);
+        expect(listed.find((m: any) => m.id === message.id)).toMatchObject({ attachment: { kind: 'image' } });
+
+        // Paid: the order completes and the chat closes for both sides, calls included.
+        await db.query('INSERT INTO customer_wallets (user_id, balance) VALUES ($1, $2)', [f.owner.user.id, 1000000]);
+        await post(`/invoices/${invoice.id}/pay-with-wallet`, f.owner).expect(200);
+        expect(await thread(f.owner)).toMatchObject({ canSend: false, closedReason: 'order_completed', status: 'active' });
+        expect(await thread(f.tech)).toMatchObject({ canSend: false, closedReason: 'order_completed' });
+        for (const session of [f.owner, f.tech]) {
+          const refused = await post(`/conversations/${conversation.id}/messages`, session, { content: 'Còn đó không?' });
+          expect(refused.status).toBe(409);
+          expect(refused.body.error.code).toBe('CONVERSATION_CLOSED');
+        }
+        const closedAttach = await request(context().app.getHttpServer()).post(`/api/v1/conversations/${conversation.id}/attachments`).set('Authorization', `Bearer ${f.owner.accessToken}`).attach('file', png, { filename: 'x.png', contentType: 'image/png' });
+        expect(closedAttach.status).toBe(409);
+        expect(closedAttach.body.error.code).toBe('CONVERSATION_CLOSED');
+        // History stays readable.
+        await get(`/conversations/${conversation.id}/messages`, f.owner).expect(200);
+        await get(`/messages/${message.id}/attachment`, f.owner).expect(200);
+
+        // A warranty claim opens it again for as long as the claim is in progress.
+        const [coverage] = unwrap((await get(`/service-orders/${order.id}/warranties`, f.owner).expect(200)).body);
+        const claim = unwrap((await post(`/service-orders/${order.id}/warranty-claims`, f.owner, { warrantyCoverageId: coverage.id, description: 'Vòi lại rỉ nước sau hai ngày' }).expect(201)).body);
+        expect(await thread(f.owner)).toMatchObject({ canSend: true, closedReason: null });
+        await post(`/conversations/${conversation.id}/messages`, f.owner, { content: 'Anh ơi vòi lại rỉ ạ' }).expect(201);
+        await post(`/conversations/${conversation.id}/messages`, f.tech, { content: 'Chiều nay em ghé xem' }).expect(201);
+
+        // Rejected by the manager: closed again.
+        const manager = await context().register();
+        await db.query('UPDATE users SET role = $1 WHERE id = $2', ['service_manager', manager.user.id]);
+        const rejected = await post(`/service-manager/warranty-claims/${claim.id}/reject`, manager, { reasonCode: 'customer_misuse', customerNote: 'Vòi bị va đập mạnh từ bên ngoài' });
+        expect(rejected.status, JSON.stringify(rejected.body)).toBe(200);
+        expect(await thread(f.tech)).toMatchObject({ canSend: false, closedReason: 'order_completed' });
+        expect((await post(`/conversations/${conversation.id}/messages`, f.tech, { content: 'Dạ' })).status).toBe(409);
+      } finally {
+        spies.forEach((spy) => spy.mockRestore());
+      }
+    });
+
+    it("puts a paid order's share in the technician wallet once a completion hold is lifted, once only (PO 18/10/2026)", async () => {
+      const f = await fixture(), db = context().db;
+      const { ServiceOrdersService } = runtimeRequire('./dist/modules/service-orders/service-orders.service.js');
+      const orders = context().app.get(ServiceOrdersService);
+      const { order, invoice } = await completedOrder(f);
+      // A complaint holds completion when the customer pays.
+      const opened = unwrap((await post('/support/cases', f.owner, { caseType: 'quality', reason: 'Máy vẫn kêu khi chạy', serviceOrderId: order.id }).expect(201)).body);
+      await db.query('UPDATE support_cases SET hold_completion = true WHERE id = $1', [opened.id]);
+      await db.query('INSERT INTO customer_wallets (user_id, balance) VALUES ($1, $2)', [f.owner.user.id, 1000000]);
+      await post(`/invoices/${invoice.id}/pay-with-wallet`, f.owner).expect(200);
+      const ledger = () => db.query("SELECT t.type, t.amount FROM wallet_transactions t JOIN wallets w ON w.id = t.wallet_id WHERE w.technician_id = $1 AND t.reference_id = $2", [f.tech.user.id, order.id]);
+      expect(unwrap((await get(`/service-orders/${order.id}`, f.owner).expect(200)).body)).toMatchObject({ status: 'under_repair', paymentStatus: 'paid' });
+      expect(await ledger()).toHaveLength(0);
+      // Held: the sweep leaves it.
+      await orders.sweepPaidOrders();
+      expect(unwrap((await get(`/service-orders/${order.id}`, f.owner).expect(200)).body).status).toBe('under_repair');
+      expect(await ledger()).toHaveLength(0);
+
+      // The manager lifts the hold (as PATCH .../hold does); nothing ran completion again before 18/10/2026.
+      await db.query('UPDATE support_cases SET hold_completion = false WHERE id = $1', [opened.id]);
+      const first = await orders.sweepPaidOrders();
+      expect(first.completed).toBeGreaterThanOrEqual(1);
+      expect(unwrap((await get(`/service-orders/${order.id}`, f.owner).expect(200)).body).status).toBe('completed');
+      const [paidInvoice] = await db.query('SELECT grand_total, commission_amount, fixhome_parts_total, shipping_fee FROM invoices WHERE id = $1', [invoice.id]);
+      const share = Number(paidInvoice.grand_total) - Number(paidInvoice.commission_amount) - Number(paidInvoice.fixhome_parts_total) - Number(paidInvoice.shipping_fee);
+      expect(share).toBeGreaterThan(0);
+      expect((await ledger()).map((t: any) => [t.type, Number(t.amount)])).toEqual([['ONLINE_EARNING', share]]);
+      // Again and again: nothing more.
+      await orders.sweepPaidOrders();
+      await orders.sweepPaidOrders();
+      expect(await ledger()).toHaveLength(1);
+    });
+
+    it('settles an order recorded completed and paid before settlement existed (PO 18/10/2026)', async () => {
+      const f = await fixture(), db = context().db;
+      const { ServiceOrdersService } = runtimeRequire('./dist/modules/service-orders/service-orders.service.js');
+      const orders = context().app.get(ServiceOrdersService);
+      const legacy = await completedOrder(f);
+      await db.query("UPDATE invoices SET payment_status = 'paid', paid_at = now() WHERE id = $1", [legacy.invoice.id]);
+      await db.query("UPDATE service_orders SET status = 'completed', payment_status = 'paid', completed_at = now() WHERE id = $1", [legacy.order.id]);
+      const settledLegacy = await orders.sweepPaidOrders();
+      expect(settledLegacy.settled).toBeGreaterThanOrEqual(1);
+      const legacyLedger = await db.query("SELECT t.type FROM wallet_transactions t WHERE t.reference_id = $1", [legacy.order.id]);
+      expect(legacyLedger.map((t: any) => t.type)).toEqual(['ONLINE_EARNING']);
+    });
+
+    it('announces every committed change live to the people allowed to see it, and nothing that rolled back (PO 18/10/2026)', async () => {
+      const f = await fixture(), db = context().db;
+      const { MessagingGateway } = runtimeRequire('./dist/modules/messaging/messaging.gateway.js');
+      const { RealtimeChangeListener } = runtimeRequire('./dist/modules/messaging/realtime-change.listener.js');
+      const gateway = context().app.get(MessagingGateway), listener = context().app.get(RealtimeChangeListener);
+      gateway.server ??= { to: () => ({ emit: () => undefined }), emit: () => undefined };
+      for (let i = 0; i < 50 && !listener.listening; i++) await new Promise((r) => setTimeout(r, 50));
+      expect(listener.listening).toBe(true);
+      const sent: Array<{ users: string[]; event: string; payload: any }> = [];
+      const spy = vi.spyOn(gateway, 'emitToUsers').mockImplementation((users: any, event: any, payload: any) => { sent.push({ users: [...users], event, payload }); });
+      const waitFor = async (match: (e: { users: string[]; event: string; payload: any }) => boolean) => {
+        for (let i = 0; i < 60; i++) {
+          const found = sent.find(match);
+          if (found) return found;
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        throw new Error(`no live event: ${JSON.stringify(sent.map((e) => [e.event, e.payload]))}`);
+      };
+      try {
+        const { order, booking, invitation } = await accept(f);
+        const invited = await waitFor((e) => e.event === 'invitation:updated' && e.payload.invitationId === invitation.id && e.payload.status === 'accepted');
+        expect(invited.users).toEqual([f.tech.user.id]);
+        const taken = await waitFor((e) => e.event === 'booking:updated' && e.payload.bookingId === booking.id && e.payload.serviceOrderId === order.id);
+        expect(taken.users).toEqual([f.owner.user.id]);
+        const accepted = await waitFor((e) => e.event === 'order:updated' && e.payload.serviceOrderId === order.id);
+        expect(accepted.users.sort()).toEqual([f.owner.user.id, f.tech.user.id].sort());
+        expect(accepted.payload.kinds).toContain('status');
+        // Nobody else hears about this order.
+        expect(sent.filter((e) => JSON.stringify(e.payload).includes(order.id)).flatMap((e) => e.users).every((u) => [f.owner.user.id, f.tech.user.id].includes(u))).toBe(true);
+
+        const setOut = await post(`/service-orders/${order.id}/en-route`, f.tech);
+        expect(setOut.status, JSON.stringify(setOut.body)).toBeLessThan(300);
+        const onTheWay = await waitFor((e) => e.event === 'order:updated' && e.payload.serviceOrderId === order.id && e.payload.status === 'en_route');
+        expect(onTheWay.payload.kinds).toEqual(expect.arrayContaining(['status']));
+
+        const where = await patch(`/service-orders/${order.id}/location`, f.tech, { lat: 10.7711, lng: 106.6912, accuracyMeters: 12 });
+        expect(where.status, JSON.stringify(where.body)).toBeLessThan(300);
+        const moved = await waitFor((e) => e.event === 'order:location' && e.payload.serviceOrderId === order.id);
+        // The position goes to the customer only, without re-reading the whole order.
+        expect(moved.users).toEqual([f.owner.user.id]);
+        expect(moved.payload).toMatchObject({ lat: 10.7711, lng: 106.6912 });
+
+        // A write that rolls back is never announced.
+        sent.length = 0;
+        await expect(db.transaction(async (manager) => {
+          await manager.query("UPDATE bookings SET customer_note = 'rolled back' WHERE id = $1", [booking.id]);
+          throw new Error('rollback');
+        })).rejects.toThrow('rollback');
+        await db.query("UPDATE bookings SET customer_note = 'committed' WHERE id = $1", [booking.id]);
+        await waitFor((e) => e.event === 'booking:updated' && e.payload.bookingId === booking.id);
+        expect(sent.filter((e) => e.event === 'booking:updated' && e.payload.bookingId === booking.id)).toHaveLength(1);
+      } finally {
+        spy.mockRestore();
+      }
+    });
   });
 
   describe('AI assistant is rate limited per customer', () => {

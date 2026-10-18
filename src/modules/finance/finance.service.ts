@@ -311,6 +311,11 @@ export class FinanceService {
         orderInfo: `Thanh toan hoa don ${payment.invoiceId}${platform === 'mobile' ? ' mobile' : ''}`,
         returnUrl: platform === 'web' ? withWebOrigin(returnUrl, webOrigin) : returnUrl,
         ipAddr,
+        // The querydr reconciliation sends requestedAt as vnp_TransactionDate; VNPay only finds the
+        // payment when it equals the vnp_CreateDate the payment was opened with. A fresh new Date()
+        // here could fall in the next second, and then a payment whose IPN never arrived stayed
+        // unpaid (and the technician uncredited) although the customer had paid (PO 18/10/2026).
+        createdAt: payment.requestedAt,
       }),
     };
   }
@@ -398,6 +403,8 @@ export class FinanceService {
         orderInfo,
         returnUrl: platform === 'web' ? withWebOrigin(returnUrl, webOrigin) : returnUrl,
         ipAddr: ipAddr || '127.0.0.1',
+        // querydr finds a transaction by the create date it was opened with.
+        createdAt: payment.requestedAt,
       }),
     };
   }

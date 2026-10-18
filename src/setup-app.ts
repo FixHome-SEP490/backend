@@ -46,6 +46,16 @@ export const FILE_UPLOAD_ROUTES: RegExp[] = [
 ];
 
 /**
+ * Routes that also take a short video (PO 18/10/2026): one file of up to 50 MB
+ * (multer enforces it per route), plus the form fields.
+ */
+export const MAX_VIDEO_MULTIPART_BODY_BYTES = 51 * 1024 * 1024;
+export const VIDEO_UPLOAD_ROUTES: RegExp[] = [
+  new RegExp(`^/${API_PREFIX}/media/booking-video-upload$`),
+  new RegExp(`^/${API_PREFIX}/conversations/[^/]+/attachments$`),
+];
+
+/**
  * Turns away a declared body over 1 MB before it is read, unless the route
  * carries images. One parser stays in place: a second, route-specific parser
  * would come from the top-level express 5 while Nest runs its own express 4,
@@ -55,6 +65,11 @@ export function formBodySizeGuard(req: Request, _res: Response, next: NextFuncti
   const declared = Number(req.headers['content-length'] ?? 0);
   const path = (req.originalUrl ?? req.url ?? '').split('?')[0].replace(/\/+$/, '');
   const multipart = String(req.headers['content-type'] ?? '').toLowerCase().startsWith('multipart/form-data');
+  if (multipart && VIDEO_UPLOAD_ROUTES.some((route) => route.test(path))) {
+    if (declared > MAX_VIDEO_MULTIPART_BODY_BYTES) next(new PayloadTooLargeException('Request payload is too large'));
+    else next();
+    return;
+  }
   if (multipart && FILE_UPLOAD_ROUTES.some((route) => route.test(path))) {
     if (declared > MAX_MULTIPART_BODY_BYTES) next(new PayloadTooLargeException('Request payload is too large'));
     else next();

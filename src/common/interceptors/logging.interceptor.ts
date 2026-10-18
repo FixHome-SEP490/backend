@@ -9,6 +9,7 @@ import {
 import { Observable } from 'rxjs';
 import { tap } from 'rxjs/operators';
 import { Request } from 'express';
+import { logPath } from '../../shared/utils/log-path';
 
 @Injectable()
 export class LoggingInterceptor implements NestInterceptor {
@@ -24,7 +25,7 @@ export class LoggingInterceptor implements NestInterceptor {
         const response = context.switchToHttp().getResponse();
         const statusCode = response.statusCode;
         const duration = Date.now() - now;
-        this.logger.log(`${method} ${path} ${statusCode} - ${duration}ms`);
+        this.logger.log(`${method} ${logPath(path)} ${statusCode} - ${duration}ms`);
       }),
     );
   }

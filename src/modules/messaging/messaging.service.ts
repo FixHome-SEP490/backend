@@ -1,6 +1,6 @@
 // src/modules/messaging/messaging.service.ts
 import { ensureBookingConversation } from './ensure-conversation';
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, In, IsNull, LessThan, Repository } from 'typeorm';
 import { Conversation } from './entities/conversation.entity';
@@ -9,10 +9,14 @@ import { Booking } from '../bookings/entities/booking.entity';
 import { User } from '../users/entities/user.entity';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
-import { ConversationStatus, Role } from '../../shared/enums';
-import { EditMessageDto, ListMessagesQueryDto, SendMessageDto } from './messaging.dto';
+import { ConversationStatus, Role, ServiceOrderStatus, WARRANTY_CLAIM_ACTIVE_STATUSES } from '../../shared/enums';
+import { EditMessageDto, ListMessagesQueryDto, SendAttachmentDto, SendMessageDto } from './messaging.dto';
 import { Service } from '../services/entities/service.entity';
 import { buildAcceptGreeting } from './accept-greeting';
+import { ChatAttachmentContent, ChatAttachmentFile, ChatAttachmentStorage } from './chat-attachment-storage.service';
+import { MediaStreamTokens, VideoUnavailableError } from '../../shared/cloudinary';
+import type { VideoStream } from '../../shared/cloudinary';
+import type { VideoMimeType } from '../../shared/utils/media-signature';
 
 export interface ChatActor {
   id: string;
@@ -38,6 +42,18 @@ export interface ConversationView {
   lastMessagePreview: string | null;
   unreadCount: number;
   canSend: boolean;
+  /**
+   * Why a participant cannot write although the thread is still the active one:
+   * `order_completed` once the order is completed and no warranty claim is open
+   * on it (PO 18/10/2026). Null otherwise.
+   */
+  closedReason: 'order_completed' | null;
+}
+
+export interface MessageAttachmentView {
+  kind: 'image' | 'video';
+  mimeType: string;
+  sizeBytes: number | null;
 }
 
 export interface MessageView {
@@ -51,11 +67,14 @@ export interface MessageView {
   clientMessageId: string | null;
   /** Sent by the system on the sender's behalf; clients show a small label. */
   isAutomated: boolean;
+  /** The photo or video sent with the message; its bytes are at GET /messages/:id/attachment. Null after retraction. */
+  attachment: MessageAttachmentView | null;
 }
 
 const DEFAULT_PAGE_SIZE = 30;
 const PREVIEW_MAX_LENGTH = 255;
 const RETRACTED_PREVIEW = 'Tin nhắn đã được gỡ';
+const ATTACHMENT_PREVIEW = { image: 'Đã gửi một ảnh', video: 'Đã gửi một video' } as const;
 
 /** The participant fields a thread shows (see toParticipantView). */
 const PARTICIPANT_COLUMNS = { id: true, fullName: true, avatarUrl: true, role: true } as const;
@@ -69,7 +88,12 @@ export class MessagingService {
     private readonly conversationRepo: Repository<Conversation>,
     @InjectRepository(Message)
     private readonly messageRepo: Repository<Message>,
+    @Optional() private readonly attachmentStorage?: ChatAttachmentStorage,
+    @Optional() private readonly streamTokens?: MediaStreamTokens,
   ) {}
+
+  /** Viewing links already checked against the thread, re-checked once a minute. */
+  private readonly videoGrants = new Map<string, { until: number; message: Message }>();
 
   // ---------------------------------------------------------------- lifecycle
 
@@ -169,7 +193,40 @@ export class MessagingService {
         'This conversation is read-only',
       );
     }
+    if (await this.isClosedByCompletion(conversation.serviceOrderId)) {
+      throw new BusinessException(
+        ErrorCodes.CONVERSATION_CLOSED,
+        'The order is completed; the chat opens again while a warranty claim is in progress',
+      );
+    }
     return conversation;
+  }
+
+  /**
+   * PO 18/10/2026: a completed order closes the chat between the customer and
+   * the technician; it opens again while a warranty claim on that order is in
+   * progress, and closes once the claim is resolved or rejected. Worked out from
+   * the order and its claims each time, so it can never drift from them.
+   */
+  private async closedByCompletion(serviceOrderIds: Array<string | null | undefined>): Promise<Set<string>> {
+    const ids = [...new Set(serviceOrderIds.filter((id): id is string => typeof id === 'string' && id.length > 0))];
+    if (ids.length === 0) return new Set();
+    const rows: Array<{ id: string }> = await this.conversationRepo.manager.query(
+      `SELECT so.id
+         FROM service_orders so
+        WHERE so.id = ANY($1::uuid[])
+          AND so.status::text = $2
+          AND NOT EXISTS (
+                SELECT 1 FROM warranty_claims wc
+                 WHERE wc.service_order_id = so.id AND wc.status::text = ANY($3::text[]))`,
+      [ids, ServiceOrderStatus.COMPLETED, [...WARRANTY_CLAIM_ACTIVE_STATUSES]],
+    );
+    return new Set(rows.map((row) => row.id));
+  }
+
+  private async isClosedByCompletion(serviceOrderId: string | null | undefined): Promise<boolean> {
+    if (!serviceOrderId) return false;
+    return (await this.closedByCompletion([serviceOrderId])).has(serviceOrderId);
   }
 
   /** Rooms the socket may join. Membership is resolved server-side, never trusted from the client. */
@@ -208,10 +265,11 @@ export class MessagingService {
   ): Promise<string | null> {
     const conversation = await this.conversationRepo.findOne({
       where: { id: conversationId },
-      select: { id: true, customerId: true, technicianId: true, status: true },
+      select: { id: true, customerId: true, technicianId: true, status: true, serviceOrderId: true },
     });
     if (!conversation) return null;
     if (conversation.status !== ConversationStatus.ACTIVE) return null;
+    if (await this.isClosedByCompletion(conversation.serviceOrderId)) return null;
     if (conversation.customerId === userId) return conversation.technicianId;
     if (conversation.technicianId === userId) return conversation.customerId;
     return null;
@@ -237,12 +295,16 @@ export class MessagingService {
     });
     if (conversations.length === 0) return [];
 
-    const unread = await this.unreadCountsFor(actor.id);
+    const [unread, closed] = await Promise.all([
+      this.unreadCountsFor(actor.id),
+      this.closedByCompletion(conversations.map((conversation) => conversation.serviceOrderId)),
+    ]);
     return conversations.map((conversation) =>
       this.toConversationView(
         conversation,
         actor,
         unread.get(conversation.id) ?? 0,
+        !!conversation.serviceOrderId && closed.has(conversation.serviceOrderId),
       ),
     );
   }
@@ -252,11 +314,15 @@ export class MessagingService {
     actor: ChatActor,
   ): Promise<ConversationView> {
     const conversation = await this.loadReadable(conversationId, actor);
-    const unread = await this.unreadCountsFor(actor.id);
+    const [unread, closed] = await Promise.all([
+      this.unreadCountsFor(actor.id),
+      this.isClosedByCompletion(conversation.serviceOrderId),
+    ]);
     return this.toConversationView(
       conversation,
       actor,
       unread.get(conversation.id) ?? 0,
+      closed,
     );
   }
 
@@ -400,6 +466,126 @@ export class MessagingService {
 
     await this.touchConversation(conversation, saved.createdAt, dto.content);
     return { message: this.toMessageView(saved), conversation };
+  }
+
+  /**
+   * A photo or short video with an optional caption (PO 18/10/2026). Same rules
+   * as a text message: only the two participants of an open thread may send,
+   * and replaying the client id returns the first bubble instead of a second file.
+   */
+  async sendAttachment(
+    conversationId: string,
+    actor: ChatActor,
+    dto: SendAttachmentDto,
+    file?: ChatAttachmentFile,
+  ): Promise<{ message: MessageView; conversation: Conversation }> {
+    const conversation = await this.loadWritable(conversationId, actor);
+    if (!this.attachmentStorage) throw new ServiceUnavailableException('Chat attachment storage is not configured');
+    const detected = this.attachmentStorage.inspect(file);
+    const content = dto.content ?? '';
+
+    if (dto.clientMessageId) {
+      const duplicate = await this.messageRepo.findOneBy({ conversationId, senderId: actor.id, clientMessageId: dto.clientMessageId });
+      if (duplicate) return { message: this.toMessageView(duplicate), conversation };
+    }
+
+    const reference = await this.attachmentStorage.upload(conversation.id, detected.kind, file as ChatAttachmentFile);
+    if (dto.clientMessageId) {
+      // A resend on a weak connection can overlap its first try (the upload takes seconds): the first saved wins.
+      const first = await this.messageRepo.findOneBy({ conversationId, senderId: actor.id, clientMessageId: dto.clientMessageId });
+      if (first) {
+        await this.attachmentStorage.discard(reference, conversation.id);
+        return { message: this.toMessageView(first), conversation };
+      }
+    }
+    const saved = await this.messageRepo.save(
+      this.messageRepo.create({
+        conversationId,
+        senderId: actor.id,
+        content,
+        clientMessageId: dto.clientMessageId ?? null,
+        attachmentKind: detected.kind,
+        attachmentRef: reference,
+        attachmentMime: detected.mimeType,
+        attachmentSize: (file as ChatAttachmentFile).size,
+      }),
+    );
+    await this.touchConversation(conversation, saved.createdAt, content || ATTACHMENT_PREVIEW[detected.kind]);
+    return { message: this.toMessageView(saved), conversation };
+  }
+
+  /** The bytes of a message's photo or video, for anyone who may read the thread. */
+  /**
+   * A viewing link for a video in a thread I can read (PO 18/10/2026): the
+   * player streams and seeks it instead of downloading it whole first.
+   */
+  async attachmentVideoLink(messageId: string, actor: ChatActor): Promise<{ url: string; posterUrl: string; expiresAt: string }> {
+    const message = await this.readableAttachment(messageId, actor);
+    if (message.attachmentKind !== 'video') throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Attachment not found');
+    if (!this.streamTokens || !this.attachmentStorage) throw new ServiceUnavailableException('Chat attachment storage is not configured');
+    const { token, expiresAt } = this.streamTokens.issue({ k: 'm', id: messageId, u: actor.id, r: actor.role });
+    return { url: `/messages/attachment/stream/${token}`, posterUrl: `/messages/attachment/stream/${token}/poster`, expiresAt };
+  }
+
+  /** Opens the video a link names; null when the link is forged, expired or its holder may no longer read the thread. */
+  async openAttachmentVideo(token: string, range: string | undefined, part: 'video' | 'poster'): Promise<VideoStream | null> {
+    const grant = this.streamTokens?.verify(token, 'm');
+    if (!grant || !this.attachmentStorage) return null;
+    let message: Message;
+    const cached = this.videoGrants.get(token);
+    if (cached && cached.until > Date.now()) {
+      message = cached.message;
+    } else {
+      try {
+        message = await this.readableAttachment(grant.id, { id: grant.u, role: grant.r as Role });
+      } catch {
+        this.videoGrants.delete(token);
+        return null;
+      }
+      if (message.attachmentKind !== 'video') return null;
+      if (this.videoGrants.size > 2000) this.videoGrants.clear();
+      this.videoGrants.set(token, { until: Date.now() + 60_000, message });
+    }
+    try {
+      return await this.attachmentStorage.openVideo(message.attachmentRef!, message.conversationId, message.attachmentMime as VideoMimeType, range, part);
+    } catch (error) {
+      // Storage unreachable or a stored reference it cannot read: the video is unavailable for now, not a server fault.
+      if (error instanceof VideoUnavailableError || error instanceof BadRequestException) {
+        throw new ServiceUnavailableException('Chat attachment is unavailable');
+      }
+      throw error;
+    }
+  }
+
+  private async readableAttachment(messageId: string, actor: ChatActor): Promise<Message> {
+    const message = await this.messageRepo
+      .createQueryBuilder('m')
+      .addSelect('m.attachmentRef')
+      .where('m.id = :id', { id: messageId })
+      .getOne();
+    if (!message) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Message not found');
+    // Same answer for a stranger as for a missing row (IDOR guard).
+    await this.loadReadable(message.conversationId, actor);
+    if (message.deletedAt || !message.attachmentRef || !message.attachmentKind) {
+      throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Attachment not found');
+    }
+    return message;
+  }
+
+  async attachmentContent(messageId: string, actor: ChatActor): Promise<ChatAttachmentContent> {
+    const message = await this.messageRepo
+      .createQueryBuilder('m')
+      .addSelect('m.attachmentRef')
+      .where('m.id = :id', { id: messageId })
+      .getOne();
+    if (!message) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Message not found');
+    // Same answer for a stranger as for a missing row (IDOR guard).
+    await this.loadReadable(message.conversationId, actor);
+    if (message.deletedAt || !message.attachmentRef || !message.attachmentKind) {
+      throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Attachment not found');
+    }
+    if (!this.attachmentStorage) throw new ServiceUnavailableException('Chat attachment storage is not configured');
+    return this.attachmentStorage.download(message.attachmentRef, message.conversationId);
   }
 
   async editMessage(
@@ -548,6 +734,7 @@ export class MessagingService {
     conversation: Conversation,
     actor: ChatActor,
     unreadCount: number,
+    closedByCompletion = false,
   ): ConversationView {
     const viewerIsCustomer = conversation.customerId === actor.id;
     const counterpart = viewerIsCustomer
@@ -566,11 +753,15 @@ export class MessagingService {
       unreadCount,
       canSend:
         conversation.status === ConversationStatus.ACTIVE &&
-        this.isParticipant(conversation, actor),
+        this.isParticipant(conversation, actor) &&
+        !closedByCompletion,
+      closedReason:
+        conversation.status === ConversationStatus.ACTIVE && closedByCompletion ? 'order_completed' : null,
     };
   }
 
   private toMessageView(message: Message): MessageView {
+    const kind = message.attachmentKind;
     return {
       id: message.id,
       conversationId: message.conversationId,
@@ -581,6 +772,10 @@ export class MessagingService {
       isDeleted: !!message.deletedAt,
       clientMessageId: message.clientMessageId ?? null,
       isAutomated: message.isAutomated === true,
+      attachment:
+        !message.deletedAt && (kind === 'image' || kind === 'video')
+          ? { kind, mimeType: message.attachmentMime ?? '', sizeBytes: message.attachmentSize ?? null }
+          : null,
     };
   }
 

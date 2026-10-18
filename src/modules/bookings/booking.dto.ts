@@ -57,8 +57,8 @@ export class CreateBookingDto extends ScheduleBookingDto {
   @IsOptional() @IsArray() @IsString({ each: true })
   mediaUrls?: string[];
 
-  @ApiPropertyOptional({ type: [String], maxItems: 5, uniqueItems: true, description: 'Up to five PRIVATE booking PHOTO upload UUIDs; distinct from the one-or-two technician shortlist IDs.' })
-  @IsOptional() @IsArray() @ArrayMaxSize(5) @ArrayUnique()
+  @ApiPropertyOptional({ type: [String], maxItems: 7, uniqueItems: true, description: 'PRIVATE booking upload UUIDs: up to five photos (POST /media/booking-photo-upload) and up to two videos (POST /media/booking-video-upload); distinct from the one-or-two technician shortlist IDs.' })
+  @IsOptional() @IsArray() @ArrayMaxSize(7) @ArrayUnique()
   @Matches(UUID_REGEX, { each: true, message: 'Each photo upload ID must be a valid UUID' })
   photoUploadIds?: string[];
 

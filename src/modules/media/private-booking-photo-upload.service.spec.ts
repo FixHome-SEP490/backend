@@ -2,6 +2,8 @@ import { BadRequestException, ForbiddenException, ServiceUnavailableException } 
 import { Repository } from 'typeorm';
 import axios from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { BusinessException } from '../../common/exceptions/business.exception';
+import { ErrorCodes } from '../../shared/constants';
 import { Role } from '../../shared/enums';
 import { PrivateBookingPhotoUpload } from './entities/private-booking-photo-upload.entity';
 import { PrivateBookingPhotoUploadService } from './private-booking-photo-upload.service';
@@ -133,5 +135,25 @@ describe('PrivateBookingPhotoUploadService', () => {
     expect((error as Error).message).not.toContain('connection-secret');
     expect(providerFactory).not.toHaveBeenCalled();
     expect(storage).not.toHaveProperty('delete');
+  });
+
+  // Found live 18/10/2026: a 75-second clip came back as 503 instead of the customer's 422.
+  it('passes a too-long video through as VIDEO_TOO_LONG, and only hides real storage failures', async () => {
+    const video = { buffer: Buffer.from('x'), mimetype: 'video/mp4', size: 1 };
+    const videos = Object.assign(storage, {
+      validateVideo: vi.fn().mockReturnValue('video/mp4'),
+      uploadVideo: vi.fn().mockRejectedValueOnce(new BusinessException(ErrorCodes.VIDEO_TOO_LONG, 'Video is longer than 60 seconds')),
+    });
+
+    const tooLong = await service.uploadVideo(Role.CUSTOMER, OWNER_ID, video).catch((caught: unknown) => caught);
+    expect(tooLong).toBeInstanceOf(BusinessException);
+    expect((tooLong as BusinessException).getStatus()).toBe(422);
+    expect((tooLong as BusinessException).getResponse()).toMatchObject({ code: 'VIDEO_TOO_LONG' });
+    expect(repository.save).not.toHaveBeenCalled();
+
+    videos.uploadVideo.mockRejectedValueOnce(new Error(`provider failure for ${OBJECT_REF}`));
+    const outage = await service.uploadVideo(Role.CUSTOMER, OWNER_ID, video).catch((caught: unknown) => caught);
+    expect(outage).toBeInstanceOf(ServiceUnavailableException);
+    expect((outage as Error).message).not.toContain(OBJECT_REF);
   });
 });

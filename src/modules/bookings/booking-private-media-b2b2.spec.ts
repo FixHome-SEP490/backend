@@ -156,7 +156,7 @@ function makeTransactionFixture(seeds: UploadSeed[] = []) {
 }
 
 describe('B2b2 Booking private photo wiring', () => {
-  it('accepts at most five unique UUID upload IDs in the create contract', () => {
+  it('accepts at most seven unique UUID upload IDs (five photos, two videos) in the create contract', () => {
     const valid = makeCreateDto({
       photoUploadIds: [
         UPLOAD_ID,
@@ -164,12 +164,14 @@ describe('B2b2 Booking private photo wiring', () => {
         '55b11d61-7c97-4a29-a53b-97ca76ac3435',
         '65b11d61-7c97-4a29-a53b-97ca76ac3435',
         '75b11d61-7c97-4a29-a53b-97ca76ac3435',
+        '85b11d61-7c97-4a29-a53b-97ca76ac3435',
+        '95b11d61-7c97-4a29-a53b-97ca76ac3435',
       ],
     });
     expect(validateSync(valid).some((error) => error.property === 'photoUploadIds')).toBe(false);
 
     const tooMany = makeCreateDto({
-      photoUploadIds: [...valid.photoUploadIds!, '85b11d61-7c97-4a29-a53b-97ca76ac3435'],
+      photoUploadIds: [...valid.photoUploadIds!, 'a5b11d61-7c97-4a29-a53b-97ca76ac3435'],
     });
     expect(validateSync(tooMany).some((error) => error.property === 'photoUploadIds')).toBe(true);
 

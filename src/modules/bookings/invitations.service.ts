@@ -25,6 +25,7 @@ import { newOrderCode } from '../service-orders/order-code';
 import { startBackgroundJob } from '../../common/background-job';
 import { randomUUID } from 'crypto';
 import { TechnicianInvitationPreviewDto, toTechnicianInvitationPreview } from './booking-privacy.dto';
+import { technicianDistances } from './technician-distance';
 import { AcceptGreetingPublisher } from '../messaging/accept-greeting.publisher';
 
 @Injectable()
@@ -185,19 +186,21 @@ export class InvitationsService implements OnModuleInit, OnModuleDestroy {
     for (const bookingId of new Set(awaiting.map(i => i.bookingId))) await this.refreshMatching(bookingId);
     const invitations = await this.invitationRepo.find({
       where: { technicianId, status: InvitationStatus.PENDING },
-      relations: ['booking'],
+      // Photos and videos come too (PO 18/10/2026); a separate query keeps the rows from multiplying.
+      relations: ['booking', 'booking.media'],
+      relationLoadStrategy: 'query',
       order: { invitedAt: 'DESC' },
     });
     const now = new Date();
-    return invitations
-      .filter(invitation =>
-        invitation.booking &&
-        invitation.booking.status === BookingStatus.MATCHING &&
-        invitation.status === InvitationStatus.PENDING &&
-        invitation.expiresAt != null &&
-        invitation.expiresAt > now,
-      )
-      .map(toTechnicianInvitationPreview);
+    const live = invitations.filter(invitation =>
+      invitation.booking &&
+      invitation.booking.status === BookingStatus.MATCHING &&
+      invitation.status === InvitationStatus.PENDING &&
+      invitation.expiresAt != null &&
+      invitation.expiresAt > now,
+    );
+    const distances = await technicianDistances(this.dataSource.manager, technicianId, live.map(i => i.booking));
+    return live.map(invitation => toTechnicianInvitationPreview(invitation, { distanceKm: distances.get(invitation.bookingId) ?? null }));
   }
 
   async respond(invitationId: string, action: 'ACCEPT' | 'DECLINE', technician: { id: string; role: string }, opts: { auto?: boolean } = {}): Promise<{ invitation: BookingInvitation; serviceOrder?: ServiceOrder }> {

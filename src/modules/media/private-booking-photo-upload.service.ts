@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { BusinessException } from '../../common/exceptions/business.exception';
 import { Role } from '../../shared/enums';
 import { PrivateBookingPhotoUpload } from './entities/private-booking-photo-upload.entity';
 import {
@@ -68,6 +69,46 @@ export class PrivateBookingPhotoUploadService {
       throw new ServiceUnavailableException(
         'Private Booking photo metadata could not be saved',
       );
+    }
+  }
+
+  /**
+   * A short video of the problem (PO 18/10/2026). Stored privately like the
+   * photos and claimed by the booking the same way; nothing sends it to the AI.
+   */
+  async uploadVideo(
+    role: Role,
+    ownerUserId: string,
+    file?: PrivateBookingPhotoFile,
+  ): Promise<PrivateBookingPhotoUploadResponse> {
+    if (role !== Role.CUSTOMER) {
+      throw new ForbiddenException('Only customers can upload Booking videos');
+    }
+
+    const mimeType = this.privateStorage.validateVideo(file);
+    const video = file as PrivateBookingPhotoFile;
+
+    let objectRef: string;
+    try {
+      objectRef = await this.privateStorage.uploadVideo(ownerUserId, video);
+    } catch (error) {
+      // A video longer than a minute is the customer's to fix (422), not an outage.
+      if (error instanceof BusinessException) throw error;
+      throw new ServiceUnavailableException('Private Booking video upload is unavailable');
+    }
+
+    try {
+      const saved = await this.uploadRepository.save(this.uploadRepository.create({
+        ownerUserId,
+        objectRef,
+        mimeType,
+        sizeBytes: video.size,
+        expiresAt: new Date(Date.now() + UPLOAD_TTL_MS),
+        claimedBookingId: null,
+      }));
+      return { uploadId: saved.id, mimeType: saved.mimeType, sizeBytes: saved.sizeBytes };
+    } catch {
+      throw new ServiceUnavailableException('Private Booking video metadata could not be saved');
     }
   }
 }

@@ -49,7 +49,7 @@ describe('Booking Swagger contract: ordered invitations', () => {
         serviceId: { type: 'string', format: 'uuid' },
         addressId: { type: 'string', format: 'uuid' },
         urgency: { enum: ['low', 'medium', 'high', 'critical'] },
-        photoUploadIds: { type: 'array', maxItems: 5 },
+        photoUploadIds: { type: 'array', maxItems: 7 },
       },
     });
     const gps = doc.paths['/api/v1/service-orders/{id}/check-in']?.post;
