@@ -2,7 +2,9 @@ import { BadRequestException, Inject, Injectable, Optional, ServiceUnavailableEx
 import { Readable } from 'stream';
 import { randomUUID } from 'crypto';
 import axios from 'axios';
-import { CLOUDINARY } from '../../shared/cloudinary';
+import { CLOUDINARY, PrivateVideoService, VideoTooLongError, splitPlan, withPlan } from '../../shared/cloudinary';
+import { BusinessException } from '../../common/exceptions/business.exception';
+import { ErrorCodes } from '../../shared/constants';
 import type { CloudinaryInstance, UploadApiResponse } from '../../shared/cloudinary';
 import {
   detectImageMimeType,
@@ -34,6 +36,7 @@ const VIDEO_REF_PREFIX = 'cloudinary://booking-videos/';
 export class PrivateBookingPhotoStorage {
   constructor(
     @Optional() @Inject(CLOUDINARY) private readonly cloudinary: CloudinaryInstance | null,
+    @Optional() private readonly videos?: PrivateVideoService,
   ) {}
 
   validate(file?: PrivateBookingPhotoFile): asserts file is PrivateBookingPhotoFile {
@@ -72,22 +75,30 @@ export class PrivateBookingPhotoStorage {
     return detected.mimeType as VideoMimeType;
   }
 
+  /**
+   * Stores a validated video (location stamp blanked, at most a minute) and
+   * returns its reference with the viewing plan: the original when it plays
+   * everywhere, otherwise a copy Cloudinary makes in the background.
+   */
   async uploadVideo(ownerId: string, file: PrivateBookingPhotoFile): Promise<string> {
     this.validateVideo(file);
     const normalizedOwnerId = this.normalizeOwnerId(ownerId);
-    const cld = this.getCloudinary();
+    if (!this.videos?.configured) throw new ServiceUnavailableException('Private booking video storage is not configured');
     const publicId = `fixhome/booking-videos/${normalizedOwnerId}/${randomUUID()}`;
     try {
-      await this.uploadToCloudinary(cld, file.buffer, {
-        public_id: publicId,
-        resource_type: 'video',
-        type: 'authenticated',
-        overwrite: false,
-      });
-      return `${VIDEO_REF_PREFIX}${publicId}`;
-    } catch {
+      const { plan } = await this.videos.store(publicId, file.buffer);
+      return withPlan(`${VIDEO_REF_PREFIX}${publicId}`, plan);
+    } catch (error) {
+      if (error instanceof VideoTooLongError) throw new BusinessException(ErrorCodes.VIDEO_TOO_LONG, 'Video is longer than 60 seconds');
       throw new ServiceUnavailableException('Private booking video storage is unavailable');
     }
+  }
+
+  /** The video's storage id and viewing plan, after checking the reference belongs to this owner. */
+  videoObject(reference: string, expectedOwnerId: string): { publicId: string; plan: 'orig' | 'mp4' } {
+    const { reference: base, plan } = splitPlan(String(reference ?? ''));
+    if (!base.startsWith(VIDEO_REF_PREFIX)) throw new BadRequestException('Invalid booking photo reference');
+    return { publicId: this.getOwnedPublicId(base, expectedOwnerId), plan };
   }
 
   async upload(ownerId: string, file: PrivateBookingPhotoFile): Promise<string> {
@@ -112,7 +123,8 @@ export class PrivateBookingPhotoStorage {
 
   async download(reference: string, expectedOwnerId: string): Promise<PrivateBookingPhotoContent> {
     const cld = this.getCloudinary();
-    const isVideo = typeof reference === 'string' && reference.startsWith(VIDEO_REF_PREFIX);
+    reference = splitPlan(String(reference ?? '')).reference;
+    const isVideo = reference.startsWith(VIDEO_REF_PREFIX);
     const publicId = this.getOwnedPublicId(reference, expectedOwnerId);
     const maxBytes = isVideo ? VIDEO_MAX_BYTES : MAX_FILE_SIZE;
 

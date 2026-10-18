@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { BusinessException } from '../../common/exceptions/business.exception';
 import { Role } from '../../shared/enums';
 import { PrivateBookingPhotoUpload } from './entities/private-booking-photo-upload.entity';
 import {
@@ -90,7 +91,9 @@ export class PrivateBookingPhotoUploadService {
     let objectRef: string;
     try {
       objectRef = await this.privateStorage.uploadVideo(ownerUserId, video);
-    } catch {
+    } catch (error) {
+      // A video longer than a minute is the customer's to fix (422), not an outage.
+      if (error instanceof BusinessException) throw error;
       throw new ServiceUnavailableException('Private Booking video upload is unavailable');
     }
 

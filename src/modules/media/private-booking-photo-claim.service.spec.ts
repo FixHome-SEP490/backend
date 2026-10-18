@@ -299,7 +299,7 @@ describe('PrivateBookingPhotoClaimService', () => {
 
   it.each([
     ['a sixth photo', [...UPLOAD_IDS].map((id) => uploadRow(id))],
-    ['a third video', [...UPLOAD_IDS.slice(0, 3)].map((id) => uploadRow(id, { mimeType: 'video/webm' }))],
+    ['a third video', UPLOAD_IDS.slice(0, 3).map((id) => uploadRow(id, { mimeType: 'video/webm' }))],
   ])('rejects %s after locking and claims nothing', async (_label, rows) => {
     const db = createMockManager(rows);
 

@@ -2,7 +2,10 @@ import { BadRequestException, Inject, Injectable, Optional, ServiceUnavailableEx
 import { Readable } from 'stream';
 import { randomUUID } from 'crypto';
 import axios from 'axios';
-import { CLOUDINARY } from '../../shared/cloudinary';
+import { CLOUDINARY, PrivateVideoService, VideoTooLongError, splitPlan, withPlan } from '../../shared/cloudinary';
+import type { VideoPlan, VideoStream } from '../../shared/cloudinary';
+import { BusinessException } from '../../common/exceptions/business.exception';
+import { ErrorCodes } from '../../shared/constants';
 import type { CloudinaryInstance, UploadApiResponse } from '../../shared/cloudinary';
 import {
   detectImageMimeType,
@@ -29,7 +32,10 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
  */
 @Injectable()
 export class ChatAttachmentStorage {
-  constructor(@Optional() @Inject(CLOUDINARY) private readonly cloudinary: CloudinaryInstance | null) {}
+  constructor(
+    @Optional() @Inject(CLOUDINARY) private readonly cloudinary: CloudinaryInstance | null,
+    @Optional() private readonly videos?: PrivateVideoService,
+  ) {}
 
   /** What the file is by its bytes: a jpeg/png/webp photo up to 10 MB or an mp4/mov/webm video up to 50 MB. */
   inspect(file?: ChatAttachmentFile): { kind: ChatAttachmentKind; mimeType: ImageMimeType | VideoMimeType } {
@@ -43,8 +49,19 @@ export class ChatAttachmentStorage {
 
   async upload(conversationId: string, kind: ChatAttachmentKind, file: ChatAttachmentFile): Promise<string> {
     if (!UUID_PATTERN.test(conversationId)) throw new BadRequestException('Invalid chat attachment');
-    const cld = this.getCloudinary();
     const publicId = `fixhome/chat-media/${conversationId.toLowerCase()}/${randomUUID()}`;
+    if (kind === 'video') {
+      // Videos are stored like booking videos: location blanked, at most a minute, a playable copy when needed.
+      if (!this.videos?.configured) throw new ServiceUnavailableException('Chat attachment storage is not configured');
+      try {
+        const { plan } = await this.videos.store(publicId, file.buffer);
+        return withPlan(`${REF_PREFIX}video/${publicId}`, plan);
+      } catch (error) {
+        if (error instanceof VideoTooLongError) throw new BusinessException(ErrorCodes.VIDEO_TOO_LONG, 'Video is longer than 60 seconds');
+        throw new ServiceUnavailableException('Chat attachment storage is unavailable');
+      }
+    }
+    const cld = this.getCloudinary();
     try {
       await new Promise<UploadApiResponse>((resolve, reject) => {
         const stream = cld.uploader.upload_stream(
@@ -60,7 +77,7 @@ export class ChatAttachmentStorage {
   }
 
   async download(reference: string, conversationId: string): Promise<ChatAttachmentContent> {
-    const { kind, publicId } = this.parse(reference, conversationId);
+    const { kind, publicId } = this.parse(splitPlan(reference).reference, conversationId);
     const cld = this.getCloudinary();
     const maxBytes = maxBytesFor(kind);
     try {
@@ -83,6 +100,27 @@ export class ChatAttachmentStorage {
       return { buffer, mimeType };
     } catch {
       throw new ServiceUnavailableException('Chat attachment storage is unavailable');
+    }
+  }
+
+  /** Streams a chat video (or its poster) with the viewer's byte range, the playable copy once ready. */
+  async openVideo(reference: string, conversationId: string, mimeType: VideoMimeType, range: string | undefined, part: 'video' | 'poster'): Promise<VideoStream | null> {
+    const { reference: base, plan } = splitPlan(reference);
+    const { kind, publicId } = this.parse(base, conversationId);
+    if (kind !== 'video' || !this.videos?.configured) return null;
+    return part === 'poster' ? this.videos.openPoster(publicId, plan as VideoPlan) : this.videos.open(publicId, plan as VideoPlan, mimeType, range);
+  }
+
+  /**
+   * Removes a file that was stored but will never be shown (a resend that lost
+   * the race to its first copy). Best effort: a leftover file costs storage only.
+   */
+  async discard(reference: string, conversationId: string): Promise<void> {
+    try {
+      const { kind, publicId } = this.parse(splitPlan(reference).reference, conversationId);
+      await this.getCloudinary().uploader.destroy(publicId, { resource_type: kind, type: 'authenticated', invalidate: true });
+    } catch {
+      // Nothing to do: the row was never saved, so nothing points at the file.
     }
   }
 

@@ -11,7 +11,7 @@ import { MessagingGateway } from './messaging.gateway';
 import { CallRegistryService } from './call-registry.service';
 import { AcceptGreetingPublisher } from './accept-greeting.publisher';
 import { ChatAttachmentStorage } from './chat-attachment-storage.service';
-import { OrderRealtimeSubscriber } from './order-realtime.subscriber';
+import { RealtimeChangeListener } from './realtime-change.listener';
 import { NotificationsModule } from '../notifications/notifications.module';
 import {
   ConversationsController,
@@ -32,7 +32,7 @@ import {
     }),
   ],
   controllers: [ConversationsController, MessagesController],
-  providers: [MessagingService, CallRegistryService, MessagingGateway, AcceptGreetingPublisher, ChatAttachmentStorage, OrderRealtimeSubscriber],
-  exports: [MessagingService, MessagingGateway, AcceptGreetingPublisher, OrderRealtimeSubscriber],
+  providers: [MessagingService, CallRegistryService, MessagingGateway, AcceptGreetingPublisher, ChatAttachmentStorage, RealtimeChangeListener],
+  exports: [MessagingService, MessagingGateway, AcceptGreetingPublisher],
 })
 export class MessagingModule {}

@@ -43,7 +43,16 @@ export const CHAT_EVENTS = {
   CONVERSATION_UPDATED: 'conversation:updated',
   TYPING: 'typing',
   ORDER_UPDATED: 'order:updated',
+  ORDER_LOCATION: 'order:location',
+  BOOKING_UPDATED: 'booking:updated',
+  INVITATION_UPDATED: 'invitation:updated',
+  NOTIFICATION_NEW: 'notification:new',
+  WALLET_UPDATED: 'wallet:updated',
+  REALTIME_RESYNC: 'realtime:resync',
 } as const;
+
+/** The live-update events (PO 18/10/2026), each sent only to the people allowed to see that record. */
+export type RealtimeEvent = Exclude<(typeof CHAT_EVENTS)[keyof typeof CHAT_EVENTS], 'message:new' | 'message:updated' | 'message:deleted' | 'conversation:updated' | 'typing'>;
 
 const DEFAULT_ICE_URLS = 'stun:stun.l.google.com:19302';
 
@@ -574,20 +583,17 @@ export class MessagingGateway
   }
 
   /**
-   * An order changed (status, invoice, quotation, warranty...), sent after the
-   * write committed to the customer and every technician who held it, so open
-   * job and order screens reload without polling (PO 18/10/2026). The payload
-   * only names the order; screens read the details over REST with their own rights.
+   * A live update for these people's open screens, sent to their personal rooms
+   * after the write committed. Payloads name what changed and its new state;
+   * screens read anything else over REST with their own rights.
    */
-  emitOrderUpdated(userIds: string[], payload: OrderUpdatedPayload): void {
-    for (const userId of new Set(userIds)) {
-      this.server?.to(userRoom(userId)).emit(CHAT_EVENTS.ORDER_UPDATED, payload);
-    }
+  emitToUsers(userIds: Iterable<string>, event: RealtimeEvent, payload: object): void {
+    const rooms = [...new Set(userIds)].filter(Boolean).map(userRoom);
+    if (rooms.length) this.server?.to(rooms).emit(event, payload);
   }
-}
 
-export interface OrderUpdatedPayload {
-  serviceOrderId: string;
-  bookingId: string;
-  status: string;
+  /** Every connected user: after the listener lost changes while reconnecting, screens read again once. */
+  emitToEveryone(event: RealtimeEvent, payload: object): void {
+    this.server?.emit(event, payload);
+  }
 }

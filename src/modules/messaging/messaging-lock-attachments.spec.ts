@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ServiceUnavailableException } from '@nestjs/common';
+import { describe, expect, it, vi } from 'vitest';
 import { MessagingService } from './messaging.service';
 import { Conversation } from './entities/conversation.entity';
 import { Message } from './entities/message.entity';
@@ -6,6 +7,7 @@ import { ChatAttachmentStorage } from './chat-attachment-storage.service';
 import { ConversationStatus, Role, WARRANTY_CLAIM_ACTIVE_STATUSES } from '../../shared/enums';
 import { ErrorCodes } from '../../shared/constants';
 import { BusinessException } from '../../common/exceptions/business.exception';
+import { MediaStreamTokens, VideoUnavailableError } from '../../shared/cloudinary';
 
 const CUSTOMER = { id: 'c1', role: Role.CUSTOMER };
 const TECHNICIAN = { id: 't1', role: Role.TECHNICIAN };
@@ -64,9 +66,12 @@ function harness(closedOrderIds: string[] = []) {
     upload: vi.fn(async () => `cloudinary://chat-media/image/fixhome/chat-media/${CONVERSATION_ID}/33333333-3333-4333-8333-333333333333`),
     download: vi.fn(async () => ({ buffer: JPEG, mimeType: 'image/jpeg' as const })),
   };
-  const service = new MessagingService(conversationRepo as never, messageRepo as never, storage as unknown as ChatAttachmentStorage);
+  (storage as Record<string, unknown>).openVideo = vi.fn(async () => ({ status: 206, headers: {}, body: null, processing: false }));
+  const service = new MessagingService(conversationRepo as never, messageRepo as never, storage as unknown as ChatAttachmentStorage, TOKENS);
   return { service, conversationRepo, messageRepo, storage, query };
 }
+
+const TOKENS = new MediaStreamTokens({ getOrThrow: () => 'test-access-secret-at-least-32-characters' } as never);
 
 async function errorCode(promise: Promise<unknown>): Promise<string | undefined> {
   const error = await promise.catch((caught: unknown) => caught);
@@ -174,5 +179,43 @@ describe('Chat photos and videos (PO 18/10/2026)', () => {
     expect(await errorCode(service.attachmentContent('m1', OUTSIDER))).toBe(ErrorCodes.OWNERSHIP_DENIED);
     row.deletedAt = new Date();
     expect(await errorCode(service.attachmentContent('m1', CUSTOMER))).toBe(ErrorCodes.OWNERSHIP_DENIED);
+  });
+
+  it('gives participants a short viewing link for a video and streams it with their range (PO 18/10/2026)', async () => {
+    const { service, storage, messageRepo } = harness([ORDER_ID]);
+    const row = { id: 'm2', conversationId: CONVERSATION_ID, senderId: CUSTOMER.id, deletedAt: null as Date | null, attachmentKind: 'video', attachmentMime: 'video/quicktime', attachmentRef: 'cloudinary://chat-media/video/x?r=mp4' };
+    messageRepo.createQueryBuilder.mockReturnValue({ addSelect: vi.fn().mockReturnThis(), where: vi.fn().mockReturnThis(), getOne: vi.fn(async () => row) });
+    const link = await service.attachmentVideoLink('m2', TECHNICIAN);
+    expect(link.url).toMatch(/^\/messages\/attachment\/stream\/[\w-]+\.[\w-]+$/);
+    const token = link.url.split('/').pop()!;
+    await service.openAttachmentVideo(token, 'bytes=0-1023', 'video');
+    expect((storage as unknown as { openVideo: ReturnType<typeof vi.fn> }).openVideo).toHaveBeenCalledWith('cloudinary://chat-media/video/x?r=mp4', CONVERSATION_ID, 'video/quicktime', 'bytes=0-1023', 'video');
+    expect(await service.openAttachmentVideo('forged.link', undefined, 'video')).toBeNull();
+    expect(await errorCode(service.attachmentVideoLink('m2', OUTSIDER))).toBe(ErrorCodes.OWNERSHIP_DENIED);
+    row.attachmentKind = 'image';
+    expect(await errorCode(service.attachmentVideoLink('m2', CUSTOMER))).toBe(ErrorCodes.OWNERSHIP_DENIED);
+  });
+
+  // Review 18/10/2026: a resend that overlaps its first try must not leave two bubbles.
+  it('keeps the first copy when a resend finishes uploading after it, and removes the extra file', async () => {
+    const { service, storage, messageRepo } = harness();
+    (storage as Record<string, unknown>).discard = vi.fn(async () => undefined);
+    const first = { id: 'm0', conversationId: CONVERSATION_ID, senderId: CUSTOMER.id, content: '', createdAt: new Date(), attachmentKind: 'image', attachmentMime: 'image/jpeg', attachmentSize: 8 };
+    // Nothing saved yet when the resend starts; the first try saved while this one was uploading.
+    messageRepo.findOneBy.mockResolvedValueOnce(null).mockResolvedValueOnce(first as never);
+    const { message } = await service.sendAttachment(CONVERSATION_ID, CUSTOMER, { clientMessageId: 'retry-2' }, file(JPEG, 'image/jpeg'));
+    expect(message.id).toBe('m0');
+    expect(storage.upload).toHaveBeenCalledTimes(1);
+    expect(messageRepo.save).not.toHaveBeenCalled();
+    expect((storage as unknown as { discard: ReturnType<typeof vi.fn> }).discard).toHaveBeenCalledWith(expect.stringContaining('cloudinary://chat-media/'), CONVERSATION_ID);
+  });
+
+  it('says a chat video is unavailable (503) when storage cannot be reached', async () => {
+    const { service, storage, messageRepo } = harness();
+    const row = { id: 'm3', conversationId: CONVERSATION_ID, senderId: CUSTOMER.id, deletedAt: null, attachmentKind: 'video', attachmentMime: 'video/mp4', attachmentRef: 'cloudinary://chat-media/video/x?r=orig' };
+    messageRepo.createQueryBuilder.mockReturnValue({ addSelect: vi.fn().mockReturnThis(), where: vi.fn().mockReturnThis(), getOne: vi.fn(async () => row) });
+    (storage as unknown as { openVideo: ReturnType<typeof vi.fn> }).openVideo.mockRejectedValueOnce(new VideoUnavailableError());
+    const token = (await service.attachmentVideoLink('m3', CUSTOMER)).url.split('/').pop()!;
+    await expect(service.openAttachmentVideo(token, undefined, 'video')).rejects.toBeInstanceOf(ServiceUnavailableException);
   });
 });

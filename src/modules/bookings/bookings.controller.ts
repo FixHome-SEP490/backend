@@ -16,7 +16,10 @@ import {
   Res,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiOkResponse } from '@nestjs/swagger';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
+import { sendVideoStream } from '../../shared/cloudinary';
+import { BusinessException } from '../../common/exceptions/business.exception';
+import { ErrorCodes } from '../../shared/constants';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionGuard } from '../../common/guards/permission.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
@@ -92,6 +95,38 @@ export class BookingsController {
     await this.invitationsService.refreshMatching(id);
     const booking = await this.bookingsService.findById(id, req.user);
     return { data: toBookingResponse(booking) };
+  }
+
+  @Get('media/stream/:token')
+  @ApiOperation({
+    summary: 'Stream a booking video through its viewing link (byte ranges supported; the link is the authorization)',
+  })
+  async streamVideo(@Param('token') token: string, @Req() request: Request, @Res() response: Response): Promise<void> {
+    const stream = await this.privateMediaContentService.openVideo(token, request.headers.range, 'video');
+    if (!stream) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking media not found');
+    sendVideoStream(request, response, stream);
+  }
+
+  @Get('media/stream/:token/poster')
+  @ApiOperation({ summary: 'The poster still of a booking video, once ready (404 until then)' })
+  async streamVideoPoster(@Param('token') token: string, @Req() request: Request, @Res() response: Response): Promise<void> {
+    const stream = await this.privateMediaContentService.openVideo(token, undefined, 'poster');
+    if (!stream) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking media not found');
+    sendVideoStream(request, response, stream);
+  }
+
+  @Get(':bookingId/media/:mediaId/stream')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'A viewing link for a booking video, valid 15 minutes, for the same people who may read its content',
+  })
+  async videoLink(
+    @Param('bookingId', ParseUUIDPipe) bookingId: string,
+    @Param('mediaId', ParseUUIDPipe) mediaId: string,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    return { data: await this.privateMediaContentService.videoLink(bookingId, mediaId, req.user) };
   }
 
   @Get(':bookingId/media/:mediaId/content')

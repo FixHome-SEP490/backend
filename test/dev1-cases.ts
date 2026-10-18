@@ -902,7 +902,7 @@ export function registerDev1Cases(context: () => Context) {
       const media = context().app.get(PrivateBookingPhotoStorage);
       return [
         vi.spyOn(media, 'upload').mockImplementation(async () => `cloudinary://booking-photos/test/${randomUUID()}`),
-        vi.spyOn(media, 'uploadVideo').mockImplementation(async () => `cloudinary://booking-videos/test/${randomUUID()}`),
+        vi.spyOn(media, 'uploadVideo').mockImplementation(async (owner: any) => `cloudinary://booking-videos/fixhome/booking-videos/${owner}/${randomUUID()}?r=mp4`),
         vi.spyOn(media, 'download').mockImplementation(async (ref: any) => String(ref).includes('booking-videos') ? { buffer: mp4, mimeType: 'video/mp4' } : { buffer: png, mimeType: 'image/png' }),
       ];
     };
@@ -926,6 +926,12 @@ export function registerDev1Cases(context: () => Context) {
         // Upload rules: a customer only; a video must be a video by its bytes.
         denied(await upload('/media/booking-video-upload', f.tech, mp4, 'clip.mp4', 'video/mp4'));
         expect((await upload('/media/booking-video-upload', f.owner, png, 'clip.mp4', 'video/mp4')).status).toBe(400);
+        // Found live 18/10/2026: a clip over a minute came back as 503 instead of the customer's 422.
+        const { BusinessException } = runtimeRequire('./dist/common/exceptions/business.exception.js');
+        spies[1].mockRejectedValueOnce(new BusinessException('VIDEO_TOO_LONG', 'Video is longer than 60 seconds'));
+        const tooLong = await upload('/media/booking-video-upload', f.owner, mp4, 'long.mp4', 'video/mp4');
+        expect(tooLong.status, JSON.stringify(tooLong.body)).toBe(422);
+        expect(tooLong.body.error.code).toBe('VIDEO_TOO_LONG');
         const photo = unwrap((await upload('/media/booking-photo-upload', f.owner, png, 'leak.png', 'image/png').expect(201)).body);
         const video = unwrap((await upload('/media/booking-video-upload', f.owner, mp4, 'leak.mov', 'video/quicktime').expect(201)).body);
         expect(video).toMatchObject({ mimeType: 'video/mp4', sizeBytes: mp4.length });
@@ -954,6 +960,35 @@ export function registerDev1Cases(context: () => Context) {
         const content = await get(`/bookings/${booking.id}/media/${videoMedia.id}/content`, f.tech).expect(200);
         expect(content.headers['content-type']).toBe('video/mp4');
         expect(content.headers['cache-control']).toContain('no-store');
+
+        // Watching streams through a short viewing link with byte ranges, the playable copy while it is made.
+        const { PrivateVideoService } = runtimeRequire('./dist/shared/cloudinary/private-video.service.js');
+        const { Readable } = runtimeRequire('stream');
+        const videoService = context().app.get(PrivateVideoService);
+        const opened: unknown[][] = [];
+        (spies as Array<{ mockRestore(): void }>).push(
+          vi.spyOn(videoService, 'configured', 'get').mockReturnValue(true),
+          vi.spyOn(videoService, 'open').mockImplementation(async (...args: unknown[]) => {
+            opened.push(args);
+            return { status: 206, headers: { 'content-range': 'bytes 0-3/40', 'content-length': '4', 'accept-ranges': 'bytes', 'content-type': 'video/mp4' }, body: Readable.from([Buffer.from('abcd')]), processing: true };
+          }),
+        );
+        const link = unwrap((await get(`/bookings/${booking.id}/media/${videoMedia.id}/stream`, f.tech).expect(200)).body);
+        expect(link.url).toMatch(/^\/bookings\/media\/stream\//);
+        const binary = (res: any, done: any) => { const chunks: Buffer[] = []; res.on('data', (c: Buffer) => chunks.push(c)); res.on('end', () => done(null, Buffer.concat(chunks))); };
+        // No Authorization header: the link itself is the right to watch.
+        const streamed = await request(context().app.getHttpServer()).get(`/api/v1${link.url}`).set('Range', 'bytes=0-3').buffer(true).parse(binary);
+        expect(streamed.status).toBe(206);
+        expect(streamed.headers).toMatchObject({ 'content-range': 'bytes 0-3/40', 'accept-ranges': 'bytes', 'content-type': 'video/mp4', 'x-video-processing': '1', 'x-content-type-options': 'nosniff' });
+        expect(streamed.headers['cache-control']).toBe('private, max-age=600');
+        expect(Buffer.from(streamed.body).toString()).toBe('abcd');
+        expect(opened[0]).toEqual([expect.stringMatching(/^fixhome\/booking-videos\//), 'mp4', 'video/mp4', 'bytes=0-3']);
+        await request(context().app.getHttpServer()).get('/api/v1/bookings/media/stream/forged.link').expect(404);
+        await request(context().app.getHttpServer()).get(`/api/v1${link.url.replace(/.$/, link.url.endsWith('A') ? 'B' : 'A')}`).expect(404);
+        // No link for a photo, nor for the technician not invited yet.
+        const photoMedia = preview.media.find((m: any) => m.mimeType === 'image/png');
+        await get(`/bookings/${booking.id}/media/${photoMedia.id}/stream`, f.tech).expect(404);
+        await get(`/bookings/${booking.id}/media/${videoMedia.id}/stream`, f.spare).expect(404);
         // The technician waiting on standby is not invited yet: nothing.
         await get(`/bookings/${booking.id}/media/${videoMedia.id}/content`, f.spare).expect(404);
         await get(`/bookings/${booking.id}`, f.spare).expect(404);
@@ -1095,6 +1130,62 @@ export function registerDev1Cases(context: () => Context) {
       expect(settledLegacy.settled).toBeGreaterThanOrEqual(1);
       const legacyLedger = await db.query("SELECT t.type FROM wallet_transactions t WHERE t.reference_id = $1", [legacy.order.id]);
       expect(legacyLedger.map((t: any) => t.type)).toEqual(['ONLINE_EARNING']);
+    });
+
+    it('announces every committed change live to the people allowed to see it, and nothing that rolled back (PO 18/10/2026)', async () => {
+      const f = await fixture(), db = context().db;
+      const { MessagingGateway } = runtimeRequire('./dist/modules/messaging/messaging.gateway.js');
+      const { RealtimeChangeListener } = runtimeRequire('./dist/modules/messaging/realtime-change.listener.js');
+      const gateway = context().app.get(MessagingGateway), listener = context().app.get(RealtimeChangeListener);
+      gateway.server ??= { to: () => ({ emit: () => undefined }), emit: () => undefined };
+      for (let i = 0; i < 50 && !listener.listening; i++) await new Promise((r) => setTimeout(r, 50));
+      expect(listener.listening).toBe(true);
+      const sent: Array<{ users: string[]; event: string; payload: any }> = [];
+      const spy = vi.spyOn(gateway, 'emitToUsers').mockImplementation((users: any, event: any, payload: any) => { sent.push({ users: [...users], event, payload }); });
+      const waitFor = async (match: (e: { users: string[]; event: string; payload: any }) => boolean) => {
+        for (let i = 0; i < 60; i++) {
+          const found = sent.find(match);
+          if (found) return found;
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        throw new Error(`no live event: ${JSON.stringify(sent.map((e) => [e.event, e.payload]))}`);
+      };
+      try {
+        const { order, booking, invitation } = await accept(f);
+        const invited = await waitFor((e) => e.event === 'invitation:updated' && e.payload.invitationId === invitation.id && e.payload.status === 'accepted');
+        expect(invited.users).toEqual([f.tech.user.id]);
+        const taken = await waitFor((e) => e.event === 'booking:updated' && e.payload.bookingId === booking.id && e.payload.serviceOrderId === order.id);
+        expect(taken.users).toEqual([f.owner.user.id]);
+        const accepted = await waitFor((e) => e.event === 'order:updated' && e.payload.serviceOrderId === order.id);
+        expect(accepted.users.sort()).toEqual([f.owner.user.id, f.tech.user.id].sort());
+        expect(accepted.payload.kinds).toContain('status');
+        // Nobody else hears about this order.
+        expect(sent.filter((e) => JSON.stringify(e.payload).includes(order.id)).flatMap((e) => e.users).every((u) => [f.owner.user.id, f.tech.user.id].includes(u))).toBe(true);
+
+        const setOut = await post(`/service-orders/${order.id}/en-route`, f.tech);
+        expect(setOut.status, JSON.stringify(setOut.body)).toBeLessThan(300);
+        const onTheWay = await waitFor((e) => e.event === 'order:updated' && e.payload.serviceOrderId === order.id && e.payload.status === 'en_route');
+        expect(onTheWay.payload.kinds).toEqual(expect.arrayContaining(['status']));
+
+        const where = await patch(`/service-orders/${order.id}/location`, f.tech, { lat: 10.7711, lng: 106.6912, accuracyMeters: 12 });
+        expect(where.status, JSON.stringify(where.body)).toBeLessThan(300);
+        const moved = await waitFor((e) => e.event === 'order:location' && e.payload.serviceOrderId === order.id);
+        // The position goes to the customer only, without re-reading the whole order.
+        expect(moved.users).toEqual([f.owner.user.id]);
+        expect(moved.payload).toMatchObject({ lat: 10.7711, lng: 106.6912 });
+
+        // A write that rolls back is never announced.
+        sent.length = 0;
+        await expect(db.transaction(async (manager) => {
+          await manager.query("UPDATE bookings SET customer_note = 'rolled back' WHERE id = $1", [booking.id]);
+          throw new Error('rollback');
+        })).rejects.toThrow('rollback');
+        await db.query("UPDATE bookings SET customer_note = 'committed' WHERE id = $1", [booking.id]);
+        await waitFor((e) => e.event === 'booking:updated' && e.payload.bookingId === booking.id);
+        expect(sent.filter((e) => e.event === 'booking:updated' && e.payload.bookingId === booking.id)).toHaveLength(1);
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 

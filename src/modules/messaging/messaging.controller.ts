@@ -18,7 +18,8 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
+import { sendVideoStream } from '../../shared/cloudinary';
 import { ApiBearerAuth, ApiConsumes, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { VIDEO_MAX_BYTES } from '../../shared/utils/media-signature';
 import type { ChatAttachmentFile } from './chat-attachment-storage.service';
@@ -26,6 +27,8 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionGuard } from '../../common/guards/permission.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { MessagingService } from './messaging.service';
+import { BusinessException } from '../../common/exceptions/business.exception';
+import { ErrorCodes } from '../../shared/constants';
 import { MessagingGateway } from './messaging.gateway';
 import {
   EditMessageDto,
@@ -204,6 +207,31 @@ export class MessagesController {
       conversation.id,
     );
     return { data: message };
+  }
+
+  @Get('attachment/stream/:token')
+  @ApiOperation({ summary: 'Stream a chat video through its viewing link (byte ranges supported; the link is the authorization)' })
+  async streamAttachment(@Param('token') token: string, @Req() request: Request, @Res() response: Response): Promise<void> {
+    const stream = await this.messagingService.openAttachmentVideo(token, request.headers.range, 'video');
+    if (!stream) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Attachment not found');
+    sendVideoStream(request, response, stream);
+  }
+
+  @Get('attachment/stream/:token/poster')
+  @ApiOperation({ summary: 'The poster still of a chat video, once ready (404 until then)' })
+  async streamAttachmentPoster(@Param('token') token: string, @Req() request: Request, @Res() response: Response): Promise<void> {
+    const stream = await this.messagingService.openAttachmentVideo(token, undefined, 'poster');
+    if (!stream) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Attachment not found');
+    sendVideoStream(request, response, stream);
+  }
+
+  @Get(':id/attachment/stream')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('message:read_thread')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'A viewing link for a video in a thread I can read, valid 15 minutes' })
+  async attachmentVideoLink(@Param('id', ParseUUIDPipe) id: string, @Req() req: RequestUser) {
+    return { data: await this.messagingService.attachmentVideoLink(id, req.user) };
   }
 
   @Get(':id/attachment')
