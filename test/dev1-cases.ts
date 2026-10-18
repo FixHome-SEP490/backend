@@ -151,6 +151,12 @@ export function registerDev1Cases(context: () => Context) {
       const theirs = unwrap((await get('/conversations', f.tech).expect(200)).body);
       expect(theirs).toHaveLength(1);
       expect(theirs[0].counterpart).toMatchObject({ id: f.owner.user.id, fullName: 'Khách Trò Chuyện' });
+      // PO 18/10/2026: threads about the same service with the same person are told apart by the order code.
+      expect(mine[1].orderCode).toBeNull();
+      const { order } = await accept(f);
+      const withOrder = unwrap((await get('/conversations', f.owner).expect(200)).body).find((c: any) => c.serviceOrderId === order.id);
+      expect(withOrder?.orderCode).toBe(order.code);
+      expect(unwrap((await get(`/conversations/${withOrder.id}`, f.tech).expect(200)).body).orderCode).toBe(order.code);
     });
 
     it('resets reputation every period on the real database, skipping recent and locked accounts (PO 14/10/2026)', async () => {

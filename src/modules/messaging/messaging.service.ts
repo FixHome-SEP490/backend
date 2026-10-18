@@ -37,6 +37,11 @@ export interface ConversationView {
   status: ConversationStatus;
   /** Booked service name, shown as the small note under the counterpart name. */
   serviceName: string | null;
+  /**
+   * The order's code (FH-...), so threads with the same person about the same
+   * service can be told apart in the list (PO 18/10/2026). Null before an order exists.
+   */
+  orderCode: string | null;
   counterpart: ConversationParticipantView;
   lastMessageAt: string | null;
   lastMessagePreview: string | null;
@@ -224,6 +229,17 @@ export class MessagingService {
     return new Set(rows.map((row) => row.id));
   }
 
+  /** Order codes by order id, one query for the whole thread list. */
+  private async orderCodes(serviceOrderIds: Array<string | null | undefined>): Promise<Map<string, string>> {
+    const ids = [...new Set(serviceOrderIds.filter((id): id is string => typeof id === 'string' && id.length > 0))];
+    if (ids.length === 0) return new Map();
+    const rows: Array<{ id: string; code: string }> | undefined = await this.conversationRepo.manager.query(
+      `SELECT id, code FROM service_orders WHERE id = ANY($1::uuid[])`,
+      [ids],
+    );
+    return new Map((rows ?? []).map((row) => [row.id, row.code]));
+  }
+
   private async isClosedByCompletion(serviceOrderId: string | null | undefined): Promise<boolean> {
     if (!serviceOrderId) return false;
     return (await this.closedByCompletion([serviceOrderId])).has(serviceOrderId);
@@ -295,9 +311,11 @@ export class MessagingService {
     });
     if (conversations.length === 0) return [];
 
-    const [unread, closed] = await Promise.all([
+    const orderIds = conversations.map((conversation) => conversation.serviceOrderId);
+    const [unread, closed, codes] = await Promise.all([
       this.unreadCountsFor(actor.id),
-      this.closedByCompletion(conversations.map((conversation) => conversation.serviceOrderId)),
+      this.closedByCompletion(orderIds),
+      this.orderCodes(orderIds),
     ]);
     return conversations.map((conversation) =>
       this.toConversationView(
@@ -305,6 +323,7 @@ export class MessagingService {
         actor,
         unread.get(conversation.id) ?? 0,
         !!conversation.serviceOrderId && closed.has(conversation.serviceOrderId),
+        conversation.serviceOrderId ? codes.get(conversation.serviceOrderId) ?? null : null,
       ),
     );
   }
@@ -314,15 +333,17 @@ export class MessagingService {
     actor: ChatActor,
   ): Promise<ConversationView> {
     const conversation = await this.loadReadable(conversationId, actor);
-    const [unread, closed] = await Promise.all([
+    const [unread, closed, codes] = await Promise.all([
       this.unreadCountsFor(actor.id),
       this.isClosedByCompletion(conversation.serviceOrderId),
+      this.orderCodes([conversation.serviceOrderId]),
     ]);
     return this.toConversationView(
       conversation,
       actor,
       unread.get(conversation.id) ?? 0,
       closed,
+      conversation.serviceOrderId ? codes.get(conversation.serviceOrderId) ?? null : null,
     );
   }
 
@@ -735,6 +756,7 @@ export class MessagingService {
     actor: ChatActor,
     unreadCount: number,
     closedByCompletion = false,
+    orderCode: string | null = null,
   ): ConversationView {
     const viewerIsCustomer = conversation.customerId === actor.id;
     const counterpart = viewerIsCustomer
@@ -747,6 +769,7 @@ export class MessagingService {
       serviceOrderId: conversation.serviceOrderId ?? null,
       status: conversation.status,
       serviceName: conversation.serviceNameSnapshot ?? null,
+      orderCode,
       counterpart: this.toParticipantView(counterpart),
       lastMessageAt: conversation.lastMessageAt?.toISOString() ?? null,
       lastMessagePreview: conversation.lastMessagePreview ?? null,
