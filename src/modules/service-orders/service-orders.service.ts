@@ -58,6 +58,7 @@ import {
   PaymentAttemptStatus,
   CashSettlementStatus,
 } from '../../shared/enums';
+import { orderStageSql, type RepairStage } from '../../shared/utils/customer-activity-stage';
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { FinanceService, FinanceActor } from '../finance/finance.service';
@@ -403,7 +404,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   async findMyOrders(
     userId: string,
     role: string,
-    options: { page?: number; limit?: number; status?: ServiceOrderStatus; statuses?: ServiceOrderStatus[]; search?: string },
+    options: { page?: number; limit?: number; status?: ServiceOrderStatus; statuses?: ServiceOrderStatus[]; search?: string; stage?: RepairStage },
   ): Promise<{ data: (ServiceOrder | HistoricalOrderSummary)[]; total: number }> {
     await this.cancelOverdueOrders();
     const page = options.page || 1;
@@ -414,6 +415,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     if (role === Role.CUSTOMER) {
       qb.innerJoin('bookings', 'b', 'b.id = o.booking_id')
         .where('b.customer_id = :userId', { userId });
+      if (options.stage) qb.andWhere(orderStageSql(options.stage, 'o'));
     } else if (role === Role.TECHNICIAN) {
       qb.innerJoin(
         'technician_assignments',

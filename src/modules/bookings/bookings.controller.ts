@@ -64,8 +64,18 @@ export class BookingsController {
       status: query.status,
       statuses: query.statuses,
       search: query.search,
+      stage: query.stage,
     });
     return { data: result.data.map(toBookingResponse), meta: { total: result.total } };
+  }
+
+  @Get('my/activity-counts')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('booking:read_own')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'My Activity counts: repair orders (in_progress, completed, cancelled) and booking requests (no_technician, sent, cancelled)' })
+  async activityCounts(@Req() req: { user: { id: string } }) {
+    return { data: await this.bookingsService.activityCounts(req.user.id) };
   }
 
   @Get()

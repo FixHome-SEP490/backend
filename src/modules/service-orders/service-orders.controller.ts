@@ -100,7 +100,7 @@ export class ServiceOrdersController {
     const result = await this.serviceOrdersService.findMyOrders(
       req.user.id,
       req.user.role,
-      { page: query.page, limit: query.pageSize, status: query.status, statuses: query.statuses, search: query.search },
+      { page: query.page, limit: query.pageSize, status: query.status, statuses: query.statuses, search: query.search, stage: query.stage },
     );
     return { data: result.data, meta: { total: result.total } };
   }
