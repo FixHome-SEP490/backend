@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-19 03:27 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-p012-integration-20261019
+> Cập nhật lần cuối: 2026-10-19 18:45 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-p012-integration-20261019
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -176,6 +176,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ### Với `web` và `mobile`
 
+- P012 hiển thị catalog: public `GET /services`, `/services/:idOrSlug`, `/categories` (alias `/service-categories`) và category detail thêm `priceSummary` tùy chọn cho từng service V2 M1/M2 active. `fixed_range` lấy min/max từ tier DB ACTIVE khớp amount/scope owner duyệt (một tier: min=max); không lấy `Service.fixedPrice`. Một query batch mỗi response có V2. Tier ACTIVE sai hoặc thiếu tier: `inspection_only`, min/max null. Dịch vụ inspection không có S dùng `inspection_reference`, min/max null, `suggestedLaborVnd` từ source chỉ là ước tính NONBINDING, không phải giá sàn. Không xuất reference GATE/LATER; legacy có thể không có summary. Admin/Booking không đổi; không migration/DB write. Web/Mobile/runtime: NOT VERIFIED trong thay đổi này.
 - P012: public `GET /services/:id/catalog-v2-pricing` nhận facts phẳng và `selectedVariantCode` (alias `variantCode`); trả selected/possible variants, NONBINDING range, lý do khảo sát và binding readiness. `POST /bookings` nhận selection ở root, facts trong `deviceAttributes`; response có `catalogV2PricingSnapshot`. Chỉ POST chốt tier ACTIVE + scope đúng dưới transaction; Service cha không mang giá tier. Hợp đồng chi tiết: `docs/P012-PRICING-API.md`. Web/Mobile parity và preview hiện tại với code mới: NOT VERIFIED.
 - REST `/api/v1`, JWT Bearer; refresh qua `POST /auth/refresh`. Role trong token viết thường (`customer`, `technician`, `service_manager`, `admin`).
 - Danh sách nhận `page` (1 đến 1.000.000) và `pageSize` hoặc `limit` (1 đến 100); `status` phải đúng enum. Sai trả 400.
@@ -276,6 +277,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-19 18:45 (UTC+7) | foxonworld | foxonworld/fixhome-p012-integration-20261019 | Thêm priceSummary public catalog bằng một query batch, kiểm tier owner duyệt và tách ước tính inspection khỏi giá sàn; không đổi admin/Booking/DB.
 - 2026-10-19 03:27 (UTC+7) | foxonworld | foxonworld/fixhome-p012-integration-20261019 | Thêm public pricing API và Booking snapshot tier ACTIVE bất biến qua #0040; xác minh PG/HTTP cô lập, ghi rõ E2E còn lỗi và giữ preview/P1 OFF.
 - 2026-10-19 01:59 (UTC+7) | foxonworld | foxonworld/fixhome-p012-integration-20261019 | Tích hợp P0/P1 staging, giữ Booking media/privacy của dev, xác minh migration và harness PostgreSQL cô lập, không activation.
 - 2026-10-19 00:50 (UTC+7) | foxonworld | feature/catalog-v2-owner-approved | Chặn thuộc tính mâu thuẫn tier legacy, xác thực input preview và máy giặt WM-03; rollback #0037/#0038 khóa an toàn; E2E sandbox vẫn timeout.
@@ -315,4 +317,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-09 23:59 (UTC+7) | ToanAltF4 | fix/multipart-upload-size | Sửa lỗi tải ảnh trên 1 MB bị 413
 - 2026-10-09 23:46 (UTC+7) | ToanAltF4 | perf/parallel-candidate-eligibility | Tìm thợ nhanh hơn: kiểm điều kiện theo lô song song
 - 2026-10-09 23:28 (UTC+7) | ToanAltF4 | feat/no-customer-acceptance | Bỏ bước khách nghiệm thu: thợ hoàn thành có ảnh, thanh toán xong là hoàn tất
-- 2026-10-09 21:42 (UTC+7) | ToanAltF4 | feat/admin-reviews | Admin xem danh sách đánh giá

@@ -17,6 +17,7 @@ import { User } from '../users/entities/user.entity';
 import { ServicePricingMode } from '../../shared/enums';
 import { resolveCatalogV2Pricing } from '../../database/catalog-v2/catalog-v2-pricing-binding';
 import { CatalogV2PricingQueryDto } from './dto/catalog-v2-pricing-query.dto';
+import { addCatalogV2PriceSummaries } from '../../database/catalog-v2/catalog-v2-price-summary';
 
 @Injectable()
 export class ServicesService {
@@ -81,6 +82,7 @@ export class ServicesService {
       totalPages: Math.ceil(total / query.limit),
     };
 
+    if (onlyActive) await addCatalogV2PriceSummaries(this.serviceRepository.manager, data);
     return { data, meta };
   }
 
@@ -121,6 +123,7 @@ export class ServicesService {
       throw new NotFoundException(`Service "${idOrSlug}" belongs to an inactive category`);
     }
 
+    if (onlyActive) await addCatalogV2PriceSummaries(this.serviceRepository.manager, [service]);
     return service;
   }
 

@@ -11,6 +11,7 @@ import { ServiceCategory } from './entities/category.entity';
 import { CreateCategoryDto, UpdateCategoryDto } from './dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { User } from '../users/entities/user.entity';
+import { addCatalogV2PriceSummaries } from '../../database/catalog-v2/catalog-v2-price-summary';
 
 @Injectable()
 export class CategoriesService {
@@ -30,6 +31,7 @@ export class CategoriesService {
     });
     // A disabled service is not bookable; listing it publicly led customers into a failing booking.
     if (onlyActive) for (const category of categories) category.services = (category.services ?? []).filter((service) => service.isActive);
+    if (onlyActive) await addCatalogV2PriceSummaries(this.categoryRepository.manager, categories.flatMap(category => category.services));
     return categories;
   }
 
@@ -73,6 +75,7 @@ export class CategoriesService {
 
     if (onlyActive && category.services) {
       category.services = category.services.filter((s) => s.isActive);
+      await addCatalogV2PriceSummaries(this.categoryRepository.manager, category.services);
     }
 
     return category;
