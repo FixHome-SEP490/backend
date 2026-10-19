@@ -10,10 +10,10 @@ import { PartRequest } from './entities/part-request.entity';
 import { PartRequestItem } from './entities/part-request-item.entity';
 import { applyCustodyCommand, createPartCustodySnapshot, PartCustodyRuleError } from './part-custody.rules';
 import { PartCustodyActor, PartCustodyCommand } from './part-custody.types';
-import { custodyActivation, lockCustodyTechnician, p1CustodyEnabled } from './part-custody.policy';
-import { PartReturnDto } from './dto/part-return.dto';
+import { custodyActivation, custodyTrackingEnabled, lockCustodyTechnician, partReturnsTrackingEnabled } from './part-custody.policy';
+import { PartReturnDiscrepancyDto, PartReturnDto } from './dto/part-return.dto';
 
-type Usage = { usedQty?: number; expectedVersion?: number; idempotencyKey?: string };
+type Usage = { usedQty?: number; expectedVersion?: number; idempotencyKey?: string; usageStatus?: PartUsageStatus };
 
 @Injectable()
 export class PartCustodyService {
@@ -25,10 +25,14 @@ export class PartCustodyService {
     if (!activation || !request.receivedAt || request.receivedAt <= activation.activatedAt! ||
         [ServiceOrderStatus.COMPLETED, ServiceOrderStatus.CANCELLED].includes(order.status) ||
         order.completionRequestedAt || await manager.findOne(Invoice, { where: { serviceOrderId: order.id } })) return;
+    // Existing work stays legacy, even if its first physical handover happens after cutover.
+    const trackingOnly = partReturnsTrackingEnabled();
+    if (trackingOnly && (!(order.createdAt instanceof Date) || !Number.isFinite(order.createdAt.getTime()) || order.createdAt <= activation.activatedAt!)) return;
     await lockCustodyTechnician(manager, request.technicianId);
     for (const item of request.items) {
       if (item.partSource !== PartSource.FIXHOME) continue;
       const row = manager.create(PartCustody, {
+        trackingOnly,
         serviceOrderId: order.id, partRequestId: request.id, partRequestItemId: item.id,
         technicianId: request.technicianId, partNameSnapshot: item.partNameSnapshot,
         cohortActivatedAt: activation.activatedAt!, handedOverAt: request.receivedAt,
@@ -45,18 +49,24 @@ export class PartCustodyService {
   }
 
   private async requireActive(manager: EntityManager): Promise<void> {
+    // The DB switch stops NEW handovers, never reads/receipts of persisted debt.
+    if (partReturnsTrackingEnabled()) return;
     if (!await custodyActivation(manager)) throw new ServiceUnavailableException('Chức năng trả linh kiện chưa được mở.');
   }
 
   private view(row: PartCustody): Record<string, unknown> {
     const s = row.state;
     const declaredQty = s.declarations.reduce((sum, d) => sum + d.quantity, 0);
+    const discrepancies = s.events.filter(event => event.type === 'DISCREPANCY');
     return {
       id: row.id, orderId: row.serviceOrderId, partRequestId: row.partRequestId,
       partRequestItemId: row.partRequestItemId, technicianId: row.technicianId, partNameSnapshot: row.partNameSnapshot,
       issuedQty: s.issuedQty, usedQty: s.usedQty, declaredQty, managerAcceptedQty: s.managerAcceptedQty,
       outstandingQty: s.outstandingQty, version: s.version,
-      returnStatus: s.returnDueQty === 0 ? 'not_required' : s.outstandingQty === 0 ? 'received' : s.managerAcceptedQty > 0 ? 'partially_received'
+      trackingOnly: row.trackingOnly, blocksNewWork: row.trackingOnly && s.outstandingQty > 0,
+      usageRecorded: s.events.some(event => event.type === 'USAGE_RECORDED'),
+      discrepancies: discrepancies.map(event => ({ declaredQty: event.declaredQty, observedQty: event.observedQty, occurredAt: event.occurredAt })),
+      returnStatus: s.returnDueQty === 0 ? 'not_required' : s.outstandingQty === 0 ? 'received' : discrepancies.length ? 'exception' : s.managerAcceptedQty > 0 ? 'partially_received'
         : declaredQty > 0 ? 'declared' : 'outstanding',
       cohortActivatedAt: new Date(row.cohortActivatedAt).toISOString(), handedOverAt: new Date(row.handedOverAt).toISOString(),
       receipts: s.receipts.map(r => ({ quantity: r.quantity, actorUserId: r.actorUserId, acceptedAt: r.acceptedAt })),
@@ -76,16 +86,17 @@ export class PartCustodyService {
   }
 
   async pending(actor: PartCustodyActor): Promise<Record<string, unknown>[]> {
-    if (actor.role !== Role.SERVICE_MANAGER) throw new ForbiddenException();
+    if (![Role.SERVICE_MANAGER, Role.TECHNICIAN].includes(actor.role as Role)) throw new ForbiddenException();
     await this.requireActive(this.dataSource.manager);
-    const rows = await this.dataSource.manager.createQueryBuilder(PartCustody, 'c')
-      .where("(c.state->>'outstandingQty')::int > 0")
-      .andWhere("(SELECT COALESCE(sum((d->>'quantity')::int), 0) FROM jsonb_array_elements(c.state->'declarations') d) > (c.state->>'managerAcceptedQty')::int")
+    const query = this.dataSource.manager.createQueryBuilder(PartCustody, 'c')
+      .where("(c.state->>'outstandingQty')::int > 0");
+    if (actor.role === Role.TECHNICIAN) query.andWhere('c.technicianId = :technicianId', { technicianId: actor.id });
+    const rows = await query
       .orderBy('c.handedOverAt', 'ASC').addOrderBy('c.id', 'ASC').take(100).getMany();
     return rows.map(row => this.view(row));
   }
 
-  async command(requestId: string, itemId: string, kind: 'declare_return' | 'accept_return', body: PartReturnDto, actor: PartCustodyActor): Promise<Record<string, unknown>> {
+  async command(requestId: string, itemId: string, kind: 'declare_return' | 'accept_return' | 'report_discrepancy', body: PartReturnDto | PartReturnDiscrepancyDto, actor: PartCustodyActor): Promise<Record<string, unknown>> {
     if (actor.role !== (kind === 'declare_return' ? Role.TECHNICIAN : Role.SERVICE_MANAGER)) throw new ForbiddenException();
     return this.dataSource.transaction(async manager => {
       await this.requireActive(manager);
@@ -95,16 +106,32 @@ export class PartCustodyService {
       const order = await manager.findOne(ServiceOrder, { where: { id: reference.serviceOrderId }, lock: { mode: 'pessimistic_write' } });
       if (!order) throw new NotFoundException();
       await lockCustodyTechnician(manager, reference.technicianId);
-      return (await this.execute(manager, itemId, { ...body, kind, partRequestId: requestId, partRequestItemId: itemId }, actor, order)).response;
+      const ids = { partRequestId: requestId, partRequestItemId: itemId };
+      const command: PartCustodyCommand = kind === 'report_discrepancy'
+        ? { ...body as PartReturnDiscrepancyDto, ...ids, kind }
+        : { ...body as PartReturnDto, ...ids, kind };
+      return (await this.execute(manager, itemId, command, actor, order)).response;
     });
   }
 
   /** Existing usage route, with explicit quantities ONLY for enrolled items. Caller holds Order lock. */
   async recordUsage(manager: EntityManager, request: PartRequest, item: PartRequestItem, order: ServiceOrder, body: Usage, actor: PartCustodyActor): Promise<boolean | 'replayed'> {
-    if (!p1CustodyEnabled()) return false;
+    if (!custodyTrackingEnabled()) return false;
     const row = await manager.findOne(PartCustody, { where: { partRequestItemId: item.id } });
     if (!row) return false;
+    if (actor.role !== Role.TECHNICIAN || row.technicianId !== actor.id || row.partRequestId !== request.id) throw new ForbiddenException();
+    if (row.trackingOnly && [body.usedQty, body.expectedVersion, body.idempotencyKey].every(value => value === undefined)
+        && [PartUsageStatus.USED, PartUsageStatus.RETURNED].includes(body.usageStatus)) {
+      // Existing clients send a whole-line status. Derive the ledger decision
+      // server-side under the caller's Order lock; never enable partial billing.
+      const usedQty = body.usageStatus === PartUsageStatus.USED ? item.quantity : 0;
+      if (row.state.usedQty === usedQty && row.state.events.some(event => event.type === 'USAGE_RECORDED')) return 'replayed';
+      body = { usedQty, expectedVersion: row.state.version, idempotencyKey: `tracking-usage:${item.id}:${body.usageStatus}` };
+    }
     if (body.usedQty === undefined || body.expectedVersion === undefined || !body.idempotencyKey) throw new BadRequestException('Vui lòng gửi số lượng đã dùng, phiên bản và mã chống gửi trùng.');
+    // The legacy invoice bills a USED line at its full quantity. Partial usage needs
+    // a separately approved billing change; tracking must never silently change it.
+    if (row.trackingOnly && body.usedQty !== 0 && body.usedQty !== item.quantity) throw new BadRequestException('Vui lòng chọn dùng toàn bộ hoặc trả toàn bộ linh kiện của dòng này.');
     await lockCustodyTechnician(manager, row.technicianId);
     const result = await this.execute(manager, item.id, { kind: 'record_usage', partRequestId: request.id, partRequestItemId: item.id,
       usedQty: body.usedQty, expectedVersion: body.expectedVersion, idempotencyKey: body.idempotencyKey }, actor, order);
@@ -123,6 +150,9 @@ export class PartCustodyService {
       expectedVersion: command.expectedVersion, idempotencyKey: command.idempotencyKey,
       quantity: 'quantity' in command ? command.quantity : undefined,
       usedQty: command.kind === 'record_usage' ? command.usedQty : undefined,
+      declaredQty: command.kind === 'report_discrepancy' ? command.declaredQty : undefined,
+      observedQty: command.kind === 'report_discrepancy' ? command.observedQty : undefined,
+      reason: command.reason,
       actorId: actor.id, role: actor.role,
     })).digest('hex');
     const prior = await manager.findOne(PartCustodyEntry, { where: { custodyId: row.id, idempotencyKey: command.idempotencyKey } });
@@ -146,7 +176,7 @@ export class PartCustodyService {
     await manager.insert(PartCustodyEntry, {
       custodyId: row.id, kind: command.kind as PartCustodyEntry['kind'], idempotencyKey: command.idempotencyKey,
       requestFingerprint: fingerprint, actorUserId: actor.id, actorRole: actor.role, occurredAt: now,
-      quantity: command.kind === 'record_usage' ? command.usedQty : 'quantity' in command ? command.quantity : 0,
+      quantity: command.kind === 'record_usage' ? command.usedQty : 'quantity' in command ? command.quantity : command.declaredQty,
       version: row.state.version, response,
     });
     return { response, replayed: false };

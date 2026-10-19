@@ -17,7 +17,7 @@ import { RbacModule } from '../rbac/rbac.module';
 
 @Module({
   imports: [
-    ConditionalModule.registerWhen(PartCustodyModule, env => env.P1_CUSTODY_ENABLED === 'true'),
+    ConditionalModule.registerWhen(PartCustodyModule, env => env.P1_CUSTODY_ENABLED === 'true' || env.PART_RETURNS_TRACKING_ENABLED === 'true'),
     TypeOrmModule.forFeature([
       PartRequest,
       PartRequestItem,

@@ -1,11 +1,54 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EntityManager } from 'typeorm';
-import { assertCashCustodyAllowsWithdrawal, assertCustodyRuntimeConfiguration, hasCashCustodyRestriction } from './part-custody.policy';
+import { assertCashCustodyAllowsWithdrawal, assertCustodyRuntimeConfiguration, custodyUsageForInvoice, hasCashCustodyRestriction, hasPartReturnRestriction } from './part-custody.policy';
 import { technicianEligibility } from '../bookings/technician-eligibility';
 import { Booking } from '../bookings/entities/booking.entity';
 
 describe('P1 cash restriction gates', () => {
   afterEach(() => vi.unstubAllEnvs());
+  it.each([
+    ['false', 'true', false, true, true],
+    ['false', 'false', false, true, false],
+    ['true', 'false', false, true, false],
+    ['false', 'true', true, false, false],
+    ['true', 'false', true, false, true],
+    ['false', 'false', false, false, true],
+  ])('validates persisted mode against flags P1=%s / tracking=%s', async (p1, tracking, p1_enrolled, tracking_enrolled, allowed) => {
+    vi.stubEnv('P1_CUSTODY_ENABLED', p1 as string);
+    vi.stubEnv('PART_RETURNS_TRACKING_ENABLED', tracking as string);
+    const db = { query: vi.fn().mockResolvedValueOnce([{ installed: true, tracking_installed: true }]).mockResolvedValueOnce([{ p1_enrolled, tracking_enrolled }]) };
+    const result = assertCustodyRuntimeConfiguration(db as unknown as EntityManager);
+    if (allowed) await expect(result).resolves.toBeUndefined();
+    else await expect(result).rejects.toThrow('cannot');
+  });
+  it('requires migration before tracking and fails closed on an unknown eligibility verdict', async () => {
+    vi.stubEnv('P1_CUSTODY_ENABLED', 'false'); vi.stubEnv('PART_RETURNS_TRACKING_ENABLED', 'true');
+    const db = { query: vi.fn().mockResolvedValueOnce([{ installed: true, tracking_installed: false }]) };
+    await expect(assertCustodyRuntimeConfiguration(db as unknown as EntityManager)).rejects.toThrow('migration');
+    db.query.mockResolvedValueOnce([]);
+    await expect(hasPartReturnRestriction(db as unknown as EntityManager, 'tech')).rejects.toMatchObject({ status: 503 });
+    expect(await custodyUsageForInvoice(db as unknown as EntityManager, 'order')).toEqual(new Map());
+  });
+  it('blocks new discovery and Accept for tracking returns without touching cash or withdrawal', async () => {
+    vi.stubEnv('P1_CUSTODY_ENABLED', 'false');
+    vi.stubEnv('PART_RETURNS_TRACKING_ENABLED', 'true');
+    const db = { query: vi.fn().mockResolvedValue([{ blocked: true }]), findOneBy: vi.fn().mockResolvedValue(null), findOne: vi.fn() };
+    for (const options of [undefined, { allowPausedExistingInvitation: true }]) {
+      expect(await technicianEligibility(db as unknown as EntityManager, 'tech', {} as Booking, undefined, options)).toMatchObject({ eligible: false, reason: expect.stringContaining('linh kiện') });
+    }
+    expect(db.query.mock.calls.every(([sql]) => !sql.includes('cash_settlements'))).toBe(true);
+    const count = db.query.mock.calls.length;
+    await technicianEligibility(db as unknown as EntityManager, 'tech', {} as Booking, undefined, { keepingExistingOrder: true });
+    await assertCashCustodyAllowsWithdrawal(db as unknown as EntityManager, 'tech');
+    expect(db.query).toHaveBeenCalledTimes(count);
+    expect(db.findOne).not.toHaveBeenCalled();
+  });
+  it('refuses to mix the finance P1 flag with return tracking', async () => {
+    vi.stubEnv('P1_CUSTODY_ENABLED', 'true');
+    vi.stubEnv('PART_RETURNS_TRACKING_ENABLED', 'true');
+    const db = { query: vi.fn().mockResolvedValue([{ installed: true }]) };
+    await expect(assertCustodyRuntimeConfiguration(db as unknown as EntityManager)).rejects.toThrow('cannot');
+  });
   it('refuses to start with flag OFF after any persisted cohort to prevent fallback to legacy payout', async () => {
     vi.stubEnv('P1_CUSTODY_ENABLED', 'false');
     const db = { query: vi.fn().mockResolvedValueOnce([{ installed: true }]).mockResolvedValueOnce([{ enrolled: true }]) };

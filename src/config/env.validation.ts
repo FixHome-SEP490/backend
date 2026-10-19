@@ -24,6 +24,9 @@ export class EnvironmentVariables {
   @IsIn(['true', 'false'])
   P1_CUSTODY_ENABLED: string = 'false';
 
+  @IsIn(['true', 'false'])
+  PART_RETURNS_TRACKING_ENABLED: string = 'false';
+
   @IsEnum(Environment)
   @IsOptional()
   NODE_ENV: Environment = Environment.Development;

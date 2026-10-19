@@ -57,6 +57,15 @@ function setup(rows: Record<string, unknown[]> = {}) {
 const ORDER_ROW = { id: ORDER, status: 'en_route', booking_id: BOOKING, customer_id: CUSTOMER, technician_ids: [TECH] };
 
 describe('groupChanges', () => {
+  it('routes item usage and custody receipts to a targeted part refresh, including the original custodian', () => {
+    const batch = groupChanges([
+      { t: 'part_requests', op: 'update', id: 'request', so: ORDER },
+      { t: 'part_request_items', op: 'update', id: 'item', so: ORDER },
+      { t: 'part_custodies', op: 'update', id: 'custody', so: ORDER, tech: OLD_TECH },
+    ]);
+    expect([...batch.orders.get(ORDER)!]).toEqual(['part']);
+    expect([...(batch.orderTechnicians.get(ORDER) ?? [])]).toEqual([OLD_TECH]);
+  });
   it('turns rows into one entry per order with the kinds of change, and keeps a position move apart', () => {
     const batch = groupChanges([
       { t: 'order_status_history', op: 'insert', id: 'h1', so: ORDER },

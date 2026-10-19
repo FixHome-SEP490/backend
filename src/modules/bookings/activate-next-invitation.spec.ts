@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EntityManager } from 'typeorm';
 import { BookingStatus, InvitationStatus } from '../../shared/enums';
 import { activateNextInvitation } from './activate-next-invitation';
@@ -44,8 +44,23 @@ function setup(count: number, excluded: string[] = []) {
 }
 
 beforeEach(() => { vi.clearAllMocks(); });
+afterEach(() => vi.unstubAllEnvs());
 
 describe('BE-MATCH one-or-two customer-ranked technicians, sequential activation (synthetic EntityManager)', () => {
+  it('locks tracking custodians in stable order before checking and activating an invitation', async () => {
+    vi.stubEnv('PART_RETURNS_TRACKING_ENABLED', 'true');
+    const s = setup(2);
+    s.invitations[0].technicianId = 'technician-2';
+    s.invitations[1].technicianId = 'technician-1';
+    const calls: string[] = [];
+    Object.assign(s.manager, { findOne: vi.fn(async (_entity, options) => {
+      expect(options.lock).toEqual({ mode: 'pessimistic_write' });
+      calls.push(options.where.id); return { id: options.where.id };
+    }) });
+    eligible.mockImplementation(async () => { expect(calls).toEqual(['technician-1', 'technician-2']); return { eligible: true }; });
+    await activateNextInvitation(s.manager, s.booking, 30, s.onActivated);
+    expect(s.invitations.map(i => i.status)).toEqual([InvitationStatus.PENDING, InvitationStatus.STANDBY]);
+  });
   it.each([1, 2])('notifies ONLY the first of %i eligible technicians', async count => {
     const s = setup(count);
     const before = Date.now();

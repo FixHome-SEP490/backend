@@ -4,7 +4,7 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Role } from '../../shared/enums';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { PartReturnDto } from './dto/part-return.dto';
+import { PartReturnDiscrepancyDto, PartReturnDto } from './dto/part-return.dto';
 import { PartCustodyService } from './part-custody.service';
 import { PartCustodyActor } from './part-custody.types';
 
@@ -25,6 +25,20 @@ export class PartReturnsController {
   @Roles(Role.SERVICE_MANAGER)
   async pending(@Req() req: { user: PartCustodyActor }) {
     return { data: await this.custody.pending(req.user) };
+  }
+
+  @Get('part-returns/mine')
+  @Roles(Role.TECHNICIAN)
+  async mine(@Req() req: { user: PartCustodyActor }) {
+    return { data: await this.custody.pending(req.user) };
+  }
+
+  @Post('part-requests/:requestId/items/:itemId/return-discrepancy')
+  @HttpCode(200)
+  @Roles(Role.SERVICE_MANAGER)
+  async discrepancy(@Param('requestId', ParseUUIDPipe) requestId: string, @Param('itemId', ParseUUIDPipe) itemId: string,
+    @Body() body: PartReturnDiscrepancyDto, @Req() req: { user: PartCustodyActor }) {
+    return { data: await this.custody.command(requestId, itemId, 'report_discrepancy', body, req.user) };
   }
 
   @Post('part-requests/:requestId/items/:itemId/declare-return')

@@ -15,6 +15,7 @@ export class PartCustodyActivation {
 @Index('ix_part_custody_order', ['serviceOrderId'])
 @Index('ix_part_custody_technician', ['technicianId'])
 export class PartCustody extends BaseEntity {
+  @Column({ name: 'tracking_only', type: 'boolean', default: false }) trackingOnly: boolean;
   @Column({ name: 'service_order_id', type: 'uuid' }) serviceOrderId: string;
   @Column({ name: 'part_request_id', type: 'uuid' }) partRequestId: string;
   @Column({ name: 'part_request_item_id', type: 'uuid' }) partRequestItemId: string;
@@ -31,7 +32,7 @@ export class PartCustody extends BaseEntity {
 @Index('uq_part_custody_entry_version', ['custodyId', 'version'], { unique: true })
 export class PartCustodyEntry extends BaseEntity {
   @Column({ name: 'custody_id', type: 'uuid' }) custodyId: string;
-  @Column({ type: 'varchar', length: 24 }) kind: 'record_usage' | 'declare_return' | 'accept_return';
+  @Column({ type: 'varchar', length: 24 }) kind: 'record_usage' | 'declare_return' | 'accept_return' | 'report_discrepancy';
   @Column({ name: 'idempotency_key', type: 'varchar', length: 128 }) idempotencyKey: string;
   @Column({ name: 'request_fingerprint', type: 'varchar', length: 64 }) requestFingerprint: string;
   @Column({ name: 'actor_user_id', type: 'uuid' }) actorUserId: string;

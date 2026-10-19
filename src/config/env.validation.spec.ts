@@ -19,6 +19,7 @@ describe('Environment Validation', () => {
     const config = validate(validConfig);
     expect(config.NODE_ENV).toBe(Environment.Test);
     expect(config.PORT).toBe(3000);
+    expect(config.PART_RETURNS_TRACKING_ENABLED).toBe('false');
     expect(config.DATABASE_HOST).toBe('localhost');
     expect(config.DATABASE_PASSWORD).toBe('postgres_password');
     expect(config.JWT_ACCESS_SECRET).toBe(validConfig.JWT_ACCESS_SECRET);
@@ -68,6 +69,7 @@ describe('Environment Validation', () => {
 
   it.each([
     { PORT: 1.5 },
+    { PART_RETURNS_TRACKING_ENABLED: 'yes' },
     { DATABASE_PORT: 70000 },
     { JWT_ACCESS_EXPIRES_IN: '0s' },
     { JWT_REFRESH_EXPIRES_IN: '7' },

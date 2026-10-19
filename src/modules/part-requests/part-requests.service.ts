@@ -638,7 +638,7 @@ export class PartRequestsService {
       if (!custodyRecorded && [dto.usedQty, dto.expectedVersion, dto.idempotencyKey].some(value => value !== undefined)) {
         throw new BadRequestException('Số lượng chi tiết chỉ áp dụng cho linh kiện được bàn giao sau khi mở chức năng trả linh kiện.');
       }
-      if (custodyRecorded && dto.usageStatus !== (dto.usedQty > 0 ? PartUsageStatus.USED : PartUsageStatus.RETURNED)) throw new BadRequestException('Trạng thái sử dụng không khớp số lượng đã dùng.');
+      if (custodyRecorded && dto.usedQty !== undefined && dto.usageStatus !== (dto.usedQty > 0 ? PartUsageStatus.USED : PartUsageStatus.RETURNED)) throw new BadRequestException('Trạng thái sử dụng không khớp số lượng đã dùng.');
       if (custodyRecorded === 'replayed') return item;
       item.usageStatus = dto.usageStatus;
       const saved = await manager.save(PartRequestItem, item);
