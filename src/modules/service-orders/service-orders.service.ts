@@ -55,6 +55,7 @@ import {
   PartSource,
   PartWarrantyOption,
   PaymentAttemptStatus,
+  CashSettlementStatus,
 } from '../../shared/enums';
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
@@ -119,17 +120,25 @@ function filterOrderList(
   }
 }
 
+/** A paid order the sweep could not complete or settle is tried again after this long. */
+const PAID_SWEEP_RETRY_MS = 15 * 60_000;
+
 @Injectable()
 export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ServiceOrdersService.name);
   private departureTimer: NodeJS.Timeout | null = null;
+  private settlementTimer: NodeJS.Timeout | null = null;
+  /** When a paid order that could not complete or settle may be tried again (in memory, per instance). */
+  private readonly paidSweepRetryAt = new Map<string, number>();
 
   onModuleInit(): void {
     this.departureTimer = startBackgroundJob('departure sweep', this.logger, () => this.sweepDepartures());
+    this.settlementTimer = startBackgroundJob('paid order sweep', this.logger, async () => { await this.sweepPaidOrders(); });
   }
 
   onModuleDestroy(): void {
     if (this.departureTimer) clearInterval(this.departureTimer);
+    if (this.settlementTimer) clearInterval(this.settlementTimer);
   }
 
   constructor(
@@ -227,6 +236,97 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       .andWhere('o.departure_warned_at <= :cutoff', { cutoff: new Date(now - cancelMinutes * 60000) })
       .getRawMany();
     for (const { id } of toCancel) await this.cancelNoDeparture(id, cancelMinutes);
+  }
+
+  /**
+   * PO 18/10/2026: once the customer has paid, the technician's share reaches
+   * their wallet even when the order could not complete at that moment. Every
+   * minute two kinds of order are picked up again:
+   * - paid after the technician reported completion but still under repair: a
+   *   complaint held completion at payment time and was settled later, or it
+   *   was paid before 09/10/2026, when the customer still had to accept the work;
+   * - completed and paid with nothing in the wallet ledger for it yet (paid
+   *   before settlement existed, or settlement failed on the way).
+   * Both go through the live gates (finalizeIfSatisfied, trySettleOrder), whose
+   * row locks and idempotency keys keep a payment from being counted twice.
+   * Orders whose settlement writes nothing (no share left after the platform's
+   * part) are left out so they are not retried forever.
+   */
+  async sweepPaidOrders(limit = 20): Promise<{ completed: number; settled: number }> {
+    let completed = 0;
+    let settled = 0;
+    const now = Date.now();
+    // An order that still cannot complete (a quotation waiting, parts unresolved) waits a while
+    // before the next try, so it never keeps newer orders out of the batch.
+    const due = (id: string) => (this.paidSweepRetryAt.get(id) ?? 0) <= now;
+    const backOff = (id: string) => this.paidSweepRetryAt.set(id, now + PAID_SWEEP_RETRY_MS);
+    const stuck: Array<{ id: string }> = await this.dataSource.query(
+      `SELECT o.id
+         FROM service_orders o
+         JOIN invoices i ON i.service_order_id = o.id AND i.payment_status::text = $1
+        WHERE o.status::text = $2
+          AND o.payment_status::text = $1
+          AND o.completion_requested_at IS NOT NULL
+          AND NOT EXISTS (
+                SELECT 1 FROM support_cases sc
+                 WHERE sc.service_order_id = o.id AND sc.hold_completion = true
+                   AND sc.status::text IN ('open', 'in_review'))
+        ORDER BY o.completion_requested_at ASC
+        LIMIT $3`,
+      [PaymentStatus.PAID, ServiceOrderStatus.UNDER_REPAIR, limit * 5],
+    );
+    for (const { id } of stuck.filter((row) => due(row.id)).slice(0, limit)) {
+      try {
+        const done = await this.dataSource.transaction(async manager => {
+          const order = await manager.findOne(ServiceOrder, { where: { id }, lock: { mode: 'pessimistic_write' } });
+          if (!order || await isCompletionHeld(manager, id)) return false;
+          return this.finalizeIfSatisfied(manager, order, { id: null, role: 'system' });
+        });
+        if (done) {
+          completed++;
+          this.paidSweepRetryAt.delete(id);
+        } else {
+          backOff(id);
+        }
+      } catch (error) {
+        backOff(id);
+        this.logger.debug(`Paid order ${id} not completed yet: ${(error as Error).message}`);
+      }
+    }
+
+    if (this.settlementService) {
+      // Online: the technician's share is left to credit. Cash: the platform's part is still
+      // owed (a PENDING platform due); a commission paid on its own is not taken twice.
+      const unsettled: Array<{ id: string }> = await this.dataSource.query(
+        `SELECT o.id
+           FROM service_orders o
+           JOIN invoices i ON i.service_order_id = o.id AND i.payment_status::text = $1
+           LEFT JOIN cash_settlements cs ON cs.service_order_id = o.id
+          WHERE o.status::text = $2
+            AND EXISTS (SELECT 1 FROM technician_assignments ta WHERE ta.service_order_id = o.id)
+            AND NOT EXISTS (
+                  SELECT 1 FROM wallet_transactions t
+                   WHERE t.reference_type = 'SERVICE_ORDER' AND t.reference_id = o.id::text)
+            AND CASE WHEN cs.status::text = $3
+                     THEN EXISTS (SELECT 1 FROM platform_dues pd WHERE pd.service_order_id = o.id AND pd.status::text = 'pending')
+                     ELSE i.grand_total - i.commission_amount - i.fixhome_parts_total - i.shipping_fee > 0 END
+          ORDER BY o.completed_at ASC NULLS FIRST
+          LIMIT $4`,
+        [PaymentStatus.PAID, ServiceOrderStatus.COMPLETED, CashSettlementStatus.CONFIRMED, limit * 5],
+      );
+      for (const { id } of unsettled.filter((row) => due(row.id)).slice(0, limit)) {
+        try {
+          const result = await this.settlementService.trySettleOrder(id);
+          if (result.settled && result.reason !== 'ALREADY_SETTLED') settled++;
+          if (!result.settled) backOff(id);
+        } catch (error) {
+          backOff(id);
+          this.logger.warn(`Paid order ${id} not settled: ${(error as Error).message}`);
+        }
+      }
+    }
+    if (completed || settled) this.logger.log(`Paid order sweep: ${completed} completed, ${settled} settled into the technician wallet`);
+    return { completed, settled };
   }
 
   private async warnNoDeparture(id: string, graceMinutes: number, cancelMinutes: number): Promise<void> {
@@ -1224,7 +1324,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     if (booking.pricingModeSnapshot !== ServicePricingMode.FIXED_PRICE && !await manager.findOneBy(Quotation, { serviceOrderId: order.id, status: QuotationStatus.APPROVED })) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Approved quotation required');
   }
 
-  private async finalizeIfSatisfied(manager: EntityManager, order: ServiceOrder, actor: { id: string; role: string }): Promise<boolean> {
+  private async finalizeIfSatisfied(manager: EntityManager, order: ServiceOrder, actor: { id: string | null; role: string }): Promise<boolean> {
     if (order.status !== ServiceOrderStatus.UNDER_REPAIR || !order.completionRequestedAt) return false;
     if (await isCompletionHeld(manager, order.id)) return false;
     await this.assertCompletionReady(manager, order);

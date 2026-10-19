@@ -106,7 +106,16 @@ export class SettlementService {
         const commissionAmount = Number(invoice.commissionAmount || 0);
         const fixHomeParts = Number(invoice.fixHomePartsTotal || 0);
         const shippingFee = Number(invoice.shippingFee || 0);
-        const platformFee = commissionAmount + fixHomeParts + shippingFee;
+        // Commission the technician already paid on its own (POST commission-dues/:id/pay)
+        // is not taken again from the wallet (PO 18/10/2026: found when settlement
+        // started running by itself after a lifted completion hold).
+        const paidDues = await manager.find(CommissionDue, {
+          where: { serviceOrderId: order.id, status: CommissionDueStatus.PAID },
+        });
+        const alreadyPaid = paidDues
+          .filter((due) => !String(due.paymentReference ?? '').startsWith('SETTLED_VIA_WALLET'))
+          .reduce((sum, due) => sum + Number(due.dueAmount || 0), 0);
+        const platformFee = Math.max(0, commissionAmount + fixHomeParts + shippingFee - alreadyPaid);
 
         if (platformFee > 0) {
           await this.walletService.mutateBalance({

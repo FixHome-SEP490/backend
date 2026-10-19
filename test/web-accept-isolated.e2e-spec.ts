@@ -174,7 +174,8 @@ describe('WEB-ACCEPT isolated real HTTP/JWT/PostgreSQL (three synthetic actors)'
     expect(JSON.stringify(previewA.body)).toContain(booking.id);
     expect(JSON.stringify(previewB.body)).not.toContain(booking.id);
     expect(JSON.stringify(previewA.body)).not.toContain(customer.id);
-    expect(JSON.stringify(previewA.body)).not.toMatch(/PRIVATE_SYNTHETIC_ADDRESS_123|customerPhone|addressTextSnapshot|media|diagnosis/i);
+    // The preview carries the booking's photos and videos (PO 18/10/2026), never the address, phone or diagnosis.
+    expect(JSON.stringify(previewA.body)).not.toMatch(/PRIVATE_SYNTHETIC_ADDRESS_123|customerPhone|addressTextSnapshot|latitude|longitude|diagnosis/i);
     const prematureB = await post(`/invitations/${secondInvitation.id}/respond`, techB, { action: 'ACCEPT' });
     expect(prematureB.status).toBe(409);
     expect(prematureB.body?.error?.code).toBe('INVITATION_ALREADY_TAKEN');
@@ -352,7 +353,7 @@ describe('WEB-ACCEPT isolated real HTTP/JWT/PostgreSQL (three synthetic actors)'
     });
     expect(replacementInvitations[0]?.status).toBe('pending');
     expect(JSON.stringify(inboxB.body)).toContain(replacementInvitations[0].id);
-    expect(JSON.stringify(inboxB.body)).not.toMatch(/PRIVATE_SYNTHETIC_EXPIRY_456|customerPhone|addressTextSnapshot|media|diagnosis/i);
+    expect(JSON.stringify(inboxB.body)).not.toMatch(/PRIVATE_SYNTHETIC_EXPIRY_456|customerPhone|addressTextSnapshot|latitude|longitude|diagnosis/i);
     const acceptedB = await post(`/invitations/${replacementInvitations[0].id}/respond`, techB,
       { action: 'ACCEPT' });
     expect(acceptedB.status).toBe(200);

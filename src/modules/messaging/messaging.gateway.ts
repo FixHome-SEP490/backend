@@ -42,7 +42,17 @@ export const CHAT_EVENTS = {
   MESSAGE_DELETED: 'message:deleted',
   CONVERSATION_UPDATED: 'conversation:updated',
   TYPING: 'typing',
+  ORDER_UPDATED: 'order:updated',
+  ORDER_LOCATION: 'order:location',
+  BOOKING_UPDATED: 'booking:updated',
+  INVITATION_UPDATED: 'invitation:updated',
+  NOTIFICATION_NEW: 'notification:new',
+  WALLET_UPDATED: 'wallet:updated',
+  REALTIME_RESYNC: 'realtime:resync',
 } as const;
+
+/** The live-update events (PO 18/10/2026), each sent only to the people allowed to see that record. */
+export type RealtimeEvent = Exclude<(typeof CHAT_EVENTS)[keyof typeof CHAT_EVENTS], 'message:new' | 'message:updated' | 'message:deleted' | 'conversation:updated' | 'typing'>;
 
 const DEFAULT_ICE_URLS = 'stun:stun.l.google.com:19302';
 
@@ -570,5 +580,20 @@ export class MessagingGateway
         ?.to(userRoom(userId))
         .emit(CHAT_EVENTS.CONVERSATION_UPDATED, { conversationId });
     }
+  }
+
+  /**
+   * A live update for these people's open screens, sent to their personal rooms
+   * after the write committed. Payloads name what changed and its new state;
+   * screens read anything else over REST with their own rights.
+   */
+  emitToUsers(userIds: Iterable<string>, event: RealtimeEvent, payload: object): void {
+    const rooms = [...new Set(userIds)].filter(Boolean).map(userRoom);
+    if (rooms.length) this.server?.to(rooms).emit(event, payload);
+  }
+
+  /** Every connected user: after the listener lost changes while reconnecting, screens read again once. */
+  emitToEveryone(event: RealtimeEvent, payload: object): void {
+    this.server?.emit(event, payload);
   }
 }

@@ -45,6 +45,14 @@ export const ErrorCodes = {
   SERVICE_INACTIVE: 'SERVICE_INACTIVE',
   REBOOK_SOURCE_NOT_FOUND: 'REBOOK_SOURCE_NOT_FOUND',
 
+  // Chat
+  /** The order is completed and no warranty claim is open on it, so the chat is closed (PO 18/10/2026). */
+  CONVERSATION_CLOSED: 'CONVERSATION_CLOSED',
+
+  // Media
+  /** A video of the problem is longer than a minute (PO 18/10/2026). */
+  VIDEO_TOO_LONG: 'VIDEO_TOO_LONG',
+
   // Generic
   PAYMENT_IDEMPOTENCY_CONFLICT: 'PAYMENT_IDEMPOTENCY_CONFLICT',
   PAYMENT_PROVIDER_UNAVAILABLE: 'PAYMENT_PROVIDER_UNAVAILABLE',
@@ -86,6 +94,8 @@ export const ErrorCodeHttpStatus: Record<string, number> = {
   [ErrorCodes.PAYMENT_AMOUNT_MISMATCH]: 409,
   [ErrorCodes.CASH_SETTLEMENT_MISMATCH]: 409,
   [ErrorCodes.AI_UNAVAILABLE]: 503,
+  [ErrorCodes.CONVERSATION_CLOSED]: 409,
+  [ErrorCodes.VIDEO_TOO_LONG]: 422,
   [ErrorCodes.VALIDATION_FAILED]: 422,
   [ErrorCodes.CONFLICT]: 409,
   [ErrorCodes.NOT_FOUND]: 404,

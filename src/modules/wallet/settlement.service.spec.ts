@@ -15,6 +15,8 @@ import { Invoice } from '../service-orders/entities/invoice.entity';
 import { WalletTransaction } from './entities';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { CashSettlement } from '../service-orders/entities/cash-settlement.entity';
+import { CommissionDue } from '../service-orders/entities/commission-due.entity';
+import { CommissionDueStatus } from '../../shared/enums';
 
 describe('SettlementService', () => {
   let service: SettlementService;
@@ -138,6 +140,35 @@ describe('SettlementService', () => {
       { serviceOrderId: 'order-1', status: PlatformDueStatus.PENDING },
       expect.objectContaining({ status: PlatformDueStatus.SETTLED }),
     );
+  });
+
+  it('does not take again commission the technician already paid on its own (PO 18/10/2026)', async () => {
+    mockEntityManager.findOne.mockImplementation((entity: any) => {
+      if (entity === ServiceOrder) return Promise.resolve({ id: 'order-1', code: 'ORD001', status: ServiceOrderStatus.COMPLETED });
+      if (entity === Invoice) return Promise.resolve({ serviceOrderId: 'order-1', paymentStatus: PaymentStatus.PAID, commissionAmount: 50000, fixHomePartsTotal: 20000, shippingFee: 0 });
+      if (entity === TechnicianAssignment) return Promise.resolve({ technicianId: 'tech-1' });
+      if (entity === CashSettlement) return Promise.resolve({ status: CashSettlementStatus.CONFIRMED });
+      return Promise.resolve(null);
+    });
+    // Paid through VNPay before completion; a due closed by an earlier settlement does not count.
+    mockEntityManager.find.mockImplementation((entity: any, options: any) =>
+      entity === CommissionDue && options?.where?.status === CommissionDueStatus.PAID
+        ? Promise.resolve([{ dueAmount: '50000.00', paymentReference: 'payment-9' }, { dueAmount: '999', paymentReference: 'SETTLED_VIA_WALLET:old' }])
+        : Promise.resolve([]));
+
+    await service.trySettleOrder('order-1');
+    expect(mockWalletService.mutateBalance).toHaveBeenCalledWith(expect.objectContaining({ type: WalletTransactionType.PLATFORM_FEE, amount: 20000 }));
+
+    // Everything prepaid: nothing taken, the platform due still closes.
+    (mockWalletService.mutateBalance as any).mockClear();
+    mockEntityManager.find.mockImplementation((entity: any, options: any) =>
+      entity === CommissionDue && options?.where?.status === CommissionDueStatus.PAID
+        ? Promise.resolve([{ dueAmount: 70000, paymentReference: 'payment-9' }])
+        : Promise.resolve([]));
+    const result = await service.trySettleOrder('order-1');
+    expect(result.settled).toBe(true);
+    expect(mockWalletService.mutateBalance).not.toHaveBeenCalled();
+    expect(mockEntityManager.update).toHaveBeenCalledWith(PlatformDue, { serviceOrderId: 'order-1', status: PlatformDueStatus.PENDING }, expect.objectContaining({ status: PlatformDueStatus.SETTLED }));
   });
 
   it('should credit ONLINE_EARNING for online paid order', async () => {
