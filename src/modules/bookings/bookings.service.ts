@@ -46,6 +46,11 @@ import { MAX_BOOKING_MEDIA_UPLOADS, PrivateBookingPhotoClaimService } from '../m
 import { AiChatSession } from '../ai-diagnosis/entities/ai-chat-session.entity';
 import { AiBookingSummary, hasAdvice, toBookingSummary } from '../ai-diagnosis/ai-chat-summary';
 import { composeAddressText } from '../../shared/utils/address-text';
+import {
+  conflictsWithCatalogV2LegacyFixedTier,
+  validateCatalogV2DeviceAttributesForBooking,
+} from '../../database/catalog-v2/catalog-v2-device-attributes';
+import { catalogV2SelectedVariantCode, isCatalogV2Service, resolveCatalogV2Pricing } from '../../database/catalog-v2/catalog-v2-pricing-binding';
 
 export interface TechnicianCandidate {
   technicianId: string;
@@ -165,6 +170,27 @@ export class BookingsService {
       throw new BusinessException(ErrorCodes.NOT_FOUND, 'Service not found or inactive');
     }
 
+    const catalogV2 = isCatalogV2Service(service.code);
+    if (!catalogV2 && catalogV2SelectedVariantCode(dto)) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Phạm vi đã chọn không thuộc dịch vụ này.');
+    }
+    const isFixed = !catalogV2 && service.pricingMode === ServicePricingMode.FIXED_PRICE;
+    const deviceAttributesResult = validateCatalogV2DeviceAttributesForBooking(service.code, dto.deviceAttributes);
+    if (deviceAttributesResult.status === 'INVALID_ATTRIBUTES') {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Device attributes are invalid');
+    }
+    if (deviceAttributesResult.status === 'SERVICE_MISMATCH') {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Device attributes do not match the selected service');
+    }
+    if (isFixed && deviceAttributesResult.status === 'VALID'
+      && deviceAttributesResult.snapshot
+      && conflictsWithCatalogV2LegacyFixedTier(service.code, deviceAttributesResult.snapshot)) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Device attributes are invalid');
+    }
+    const deviceAttributesSnapshot = deviceAttributesResult.status === 'VALID'
+      ? deviceAttributesResult.snapshot
+      : null;
+
     // Validate address belongs to customer
     if (dto.addressId) {
       const address = await this.addressRepo.findOneBy({
@@ -176,7 +202,6 @@ export class BookingsService {
       }
     }
 
-    const isFixed = service.pricingMode === ServicePricingMode.FIXED_PRICE;
     const quantity = Math.max(1, dto.quantity || 1);
 
     // Spec v1.4: Snapshot address for historical integrity
@@ -215,6 +240,10 @@ export class BookingsService {
     const aiSummary = dto.aiSessionId ? await this.aiSummaryFor(dto.aiSessionId, customer.id) : null;
 
     const saved = await this.dataSource.transaction(async (manager) => {
+      // Lock the active parent/category and tiers until the immutable snapshot is stored.
+      const pricingPreview = catalogV2 ? await resolveCatalogV2Pricing(manager, service.id, dto, true) : null;
+      const catalogV2PricingSnapshot = pricingPreview ? { ...pricingPreview, priceBinding: pricingPreview.bindingReady } : null;
+      const selectedVariant = catalogV2PricingSnapshot?.selectedVariant;
       const bookingRepository = manager.getRepository(Booking);
       const mediaRepository = manager.getRepository(BookingMedia);
       const booking = bookingRepository.create({
@@ -235,10 +264,14 @@ export class BookingsService {
         bookingMode: window.mode,
         slot: window.slot,
         customerNote: dto.customerNote?.trim() || null,
-        pricingModeSnapshot: service.pricingMode,
-        fixedUnitPriceSnapshot: isFixed ? service.fixedPrice : null,
+        deviceAttributesSnapshot,
+        catalogV2PricingSnapshot,
+        pricingModeSnapshot: catalogV2PricingSnapshot
+          ? selectedVariant ? ServicePricingMode.FIXED_PRICE : ServicePricingMode.INSPECTION_REQUIRED
+          : service.pricingMode,
+        fixedUnitPriceSnapshot: selectedVariant ? selectedVariant.laborPriceVnd : isFixed ? service.fixedPrice : null,
         quantity,
-        scopeSnapshot: isFixed ? (service.scopeDescription || service.description || null) : null,
+        scopeSnapshot: selectedVariant ? selectedVariant.scopeVi : isFixed ? (service.scopeDescription || service.description || null) : null,
         urgency: dto.urgency || UrgencyLevel.MEDIUM,
         status: BookingStatus.SUBMITTED,
         aiSummary,

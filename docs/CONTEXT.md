@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-18 23:37 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/chat-list-order-code
+> Cập nhật lần cuối: 2026-10-19 18:45 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-p012-integration-20261019
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -154,12 +154,18 @@ Nhánh `fix/order-timing-and-matching`: luật quá giờ hẹn BRX-063 (cảnh 
 
 Không dùng thư viện lịch; `src/common/background-job.ts` chạy mỗi `BACKGROUND_JOBS_INTERVAL_MS` (mặc định 60000, đặt 0 để tắt, không chạy khi test). Hai việc: `InvitationsService.sweepMatching` chuyển lời mời hết hạn sang kỹ thuật viên kế tiếp và báo khách khi hết người; `ServiceOrdersService.sweepDepartures` áp BRX-063. Chạy nhiều instance vẫn an toàn nhờ khoá dòng.
 
+### P1 part custody — Phase A + Phase B cô lập (19/10/2026)
+
+Đã thêm domain TypeScript thuần và DTO riêng chưa đăng ký vào NestJS: snapshot theo dòng yêu cầu linh kiện, khai báo của kỹ thuật viên tách khỏi biên nhận vật lý của quản lý dịch vụ, số lượng được bảo toàn, kiểm tra vai trò/chủ thể, version và idempotency trong snapshot. Chỉ linh kiện nguồn FixHome tạo nghĩa vụ trả. Khai báo/biên nhận có thể phát sinh sau khi đơn hoàn tất hoặc hủy mà không đổi trạng thái đơn hay dữ liệu hóa đơn.
+
+Phase A được giữ và bổ sung validation phân biệt command, audit quyết định dùng 0. Phase B đã viết persistence/receipt, bốn API trả linh kiện và migration 039 cộng thêm, nhưng `P1_CUSTODY_ENABLED` mặc định `false`, singleton activation mặc định inactive. Chỉ QR bàn giao FixHome sau cutover mới enroll, không backfill. Hỗ trợ 3 cấp / 2 dùng / 1 trả mà không đổi quantity gốc hoặc tính lại hóa đơn cũ. CASH chặn nhận/assign mới và rút ví tại transaction sau khai tiền mặt; ONLINE có ledger NET_LABOR/NONLABOR riêng và đi chung callback/sweep. Chưa bật/deploy; xem gate còn chặn activation và API chính xác tại `docs/P1-CUSTODY-MIGRATION-PLAN.md`.
+
 ## 4. Kiến trúc và thư mục chính
 
 Kiểu modular monolith: mỗi module `controller → service → TypeORM repository/entity`, DTO dùng `class-validator`, `ValidationPipe` toàn cục bật `whitelist` và `forbidNonWhitelisted`.
 
 - `src/modules/`: 29 module. Quan trọng nhất: `auth`, `users`, `bookings` (booking, shortlist, lời mời, điều kiện nhận việc), `service-orders` (state machine, check-in, bằng chứng, hoá đơn, tiền mặt, huỷ, vi phạm, bảo hành), `quotations`, `part-requests`, `finance` (VNPay, Payment, PlatformDue), `wallet` (ví, nạp, rút, quyết toán), `technician-assignment`, `messaging` (chat, Socket.IO, gọi thoại), `ai-diagnosis` (proxy tới `ai-service`), `support-cases`, `notifications`, `system-config`, `rbac`, `audit-log`, `technician-verifications` (KYC), `media` (Cloudinary).
-- `src/database/migrations/`: migration TypeORM; mới nhất `1790000000038-RealtimeChangeNotify.ts`. `src/database/seeds/`: dữ liệu demo.
+- `src/database/migrations/`: migration TypeORM; mới nhất `1790000000040-BookingCatalogV2Pricing.ts` (đã rehearsal cô lập, chưa chạy trên DB dùng chung). `src/database/seeds/`: dữ liệu demo.
 - `src/shared/`: enum, hằng số, DTO dùng chung (`PaginationDto`, `PageSizeQueryDto`), validator văn bản và tên người.
 - `src/common/`: guard (JWT, Roles, Permission), filter lỗi, interceptor bọc response.
 - `test/`: e2e chạy migration trên Postgres sạch.
@@ -170,6 +176,8 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ### Với `web` và `mobile`
 
+- P012 hiển thị catalog: public `GET /services`, `/services/:idOrSlug`, `/categories` (alias `/service-categories`) và category detail thêm `priceSummary` tùy chọn cho từng service V2 M1/M2 active. `fixed_range` lấy min/max từ tier DB ACTIVE khớp amount/scope owner duyệt (một tier: min=max); không lấy `Service.fixedPrice`. Một query batch mỗi response có V2. Tier ACTIVE sai hoặc thiếu tier: `inspection_only`, min/max null. Dịch vụ inspection không có S dùng `inspection_reference`, min/max null, `suggestedLaborVnd` từ source chỉ là ước tính NONBINDING, không phải giá sàn. Không xuất reference GATE/LATER; legacy có thể không có summary. Admin/Booking không đổi; không migration/DB write. Web/Mobile/runtime: NOT VERIFIED trong thay đổi này.
+- P012: public `GET /services/:id/catalog-v2-pricing` nhận facts phẳng và `selectedVariantCode` (alias `variantCode`); trả selected/possible variants, NONBINDING range, lý do khảo sát và binding readiness. `POST /bookings` nhận selection ở root, facts trong `deviceAttributes`; response có `catalogV2PricingSnapshot`. Chỉ POST chốt tier ACTIVE + scope đúng dưới transaction; Service cha không mang giá tier. Hợp đồng chi tiết: `docs/P012-PRICING-API.md`. Web/Mobile parity và preview hiện tại với code mới: NOT VERIFIED.
 - REST `/api/v1`, JWT Bearer; refresh qua `POST /auth/refresh`. Role trong token viết thường (`customer`, `technician`, `service_manager`, `admin`).
 - Danh sách nhận `page` (1 đến 1.000.000) và `pageSize` hoặc `limit` (1 đến 100); `status` phải đúng enum. Sai trả 400.
 - Thu nhập kỹ thuật viên (`/technicians/me/earnings`, dashboard) lấy tiền công và hoa hồng từ hoá đơn, chỉ tính đơn kỹ thuật viên giữ tới lúc hoàn tất; "thu nhập tháng" tính từ đầu tháng theo giờ Việt Nam.
@@ -214,7 +222,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - AI chỉ gợi ý; AI hỏng không chặn đặt lịch.
 - Khách chọn 1 đến 2 kỹ thuật viên cho một booking (PO xác nhận 07/10/2026).
 - Ví kỹ thuật viên giữ tối thiểu 200.000 ₫ để được nhận việc (`wallet.minimum_balance`, PO xác nhận 07/10/2026).
-- Giữ nguyên các cổng thanh toán VNPay và payOS; không chặn rút tiền thật (PO 07/10/2026).
+- Giữ nguyên các cổng thanh toán VNPay và payOS (PO 07/10/2026). Chính sách P1 do owner xác nhận 18/10/2026: khi đơn tiền mặt còn nghĩa vụ trả linh kiện FixHome, kỹ thuật viên không nhận việc mới và không rút bất kỳ khoản ví nào; đơn đã nhận vẫn tiếp tục, hạn chế gỡ khi quản lý dịch vụ xác nhận đã giải quyết mọi nghĩa vụ. Với đơn online, giữ 100% tiền công ròng của đơn bị ảnh hưởng (tiền công đã duyệt sau hoa hồng, gồm phát sinh tiền công đã duyệt) tới khi xác nhận trả vật lý. Khách vẫn hoàn tất và thanh toán độc lập với custody; không tự lấy tiền ví để bù thiếu/hỏng. P0 tiền công thay linh kiện mới và các ngoại lệ chưa được phê duyệt không nằm trong phạm vi. Owner khóa phạm vi tối giản 19/10/2026: CASH chặn ngay từ khai tiền mặt của kỹ thuật viên, không đợi khách xác nhận; chỉ cohort QR bàn giao sau activation, manager nhận số dương thực tế, không module tranh chấp/phạt/hoàn tiền mới. Code Phase B được gate OFF; xem mục 8.
 - Không làm hoàn tiền (PO 07/10/2026). Cuộc trò chuyện khoá khi đơn hoàn tất và mở lại trong lúc có yêu cầu bảo hành đang xử lý (PO 18/10/2026, thay quyết định 07/10/2026); đơn bị huỷ thì không đổi.
 - Linh kiện vượt báo giá đi qua chi phí phát sinh để khách duyệt; báo giá chỉ là ước tính (PO 07/10/2026).
 - Duyệt KYC và quản lý danh mục chỉ admin làm; quản lý dịch vụ xử lý ngoại lệ (BRX-041, BRX-045).
@@ -239,8 +247,22 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - Điểm uy tín (PO 08/10/2026, module `reputation`, migration 030): khách và thợ bắt đầu 100 điểm (`users.reputation_points`). Mỗi lần khách huỷ đơn đã có thợ nhận, thợ rút khỏi đơn trước khi đến, hoặc đơn bị tự huỷ vì thợ không xuất phát, bị trừ `reputation.violation_points` (10), ghi vào `reputation_events` cùng lần huỷ. Quản lý huỷ thì không ai bị trừ. Thợ đã báo "Cần thay đổi thợ" (case `technician_replacement`) trên đơn đó thì không bị trừ. Điểm sau khi trừ quyết định mức khoá: dưới 70 khoá 72 giờ, dưới 40 khoá 7 ngày, từ 20 trở xuống khoá 30 ngày, 0 khoá tài khoản (`status = locked`); khách bị khoá đặt lịch (`booking_suspended_until`), thợ bị khoá nhận việc (`work_suspended_until`), lần sau không bao giờ rút ngắn lần khoá đang chạy. Cứ `reputation.reset_months` (2) tháng điểm về lại 100 (job nền), tài khoản đã khoá giữ nguyên. SM/admin: `GET /reputation?role&search&page&pageSize` (điểm thấp trước), `GET /reputation/:userId/events`, `POST /reputation/:userId/adjust {delta, reason}` (lý do bắt buộc, chỉ khách và thợ, nâng lên từ 70 thì gỡ khoá). `/users/me` và `/me` trả `reputationPoints`, `reputationPeriodStart`. Khách và thợ xem điểm của mình ở `GET /reputation/me` (điểm, ngày làm mới `resetsAt`, `suspendedUntil` nếu đang bị khoá, `locked`, 20 thay đổi gần nhất).
 - Đơn đã huỷ thì không thanh toán hoá đơn được nữa; các lần thanh toán đang chờ bị đóng với mã `ORDER_CANCELLED`. Không hoàn tiền.
 
+### Tích hợp P0 Catalog V2 và P1 custody (staging only)
+
+Catalog V2 giữ 13 danh mục, 36 dịch vụ, 28 biến thể tiền công S chính xác thuộc 17 dịch vụ, 19 mức khảo sát NONBINDING và 34 alias legacy. `stageCatalogV2Inactive` là opt-in, không tự chạy: mọi dịch vụ/variant/alias V2 inactive, dịch vụ dùng `inspection_required` và `fixed_price=NULL`; chạy lại kiểm drift, không ghi đè hàng đang active. Không chọn tier thấp nhất hoặc ràng buộc giá khi thiếu HP/kiểu lắp/cửa/kg. GATE/LATER không mở. Giữ 792 SKU FixHome; không thay P/warranty hay settlement bằng bảng S. Công thức owner duyệt là S + P + ΔS khách duyệt; hoa hồng 10% trên S+ΔS, không trên P; bonus 3%/5% P là quyết định cho tương lai, CHƯA triển khai.
+
+`POST /bookings` vẫn nhận một `serviceId`; `deviceAttributes` tùy chọn gồm `brand`, `acMounting`, `acHorsepower`, `washerLoadingStyle`, `washerCapacityKg`. Thêm `selectedVariantCode` (alias `variantCode`) để xác nhận scope đã duyệt. Resolver dùng chung với public `GET /services/:id/catalog-v2-pricing`; AC-02 treo tường cần mounting + HP, cassette cần mounting + chọn scope tiêu chuẩn, WM-02 cần cửa + kg; 15 dịch vụ fixed còn lại phải chọn scope rõ ràng. Chỉ tier DB ACTIVE có amount/scope trùng bản owner duyệt mới chốt S; thiếu dữ kiện hoặc tier không đủ điều kiện thì `inspection_required`, S NULL và chỉ khoảng tham khảo có căn cứ khi có nhiều tier. Selection sai/mâu thuẫn bị từ chối. Không phí khảo sát tự động, không dùng 19 mức tham khảo làm giá chốt. Quotation sau check-in và khách duyệt giữ module hiện có. Legacy giá/media/AI không đổi. Helper P0 cũ vẫn không ràng buộc. Không thêm wizard; Web/Mobile parity chưa kiểm chứng. Mapping AI do Toàn phụ trách, ngoài phạm vi tích hợp này.
+
+Migration cộng thêm #0040 lưu `catalog_v2_pricing_snapshot` gồm variant ID/code, S/scope hoặc cơ sở khảo sát; trigger giữ bất biến snapshot và các cột giá/facts/service/quantity. Booking response trả snapshot lịch sử, không lấy tier hiện hành thay giá. Chưa chạy migration này trên DB dùng chung hoặc preview 3101; preview process được giữ nguyên. Trước QA code mới phải migrate DB cô lập rồi restart có kiểm soát. Xem `docs/P012-PRICING-API.md`.
+
+Migration P0 `CatalogV2VariantAndAlias1790000000037`, `BookingDeviceAttributes1790000000038` và P1 `PartCustody1790000000039` được giữ nguyên. Timestamp 0037/0038 trùng migration dev ChatAttachments/RealtimeChangeNotify nhưng tên class/name khác nhau; TypeORM nhận diện ledger bằng tên. Rehearsal nâng cấp từ đầy đủ migration dev chạy đúng P0 0037 → P0 0038 → P1 0039 trên PostgreSQL dùng một lần; fresh chain 64 migration cũng PASS. Không đổi định danh migration dev đã phát hành. Rollback P0 cần transaction/khóa độc quyền và từ chối khi có dữ liệu; sau staging cần kế hoạch forward/restore riêng.
+
+Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có thể reset, không cần chuyển nguyên 1.068 skill links. Việc mở M1/M2 cần ít nhất một kỹ thuật viên thử đủ năng lực mỗi dịch vụ được phép; không activate DB dùng chung. `P1_CUSTODY_ENABLED=false` mặc định. Harness cô lập được lưu ở workspace cá nhân, không đưa vào source phát hành; harness kiểm chứng bổ sung `scripts/p012-pricing-isolated.cjs` tự tạo/gỡ đúng container PostgreSQL 16 riêng, không đọc `.env`, kiểm upgrade #0040 và fresh chain 65 migration, rollback an toàn, HTTP/JWT public preview + Booking, 28 tier fixed, 32 fallback, 32 skill giả lập và matching/accept thật. Giữ nguyên 792 SKU giả lập, P1 OFF, GATE/LATER inactive. Hợp đồng custody và gate tiền vẫn theo `docs/P1-CUSTODY-MIGRATION-PLAN.md`.
+
 ## 8. Việc đang dở và rủi ro đã biết
 
+- P012 price-binding đã qua unit và harness PostgreSQL/HTTP cô lập (28 tier, 32 fallback, matching/accept, snapshot bất biến); chưa migrate shared DB/preview 3101, chưa restart preview. Full `npm run test:e2e` trên DB cô lập trống: FAIL, `test/app.e2e-spec.ts` worker thoát bất thường; `test/web-accept-isolated.e2e-spec.ts` lỗi migration cũ `urgency_level_enum` không tồn tại. Không sửa migration cũ hoặc nới gate. Web/Mobile/browser parity và Docker Compose runtime: NOT VERIFIED.
+- P1 Phase B phải giữ `P1_CUSTODY_ENABLED=false`: đã có kiểm thử PostgreSQL dùng một lần cho HTTP/JWT/IDOR, replay/receipt, Accept/auto-Accept/assign/withdraw, race khai tiền mặt và callback/sweep online. Chưa chứng minh toàn bộ lock order nhiều instance, các đường override/replace, toàn bộ IPN/querydr/provider retry hoặc rolling cutover; không coi là production-safe. Không chạy migration 039/activation hay Docker Compose trên dev dùng chung. Full E2E cũ và Web/Mobile/browser parity: NOT VERIFIED. Kế hoạch migration/rollback, hợp đồng API và giới hạn nằm ở `docs/P1-CUSTODY-MIGRATION-PLAN.md`.
 - Lỗi của đợt rà soát 07/10/2026 đã sửa hết phần backend, trừ phần bảo hành (dev khác phụ trách).
 - Migration `1790000000027-HonestTechnicianRatings` đưa điểm của kỹ thuật viên chưa có đánh giá về 0 và mặc định cột là 0; phải chạy `npm run migration:run` trên database dùng chung sau khi merge.
 - `web` và `mobile` cần xử lý `rating: null` (chưa có đánh giá), nút "xác nhận vi phạm" ở trang huỷ đơn, và báo "chưa mở" khi nạp hay rút tiền bị từ chối.
@@ -255,6 +277,12 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-19 18:45 (UTC+7) | foxonworld | foxonworld/fixhome-p012-integration-20261019 | Thêm priceSummary public catalog bằng một query batch, kiểm tier owner duyệt và tách ước tính inspection khỏi giá sàn; không đổi admin/Booking/DB.
+- 2026-10-19 03:27 (UTC+7) | foxonworld | foxonworld/fixhome-p012-integration-20261019 | Thêm public pricing API và Booking snapshot tier ACTIVE bất biến qua #0040; xác minh PG/HTTP cô lập, ghi rõ E2E còn lỗi và giữ preview/P1 OFF.
+- 2026-10-19 01:59 (UTC+7) | foxonworld | foxonworld/fixhome-p012-integration-20261019 | Tích hợp P0/P1 staging, giữ Booking media/privacy của dev, xác minh migration và harness PostgreSQL cô lập, không activation.
+- 2026-10-19 00:50 (UTC+7) | foxonworld | feature/catalog-v2-owner-approved | Chặn thuộc tính mâu thuẫn tier legacy, xác thực input preview và máy giặt WM-03; rollback #0037/#0038 khóa an toàn; E2E sandbox vẫn timeout.
+- 2026-10-19 00:48 (UTC+7) | foxonworld | foxonworld/fixhome-p1-parts-return-20261018 | Ghi code P1 Phase B cô lập, migration inactive, API/guard/ledger mặc định OFF và gate concurrency/cutover còn chặn.
+- 2026-10-19 00:11 (UTC+7) | foxonworld | foxonworld/fixhome-p1-parts-return-20261018 | Ghi rõ quyết định P1 custody và giới hạn Phase A domain chưa đăng ký runtime/API/DB/finance.
 - 2026-10-18 23:37 (UTC+7) | ToanAltF4 | feat/chat-list-order-code | Danh sách hội thoại trả thêm mã đơn (orderCode)
 - 2026-10-18 12:59 (UTC+7) | ToanAltF4 | feat/po-batch-2026-10-18 | Sửa sau rà soát và test thật: video 75 giây trả đúng 422, LISTEN có heartbeat tự ping, kiểm bản chuyển mã theo cách xem, chặn tin chat trùng khi gửi lại chồng, ẩn link xem trong log, quét GPS cả XMP
 - 2026-10-18 12:18 (UTC+7) | ToanAltF4 | feat/po-batch-2026-10-18 | Realtime thật bằng trigger Postgres + LISTEN (migration 038, order/booking/invitation/notification/wallet/location events, resync); video riêng tư: xoá GPS, tối đa 60 giây, Cloudinary chuyển mã H.264 khi cần + poster, link xem 15 phút stream có Range; requestTimeout 15 phút cho mạng yếu
@@ -289,9 +317,3 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - 2026-10-09 23:59 (UTC+7) | ToanAltF4 | fix/multipart-upload-size | Sửa lỗi tải ảnh trên 1 MB bị 413
 - 2026-10-09 23:46 (UTC+7) | ToanAltF4 | perf/parallel-candidate-eligibility | Tìm thợ nhanh hơn: kiểm điều kiện theo lô song song
 - 2026-10-09 23:28 (UTC+7) | ToanAltF4 | feat/no-customer-acceptance | Bỏ bước khách nghiệm thu: thợ hoàn thành có ảnh, thanh toán xong là hoàn tất
-- 2026-10-09 21:42 (UTC+7) | ToanAltF4 | feat/admin-reviews | Admin xem danh sách đánh giá
-- 2026-10-09 21:28 (UTC+7) | ToanAltF4 | feat/admin-payments | Admin xem danh sách thanh toán
-- 2026-10-09 21:13 (UTC+7) | ToanAltF4 | feat/sm-dashboard-replacements | Tổng quan quản lý: số yêu cầu đổi thợ đang chờ, đơn tự huỷ vì không xuất phát
-- 2026-10-09 20:40 (UTC+7) | ToanAltF4 | feat/admin-customer-wallets | Admin xem và điều chỉnh ví khách (migration 032)
-- 2026-10-09 20:31 (UTC+7) | ToanAltF4 | feat/refund-parts-only | Hoàn tiền vào ví chỉ cho khiếu nại linh kiện, bảo hành; FixHome chịu
-- 2026-10-09 19:51 (UTC+7) | ToanAltF4 | feat/availability-from-schedule | Trạng thái nhận việc theo lịch tuần, nút tay chỉ tạm nghỉ

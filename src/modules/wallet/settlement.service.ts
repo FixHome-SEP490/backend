@@ -16,6 +16,8 @@ import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { WalletTransaction } from './entities';
 import { WalletService } from './wallet.service';
+import { p1CustodyEnabled } from '../part-requests/part-custody.policy';
+import { settleCustodyOnline } from './custody-settlement';
 
 @Injectable()
 export class SettlementService {
@@ -40,6 +42,7 @@ export class SettlementService {
     const runInManager = async (manager: EntityManager) => {
       const order = await manager.findOne(ServiceOrder, {
         where: { id: orderId },
+        ...(p1CustodyEnabled() ? { lock: { mode: 'pessimistic_write' as const } } : {}),
       });
       if (!order) {
         return { settled: false, reason: 'ORDER_NOT_FOUND' };
@@ -60,6 +63,9 @@ export class SettlementService {
         );
         return { settled: false, reason: 'PAYMENT_NOT_PAID' };
       }
+
+      const custodyResult = await settleCustodyOnline(manager, order, invoice, this.walletService);
+      if (custodyResult) return custodyResult;
 
       // Check if already settled (idempotent)
       const existingTx = await manager.findOne(WalletTransaction, {

@@ -29,6 +29,7 @@ import {
   PayoutResult,
 } from './payout/payout-provider';
 import { WalletService } from './wallet.service';
+import { assertCashCustodyAllowsWithdrawal } from '../part-requests/part-custody.policy';
 
 /** How long a payout payOS has never heard of may sit before it is refunded. */
 export const PAYOUT_NOT_FOUND_GRACE_MS = 10 * 60 * 1000;
@@ -229,6 +230,7 @@ export class WithdrawalPayoutService implements OnModuleInit, OnModuleDestroy {
     const minimumBalance = await this.walletService.getMinimumBalance();
 
     await this.dataSource.transaction(async (manager) => {
+      await assertCashCustodyAllowsWithdrawal(manager, technicianId);
       const locked = await manager.getRepository(Wallet).findOne({
         where: { id: wallet.id },
         lock: { mode: 'pessimistic_write' },

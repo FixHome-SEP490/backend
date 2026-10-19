@@ -1,6 +1,7 @@
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsDateString, IsEnum, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsDateString, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateNested } from 'class-validator';
+import type { CatalogV2DeviceAttributes } from '../../database/catalog-v2/catalog-v2-device-attributes';
 import { UrgencyLevel } from '../../shared/enums';
 
 export const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -30,7 +31,38 @@ export class ScheduleBookingDto {
   description?: string;
 }
 
+export class BookingDeviceAttributesDto implements CatalogV2DeviceAttributes {
+  @Transform(({ value }) => typeof value === 'string' ? value.trim() : value)
+  @ApiPropertyOptional({ maxLength: 64, description: 'Optional device brand supplied by the customer.' })
+  @IsOptional() @IsString() @MaxLength(64)
+  brand?: string;
+
+  @ApiPropertyOptional({ enum: ['wall', 'ceiling', 'unknown'] })
+  @IsOptional() @IsIn(['wall', 'ceiling', 'unknown'])
+  acMounting?: 'wall' | 'ceiling' | 'unknown';
+
+  @ApiPropertyOptional({ enum: ['up_to_1_5', '2_to_2_5', 'unknown'] })
+  @IsOptional() @IsIn(['up_to_1_5', '2_to_2_5', 'unknown'])
+  acHorsepower?: 'up_to_1_5' | '2_to_2_5' | 'unknown';
+
+  @ApiPropertyOptional({ enum: ['top', 'front', 'unknown'] })
+  @IsOptional() @IsIn(['top', 'front', 'unknown'])
+  washerLoadingStyle?: 'top' | 'front' | 'unknown';
+
+  @ApiPropertyOptional({ minimum: 0.1, maximum: 50, description: 'Optional washer capacity in kg; omitted or null means unknown.' })
+  @IsOptional() @IsNumber({ allowInfinity: false, allowNaN: false, maxDecimalPlaces: 1 }) @Min(0.1) @Max(50)
+  washerCapacityKg?: number | null;
+}
+
 export class CreateBookingDto extends ScheduleBookingDto {
+  @ApiPropertyOptional({ description: 'Approved Catalog V2 variant code. Selecting it confirms its named work scope; AC/WM still require sufficient device facts.' })
+  @IsOptional() @Matches(/^[A-Z]{2}-\d{2}-\d{2}$/)
+  selectedVariantCode?: string | null;
+
+  @ApiPropertyOptional({ description: 'Alias of selectedVariantCode for the initial cross-team contract. When both are sent they must match.' })
+  @IsOptional() @Matches(/^[A-Z]{2}-\d{2}-\d{2}$/)
+  variantCode?: string | null;
+
   @ApiProperty({ format: 'uuid', example: '11111111-1111-4111-8111-111111111111', description: 'Service ID from catalog.' })
   @Matches(UUID_REGEX, { message: 'serviceId must be a valid UUID' })
   serviceId: string;
@@ -66,6 +98,10 @@ export class CreateBookingDto extends ScheduleBookingDto {
   @ApiPropertyOptional({ maxLength: 1000, example: 'Gọi trước khi đến, nhà trong hẻm', description: 'Note for the technician, apart from the problem description.' })
   @IsOptional() @IsString() @MaxLength(1000)
   customerNote?: string;
+
+  @ApiPropertyOptional({ type: () => BookingDeviceAttributesDto, description: 'Optional customer-reported device facts. The server validates them against the selected service and derives any Catalog V2 preview itself.' })
+  @IsOptional() @IsObject() @ValidateNested() @Type(() => BookingDeviceAttributesDto)
+  deviceAttributes?: BookingDeviceAttributesDto | null;
 
   @ApiPropertyOptional({ format: 'uuid', description: 'Optional linked AI diagnosis ID.' })
   @IsOptional() @Matches(UUID_REGEX, { message: 'aiDiagnosisId must be a valid UUID' })

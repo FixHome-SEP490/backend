@@ -1,7 +1,11 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { ServicePricingMode } from '../../../shared/enums';
+import { ServicePriceSummaryResponseDto } from '../../services/dto/service-response.dto';
 
 export class CategoryServiceSummaryResponseDto {
+  @ApiPropertyOptional({ type: ServicePriceSummaryResponseDto })
+  priceSummary?: ServicePriceSummaryResponseDto;
+
   @ApiProperty({ format: 'uuid' })
   id: string;
 

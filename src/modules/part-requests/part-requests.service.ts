@@ -1,5 +1,6 @@
 // src/modules/part-requests/part-requests.service.ts
-import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, ForbiddenException, Optional, BadRequestException } from '@nestjs/common';
+import { PartCustodyService } from './part-custody.service';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository, Not } from 'typeorm';
 import * as crypto from 'crypto';
@@ -46,6 +47,7 @@ export class PartRequestsService {
     private readonly fixHomePartRepo: Repository<FixHomePart>,
     private readonly auditLogService: AuditLogService,
     private readonly notificationsService: NotificationsService,
+    @Optional() private readonly custodyService?: PartCustodyService,
   ) {}
 
   // Always lock the order before its request, matching cancellation and invoicing.
@@ -477,7 +479,7 @@ export class PartRequestsService {
   ): Promise<PartRequest> {
     if (actor.role !== Role.TECHNICIAN) throw new ForbiddenException('Technician role required');
     return this.dataSource.transaction(async (manager: EntityManager) => {
-      const { request } = await this.lockRequest(manager, requestId, actor);
+      const { request, order } = await this.lockRequest(manager, requestId, actor);
 
       if (!request) {
         throw new BusinessException(
@@ -546,6 +548,7 @@ export class PartRequestsService {
       request.qrToken = null;
 
       const saved = await manager.save(PartRequest, request);
+      await this.custodyService?.enrollHandover(manager, request, order);
 
       // Audit log
       await this.auditLogService.logWithManager(manager, {
@@ -631,6 +634,12 @@ export class PartRequestsService {
       }
 
       const previous = item.usageStatus;
+      const custodyRecorded = await this.custodyService?.recordUsage(manager, request, item, order, dto, actor);
+      if (!custodyRecorded && [dto.usedQty, dto.expectedVersion, dto.idempotencyKey].some(value => value !== undefined)) {
+        throw new BadRequestException('Số lượng chi tiết chỉ áp dụng cho linh kiện được bàn giao sau khi mở chức năng trả linh kiện.');
+      }
+      if (custodyRecorded && dto.usageStatus !== (dto.usedQty > 0 ? PartUsageStatus.USED : PartUsageStatus.RETURNED)) throw new BadRequestException('Trạng thái sử dụng không khớp số lượng đã dùng.');
+      if (custodyRecorded === 'replayed') return item;
       item.usageStatus = dto.usageStatus;
       const saved = await manager.save(PartRequestItem, item);
 

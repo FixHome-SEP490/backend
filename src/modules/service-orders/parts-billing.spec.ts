@@ -10,6 +10,15 @@ import { assertPartsResolved, usedPartQuantities } from '../part-requests/part-r
 import { PartRequestStatus, PartRequestType, PartSource, PartUsageStatus } from '../../shared/enums';
 
 describe('Parts reconciliation at invoice freeze', () => {
+  it('bills exactly 2 of 3 issued for an enrolled item while preserving legacy quantity and approvals', () => {
+    const requests = [{ id: 'request', status: PartRequestStatus.RECEIVED, requestType: PartRequestType.PRE_REPAIR,
+      items: [{ id: 'item', quantity: 3, partSource: PartSource.FIXHOME, partCatalogId: 'part', usageStatus: PartUsageStatus.USED }] }] as PartRequest[];
+    const bill = usedPartQuantities(requests, new Map([['item', 2]]));
+    expect(bill('quotation', { partSource: PartSource.FIXHOME, partCatalogId: 'part', quantity: 3 })).toBe(2);
+    expect(bill('quotation', { partSource: PartSource.FIXHOME, partCatalogId: 'part', quantity: 3 })).toBe(0);
+    expect(requests[0].items[0].quantity).toBe(3);
+    expect(usedPartQuantities(requests)('quotation', { partSource: PartSource.FIXHOME, partCatalogId: 'part', quantity: 3 })).toBe(3);
+  });
   it('invoices approved USED quantities only, excluding RETURNED and non-received parts', async () => {
     const approved = (id: string, catalog: string, quantity = 1) => ({ id, type: 'parts_equipment', partSource: 'fixhome', partCatalogId: catalog, quantity, unitPrice: 100, lineTotal: quantity * 100 });
     const requests = [
@@ -50,5 +59,46 @@ describe('Parts reconciliation at invoice freeze', () => {
     expect(consume('cost1', item)).toBe(0);
     request.status = PartRequestStatus.CANCELLED;
     expect(usedPartQuantities([request])('cost1', item)).toBe(0);
+  });
+
+  it('keeps PRE_REPAIR and multiple ADDITIONAL approvals separated by approval source and bills USED quantity once', () => {
+    const requests = [
+      {
+        requestType: PartRequestType.PRE_REPAIR,
+        status: PartRequestStatus.RECEIVED,
+        items: [
+          { partSource: PartSource.FIXHOME, partCatalogId: 'same-sku', quantity: 2, usageStatus: PartUsageStatus.USED },
+          { partSource: PartSource.FIXHOME, partCatalogId: 'same-sku', quantity: 9, usageStatus: PartUsageStatus.RETURNED },
+        ],
+      },
+      {
+        requestType: PartRequestType.ADDITIONAL,
+        additionalCostId: 'approved-cost-1',
+        status: PartRequestStatus.RECEIVED,
+        items: [{ partSource: PartSource.FIXHOME, partCatalogId: 'same-sku', quantity: 1, usageStatus: PartUsageStatus.USED }],
+      },
+      {
+        requestType: PartRequestType.ADDITIONAL,
+        additionalCostId: 'approved-cost-2',
+        status: PartRequestStatus.COMPLETED,
+        items: [{ partSource: PartSource.FIXHOME, partCatalogId: 'same-sku', quantity: 3, usageStatus: PartUsageStatus.USED }],
+      },
+      {
+        requestType: PartRequestType.ADDITIONAL,
+        additionalCostId: 'pending-cost-3',
+        status: PartRequestStatus.REQUESTED,
+        items: [{ partSource: PartSource.FIXHOME, partCatalogId: 'same-sku', quantity: 7, usageStatus: PartUsageStatus.USED }],
+      },
+    ] as PartRequest[];
+    const bill = usedPartQuantities(requests);
+    const item = { partSource: PartSource.FIXHOME, partCatalogId: 'same-sku', quantity: 5 };
+
+    expect(bill('quotation', item)).toBe(2);
+    expect(bill('quotation', item)).toBe(0);
+    expect(bill('approved-cost-1', item)).toBe(1);
+    expect(bill('approved-cost-1', item)).toBe(0);
+    expect(bill('approved-cost-2', item)).toBe(3);
+    expect(bill('approved-cost-2', item)).toBe(0);
+    expect(bill('pending-cost-3', item)).toBe(0);
   });
 });

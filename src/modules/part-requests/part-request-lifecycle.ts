@@ -52,7 +52,7 @@ export function assertPartsResolved(requests: PartRequest[]): void {
 }
 
 /** Consume each received USED quantity once, within its approved cost source. */
-export function usedPartQuantities(requests: PartRequest[]) {
+export function usedPartQuantities(requests: PartRequest[], custodyUsage: ReadonlyMap<string, number> = new Map()) {
   const quantities = new Map<string, number>();
   const key = (source: string, catalogId: string) => `${source}:${catalogId}`;
   for (const request of requests) {
@@ -62,7 +62,7 @@ export function usedPartQuantities(requests: PartRequest[]) {
     for (const item of request.items) {
       if (item.partSource !== PartSource.FIXHOME || item.usageStatus !== PartUsageStatus.USED || !item.partCatalogId) continue;
       const itemKey = key(source, item.partCatalogId);
-      quantities.set(itemKey, (quantities.get(itemKey) || 0) + item.quantity);
+      quantities.set(itemKey, (quantities.get(itemKey) || 0) + (custodyUsage.get(item.id) ?? item.quantity));
     }
   }
   return (source: string, item: { partSource?: PartSource | null; partCatalogId?: string | null; quantity: number }): number => {

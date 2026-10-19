@@ -1,6 +1,20 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { ServicePricingMode } from '../../../shared/enums';
 
+export class ServicePriceSummaryResponseDto {
+  @ApiProperty({ enum: ['fixed_range', 'inspection_reference', 'inspection_only'] })
+  kind: 'fixed_range' | 'inspection_reference' | 'inspection_only';
+
+  @ApiProperty({ type: Number, nullable: true, description: 'Minimum active approved tier labor; null for inspection.' })
+  minLaborVnd: number | null;
+
+  @ApiProperty({ type: Number, nullable: true, description: 'Maximum active approved tier labor; null for inspection.' })
+  maxLaborVnd: number | null;
+
+  @ApiPropertyOptional({ type: Number, description: 'Inspection estimate only, never a binding starting price or floor.' })
+  suggestedLaborVnd?: number;
+}
+
 export class ServiceCategorySummaryResponseDto {
   @ApiProperty({ format: 'uuid' })
   id: string;
@@ -34,6 +48,9 @@ export class ServiceCategorySummaryResponseDto {
 }
 
 export class ServiceResponseDto {
+  @ApiPropertyOptional({ type: ServicePriceSummaryResponseDto, description: 'Public Catalog V2 display only; booking revalidates scope and price.' })
+  priceSummary?: ServicePriceSummaryResponseDto;
+
   @ApiProperty({ format: 'uuid' })
   id: string;
 

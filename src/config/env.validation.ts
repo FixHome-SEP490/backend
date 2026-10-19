@@ -3,6 +3,7 @@ import 'reflect-metadata';
 import { plainToInstance } from 'class-transformer';
 import {
   IsEnum,
+  IsIn,
   IsInt,
   Min,
   Max,
@@ -20,6 +21,9 @@ export enum Environment {
 }
 
 export class EnvironmentVariables {
+  @IsIn(['true', 'false'])
+  P1_CUSTODY_ENABLED: string = 'false';
+
   @IsEnum(Environment)
   @IsOptional()
   NODE_ENV: Environment = Environment.Development;
