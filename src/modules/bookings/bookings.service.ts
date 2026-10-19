@@ -18,6 +18,12 @@ import { Service } from '../services/entities/service.entity';
 import { Address } from '../users/entities/address.entity';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
+import {
+  bookingStageSql,
+  orderStageSql,
+  type CustomerActivityCounts,
+  type RequestStage,
+} from '../../shared/utils/customer-activity-stage';
 import { BookingStatus, Role, ServicePricingMode, UrgencyLevel } from '../../shared/enums';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
@@ -84,6 +90,7 @@ type BookingListOptions = {
   search?: string;
   overdue?: boolean;
   sort?: 'created' | 'appointment';
+  stage?: RequestStage;
 };
 
 /**
@@ -94,6 +101,7 @@ function filterBookingList(qb: SelectQueryBuilder<Booking>, options: BookingList
   if (options.status) qb.andWhere('b.status = :status', { status: options.status });
   if (options.statuses?.length) qb.andWhere('b.status IN (:...statuses)', { statuses: options.statuses });
   andWhereTextMatches(qb, ['b.service_name_snapshot', 'b.description'], options.search);
+  if (options.stage) qb.andWhere(bookingStageSql(options.stage, 'b'));
   if (options.overdue === true) qb.andWhere('b.preferred_start_at < now()');
   if (options.overdue === false) qb.andWhere('(b.preferred_start_at IS NULL OR b.preferred_start_at >= now())');
   if (options.sort === 'appointment') qb.orderBy('b.preferredStartAt', 'ASC', 'NULLS LAST').addOrderBy('b.createdAt', 'DESC');
@@ -396,6 +404,39 @@ export class BookingsService {
 
     const [data, total] = await qb.getManyAndCount();
     return { data, total };
+  }
+
+  /** Exact counts of the customer's Activity tabs and their filters, so a client shows numbers without loading every page. */
+  async activityCounts(customerId: string): Promise<CustomerActivityCounts> {
+    await this.closeOverdueBookings();
+    const [orders, bookings] = await Promise.all([
+      this.dataSource.query(
+        `SELECT
+           count(*) FILTER (WHERE ${orderStageSql('in_progress')})::int AS in_progress,
+           count(*) FILTER (WHERE ${orderStageSql('completed')})::int AS completed,
+           count(*) FILTER (WHERE ${orderStageSql('cancelled')})::int AS cancelled
+         FROM service_orders o JOIN bookings b ON b.id = o.booking_id
+         WHERE b.customer_id = $1`,
+        [customerId],
+      ),
+      this.dataSource.query(
+        `SELECT
+           count(*) FILTER (WHERE ${bookingStageSql('no_technician')})::int AS no_technician,
+           count(*) FILTER (WHERE ${bookingStageSql('sent')})::int AS sent,
+           count(*) FILTER (WHERE ${bookingStageSql('cancelled')})::int AS cancelled
+         FROM bookings b
+         WHERE b.customer_id = $1`,
+        [customerId],
+      ),
+    ]);
+    const o = orders[0] ?? {};
+    const b = bookings[0] ?? {};
+    const repair = { in_progress: Number(o.in_progress ?? 0), completed: Number(o.completed ?? 0), cancelled: Number(o.cancelled ?? 0) };
+    const request = { no_technician: Number(b.no_technician ?? 0), sent: Number(b.sent ?? 0), cancelled: Number(b.cancelled ?? 0) };
+    return {
+      repair: { all: repair.in_progress + repair.completed + repair.cancelled, ...repair },
+      request: { all: request.no_technician + request.sent + request.cancelled, ...request },
+    };
   }
 
   /**

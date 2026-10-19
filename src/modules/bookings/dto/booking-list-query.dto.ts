@@ -4,6 +4,7 @@ import { CsvToArray } from '../../../shared/utils/list-search';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { PageSizeQueryDto } from '../../../shared/dto/page-size-query.dto';
 import { BookingStatus } from '../../../shared/enums';
+import { REQUEST_STAGES, type RequestStage } from '../../../shared/utils/customer-activity-stage';
 
 export class BookingListQueryDto extends PageSizeQueryDto {
   @ApiPropertyOptional({ enum: BookingStatus })
@@ -18,6 +19,11 @@ export class BookingListQueryDto extends PageSizeQueryDto {
   @ArrayMaxSize(10)
   @IsEnum(BookingStatus, { each: true })
   statuses?: BookingStatus[];
+
+  @ApiPropertyOptional({ enum: REQUEST_STAGES, description: 'Customer list only: no_technician (closed, or the order lost its technician), sent (still searching), cancelled' })
+  @IsOptional()
+  @IsIn(REQUEST_STAGES)
+  stage?: RequestStage;
 
   @ApiPropertyOptional({ description: 'Service name or description contains (accents ignored)' })
   @IsOptional()

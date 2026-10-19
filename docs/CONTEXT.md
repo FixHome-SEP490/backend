@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-19 18:45 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-p012-integration-20261019
+> Cập nhật lần cuối: 2026-10-20 01:53 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: feat/customer-activity-stages
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -178,6 +178,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 - P012 hiển thị catalog: public `GET /services`, `/services/:idOrSlug`, `/categories` (alias `/service-categories`) và category detail thêm `priceSummary` tùy chọn cho từng service V2 M1/M2 active. `fixed_range` lấy min/max từ tier DB ACTIVE khớp amount/scope owner duyệt (một tier: min=max); không lấy `Service.fixedPrice`. Một query batch mỗi response có V2. Tier ACTIVE sai hoặc thiếu tier: `inspection_only`, min/max null. Dịch vụ inspection không có S dùng `inspection_reference`, min/max null, `suggestedLaborVnd` từ source chỉ là ước tính NONBINDING, không phải giá sàn. Không xuất reference GATE/LATER; legacy có thể không có summary. Admin/Booking không đổi; không migration/DB write. Web/Mobile/runtime: NOT VERIFIED trong thay đổi này.
 - P012: public `GET /services/:id/catalog-v2-pricing` nhận facts phẳng và `selectedVariantCode` (alias `variantCode`); trả selected/possible variants, NONBINDING range, lý do khảo sát và binding readiness. `POST /bookings` nhận selection ở root, facts trong `deviceAttributes`; response có `catalogV2PricingSnapshot`. Chỉ POST chốt tier ACTIVE + scope đúng dưới transaction; Service cha không mang giá tier. Hợp đồng chi tiết: `docs/P012-PRICING-API.md`. Web/Mobile parity và preview hiện tại với code mới: NOT VERIFIED.
+- Hoạt động của khách (mobile, 20/10/2026): `GET /bookings/my` nhận thêm `stage` (`no_technician`: booking `closed` hoặc đơn đã mất thợ; `sent`: `submitted`, `matching`; `cancelled`), `GET /service-orders/my` (khách) nhận `stage` (`in_progress`: đơn có thợ phụ trách; `completed`; `cancelled`); đơn mất thợ là đơn `accepted` hoặc `en_route` không còn `technician_assignments.is_active`, nó thuộc yêu cầu `no_technician` chứ không thuộc `in_progress`. `GET /bookings/my/activity-counts` trả số chính xác `{ repair: { all, in_progress, completed, cancelled }, request: { all, no_technician, sent, cancelled } }` để client hiện số mà không phải tải hết. Logic ở `shared/utils/customer-activity-stage.ts`; web chưa dùng; CHƯA KIỂM CHỨNG với dữ liệu thật (SQL đã chạy thử trên DB chung với khách giả, kết quả 0).
 - REST `/api/v1`, JWT Bearer; refresh qua `POST /auth/refresh`. Role trong token viết thường (`customer`, `technician`, `service_manager`, `admin`).
 - Danh sách nhận `page` (1 đến 1.000.000) và `pageSize` hoặc `limit` (1 đến 100); `status` phải đúng enum. Sai trả 400.
 - Thu nhập kỹ thuật viên (`/technicians/me/earnings`, dashboard) lấy tiền công và hoa hồng từ hoá đơn, chỉ tính đơn kỹ thuật viên giữ tới lúc hoàn tất; "thu nhập tháng" tính từ đầu tháng theo giờ Việt Nam.
@@ -277,6 +278,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-20 01:53 (UTC+7) | Hgnv11 | feat/customer-activity-stages | Thêm stage cho danh sách booking và đơn của khách và GET /bookings/my/activity-counts để mobile phân trang, phân loại và đếm ở server
 - 2026-10-19 18:45 (UTC+7) | foxonworld | foxonworld/fixhome-p012-integration-20261019 | Thêm priceSummary public catalog bằng một query batch, kiểm tier owner duyệt và tách ước tính inspection khỏi giá sàn; không đổi admin/Booking/DB.
 - 2026-10-19 03:27 (UTC+7) | foxonworld | foxonworld/fixhome-p012-integration-20261019 | Thêm public pricing API và Booking snapshot tier ACTIVE bất biến qua #0040; xác minh PG/HTTP cô lập, ghi rõ E2E còn lỗi và giữ preview/P1 OFF.
 - 2026-10-19 01:59 (UTC+7) | foxonworld | foxonworld/fixhome-p012-integration-20261019 | Tích hợp P0/P1 staging, giữ Booking media/privacy của dev, xác minh migration và harness PostgreSQL cô lập, không activation.
@@ -316,4 +318,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-10 01:20 (UTC+7) | ToanAltF4 | feat/technician-default-warranty | Thợ đặt bảo hành công mặc định (PUT /technicians/me/warranty-default, áp cho tất cả dịch vụ tuỳ chọn); đơn chụp bảo hành công lúc giao thợ (service_orders.labor_warranty_days, migration 033); báo giá/chi phí phát sinh để trống ngày bảo hành công thì lấy mặc định, vượt warranty.max_days bị từ chối; hoá đơn giá cố định ghi bảo hành công theo đơn thay vì 0; thẻ ứng viên không còn hiện 30 ngày khi thợ chưa đặt; warranty.default_days và warranty.max_days chuyển ACTIVE
 - 2026-10-09 23:59 (UTC+7) | ToanAltF4 | fix/multipart-upload-size | Sửa lỗi tải ảnh trên 1 MB bị 413
 - 2026-10-09 23:46 (UTC+7) | ToanAltF4 | perf/parallel-candidate-eligibility | Tìm thợ nhanh hơn: kiểm điều kiện theo lô song song
-- 2026-10-09 23:28 (UTC+7) | ToanAltF4 | feat/no-customer-acceptance | Bỏ bước khách nghiệm thu: thợ hoàn thành có ảnh, thanh toán xong là hoàn tất
