@@ -3,6 +3,7 @@ import type { EntityManager } from 'typeorm';
 import { AccountStatus, Role, VerificationStatus } from '../../shared/enums';
 import type { Booking } from './entities/booking.entity';
 import { technicianEligibility } from './technician-eligibility';
+import { BookingsService } from './bookings.service';
 
 const day = '2030-10-15'; // Tuesday in Vietnam, 10:00 local = 03:00Z.
 const at = (hour: number, minute = 0) => new Date(`${day}T${String(hour).padStart(2,'0')}:${String(minute).padStart(2,'0')}:00Z`);
@@ -147,6 +148,116 @@ describe('ARRIVAL: actual shared technicianEligibility permits a valid arrival s
 });
 
 describe('sessions and urgent bookings (PO 08/10/2026)', () => {
+  it.each([false, true])('checks the remaining evening against the technician for availableSessions (previous=%s)', async previous => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(at(15, 59));
+      const f = fixture();
+      f.schedules[0].endTime = '23:00';
+      const findOneBy = vi.mocked(f.manager.findOneBy).getMockImplementation()!;
+      vi.mocked(f.manager.findOneBy).mockImplementation(async (entity, where) => {
+        if (typeof entity === 'function' && entity.name === 'ServiceOrder') return { id: 'old-order' };
+        if (typeof entity === 'function' && entity.name === 'TechnicianAssignment') return { technicianId: 'tech-1' };
+        return findOneBy(entity, where);
+      });
+      Object.assign(f.manager, { findOne: async () => ({ technicianId: 'tech-1' }) });
+      const service = Object.create(BookingsService.prototype) as BookingsService;
+      Object.assign(service, { bookingRepo: { findOneBy: async () => f.booking }, dataSource: { manager: f.manager } });
+      const sessions = async () => (await service.availableSessions('booking-1', { id: 'c' }, 1, previous)).sessions;
+      expect(await sessions()).toMatchObject([{ slot: 'evening', available: true }]);
+      f.assignments.push({ busyStart: at(11), busyEnd: at(16), slot: 'evening', mode: 'scheduled', status: 'completed' });
+      expect(await sessions()).toMatchObject([{ slot: 'evening', available: false }]);
+    } finally { vi.useRealTimers(); }
+  });
+  it.each(['en_route', 'under_repair'])('blocks urgent across midnight while %s, regardless of the old arrival end', async status => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2030-10-16T00:15:00+07:00'));
+      const f = fixture();
+      f.schedules.splice(0, f.schedules.length, { dayOfWeek: 2, startTime: '18:00', endTime: '02:00' });
+      Object.assign(f.booking, { bookingMode: 'urgent', slot: null,
+        preferredStartAt: new Date('2030-10-16T00:15:00+07:00'), preferredEndAt: new Date('2030-10-16T02:15:00+07:00') });
+      expect(await allowed(f)).toBe(true);
+      f.assignments.push({ busyStart: at(6), busyEnd: at(11), slot: 'afternoon', mode: 'scheduled', status });
+      expect(await allowed(f)).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('blocks a started evening appointment while an urgent order is already accepted', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(at(15, 30)); // 22:30 Vietnam
+      const f = fixture();
+      f.schedules[0].endTime = '23:00';
+      Object.assign(f.booking, {
+        bookingMode: 'scheduled', slot: 'evening',
+        preferredStartAt: at(15, 30), preferredEndAt: at(16),
+      });
+      f.assignments.push({ busyStart: at(14), busyEnd: at(16), slot: null, mode: 'urgent', status: 'accepted' });
+      expect(await allowed(f)).toBe(false);
+      f.assignments[0].status = 'completed';
+      expect(await allowed(f)).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('does not treat tomorrow accepted appointment as a job being performed now or another session being taken', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2030-10-15T22:59:00+07:00'));
+      const f = fixture();
+      f.schedules[0].endTime = '23:00';
+      Object.assign(f.booking, { bookingMode: 'urgent', slot: null, preferredStartAt: at(15, 59), preferredEndAt: at(17, 59) });
+      f.assignments.push({ busyStart: new Date('2030-10-16T01:00:00Z'), busyEnd: new Date('2030-10-16T05:00:00Z'), slot: 'morning', mode: 'scheduled', status: 'accepted' });
+      expect(await allowed(f)).toBe(true);
+      Object.assign(f.booking, { bookingMode: 'scheduled', slot: 'evening', preferredEndAt: at(16) });
+      expect(await allowed(f)).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('requires working shift overlap after 23:00, including a shift from the previous Vietnam date', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(at(16)); // Tuesday 23:00 Vietnam
+      const f = fixture();
+      Object.assign(f.booking, { bookingMode: 'urgent', slot: null, preferredStartAt: at(16), preferredEndAt: at(18) });
+      f.schedules[0].endTime = '23:00';
+      expect(await allowed(f)).toBe(false);
+      f.schedules[0] = { dayOfWeek: 2, startTime: '18:00', endTime: '02:00' };
+      expect(await allowed(f)).toBe(true);
+      vi.setSystemTime(at(17, 15)); // Wednesday 00:15 Vietnam, still Tuesday's shift
+      f.booking.preferredStartAt = at(17, 15);
+      f.booking.preferredEndAt = at(19, 15);
+      expect(await allowed(f)).toBe(true);
+      f.assignments.push({ busyStart: at(11), busyEnd: at(16), slot: 'evening', mode: 'scheduled', status: 'under_repair' });
+      expect(await allowed(f)).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(['accepted', 'completed'])('prevents a second evening booking even when first is %s', async status => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(at(15, 59));
+      const f = fixture();
+      f.schedules[0].endTime = '23:00';
+      Object.assign(f.booking, { bookingMode: 'scheduled', slot: 'evening', preferredStartAt: at(15, 59), preferredEndAt: at(16) });
+      expect(await allowed(f)).toBe(true);
+      f.assignments.push({ busyStart: at(11), busyEnd: at(16), slot: 'evening', mode: 'scheduled', status });
+      expect(await allowed(f)).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('does not infer a repair completion time from an earlier arrival window for a current evening booking', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(at(15, 59));
+      const f = fixture();
+      f.schedules[0].endTime = '23:00';
+      Object.assign(f.booking, { bookingMode: 'scheduled', slot: 'evening', preferredStartAt: at(15, 59), preferredEndAt: at(16) });
+      f.assignments.push({ busyStart: at(6), busyEnd: at(11), slot: 'afternoon', mode: 'scheduled', status: 'under_repair' });
+      expect(await allowed(f)).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
   // 2030-10-15 morning session = 01:00-05:00Z, afternoon = 06:00-11:00Z.
   const morning = (f: ReturnType<typeof fixture>) => {
     Object.assign(f.booking, { bookingMode: 'scheduled', slot: 'morning', preferredStartAt: at(1), preferredEndAt: at(5) });

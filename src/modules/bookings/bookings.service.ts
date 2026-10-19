@@ -25,7 +25,7 @@ import { TechnicianSkill } from '../technicians/entities/technician-skill.entity
 
 export { CreateBookingDto } from './booking.dto';
 import { AttachBookingMediaDto, CreateBookingDto, RebookDto, ScheduleBookingDto } from './booking.dto';
-import { BOOKING_SLOTS, resolveBookingWindow, slotWindow, vnDate, type BookingSlot } from './booking-slots';
+import { BOOKING_SLOTS, resolveBookingWindow, vnDate, type BookingSlot } from './booking-slots';
 import { distanceToBooking, servesArea, technicianOrigin } from './technician-location';
 import { technicianDistances } from './technician-distance';
 import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
@@ -721,7 +721,7 @@ export class BookingsService {
     customer: { id: string },
   ): Promise<Booking> {
     if (dto.mode === 'urgent') {
-      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Dời lịch thì chọn ngày và buổi (sáng hoặc chiều)');
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Dời lịch thì chọn ngày và buổi (sáng, chiều hoặc tối)');
     }
     const window = resolveBookingWindow(dto, new Date(), 0);
     if ('error' in window) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, window.error);
@@ -923,8 +923,8 @@ export class BookingsService {
     for (let i = 0; i < Math.min(Math.max(days, 1), 30); i++) {
       const date = vnDate(new Date(Date.parse(today + 'T00:00:00Z') + i * 86_400_000));
       for (const slot of Object.keys(BOOKING_SLOTS) as BookingSlot[]) {
-        const window = slotWindow(date, slot)!;
-        if (window.start.getTime() <= now) continue;
+        const window = resolveBookingWindow({ mode: 'scheduled', date, slot }, new Date(now), 0);
+        if ('error' in window) continue;
         let available = true;
         let reason: string | null = null;
         if (technicianId) {

@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-19 18:45 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-p012-integration-20261019
+> Cập nhật lần cuối: 2026-10-19 22:15 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-p012-integration-20261019
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -114,8 +114,8 @@ Nhánh `fix/order-timing-and-matching`: luật quá giờ hẹn BRX-063 (cảnh 
 
 ### Đặt lịch theo buổi, đơn vãng lai, GPS (PO 08/10/2026, nhánh `feat/booking-sessions`)
 
-- Booking có `booking_mode` (scheduled | urgent), `slot` (morning 08-12 | afternoon 13-18 giờ VN) và `customer_note` (migration 028). Tạo booking gửi `mode` + `date` + `slot`, hoặc `mode: urgent` (khung = bây giờ tới `booking.urgent_window_minutes`, 120). Không gửi mode thì vẫn nhận khung giờ cũ (client cũ). Hàm: `bookings/booking-slots.ts`.
-- `technicianEligibility`: đặt trước thì mỗi thợ một đơn mỗi buổi kể cả đơn đã xong (tối đa 2 buổi/ngày), ngày nghỉ trùng khung là chặn, phải có lịch tuần phủ buổi. Vãng lai thì thợ không được đang trong đơn nào, và nếu đang trong một buổi có đơn đặt trước chưa xong thì không nhận. Gốc toạ độ (`bookings/technician-location.ts`): vãng lai dùng GPS gửi trong `matching.gps_fresh_minutes` (15) nếu có, còn lại dùng địa chỉ thợ + khu vực đã chọn. Khu vực có hai bộ mã (quận cũ 1-3 chữ số, phường mới 5 chữ số), chỉ so trong cùng bộ, khác bộ thì bán kính quyết định.
+- Booking có `booking_mode` (scheduled | urgent), `slot` (morning 08-12 | afternoon 13-18 | evening 18-23 giờ VN) và `customer_note` (migration 028; CHECK mở rộng bởi `BookingEveningSession1790000000041`, PO 19/10/2026). Tạo booking gửi `mode` + `date` + `slot`, hoặc `mode: urgent` (khung = bây giờ tới `booking.urgent_window_minutes`, mặc định 120 phút, có thể sang ngày kế tiếp). Riêng evening trong ngày còn nhận trước 23:00 với khung đến `[max(now,18:00),23:00)`; từ 23:00 không nhận ca tối đã hết, vẫn gửi urgent được. Sáng/chiều phải chưa bắt đầu như cũ. Không gửi mode thì vẫn nhận khung giờ cũ (client cũ). Hàm: `bookings/booking-slots.ts`.
+- `technicianEligibility`: đặt trước thì mỗi thợ một đơn mỗi buổi kể cả đơn đã xong (ba buổi/ngày), ngày nghỉ trùng khung là chặn, lịch tuần phải giao với phần khung đến còn lại. EN_ROUTE/UNDER_REPAIR chặn urgent và lịch đến bắt đầu ngay, kể cả đơn từ ngày/buổi trước; không suy diễn đã sửa xong từ cuối khung đến. ACCEPTED của buổi/ngày tương lai không tự chặn mọi lịch khác. Các gate cũ của urgent vẫn giữ. Gốc toạ độ (`bookings/technician-location.ts`): vãng lai dùng GPS gửi trong `matching.gps_fresh_minutes` (15) nếu có, còn lại dùng địa chỉ thợ + khu vực đã chọn. Khu vực có hai bộ mã (quận cũ 1-3 chữ số, phường mới 5 chữ số), chỉ so trong cùng bộ, khác bộ thì bán kính quyết định.
 - Đổi lịch (`PATCH /bookings/:id/schedule`) theo ngày + buổi; thợ của đơn không rảnh buổi mới thì trả TECHNICIAN_NOT_ELIGIBLE, không tự gỡ thợ nữa. `GET /bookings/:id/available-slots?days=14[&previous=1]` trả các buổi và thợ có rảnh không. Đặt lại thợ (`POST /bookings/:id/rebook`) chỉ từ booking đã huỷ hoặc đơn đã xong/huỷ, mời đúng thợ cũ nếu rảnh (`previousTechnicianInvited`).
 - Xuất phát sớm nhất `order.depart_early_minutes` (60) trước giờ hẹn; chi tiết đơn có `departAvailableAt`, `customerNote`, `bookingMode`, `slot`. `PATCH /technicians/me/location` lưu vị trí lần cuối (bỏ qua sai số > 1 km). Bán kính 1-40 km.
 
@@ -165,7 +165,7 @@ Phase A được giữ và bổ sung validation phân biệt command, audit quy�
 Kiểu modular monolith: mỗi module `controller → service → TypeORM repository/entity`, DTO dùng `class-validator`, `ValidationPipe` toàn cục bật `whitelist` và `forbidNonWhitelisted`.
 
 - `src/modules/`: 29 module. Quan trọng nhất: `auth`, `users`, `bookings` (booking, shortlist, lời mời, điều kiện nhận việc), `service-orders` (state machine, check-in, bằng chứng, hoá đơn, tiền mặt, huỷ, vi phạm, bảo hành), `quotations`, `part-requests`, `finance` (VNPay, Payment, PlatformDue), `wallet` (ví, nạp, rút, quyết toán), `technician-assignment`, `messaging` (chat, Socket.IO, gọi thoại), `ai-diagnosis` (proxy tới `ai-service`), `support-cases`, `notifications`, `system-config`, `rbac`, `audit-log`, `technician-verifications` (KYC), `media` (Cloudinary).
-- `src/database/migrations/`: migration TypeORM; mới nhất `1790000000040-BookingCatalogV2Pricing.ts` (đã rehearsal cô lập, chưa chạy trên DB dùng chung). `src/database/seeds/`: dữ liệu demo.
+- `src/database/migrations/`: migration TypeORM; mới nhất `1790000000041-BookingEveningSession.ts` (chưa chạy trên DB; #0040 đã rehearsal cô lập, chưa chạy DB dùng chung). `src/database/seeds/`: dữ liệu demo.
 - `src/shared/`: enum, hằng số, DTO dùng chung (`PaginationDto`, `PageSizeQueryDto`), validator văn bản và tên người.
 - `src/common/`: guard (JWT, Roles, Permission), filter lỗi, interceptor bọc response.
 - `test/`: e2e chạy migration trên Postgres sạch.
@@ -176,6 +176,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ### Với `web` và `mobile`
 
+- Ca tối đã duyệt 19/10/2026: `slot: evening` cho create/schedule/rebook, Booking/order/invitation response giữ slot và timestamps. `available-slots` dùng cùng phép tính khung đến, còn ca tối hôm nay tới trước 23:00. Lịch tuần qua nửa đêm chỉ mở phần giờ có giao với khung đến; không bảo đảm nhận được thợ hay sửa xong trước cuối ca. Chỉ kiểm tra lịch của cuộc hẹn tương lai, không dự đoán thời lượng sửa; eligibility được kiểm lại lúc matching/Accept. Hợp đồng và ví dụ: `docs/BOOKING-EVENING-SESSION.md`. Web/Mobile parity: NOT VERIFIED, cần PR của các repo tiêu thụ.
 - P012 hiển thị catalog: public `GET /services`, `/services/:idOrSlug`, `/categories` (alias `/service-categories`) và category detail thêm `priceSummary` tùy chọn cho từng service V2 M1/M2 active. `fixed_range` lấy min/max từ tier DB ACTIVE khớp amount/scope owner duyệt (một tier: min=max); không lấy `Service.fixedPrice`. Một query batch mỗi response có V2. Tier ACTIVE sai hoặc thiếu tier: `inspection_only`, min/max null. Dịch vụ inspection không có S dùng `inspection_reference`, min/max null, `suggestedLaborVnd` từ source chỉ là ước tính NONBINDING, không phải giá sàn. Không xuất reference GATE/LATER; legacy có thể không có summary. Admin/Booking không đổi; không migration/DB write. Web/Mobile/runtime: NOT VERIFIED trong thay đổi này.
 - P012: public `GET /services/:id/catalog-v2-pricing` nhận facts phẳng và `selectedVariantCode` (alias `variantCode`); trả selected/possible variants, NONBINDING range, lý do khảo sát và binding readiness. `POST /bookings` nhận selection ở root, facts trong `deviceAttributes`; response có `catalogV2PricingSnapshot`. Chỉ POST chốt tier ACTIVE + scope đúng dưới transaction; Service cha không mang giá tier. Hợp đồng chi tiết: `docs/P012-PRICING-API.md`. Web/Mobile parity và preview hiện tại với code mới: NOT VERIFIED.
 - REST `/api/v1`, JWT Bearer; refresh qua `POST /auth/refresh`. Role trong token viết thường (`customer`, `technician`, `service_manager`, `admin`).
@@ -261,6 +262,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 8. Việc đang dở và rủi ro đã biết
 
+- Ca tối #0041 chưa chạy migration, PostgreSQL/E2E/Docker runtime và Web/Mobile parity: NOT VERIFIED. Task chỉ sửa backend và chạy kiểm tra không ghi DB. Phải migrate bằng quy trình phát hành riêng rồi restart backend trước runtime QA; không chạy Compose/migration trên shared-dev trong task này. Rollback CHECK là atomic và sẽ từ chối nếu còn hàng evening, không đổi/xóa lịch sử. Khung đến không đại diện thời lượng sửa; không hứa hoàn tất trước 23:00 hoặc tự coi đơn qua nửa đêm là đã rảnh.
 - P012 price-binding đã qua unit và harness PostgreSQL/HTTP cô lập (28 tier, 32 fallback, matching/accept, snapshot bất biến); chưa migrate shared DB/preview 3101, chưa restart preview. Full `npm run test:e2e` trên DB cô lập trống: FAIL, `test/app.e2e-spec.ts` worker thoát bất thường; `test/web-accept-isolated.e2e-spec.ts` lỗi migration cũ `urgency_level_enum` không tồn tại. Không sửa migration cũ hoặc nới gate. Web/Mobile/browser parity và Docker Compose runtime: NOT VERIFIED.
 - P1 Phase B phải giữ `P1_CUSTODY_ENABLED=false`: đã có kiểm thử PostgreSQL dùng một lần cho HTTP/JWT/IDOR, replay/receipt, Accept/auto-Accept/assign/withdraw, race khai tiền mặt và callback/sweep online. Chưa chứng minh toàn bộ lock order nhiều instance, các đường override/replace, toàn bộ IPN/querydr/provider retry hoặc rolling cutover; không coi là production-safe. Không chạy migration 039/activation hay Docker Compose trên dev dùng chung. Full E2E cũ và Web/Mobile/browser parity: NOT VERIFIED. Kế hoạch migration/rollback, hợp đồng API và giới hạn nằm ở `docs/P1-CUSTODY-MIGRATION-PLAN.md`.
 - Lỗi của đợt rà soát 07/10/2026 đã sửa hết phần backend, trừ phần bảo hành (dev khác phụ trách).
@@ -277,6 +279,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-19 22:15 (UTC+7) | foxonworld | foxonworld/fixhome-p012-integration-20261019 | Thêm ca tối 18-23 qua #0041, khung đến còn lại cho tạo/đổi/đặt lại và chặn urgent khi đơn đang chạy qua nửa đêm; không ghi DB, chưa kiểm chứng liên repo/runtime.
 - 2026-10-19 18:45 (UTC+7) | foxonworld | foxonworld/fixhome-p012-integration-20261019 | Thêm priceSummary public catalog bằng một query batch, kiểm tier owner duyệt và tách ước tính inspection khỏi giá sàn; không đổi admin/Booking/DB.
 - 2026-10-19 03:27 (UTC+7) | foxonworld | foxonworld/fixhome-p012-integration-20261019 | Thêm public pricing API và Booking snapshot tier ACTIVE bất biến qua #0040; xác minh PG/HTTP cô lập, ghi rõ E2E còn lỗi và giữ preview/P1 OFF.
 - 2026-10-19 01:59 (UTC+7) | foxonworld | foxonworld/fixhome-p012-integration-20261019 | Tích hợp P0/P1 staging, giữ Booking media/privacy của dev, xác minh migration và harness PostgreSQL cô lập, không activation.
@@ -316,4 +319,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-10 01:20 (UTC+7) | ToanAltF4 | feat/technician-default-warranty | Thợ đặt bảo hành công mặc định (PUT /technicians/me/warranty-default, áp cho tất cả dịch vụ tuỳ chọn); đơn chụp bảo hành công lúc giao thợ (service_orders.labor_warranty_days, migration 033); báo giá/chi phí phát sinh để trống ngày bảo hành công thì lấy mặc định, vượt warranty.max_days bị từ chối; hoá đơn giá cố định ghi bảo hành công theo đơn thay vì 0; thẻ ứng viên không còn hiện 30 ngày khi thợ chưa đặt; warranty.default_days và warranty.max_days chuyển ACTIVE
 - 2026-10-09 23:59 (UTC+7) | ToanAltF4 | fix/multipart-upload-size | Sửa lỗi tải ảnh trên 1 MB bị 413
 - 2026-10-09 23:46 (UTC+7) | ToanAltF4 | perf/parallel-candidate-eligibility | Tìm thợ nhanh hơn: kiểm điều kiện theo lô song song
-- 2026-10-09 23:28 (UTC+7) | ToanAltF4 | feat/no-customer-acceptance | Bỏ bước khách nghiệm thu: thợ hoàn thành có ảnh, thanh toán xong là hoàn tất

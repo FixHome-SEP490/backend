@@ -15,9 +15,9 @@ export class ScheduleBookingDto {
   @IsOptional() @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'date must be YYYY-MM-DD' })
   date?: string;
 
-  @ApiPropertyOptional({ enum: ['morning', 'afternoon'], description: 'morning = 08:00-12:00, afternoon = 13:00-18:00 Vietnam time.' })
-  @IsOptional() @IsIn(['morning', 'afternoon'])
-  slot?: 'morning' | 'afternoon';
+  @ApiPropertyOptional({ enum: ['morning', 'afternoon', 'evening'], description: 'Vietnam arrival sessions: morning 08:00-12:00, afternoon 13:00-18:00, evening 18:00-23:00. Evening alone may be booked after its start, until strictly before 23:00; arrival starts at max(now, 18:00). No repair-completion guarantee. Urgent remains now + configured minutes, even across midnight.' })
+  @IsOptional() @IsIn(['morning', 'afternoon', 'evening'])
+  slot?: 'morning' | 'afternoon' | 'evening';
 
   @ApiPropertyOptional({ format: 'date-time', example: '2030-10-21T08:00:00.000Z', description: 'Legacy arrival-window start (ISO 8601). Ignored when mode is given.' })
   @IsOptional() @IsDateString() preferredStartAt?: string;

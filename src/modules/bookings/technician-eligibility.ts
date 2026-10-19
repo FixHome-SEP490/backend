@@ -85,9 +85,20 @@ export async function technicianEligibility(
     .map((o) => ({ ...o, session: o.mode === 'urgent' ? null : bookingSession({ slot: o.slot, preferredStartAt: o.busyStart, preferredEndAt: o.busyEnd }) }));
   const running = orders.filter((o) => o.status !== 'completed');
 
+  // Arrival end is not repair completion. An order being travelled to or repaired
+  // remains busy across sessions/dates. For a future scheduled visit, retain the
+  // session rules rather than projecting today's execution state indefinitely.
+  if ((mode === 'urgent' || start.getTime() <= now) &&
+      running.some((o) => o.status === 'en_route' || o.status === 'under_repair'
+        || (mode === 'scheduled' && o.status === 'accepted' && o.mode === 'urgent'))) {
+    // A same-evening appointment cannot be accepted while another urgent
+    // invitation has already been accepted, even before the technician departs.
+    return fail('Technician is on another job');
+  }
+
   if (mode === 'urgent') {
     // Come now: not while on another job, nor during a session whose scheduled job is not done.
-    if (running.some((o) => ['accepted', 'en_route', 'under_repair'].includes(o.status) && (o.mode === 'urgent' || !o.session || sameSession(o.session, slotAt(new Date(now)))))) {
+    if (running.some((o) => o.status === 'accepted' && (o.mode === 'urgent' || !o.session || sameSession(o.session, slotAt(new Date(now)))))) {
       return fail('Technician is on another job');
     }
     const current = slotAt(new Date(now));

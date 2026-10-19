@@ -115,12 +115,12 @@ export class Booking extends BaseEntity {
   })
   urgency: UrgencyLevel;
 
-  /** scheduled = one morning/afternoon session of a day; urgent = come now (PO 08/10/2026). */
+  /** scheduled = one morning/afternoon/evening arrival session; urgent = come now. Not repair duration. */
   @Column({ name: 'booking_mode', type: 'varchar', length: 16, default: 'scheduled' })
   bookingMode: 'scheduled' | 'urgent';
 
   @Column({ name: 'slot', type: 'varchar', length: 16, nullable: true })
-  slot?: 'morning' | 'afternoon' | null;
+  slot?: 'morning' | 'afternoon' | 'evening' | null;
 
   /** Free note for the technician, apart from the problem description. */
   @Column({ name: 'customer_note', type: 'text', nullable: true })

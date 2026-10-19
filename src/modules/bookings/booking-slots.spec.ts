@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bookingSession, sameSession, slotAt, slotWindow, vnDate } from './booking-slots';
+import { bookingSession, resolveBookingWindow, sameSession, slotAt, slotWindow, vnDate } from './booking-slots';
 
 describe('booking sessions in Vietnam time', () => {
   it('maps morning and afternoon to 08-12 and 13-18 UTC+7', () => {
@@ -16,10 +16,10 @@ describe('booking sessions in Vietnam time', () => {
     expect(slotWindow('20-10-2026', 'morning')).toBeNull();
   });
 
-  it('knows the session of an instant, and that 12:00-13:00 and evenings are outside sessions', () => {
+  it('knows the session of an instant and the gaps between sessions', () => {
     expect(slotAt(new Date('2026-10-20T02:30:00Z'))).toEqual({ date: '2026-10-20', slot: 'morning' });
     expect(slotAt(new Date('2026-10-20T05:30:00Z'))).toBeNull();
-    expect(slotAt(new Date('2026-10-20T13:00:00Z'))).toBeNull();
+    expect(slotAt(new Date('2026-10-20T13:00:00Z'))).toEqual({ date: '2026-10-20', slot: 'evening' });
     expect(vnDate(new Date('2026-10-20T18:30:00Z'))).toBe('2026-10-21');
   });
 
@@ -29,6 +29,34 @@ describe('booking sessions in Vietnam time', () => {
     expect(bookingSession({ slot: 'afternoon', preferredStartAt: '2026-10-20T06:00:00Z' })).toEqual({ date: '2026-10-20', slot: 'afternoon' });
     expect(sameSession({ date: '2026-10-20', slot: 'morning' }, { date: '2026-10-20', slot: 'morning' })).toBe(true);
     expect(sameSession(null, { date: '2026-10-20', slot: 'morning' })).toBe(false);
+  });
+});
+
+describe('evening arrival windows', () => {
+  const scheduled = { mode: 'scheduled', date: '2026-10-20', slot: 'evening' };
+  it.each(['17:59', '18:00', '22:59'])('accepts the remaining evening at %s Vietnam time', time => {
+    const now = new Date(`2026-10-20T${time}:00+07:00`);
+    const result = resolveBookingWindow(scheduled, now, 120);
+    expect(result).toEqual({ mode: 'scheduled', slot: 'evening',
+      start: new Date(Math.max(+now, +new Date('2026-10-20T18:00:00+07:00'))),
+      end: new Date('2026-10-20T23:00:00+07:00') });
+  });
+  it.each(['2026-10-20T23:00:00+07:00', '2026-10-21T00:15:00+07:00'])('rejects the ended evening at %s', time => {
+    expect(resolveBookingWindow(scheduled, new Date(time), 120)).toHaveProperty('error');
+    expect(slotAt(new Date(time))).toBeNull();
+  });
+  it.each(['2026-10-20T23:00:00+07:00', '2026-10-21T00:15:00+07:00'])('keeps a 120-minute urgent window at %s', time => {
+    const now = new Date(time);
+    expect(resolveBookingWindow({ mode: 'urgent' }, now, 120)).toEqual({ mode: 'urgent', slot: null, start: now, end: new Date(+now + 120 * 60000) });
+  });
+  it('retains the evening session for both explicit and legacy partial windows', () => {
+    const window = { preferredStartAt: '2026-10-20T22:59:00+07:00', preferredEndAt: '2026-10-20T23:00:00+07:00' };
+    expect(bookingSession({ ...window, slot: 'evening' })).toEqual({ date: '2026-10-20', slot: 'evening' });
+    expect(bookingSession(window)).toEqual({ date: '2026-10-20', slot: 'evening' });
+    expect(bookingSession({ ...window, preferredEndAt: '2026-10-21T00:01:00+07:00' })).toBeNull();
+  });
+  it.each(['morning', 'afternoon'])('still rejects an already started %s session', slot => {
+    expect(resolveBookingWindow({ ...scheduled, slot }, new Date('2026-10-20T14:00:00+07:00'), 120)).toHaveProperty('error');
   });
 });
 

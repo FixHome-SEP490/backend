@@ -277,7 +277,7 @@ export class BookingsController {
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('booking:create')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Customer: sessions of the next days and whether the technician is free', description: 'For rescheduling: the technician holding the order. With previous=1: the technician of a finished booking, for booking again. Morning 08-12 and afternoon 13-18 Vietnam time.' })
+  @ApiOperation({ summary: 'Customer: sessions of the next days and whether the technician is free', description: 'For rescheduling: the technician holding the order. With previous=1: the technician of a finished booking, for booking again. Arrival sessions: morning 08-12, afternoon 13-18, evening 18-23 Vietnam time. The remaining evening is offered until strictly before 23:00. Availability does not guarantee repair completion within the window.' })
   async availableSlots(
     @Param('id', ParseUUIDPipe) id: string,
     @Query('days') days: string | undefined,
