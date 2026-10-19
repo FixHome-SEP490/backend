@@ -14,6 +14,8 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Length,
+  Matches,
   Max,
   MaxLength,
   Min,
@@ -85,6 +87,15 @@ export class UpdateItemUsageDto {
   @ApiProperty({ enum: [PartUsageStatus.USED, PartUsageStatus.RETURNED] })
   @IsIn([PartUsageStatus.USED, PartUsageStatus.RETURNED])
   usageStatus: PartUsageStatus;
+
+  @IsOptional() @IsInt() @Min(0) @Max(100)
+  usedQty?: number;
+
+  @IsOptional() @IsInt() @Min(0) @Max(Number.MAX_SAFE_INTEGER)
+  expectedVersion?: number;
+
+  @IsOptional() @IsString() @Length(8, 128) @Matches(/^[A-Za-z0-9._:-]+$/)
+  idempotencyKey?: string;
 }
 
 // ── SM: Mark Ready ──

@@ -1,4 +1,5 @@
 import { CustomerWalletService } from '../customer-wallet/customer-wallet.service';
+import { lockCustodyTechnician } from '../part-requests/part-custody.policy';
 import { User } from '../users/entities/user.entity';
 import { forwardRef, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
@@ -574,6 +575,8 @@ export class FinanceService {
       if (!assignment) {
         throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Order not found');
       }
+      // Serializes CASH-COLLECTED self-declaration with new jobs and withdrawal writes.
+      await lockCustodyTechnician(manager, actor.id);
       if (
         ![ServiceOrderStatus.UNDER_REPAIR, ServiceOrderStatus.COMPLETED].includes(order.status)
       ) {

@@ -15,6 +15,7 @@ import { distanceToBooking, servesArea, technicianOrigin } from './technician-lo
 import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
 import { Wallet } from '../wallet/entities/wallet.entity';
 import { SystemConfig } from '../system-config/entities/system-config.entity';
+import { hasCashCustodyRestriction } from '../part-requests/part-custody.policy';
 
 /** Same authority at discovery, shortlist, activation and Accept. IDs here are User IDs. */
 export async function technicianEligibility(
@@ -33,6 +34,7 @@ export async function technicianEligibility(
 ): Promise<{ eligible: boolean; reason?: string }> {
   const keeping = options?.keepingExistingOrder === true;
   const fail = (reason: string) => ({ eligible: false, reason });
+  if (!keeping && await hasCashCustodyRestriction(manager, technicianId)) return fail('Cần quản lý xác nhận đã nhận đủ linh kiện FixHome trước khi nhận việc mới.');
   const user = await manager.findOneBy(User, { id: technicianId });
   if (!user || user.role !== Role.TECHNICIAN || user.status !== AccountStatus.ACTIVE) return fail('Technician account is not active');
   const profile = await manager.findOneBy(TechnicianProfile, { userId: technicianId });

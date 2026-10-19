@@ -15,6 +15,8 @@ import { BookingStatus, ServicePricingMode, UrgencyLevel } from '../../../shared
 import { BookingMedia } from './booking-media.entity';
 import { BookingInvitation } from './booking-invitation.entity';
 import type { AiBookingSummary } from '../../ai-diagnosis/ai-chat-summary';
+import type { CatalogV2DeviceAttributes } from '../../../database/catalog-v2/catalog-v2-device-attributes';
+import type { CatalogV2BookingPricingSnapshot } from '../../../database/catalog-v2/catalog-v2-pricing-binding';
 import { tidyAddressText } from '../../../shared/utils/address-text';
 
 @Entity('bookings')
@@ -123,6 +125,14 @@ export class Booking extends BaseEntity {
   /** Free note for the technician, apart from the problem description. */
   @Column({ name: 'customer_note', type: 'text', nullable: true })
   customerNote?: string | null;
+
+  /** Customer-reported facts frozen at booking time; never a source of price binding. */
+  @Column({ name: 'device_attributes_snapshot', type: 'jsonb', nullable: true })
+  deviceAttributesSnapshot?: CatalogV2DeviceAttributes | null;
+
+  /** Server-resolved variant identity, approved S/scope or nonbinding inspection basis. */
+  @Column({ name: 'catalog_v2_pricing_snapshot', type: 'jsonb', nullable: true })
+  catalogV2PricingSnapshot?: CatalogV2BookingPricingSnapshot | null;
 
   @Column({
     type: 'enum',

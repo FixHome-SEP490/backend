@@ -65,6 +65,8 @@ export function toBookingInvitationResponse(invitation: BookingInvitation) {
 }
 
 export type BookingResponse<T extends object> = Omit<T, 'media' | 'invitations'> & {
+  /** Frozen server decision; null on legacy bookings. Does not read current tier prices. */
+  catalogV2PricingSnapshot?: Booking['catalogV2PricingSnapshot'];
   media?: BookingMediaResponseDto[] | null;
   invitations?: ReturnType<typeof toBookingInvitationResponse>[] | null;
 };

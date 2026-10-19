@@ -1,6 +1,7 @@
 import { andWhereTextMatches } from '../../shared/utils/list-search';
 import { NO_DEPARTURE_CANCEL_REASON } from './no-departure';
 import { closeOrderPartRequests, assertPartsResolved, usedPartQuantities, holderPartRequests, releaseOutgoingTechnicianPartRequests } from '../part-requests/part-request-lifecycle';
+import { custodyUsageForInvoice, p1CustodyEnabled } from '../part-requests/part-custody.policy';
 import { Payment } from '../finance/entities/payment.entity';
 import { PartRequest } from '../part-requests/entities/part-request.entity';
 import { Injectable, Logger, ForbiddenException, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
@@ -307,6 +308,9 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
             AND NOT EXISTS (
                   SELECT 1 FROM wallet_transactions t
                    WHERE t.reference_type = 'SERVICE_ORDER' AND t.reference_id = o.id::text)
+            ${p1CustodyEnabled() ? `AND NOT EXISTS (
+                  SELECT 1 FROM part_custody_payouts cp WHERE cp.service_order_id = o.id
+                  GROUP BY cp.invoice_id HAVING count(DISTINCT cp.component) = 2)` : ''}
             AND CASE WHEN cs.status::text = $3
                      THEN EXISTS (SELECT 1 FROM platform_dues pd WHERE pd.service_order_id = o.id AND pd.status::text = 'pending')
                      ELSE i.grand_total - i.commission_amount - i.fixhome_parts_total - i.shipping_fee > 0 END
@@ -1380,7 +1384,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
 
     const requests = await manager.find(PartRequest, { where: { serviceOrderId: orderId }, relations: ['items'] });
     assertPartsResolved(await holderPartRequests(manager, orderId, requests));
-    const billableQuantity = usedPartQuantities(requests);
+    const billableQuantity = usedPartQuantities(requests, await custodyUsageForInvoice(manager, orderId));
 
     // Calculate totals
     let laborTotal = 0;

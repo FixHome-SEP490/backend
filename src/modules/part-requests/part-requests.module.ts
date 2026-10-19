@@ -1,5 +1,9 @@
 // src/modules/part-requests/part-requests.module.ts
-import { Module } from '@nestjs/common';
+import { Module, OnModuleInit } from '@nestjs/common';
+import { DataSource } from 'typeorm';
+import { assertCustodyRuntimeConfiguration } from './part-custody.policy';
+import { ConditionalModule } from '@nestjs/config';
+import { PartCustodyModule } from './part-custody.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { PartRequestsController } from './part-requests.controller';
 import { PartRequestsService } from './part-requests.service';
@@ -13,6 +17,7 @@ import { RbacModule } from '../rbac/rbac.module';
 
 @Module({
   imports: [
+    ConditionalModule.registerWhen(PartCustodyModule, env => env.P1_CUSTODY_ENABLED === 'true'),
     TypeOrmModule.forFeature([
       PartRequest,
       PartRequestItem,
@@ -28,4 +33,10 @@ import { RbacModule } from '../rbac/rbac.module';
   providers: [PartRequestsService],
   exports: [PartRequestsService, TypeOrmModule],
 })
-export class PartRequestsModule {}
+export class PartRequestsModule implements OnModuleInit {
+  constructor(private readonly dataSource: DataSource) {}
+
+  async onModuleInit(): Promise<void> {
+    await assertCustodyRuntimeConfiguration(this.dataSource.manager);
+  }
+}
