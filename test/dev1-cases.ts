@@ -606,7 +606,9 @@ export function registerDev1Cases(context: () => Context) {
       expect(cancellation).toMatchObject({ actor: 'technician', strike_applied: false });
       expect(cancellation.reason).toContain(currentCode);
       expect(await db.getRepository('TechnicianAssignment').count({ where: { serviceOrderId: nextOrder.id, isActive: true } })).toBe(0);
-      expect((await db.getRepository('Booking').findOneByOrFail({ id: next.id })).status).toBe('matching');
+      // Closed, not matching: no "nobody accepted" notice; the customer can still choose.
+      expect((await db.getRepository('Booking').findOneByOrFail({ id: next.id })).status).toBe('closed');
+      expect(await db.query("SELECT 1 FROM notifications WHERE type = 'BOOKING_MATCHING_EXHAUSTED' AND reference_id = $1", [next.id])).toEqual([]);
       // The job on site is untouched: still in progress and still theirs.
       expect(['en_route', 'under_repair']).toContain((await db.getRepository('ServiceOrder').findOneByOrFail({ id: current.id })).status);
       expect((await db.getRepository('TechnicianAssignment').findOneByOrFail({ serviceOrderId: current.id, isActive: true })).technicianId).toBe(f.tech.user.id);
