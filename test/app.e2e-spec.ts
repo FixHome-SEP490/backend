@@ -633,6 +633,21 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     ).toBeNull();
     await submit(customer).expect(403);
   });
+  it('accepts a face video instead of a face photo, as the web sends since 25/09/2026', async () => {
+    const tech = await register('technician');
+    const video = { documentType: 'face_video', storageObjectPath: `kyc/${tech.user.id}/face.webm`, fileName: 'face-liveness.webm', fileSize: 2_000_000, mimeType: 'video/webm' };
+    const created = (await http().post('/api/v1/technicians/me/verification').set('Authorization', bearer(tech))
+      .send({ documents: [documentFor(tech.user.id), video] }).expect(201)).body.data;
+    const [stored] = await db.query("SELECT document_type, mime_type FROM verification_documents WHERE verification_id = $1 AND document_type = 'face_video'", [created.id]);
+    expect(stored).toEqual({ document_type: 'face_video', mime_type: 'video/webm' });
+    const other = await register('technician');
+    // The extension must still match the video type.
+    await http().post('/api/v1/technicians/me/verification').set('Authorization', bearer(other))
+      .send({ documents: [documentFor(other.user.id), { ...video, storageObjectPath: `kyc/${other.user.id}/face.webm`, fileName: 'face.png' }] }).expect(400);
+    await http().post('/api/v1/technicians/me/verification/documents/upload-url').set('Authorization', bearer(other))
+      .send({ mimeType: 'video/quicktime' }).expect(400);
+  });
+
   it('allows one review only, stores reviewer/time, and exposes approval to Member 3', async () => {
     const tech = await provisionTechnician();
     const id = (await submit(tech).expect(201)).body.data.id;

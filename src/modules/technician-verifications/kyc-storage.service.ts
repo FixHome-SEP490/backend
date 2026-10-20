@@ -38,6 +38,8 @@ const KYC_UPLOAD_MIME_EXTENSIONS: Record<string, string> = {
   'image/png': 'png',
   'image/webp': 'webp',
   'application/pdf': 'pdf',
+  'video/webm': 'webm',
+  'video/mp4': 'mp4',
 };
 
 @Injectable()
@@ -161,7 +163,7 @@ export class KycStorageService {
     const extension = KYC_UPLOAD_MIME_EXTENSIONS[mimeType];
     if (!extension) {
       throw new BadRequestException(
-        'mimeType must be one of image/jpeg, image/png, image/webp',
+        'mimeType must be one of image/jpeg, image/png, image/webp, application/pdf, video/webm, video/mp4',
       );
     }
 

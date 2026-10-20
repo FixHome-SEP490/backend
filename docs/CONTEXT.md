@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-20 21:06 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/technician-overrun-release
+> Cập nhật lần cuối: 2026-10-20 21:41 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/kyc-face-video
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -298,6 +298,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-20 21:41 (UTC+7) | ToanAltF4 | fix/kyc-face-video | Hồ sơ xác minh thợ nhận video khuôn mặt (face_video, video/webm|mp4) thay ảnh khuôn mặt, migration 046 thêm enum IF NOT EXISTS và mở bucket kyc-private cho video
 - 2026-10-20 21:06 (UTC+7) | ToanAltF4 | feat/technician-overrun-release | Thợ nhả đơn kế tiếp khi đơn đang làm chưa xong (GET/POST /service-orders/:id/overrun-release): không trừ điểm, khách nhận TECHNICIAN_RELEASED và tự chọn thợ khác, ngưỡng matching.overrun_release_window_minutes mặc định 180; đặt lại (rebook) giữ thiết bị + phạm vi đã chốt
 - 2026-10-20 20:13 (UTC+7) | Hgnv11 | fix/departure-grace-and-catalog-copy | Ân hạn cảnh báo chưa xuất phát order.departure_grace_minutes đổi 0 thành 15 (seed, DB và migration 1790000000045 chỉ đổi khi còn giá trị 0); mô tả dịch vụ seed bỏ chữ Catalog V2/V3 và câu staging
 - 2026-10-20 18:40 (UTC+7) | foxonworld | foxonworld/tech-job-v3-be-20261020 | Thêm multipart deferAutoStart cho nhiều ảnh BEFORE trước khi tự bắt đầu sửa; giữ GPS, ảnh mặt, trạng thái và client cũ.
@@ -337,5 +338,4 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-14 15:55 (UTC+7) | ToanAltF4 | fix/profile-cartesian-join | Hồ sơ thợ đọc từng quan hệ bằng câu riêng (relationLoadStrategy query): tránh nhân dòng kỹ năng x khu vực x lịch làm egress Supabase tăng vọt
 - 2026-10-12 16:47 (UTC+7) | ToanAltF4 | fix/address-text | Địa chỉ một dòng gọn: bỏ mã bưu chính, Việt Nam, phần lặp (tạo booking và đọc snapshot cũ)
 - 2026-10-12 01:22 (UTC+7) | ToanAltF4 | feat/search-by-technician | Tìm đơn (search) thêm tên kỹ thuật viên đang giữ đơn, để khách tìm được đơn theo tên thợ như trước khi chuyển sang phân trang trên server
-- 2026-10-12 01:02 (UTC+7) | ToanAltF4 | feat/list-search | Danh sách đơn và yêu cầu đặt lịch tìm và lọc trên server để web phân trang không mất tìm kiếm: search (mã đơn, tên dịch vụ, tên khách; không dấu, không phân biệt hoa thường), statuses nhiều trạng thái một lần; bảng booking của quản lý có overdue (đã quá giờ hẹn) và sort=appointment
 
