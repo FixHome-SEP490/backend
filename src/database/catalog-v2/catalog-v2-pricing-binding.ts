@@ -71,7 +71,8 @@ export function resolveCatalogV2PricingFromRows(
   if (validated.status === 'INVALID_ATTRIBUTES' || validated.status === 'SERVICE_MISMATCH') {
     throw new BadRequestException('Thông tin thiết bị không phù hợp với dịch vụ đã chọn.');
   }
-  if (selectedCode === 'AC-03-04' && validated.status === 'VALID' && validated.snapshot?.acMounting === 'ceiling') {
+  if (selectedCode === 'AC-03-04' && validated.status === 'VALID'
+    && (validated.snapshot?.acMounting === 'ceiling' || validated.snapshot?.acMounting === 'floor')) {
     throw new BadRequestException('Phạm vi lắp điều hòa treo tường không phù hợp với thiết bị âm trần.');
   }
   const resolution = deriveCatalogV2VariantResolution(serviceCode, input.deviceAttributes);

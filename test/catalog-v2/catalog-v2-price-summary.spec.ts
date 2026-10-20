@@ -36,7 +36,7 @@ describe('public Catalog V2 price summaries', () => {
     const expected = [
       { kind: 'fixed_range', minLaborVnd: 199000, maxLaborVnd: 449000 },
       { kind: 'fixed_range', minLaborVnd: 299000, maxLaborVnd: 299000 },
-      { kind: 'inspection_reference', minLaborVnd: null, maxLaborVnd: null, suggestedLaborVnd: 249000 },
+      { kind: 'inspection_reference', minLaborVnd: 249000, maxLaborVnd: 449000, suggestedLaborVnd: 249000 },
       undefined,
     ];
     const page = await services.findServices({ page: 1, limit: 10, skip: 0 }, true);

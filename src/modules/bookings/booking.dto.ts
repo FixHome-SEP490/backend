@@ -1,6 +1,6 @@
 import { Transform, Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsDateString, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsBoolean, IsDateString, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateNested } from 'class-validator';
 import type { CatalogV2DeviceAttributes } from '../../database/catalog-v2/catalog-v2-device-attributes';
 import { UrgencyLevel } from '../../shared/enums';
 
@@ -37,9 +37,9 @@ export class BookingDeviceAttributesDto implements CatalogV2DeviceAttributes {
   @IsOptional() @IsString() @MaxLength(64)
   brand?: string;
 
-  @ApiPropertyOptional({ enum: ['wall', 'ceiling', 'unknown'] })
-  @IsOptional() @IsIn(['wall', 'ceiling', 'unknown'])
-  acMounting?: 'wall' | 'ceiling' | 'unknown';
+  @ApiPropertyOptional({ enum: ['wall', 'ceiling', 'floor', 'unknown'], description: 'floor = điều hòa tủ đứng.' })
+  @IsOptional() @IsIn(['wall', 'ceiling', 'floor', 'unknown'])
+  acMounting?: 'wall' | 'ceiling' | 'floor' | 'unknown';
 
   @ApiPropertyOptional({ enum: ['up_to_1_5', '2_to_2_5', 'unknown'] })
   @IsOptional() @IsIn(['up_to_1_5', '2_to_2_5', 'unknown'])
@@ -52,6 +52,10 @@ export class BookingDeviceAttributesDto implements CatalogV2DeviceAttributes {
   @ApiPropertyOptional({ minimum: 0.1, maximum: 50, description: 'Optional washer capacity in kg; omitted or null means unknown.' })
   @IsOptional() @IsNumber({ allowInfinity: false, allowNaN: false, maxDecimalPlaces: 1 }) @Min(0.1) @Max(50)
   washerCapacityKg?: number | null;
+
+  @ApiPropertyOptional({ description: 'Máy giặt có chức năng sấy (máy giặt sấy cửa ngang).' })
+  @IsOptional() @IsBoolean()
+  washerHasDryer?: boolean | null;
 }
 
 export class CreateBookingDto extends ScheduleBookingDto {

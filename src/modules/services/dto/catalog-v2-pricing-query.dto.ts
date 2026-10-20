@@ -15,4 +15,7 @@ export class CatalogV2PricingQueryDto extends BookingDeviceAttributesDto {
 
   @Transform(({ value }) => typeof value === 'string' ? Number(value) : value)
   declare washerCapacityKg?: number | null;
+
+  @Transform(({ value }) => value === 'true' ? true : value === 'false' ? false : value)
+  declare washerHasDryer?: boolean | null;
 }

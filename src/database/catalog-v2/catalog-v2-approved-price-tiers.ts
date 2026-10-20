@@ -43,6 +43,21 @@ export const CATALOG_V2_APPROVED_FIXED_TIERS: readonly OwnerApprovedFixedTier[] 
   { serviceCode: 'SA-03', variantCode: 'SA-03-26', conditionVi: "Thông tắc bồn cầu đơn giản", laborPriceVnd: 499000 },
   { serviceCode: 'TV-01', variantCode: 'TV-01-27', conditionVi: "Lắp TV giá treo chuẩn", laborPriceVnd: 299000 },
   { serviceCode: 'LK-03', variantCode: 'LK-03-28', conditionVi: "Lắp khóa thông minh cửa phù hợp", laborPriceVnd: 399000 },
+  // Catalog V3 (PO 19–20/10/2026): điểm giữa khoảng research, làm tròn 49/99; nguồn trong FIXHOME_CATALOG_V3_NHAP_20261019.
+  { serviceCode: 'AC-02', variantCode: 'AC-02-31', conditionVi: "Điều hòa tủ đứng", laborPriceVnd: 449000 },
+  { serviceCode: 'WM-02', variantCode: 'WM-02-34', conditionVi: "Máy giặt sấy cửa ngang", laborPriceVnd: 749000 },
+  { serviceCode: 'WM-06', variantCode: 'WM-06-38', conditionVi: "Lắp máy sấy đặt sàn hoặc kệ", laborPriceVnd: 199000 },
+  { serviceCode: 'WM-06', variantCode: 'WM-06-39', conditionVi: "Lắp máy sấy chồng lên máy giặt", laborPriceVnd: 399000 },
+  { serviceCode: 'FR-02', variantCode: 'FR-02-43', conditionVi: "Tủ lạnh mini hoặc 1 cửa", laborPriceVnd: 249000 },
+  { serviceCode: 'FR-02', variantCode: 'FR-02-44', conditionVi: "Tủ lạnh 2 cửa", laborPriceVnd: 349000 },
+  { serviceCode: 'FR-02', variantCode: 'FR-02-45', conditionVi: "Tủ lạnh side-by-side hoặc nhiều cửa", laborPriceVnd: 499000 },
+  { serviceCode: 'WH-03', variantCode: 'WH-03-46', conditionVi: "Bình nóng lạnh gián tiếp có bình chứa", laborPriceVnd: 349000 },
+  { serviceCode: 'WH-03', variantCode: 'WH-03-47', conditionVi: "Máy nước nóng trực tiếp", laborPriceVnd: 299000 },
+  { serviceCode: 'KT-06', variantCode: 'KT-06-50', conditionVi: "Lắp bếp âm mặt đá đã khoét sẵn", laborPriceVnd: 249000 },
+  { serviceCode: 'KT-10', variantCode: 'KT-10-55', conditionVi: "Lắp máy rửa bát độc lập", laborPriceVnd: 449000 },
+  { serviceCode: 'KT-10', variantCode: 'KT-10-56', conditionVi: "Lắp máy rửa bát âm tủ", laborPriceVnd: 749000 },
+  { serviceCode: 'SA-03', variantCode: 'SA-03-63', conditionVi: "Thông tắc thoát sàn", laborPriceVnd: 549000 },
+  { serviceCode: 'TV-01', variantCode: 'TV-01-64', conditionVi: "Lắp TV từ 65 inch", laborPriceVnd: 499000 },
 ];
 
 export interface OwnerApprovedInspectionReference {
@@ -72,7 +87,34 @@ export const CATALOG_V2_INSPECTION_REFERENCES: readonly OwnerApprovedInspectionR
   { serviceCode: 'TV-02', suggestedLaborVnd: 249000, confidence: 'INTERNAL_PROXY', activationGate: 'GATE' },
   { serviceCode: 'LK-01', suggestedLaborVnd: 149000, confidence: 'INTERNAL_PROXY', activationGate: 'GATE' },
   { serviceCode: 'LK-02', suggestedLaborVnd: 199000, confidence: 'RESEARCH_REFERENCE', activationGate: 'M1_M2' },
+  // Catalog V3 (PO 19–20/10/2026)
+  { serviceCode: 'KT-07', suggestedLaborVnd: 199000, confidence: 'INTERNAL_PROXY', activationGate: 'M1_M2' },
+  { serviceCode: 'KT-08', suggestedLaborVnd: 199000, confidence: 'INTERNAL_PROXY', activationGate: 'M1_M2' },
+  { serviceCode: 'KT-09', suggestedLaborVnd: 149000, confidence: 'RESEARCH_REFERENCE', activationGate: 'M1_M2' },
 ];
+
+export interface InspectionTypeReference {
+  conditionVi: string;
+  laborVnd: number;
+}
+
+/**
+ * Catalog V3: giá công tham khảo theo loại máy cho dịch vụ sửa. Chỉ để hiển thị
+ * khoảng giá trước khi đặt; không phải biến thể cố định, không ràng buộc báo giá.
+ */
+export const CATALOG_V3_INSPECTION_TYPE_REFERENCES: Readonly<Record<string, readonly InspectionTypeReference[]>> = {
+  'AC-01': [{ conditionVi: 'Treo tường', laborVnd: 249000 }, { conditionVi: 'Âm trần, tủ đứng', laborVnd: 449000 }],
+  'WM-01': [{ conditionVi: 'Cửa trên', laborVnd: 249000 }, { conditionVi: 'Cửa ngang', laborVnd: 299000 }],
+  'WM-04': [{ conditionVi: 'Máy sấy thông hơi', laborVnd: 199000 }, { conditionVi: 'Máy sấy ngưng tụ', laborVnd: 249000 }, { conditionVi: 'Máy sấy bơm nhiệt', laborVnd: 349000 }],
+  'FR-01': [{ conditionVi: 'Tủ mini, 1 cửa', laborVnd: 199000 }, { conditionVi: 'Tủ 2 cửa', laborVnd: 249000 }, { conditionVi: 'Side-by-side, nhiều cửa', laborVnd: 399000 }],
+  'KT-01': [{ conditionVi: 'Bếp đơn', laborVnd: 249000 }, { conditionVi: 'Bếp đôi trở lên', laborVnd: 349000 }],
+  'KT-07': [{ conditionVi: 'Bếp dương', laborVnd: 199000 }, { conditionVi: 'Bếp âm', laborVnd: 299000 }],
+  'KT-08': [{ conditionVi: 'Lò để bàn', laborVnd: 199000 }, { conditionVi: 'Lò âm tủ', laborVnd: 349000 }],
+  'LF-03': [{ conditionVi: 'Quạt cây, bàn, treo tường', laborVnd: 149000 }, { conditionVi: 'Quạt trần', laborVnd: 299000 }],
+  'PI-01': [{ conditionVi: 'Ống nổi', laborVnd: 199000 }, { conditionVi: 'Ống âm tường, âm sàn', laborVnd: 499000 }],
+  'SA-01': [{ conditionVi: 'Vòi, sen, chậu', laborVnd: 199000 }, { conditionVi: 'Bồn cầu', laborVnd: 249000 }],
+  'TV-02': [{ conditionVi: 'Đến 43 inch', laborVnd: 199000 }, { conditionVi: '50–55 inch', laborVnd: 249000 }, { conditionVi: 'Từ 65 inch', laborVnd: 299000 }],
+};
 
 // Additional separate reference for the electronic lock class; requires proof
 // of lawful access and specialist skill. Never published as a guaranteed price.

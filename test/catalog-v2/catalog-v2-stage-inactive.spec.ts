@@ -38,15 +38,15 @@ function fakeDatabase() {
 }
 
 describe('inactive catalog V2 stage is isolated, non-destructive and idempotent', () => {
-  it('stages 13/36/28/34 but does not touch 792 parts or historical services', async () => {
+  it('stages 13/44/42/34 but does not touch 792 parts or historical services', async () => {
     const f = fakeDatabase();
     const first = await stageCatalogV2Inactive(f.db);
     const second = await stageCatalogV2Inactive(f.db);
-    expect(first).toEqual({ categories: 13, services: 36, priceVariants: 28, aliases: 34 });
+    expect(first).toEqual({ categories: 13, services: 44, priceVariants: 42, aliases: 34 });
     expect(second).toEqual(first);
     expect(f.categories.size).toBe(13);
-    expect(f.services.size).toBe(36);
-    expect(f.variants.size).toBe(28);
+    expect(f.services.size).toBe(44);
+    expect(f.variants.size).toBe(42);
     expect(f.aliases.size).toBe(34);
     const sql = f.sql.join('\n');
     expect(sql).not.toMatch(/delete from|truncate |drop table|update "services"|update "fixhome_parts"/);

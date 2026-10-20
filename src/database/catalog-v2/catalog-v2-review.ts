@@ -95,6 +95,15 @@ export const CATALOG_V2_SERVICES: CatalogV2DraftService[] = [
   item('LK-01','CAT_LOCK','Mở khóa khẩn cấp','Khóa cơ từ 150k; điện tử khảo sát đến 400k','INSPECTION_REQUIRED','GATE'),
   item('LK-02','CAT_LOCK','Sửa khóa cửa/khóa thông minh','180–250k công tham khảo nội bộ','INSPECTION_REQUIRED','M2'),
   item('LK-03','CAT_LOCK','Lắp khóa thông minh','300–450k tiêu chuẩn tham khảo','FIXED_TIER_PENDING','M2'),
+  // Catalog V3 (PO 19–20/10/2026): bổ sung để phủ 22 thiết bị AI nhận diện; không thay mã V2 nào.
+  item('WM-06','CAT_LAUNDRY','Lắp đặt máy sấy','180–220k đặt sàn; 300–450k chồng kit','FIXED_TIER_PENDING','M2'),
+  item('FR-02','CAT_FRIDGE','Vệ sinh, bảo dưỡng tủ lạnh','150–300k mini; 300–400k 2 cửa; 400–600k side-by-side','FIXED_TIER_PENDING','M1'),
+  item('WH-03','CAT_HEATER','Lắp đặt hoặc thay bình nóng lạnh','250–450k gián tiếp; 190–435k trực tiếp','FIXED_TIER_PENDING','M1'),
+  item('KT-06','CAT_KITCHEN','Lắp bếp từ, bếp điện âm','200–300k mặt đá khoét sẵn','FIXED_TIER_PENDING','M2'),
+  item('KT-07','CAT_KITCHEN','Sửa bếp gas','150–350k công tham khảo','INSPECTION_REQUIRED','M2'),
+  item('KT-08','CAT_KITCHEN','Sửa lò nướng','150–450k công tham khảo','INSPECTION_REQUIRED','M2'),
+  item('KT-09','CAT_KITCHEN','Sửa ấm siêu tốc, bình thủy điện','100–200k công tham khảo','INSPECTION_REQUIRED','M2'),
+  item('KT-10','CAT_KITCHEN','Lắp đặt máy rửa bát','450–550k độc lập; 600–900k âm tủ','FIXED_TIER_PENDING','LATER'),
 ];
 
 // 34 historical service codes: no deletions or FK rewrites in this staging phase.
