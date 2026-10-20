@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-20 14:36 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-p013-quote-billing-20261020
+> Cập nhật lần cuối: 2026-10-20 17:02 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/catalog-v3
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -296,6 +296,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-20 17:02 (UTC+7) | ToanAltF4 | feat/catalog-v3 | Catalog V3: thêm 8 dịch vụ (WM-06 FR-02 WH-03 KT-06..10), 14 biến thể giá cố định (tủ đứng AC-02-31, máy giặt sấy WM-02-34...), giá tham khảo theo loại máy cho dịch vụ sửa, 44 linh kiện mới + sửa 11 giá linh kiện; thuộc tính acMounting=floor, washerHasDryer; lệnh nạp npm run seed:catalog-v3 (chỉ bổ sung, chạy lại an toàn)
 - 2026-10-20 14:36 (UTC+7) | foxonworld | foxonworld/fixhome-p013-quote-billing-20261020 | Chặn sớm báo giá lệch số lượng nguyên dòng PRE_REPAIR và hủy nguồn kho cần thiết sau duyệt; giữ usage/P1 finance và dữ liệu lịch sử.
 - 2026-10-20 14:25 (UTC+7) | foxonworld | foxonworld/fixhome-p013-quote-billing-20261020 | Thêm cấp kho theo phần thiếu của báo giá, chặn hóa đơn thiếu bằng chứng, xác nhận miễn phí và ngưỡng VNPay 5.000 ₫; chưa ghi DB/runtime.
 - 2026-10-20 01:53 (UTC+7) | Hgnv11 | feat/customer-activity-stages | Thêm stage cho danh sách booking và đơn của khách và GET /bookings/my/activity-counts để mobile phân trang, phân loại và đếm ở server
@@ -335,5 +336,4 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-12 00:22 (UTC+7) | ToanAltF4 | feat/earnings-period-paging | Thu nhập của thợ theo kỳ: GET /technicians/me/earnings nhận from/to (ngày lịch giờ VN, tính cả hai đầu) và page/pageSize, tổng tính trên cả kỳ (số đơn, tiền công, phí, thực nhận, giá trị đơn, số đơn đã thanh toán), danh sách đơn có tên dịch vụ, giá trị đơn, đã thanh toán chưa; không tham số thì như cũ. GET /warranty-claims/mine nhận page/pageSize và trả meta
 - 2026-10-12 00:11 (UTC+7) | ToanAltF4 | feat/geo-place-search | Gợi ý địa chỉ hỏi OpenStreetMap qua Photon trước (có dữ liệu địa điểm như Nhà Văn Hóa Sinh Viên), ưu tiên gần lat/lng người dùng gửi hoặc TP HCM, chỉ giữ kết quả ở Việt Nam; Photon lỗi hoặc không có kết quả thì MapTiler trả lời, cũng ưu tiên gần vị trí đó
 - 2026-10-11 23:39 (UTC+7) | ToanAltF4 | feat/checkin-face | Check-in gồm GPS và ảnh khuôn mặt thợ chụp bằng camera: ảnh bằng chứng loại mới checkin_face (migration 035 thêm giá trị enum), chỉ nộp khi EN_ROUTE đã check-in hợp lệ, không xoá được; ảnh trước sửa chỉ nhận khi đã có ảnh khuôn mặt; GPS qua khi cách địa chỉ không quá 5 km và sai số báo về không quá 5 km (geofence.radius_meters = geofence.min_gps_accuracy_meters = 5000, đã ACTIVE trong trang cấu hình)
-- 2026-10-10 02:40 (UTC+7) | ToanAltF4 | feat/technician-auto-accept | Thợ bật/tắt tự nhận việc (technician_profiles.auto_accept_invitations, migration 034, PATCH /technicians/me/profile autoAcceptInvitations): lời mời tới thợ đang bật được nhận thay qua respond(ACCEPT) sau khi commit (tạo shortlist, chuyển lời mời kế tiếp, vòng quét mỗi phút), nhận không được thì để thợ tự trả lời; thợ nhận thông báo INVITATION_AUTO_ACCEPTED, lịch sử đơn và audit ghi là tự nhận
 

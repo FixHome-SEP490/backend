@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { CATALOG_V2_APPROVED_FIXED_TIERS as tiers } from '../../src/database/catalog-v2/catalog-v2-approved-price-tiers';
 import { resolveCatalogV2PricingFromRows } from '../../src/database/catalog-v2/catalog-v2-pricing-binding';
+import { CATALOG_V2_SERVICES } from '../../src/database/catalog-v2/catalog-v2-review';
+
+const openCodes = new Set(CATALOG_V2_SERVICES.filter(s => s.phase === 'M1' || s.phase === 'M2').map(s => s.code));
 
 const rows = tiers.map((t, i) => ({ id: `variant-${i}`, service_id: 'service', variant_code: t.variantCode,
   fixed_labor_price_vnd: String(t.laborPriceVnd), included_scope: t.conditionVi, excluded_scope: null, is_active: true }));
@@ -14,6 +17,9 @@ describe('Catalog V2 authoritative price binding', () => {
     ['WM-02', { washerLoadingStyle: 'top', washerCapacityKg: 9.1 }, 'WM-02-06', 449000],
     ['WM-02', { washerLoadingStyle: 'front', washerCapacityKg: 9 }, 'WM-02-07', 599000],
     ['WM-02', { washerLoadingStyle: 'front', washerCapacityKg: 9.1 }, 'WM-02-08', 699000],
+    ['AC-02', { acMounting: 'floor' }, 'AC-02-31', 449000],
+    ['WM-02', { washerHasDryer: true }, 'WM-02-34', 749000],
+    ['WM-02', { washerLoadingStyle: 'front', washerHasDryer: true }, 'WM-02-34', 749000],
   ])('binds %s only from sufficient facts', (code, deviceAttributes, variantCode, laborPriceVnd) => {
     expect(resolve(code, { deviceAttributes })).toMatchObject({ status: 'FIXED_PRICE', bindingReady: true,
       selectedVariant: { variantCode, laborPriceVnd }, priceBinding: false });
@@ -27,7 +33,7 @@ describe('Catalog V2 authoritative price binding', () => {
   });
 
   it('requires explicit approved scope for every other fixed tier, including single-tier services', () => {
-    for (const tier of tiers.filter(t => !['AC-02', 'WM-02'].includes(t.serviceCode))) {
+    for (const tier of tiers.filter(t => !['AC-02', 'WM-02'].includes(t.serviceCode) && openCodes.has(t.serviceCode))) {
       expect(resolve(tier.serviceCode)).toMatchObject({ status: 'INSPECTION_REQUIRED', selectedVariant: null });
       expect(resolve(tier.serviceCode, { selectedVariantCode: tier.variantCode })).toMatchObject({
         status: 'FIXED_PRICE', missingAttributes: [], selectedVariant: { variantCode: tier.variantCode, scopeVi: tier.conditionVi, laborPriceVnd: tier.laborPriceVnd } });
@@ -46,6 +52,8 @@ describe('Catalog V2 authoritative price binding', () => {
     expect(() => resolve('AC-02', { selectedVariantCode: 'AC-02-01', variantCode: 'AC-02-02' })).toThrow();
     expect(() => resolve('AC-02', { selectedVariantCode: 'AC-02-01', deviceAttributes: { acMounting: 'wall', acHorsepower: '2_to_2_5' } })).toThrow();
     expect(() => resolve('AC-03', { selectedVariantCode: 'AC-03-04', deviceAttributes: { acMounting: 'ceiling' } })).toThrow();
+    expect(() => resolve('AC-03', { selectedVariantCode: 'AC-03-04', deviceAttributes: { acMounting: 'floor' } })).toThrow();
+    expect(() => resolve('WM-02', { deviceAttributes: { washerHasDryer: 'yes' } })).toThrow();
     for (const change of [{ is_active: false }, { included_scope: 'Other scope' }, { fixed_labor_price_vnd: '1' }, { service_id: 'foreign' }, { excluded_scope: 'Changed scope' }]) {
       const altered = rows.map(r => r.variant_code === 'AC-02-01' ? { ...r, ...change } : r);
       expect(() => resolve('AC-02', { selectedVariantCode: 'AC-02-01' }, altered)).toThrow();
@@ -62,6 +70,7 @@ describe('Catalog V2 authoritative price binding', () => {
     expect(resolve('RO-02')).toMatchObject({ priceRange: null, messageVi: 'Cần khảo sát để báo giá' });
     expect(resolve('AC-01')).toMatchObject({ selectedVariant: null, priceRange: null, bindingReady: false });
     expect(() => resolve('KT-05')).toThrow();
+    expect(() => resolve('KT-10', { selectedVariantCode: 'KT-10-55' })).toThrow();
     expect(() => resolve('AC-02', { deviceAttributes: { washerCapacityKg: 9 } })).toThrow();
     expect(() => resolve('AC-02', { deviceAttributes: { fixedPrice: 1 } })).toThrow();
   });

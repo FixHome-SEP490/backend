@@ -151,7 +151,7 @@ describe('optional Booking device attributes', () => {
     expect(deriveCatalogV2VariantResolution('AC-02', { acHorsepower: 'up_to_1_5' })).toMatchObject({
       status: 'AMBIGUOUS',
       missingAttributes: ['acMounting'],
-      availableVariants: [{ variantCode: 'AC-02-01' }, { variantCode: 'AC-02-03' }],
+      availableVariants: [{ variantCode: 'AC-02-01' }, { variantCode: 'AC-02-03' }, { variantCode: 'AC-02-31' }],
     });
     expect(deriveCatalogV2VariantResolution('AC-02', { acMounting: 'wall' })).toMatchObject({
       status: 'AMBIGUOUS',
@@ -163,6 +163,10 @@ describe('optional Booking device attributes', () => {
     expect(deriveCatalogV2VariantResolution('AC-02', {
       acMounting: 'ceiling', acHorsepower: 'unknown',
     })).toMatchObject({ status: 'RESOLVED', variantCode: 'AC-02-03' });
+    expect(deriveCatalogV2VariantResolution('AC-02', { acMounting: 'floor' }))
+      .toMatchObject({ status: 'RESOLVED', variantCode: 'AC-02-31' });
+    expect(deriveCatalogV2VariantResolution('AC-02', { acMounting: 'wall' }))
+      .toMatchObject({ availableVariants: [{ variantCode: 'AC-02-01' }, { variantCode: 'AC-02-02' }] });
   });
 
   it('keeps washer loading style alone ambiguous until capacity is known', () => {
@@ -179,13 +183,19 @@ describe('optional Booking device attributes', () => {
     expect(deriveCatalogV2VariantResolution('WM-02', {
       washerLoadingStyle: 'front', washerCapacityKg: 9,
     })).toMatchObject({ status: 'RESOLVED', variantCode: 'WM-02-07' });
+    expect(deriveCatalogV2VariantResolution('WM-02', { washerHasDryer: true }))
+      .toMatchObject({ status: 'RESOLVED', variantCode: 'WM-02-34' });
+    expect(deriveCatalogV2VariantResolution('WM-02', { washerLoadingStyle: 'top', washerHasDryer: true }))
+      .toMatchObject({ status: 'AMBIGUOUS', availableVariants: [] });
+    expect(deriveCatalogV2VariantResolution('WM-02', { washerLoadingStyle: 'front', washerCapacityKg: 10, washerHasDryer: false }))
+      .toMatchObject({ status: 'RESOLVED', variantCode: 'WM-02-08' });
   });
 
   it('leaves all-unknown and non-target service variants unresolved', () => {
     expect(deriveCatalogV2VariantResolution('AC-02', {
       acMounting: 'unknown', acHorsepower: 'unknown',
     })).toMatchObject({ status: 'MISSING_ATTRIBUTES', availableVariants: [
-      { variantCode: 'AC-02-01' }, { variantCode: 'AC-02-02' }, { variantCode: 'AC-02-03' },
+      { variantCode: 'AC-02-01' }, { variantCode: 'AC-02-02' }, { variantCode: 'AC-02-03' }, { variantCode: 'AC-02-31' },
     ] });
     expect(deriveCatalogV2VariantResolution('WM-02', {
       washerLoadingStyle: 'unknown', washerCapacityKg: null,

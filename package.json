@@ -30,6 +30,7 @@
     "migration:revert": "npm run typeorm -- migration:revert -d src/database/data-source.ts",
     "seed:demo": "npx ts-node src/database/seeds/run-seed.ts",
     "seed:parts": "npx ts-node src/database/seeds/seed-parts-catalog-791.ts",
+    "seed:catalog-v3": "npx ts-node src/database/seeds/seed-catalog-v3.ts",
     "ai:point": "node scripts/point-at-ai.js"
   },
   "dependencies": {
