@@ -23,11 +23,13 @@ describe('P1 cash restriction gates', () => {
   });
   it('requires migration before tracking and fails closed on an unknown eligibility verdict', async () => {
     vi.stubEnv('P1_CUSTODY_ENABLED', 'false'); vi.stubEnv('PART_RETURNS_TRACKING_ENABLED', 'true');
-    const db = { query: vi.fn().mockResolvedValueOnce([{ installed: true, tracking_installed: false }]) };
+    const db = { query: vi.fn().mockResolvedValueOnce([{ installed: true, tracking_installed: false }]),
+      find: vi.fn().mockResolvedValue([]) };
     await expect(assertCustodyRuntimeConfiguration(db as unknown as EntityManager)).rejects.toThrow('migration');
     db.query.mockResolvedValueOnce([]);
     await expect(hasPartReturnRestriction(db as unknown as EntityManager, 'tech')).rejects.toMatchObject({ status: 503 });
     expect(await custodyUsageForInvoice(db as unknown as EntityManager, 'order')).toEqual(new Map());
+    expect(db.find).toHaveBeenCalledOnce();
   });
   it('blocks new discovery and Accept for tracking returns without touching cash or withdrawal', async () => {
     vi.stubEnv('P1_CUSTODY_ENABLED', 'false');
