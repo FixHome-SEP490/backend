@@ -79,6 +79,7 @@ import { authorizeOrder } from './order-access';
 import { isCompletionHeld } from '../support-cases/completion-hold';
 import { historicalOrderSummary, type HistoricalOrderSummary } from './historical-order-summary';
 import { repairHistoryStatuses } from './repair-history-filter';
+import { checkOverrunRelease, OVERRUN_RELEASE_WINDOW_DEFAULT_MINUTES, OVERRUN_RELEASE_WINDOW_KEY, type OverrunReleaseCheck } from './overrun-release';
 
 /** A cancellation as the review list shows it: who cancelled, and which order. */
 export type CancellationListItem = Cancellation & {
@@ -819,6 +820,53 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         }
       }
       return manager.findOneByOrFail(ServiceOrder, { id: orderId });
+    });
+  }
+
+
+  /** Thợ xem đơn này có được nhả vì đơn trước chưa xong không (PO 20/10/2026). */
+  async overrunReleaseStatus(orderId: string, actor: { id: string; role: string }): Promise<OverrunReleaseCheck> {
+    const order = await authorizeOrder(this.dataSource.manager, orderId, actor, 'technician');
+    const windowMinutes = await this.configService.getInt(OVERRUN_RELEASE_WINDOW_KEY, OVERRUN_RELEASE_WINDOW_DEFAULT_MINUTES);
+    return checkOverrunRelease(this.dataSource.manager, order, actor.id, windowMinutes);
+  }
+
+  /**
+   * Thợ đang ở đơn khác chưa xong nhả đơn kế tiếp: không trừ điểm, không tự mời
+   * thợ dự phòng; yêu cầu quay về chờ khách chọn thợ khác với giá và lịch cũ.
+   */
+  async releaseForOverrun(orderId: string, actor: { id: string; role: string }): Promise<{ order: ServiceOrder; currentOrderCode: string }> {
+    const reference = await authorizeOrder(this.dataSource.manager, orderId, actor, 'technician');
+    const windowMinutes = await this.configService.getInt(OVERRUN_RELEASE_WINDOW_KEY, OVERRUN_RELEASE_WINDOW_DEFAULT_MINUTES);
+    return this.dataSource.transaction(async manager => {
+      const booking = await manager.findOneOrFail(Booking, { where: { id: reference.bookingId }, lock: { mode: 'pessimistic_write' } });
+      const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
+      const check = await checkOverrunRelease(manager, order, actor.id, windowMinutes);
+      if (!check.eligible) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chỉ nhả đơn khi bạn đang làm đơn khác và đơn này sắp tới giờ hẹn.', { block: check.block });
+      }
+      const reason = `Kỹ thuật viên đang làm đơn #${check.currentOrderCode} chưa xong, không kịp tới buổi hẹn`;
+      const from = order.status;
+      await manager.update(TechnicianAssignment, { serviceOrderId: orderId, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: reason });
+      await releaseOutgoingTechnicianPartRequests(manager, orderId, actor.id);
+      await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: CancelActor.TECHNICIAN, actorUserId: actor.id, reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
+      // Khách tự chọn thợ khác: dọn lượt mời còn treo để mở được danh sách mới.
+      await manager.update(BookingInvitation, { bookingId: booking.id, status: In([InvitationStatus.PENDING, InvitationStatus.STANDBY]) }, { status: InvitationStatus.CANCELLED, respondedAt: new Date() });
+      booking.status = BookingStatus.MATCHING;
+      await manager.save(booking);
+      await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from, actorUserId: actor.id, actorRole: actor.role, reason: 'Technician released for an overrunning job; customer chooses another technician: ' + reason });
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'TECHNICIAN_OVERRUN_RELEASE', resourceType: 'service_order', resourceId: orderId, after: { currentOrderCode: check.currentOrderCode, strikeApplied: false } });
+      if (this.notificationsService && booking.customerId) {
+        void this.notificationsService.createNotification({
+          userId: booking.customerId,
+          title: 'Thợ không kịp tới buổi hẹn',
+          message: `Kỹ thuật viên chưa xong đơn trước nên không sắp xếp kịp thời gian cho yêu cầu #${order.code}. Bạn chọn thợ khác, giá và lịch hẹn giữ nguyên.`,
+          type: 'TECHNICIAN_RELEASED',
+          referenceId: booking.id,
+          referenceType: 'BOOKING',
+        });
+      }
+      return { order: await manager.findOneByOrFail(ServiceOrder, { id: orderId }), currentOrderCode: check.currentOrderCode! };
     });
   }
 
