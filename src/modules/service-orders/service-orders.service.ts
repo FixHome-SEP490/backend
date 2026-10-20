@@ -823,8 +823,9 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   }
 
 
-  async uploadEvidence(orderId: string, body: { type: EvidenceType; note?: string; capturedAt?: string }, actor: { id: string; role: string }, file?: EvidenceFile): Promise<RepairEvidence> {
+  async uploadEvidence(orderId: string, body: { type: EvidenceType; note?: string; capturedAt?: string; deferAutoStart?: boolean }, actor: { id: string; role: string }, file?: EvidenceFile): Promise<RepairEvidence> {
     this.evidenceStorage.validate(file);
+    if (body.deferAutoStart === true && body.type !== EvidenceType.BEFORE) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'deferAutoStart is only supported for BEFORE evidence');
     if (body.capturedAt && new Date(body.capturedAt) > new Date()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Evidence timestamp cannot be in the future');
     // Check-in face and the before photo belong to the arrival (EN_ROUTE); the rest to the repair.
     const atArrival = body.type === EvidenceType.BEFORE || body.type === EvidenceType.CHECKIN_FACE;
@@ -855,7 +856,9 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       });
       // Check-in with the product photo is the last step before repair for a
       // fixed-price job; an inspection job also needs the approved quotation.
-      if (body.type === EvidenceType.BEFORE) await this.autoStartRepair(orderId);
+      // A camera batch defers this attempt on earlier photos, then omits the
+      // flag on its final upload. All evidence and transition gates stay intact.
+      if (body.type === EvidenceType.BEFORE && body.deferAutoStart !== true) await this.autoStartRepair(orderId);
       return saved;
     } catch (error) {
       await this.evidenceStorage.delete(mediaUrl); // avoid an orphaned upload when the re-check rejects it

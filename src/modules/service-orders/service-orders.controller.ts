@@ -166,12 +166,12 @@ export class ServiceOrdersController {
   }
 
   @Post('service-orders/:id/evidence')
-  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 3 } }))
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 4 } }))
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('evidence:upload')
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Technician: upload BEFORE / AFTER / ADDITIONAL evidence', description: 'Multipart/form-data with one image file (max 10 MB) and lowercase type. BEFORE requires a valid check-in while EN_ROUTE; AFTER and ADDITIONAL are only during UNDER_REPAIR before completion request. If the storage provider is unavailable, the API may return 503: an image picker alone is not successful upload.' })
+  @ApiOperation({ summary: 'Technician: upload BEFORE / AFTER / ADDITIONAL evidence', description: 'Multipart/form-data with one image file (max 10 MB) and lowercase type. BEFORE requires valid GPS and face check-in while EN_ROUTE; optionally send deferAutoStart=true on earlier batch photos, then omit or send false on the final sequential upload to attempt automatic repair start. The flag does not reserve the order state. AFTER and ADDITIONAL are only during UNDER_REPAIR before completion request. If the storage provider is unavailable, the API may return 503: an image picker alone is not successful upload.' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({ schema: {
     type: 'object', required: ['type', 'file'],
@@ -180,6 +180,7 @@ export class ServiceOrdersController {
       file: { type: 'string', format: 'binary', description: 'One JPEG, PNG or WebP image up to 10 MB.' },
       note: { type: 'string', maxLength: 2000, description: 'Optional short evidence note.' },
       capturedAt: { type: 'string', format: 'date-time', description: 'Optional ISO 8601 capture timestamp.' },
+      deferAutoStart: { type: 'boolean', default: false, description: 'BEFORE only. Multipart true/false; true defers auto-start for this photo. Omit or send false on the final batch photo.' },
     },
   } })
   async uploadEvidence(
