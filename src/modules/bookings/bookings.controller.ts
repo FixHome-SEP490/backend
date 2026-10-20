@@ -64,8 +64,18 @@ export class BookingsController {
       status: query.status,
       statuses: query.statuses,
       search: query.search,
+      stage: query.stage,
     });
     return { data: result.data.map(toBookingResponse), meta: { total: result.total } };
+  }
+
+  @Get('my/activity-counts')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('booking:read_own')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'My Activity counts: repair orders (in_progress, completed, cancelled) and booking requests (no_technician, sent, cancelled)' })
+  async activityCounts(@Req() req: { user: { id: string } }) {
+    return { data: await this.bookingsService.activityCounts(req.user.id) };
   }
 
   @Get()
@@ -277,7 +287,7 @@ export class BookingsController {
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('booking:create')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Customer: sessions of the next days and whether the technician is free', description: 'For rescheduling: the technician holding the order. With previous=1: the technician of a finished booking, for booking again. Morning 08-12 and afternoon 13-18 Vietnam time.' })
+  @ApiOperation({ summary: 'Customer: sessions of the next days and whether the technician is free', description: 'For rescheduling: the technician holding the order. With previous=1: the technician of a finished booking, for booking again. Arrival sessions: morning 08-12, afternoon 13-18, evening 18-23 Vietnam time. The remaining evening is offered until strictly before 23:00. Availability does not guarantee repair completion within the window.' })
   async availableSlots(
     @Param('id', ParseUUIDPipe) id: string,
     @Query('days') days: string | undefined,

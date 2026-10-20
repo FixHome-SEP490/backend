@@ -1,5 +1,7 @@
 import type { EntityManager } from 'typeorm';
-import { CATALOG_V2_APPROVED_FIXED_TIERS, CATALOG_V2_INSPECTION_REFERENCES } from './catalog-v2-approved-price-tiers';
+import {
+  CATALOG_V2_APPROVED_FIXED_TIERS, CATALOG_V2_INSPECTION_REFERENCES, CATALOG_V3_INSPECTION_TYPE_REFERENCES,
+} from './catalog-v2-approved-price-tiers';
 import type { CatalogV2PriceRow } from './catalog-v2-pricing-binding';
 import { CATALOG_V2_SERVICES } from './catalog-v2-review';
 
@@ -47,7 +49,14 @@ export async function addCatalogV2PriceSummaries<T extends { id: string; code: s
       priceSummary = { kind: 'fixed_range', minLaborVnd: Math.min(...prices), maxLaborVnd: Math.max(...prices) };
     } else if (consistent && !approved.length) {
       const reference = CATALOG_V2_INSPECTION_REFERENCES.find(r => r.serviceCode === service.code && r.activationGate === 'M1_M2');
-      if (reference) priceSummary = { ...priceSummary, kind: 'inspection_reference', suggestedLaborVnd: reference.suggestedLaborVnd };
+      if (reference) {
+        // V3: khoảng tham khảo theo loại máy nếu có; vẫn không ràng buộc báo giá.
+        const byType = (CATALOG_V3_INSPECTION_TYPE_REFERENCES[service.code] ?? []).map(t => t.laborVnd);
+        priceSummary = {
+          ...priceSummary, kind: 'inspection_reference', suggestedLaborVnd: reference.suggestedLaborVnd,
+          ...(byType.length ? { minLaborVnd: Math.min(...byType), maxLaborVnd: Math.max(...byType) } : {}),
+        };
+      }
     }
     Object.assign(service, { priceSummary });
   }

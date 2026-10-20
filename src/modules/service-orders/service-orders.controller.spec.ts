@@ -6,6 +6,8 @@ import { OrderListQueryDto } from './dto/order-list-query.dto';
 import { ServiceOrderStatus } from '../../shared/enums';
 import { ServiceOrdersController } from './service-orders.controller';
 import type { ServiceOrdersService } from './service-orders.service';
+import { EvidenceDto } from './order-command.dto';
+import { EvidenceType } from '../../shared/enums';
 
 describe('ServiceOrdersController repair-history query contract', () => {
   it('passes the optional terminal status filter to the service unchanged', async () => {
@@ -55,5 +57,19 @@ describe('ServiceOrdersController repair-history query contract', () => {
   ])('rejects bad paging %j', async (query, field) => {
     const errors = await validate(plainToInstance(OrderListQueryDto, query));
     expect(errors.map((error) => error.property)).toEqual([field]);
+  });
+});
+
+describe('EvidenceDto optional auto-start deferral', () => {
+  it.each([[undefined, undefined], ['true', true], ['false', false], [true, true], [false, false]])('accepts %j as %j', async (input, expected) => {
+    const dto = plainToInstance(EvidenceDto, { type: EvidenceType.BEFORE, ...(input === undefined ? {} : { deferAutoStart: input }) });
+    expect(await validate(dto, { whitelist: true, forbidNonWhitelisted: true })).toEqual([]);
+    expect(dto).toHaveProperty('type', EvidenceType.BEFORE);
+    expect(dto.deferAutoStart).toBe(expected);
+  });
+
+  it.each(['yes', '0', '1', '', 'TRUE', ['true'], 1])('rejects invalid deferral %j', async deferAutoStart => {
+    const dto = plainToInstance(EvidenceDto, { type: EvidenceType.BEFORE, deferAutoStart });
+    expect((await validate(dto, { whitelist: true, forbidNonWhitelisted: true })).map(error => error.property)).toContain('deferAutoStart');
   });
 });

@@ -94,7 +94,7 @@ export interface TechnicianBookingPreviewDto {
   urgency: Booking['urgency'];
   preferredStartAt: Date | null;
   preferredEndAt: Date | null;
-  /** scheduled = one session (morning 08-12 / afternoon 13-18, Vietnam time); urgent = come now. */
+  /** Arrival session: morning 08-12 / afternoon 13-18 / evening 18-23, Vietnam time; urgent = come now. Not repair duration. */
   bookingMode: Booking['bookingMode'];
   slot: Booking['slot'] | null;
   /**

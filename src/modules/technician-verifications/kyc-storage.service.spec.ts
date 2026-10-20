@@ -322,6 +322,14 @@ describe('KycStorageService', () => {
       );
     });
 
+    it.each([['video/webm', 'webm'], ['video/mp4', 'mp4']])('supports the face video type %s', async (mimeType, extension) => {
+      vi.spyOn(axios, 'post').mockResolvedValue({
+        data: { url: `/object/upload/sign/kyc-private/kyc/tech-uuid-1/generated-id.${extension}?token=opaque` },
+      } as never);
+      const result = await storage.createSignedUploadUrl('tech-uuid-1', mimeType);
+      expect(result.storageObjectPath).toMatch(new RegExp(`^kyc/tech-uuid-1/[0-9a-f-]+\.${extension}$`));
+    });
+
     it('fails closed when the provider does not return a token', async () => {
       vi.spyOn(axios, 'post').mockResolvedValue({
         data: { url: '/object/upload/sign/kyc-private/kyc/tech-uuid-1/id.jpg' },

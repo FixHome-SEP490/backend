@@ -1,6 +1,6 @@
 import { Transform, Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsDateString, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsBoolean, IsDateString, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateNested } from 'class-validator';
 import type { CatalogV2DeviceAttributes } from '../../database/catalog-v2/catalog-v2-device-attributes';
 import { UrgencyLevel } from '../../shared/enums';
 
@@ -15,9 +15,9 @@ export class ScheduleBookingDto {
   @IsOptional() @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'date must be YYYY-MM-DD' })
   date?: string;
 
-  @ApiPropertyOptional({ enum: ['morning', 'afternoon'], description: 'morning = 08:00-12:00, afternoon = 13:00-18:00 Vietnam time.' })
-  @IsOptional() @IsIn(['morning', 'afternoon'])
-  slot?: 'morning' | 'afternoon';
+  @ApiPropertyOptional({ enum: ['morning', 'afternoon', 'evening'], description: 'Vietnam arrival sessions: morning 08:00-12:00, afternoon 13:00-18:00, evening 18:00-23:00. Evening alone may be booked after its start, until strictly before 23:00; arrival starts at max(now, 18:00). No repair-completion guarantee. Urgent remains now + configured minutes, even across midnight.' })
+  @IsOptional() @IsIn(['morning', 'afternoon', 'evening'])
+  slot?: 'morning' | 'afternoon' | 'evening';
 
   @ApiPropertyOptional({ format: 'date-time', example: '2030-10-21T08:00:00.000Z', description: 'Legacy arrival-window start (ISO 8601). Ignored when mode is given.' })
   @IsOptional() @IsDateString() preferredStartAt?: string;
@@ -37,9 +37,9 @@ export class BookingDeviceAttributesDto implements CatalogV2DeviceAttributes {
   @IsOptional() @IsString() @MaxLength(64)
   brand?: string;
 
-  @ApiPropertyOptional({ enum: ['wall', 'ceiling', 'unknown'] })
-  @IsOptional() @IsIn(['wall', 'ceiling', 'unknown'])
-  acMounting?: 'wall' | 'ceiling' | 'unknown';
+  @ApiPropertyOptional({ enum: ['wall', 'ceiling', 'floor', 'unknown'], description: 'floor = điều hòa tủ đứng.' })
+  @IsOptional() @IsIn(['wall', 'ceiling', 'floor', 'unknown'])
+  acMounting?: 'wall' | 'ceiling' | 'floor' | 'unknown';
 
   @ApiPropertyOptional({ enum: ['up_to_1_5', '2_to_2_5', 'unknown'] })
   @IsOptional() @IsIn(['up_to_1_5', '2_to_2_5', 'unknown'])
@@ -52,6 +52,10 @@ export class BookingDeviceAttributesDto implements CatalogV2DeviceAttributes {
   @ApiPropertyOptional({ minimum: 0.1, maximum: 50, description: 'Optional washer capacity in kg; omitted or null means unknown.' })
   @IsOptional() @IsNumber({ allowInfinity: false, allowNaN: false, maxDecimalPlaces: 1 }) @Min(0.1) @Max(50)
   washerCapacityKg?: number | null;
+
+  @ApiPropertyOptional({ description: 'Máy giặt có chức năng sấy (máy giặt sấy cửa ngang).' })
+  @IsOptional() @IsBoolean()
+  washerHasDryer?: boolean | null;
 }
 
 export class CreateBookingDto extends ScheduleBookingDto {

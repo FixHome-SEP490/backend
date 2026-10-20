@@ -61,6 +61,8 @@ const ORDER_KIND: Record<string, OrderChangeKind> = {
   repair_evidences: 'evidence',
   arrival_check_ins: 'arrival',
   part_requests: 'part',
+  part_request_items: 'part',
+  part_custodies: 'part',
   warranty_claims: 'warranty',
   technician_assignments: 'assignment',
 };
@@ -130,7 +132,7 @@ export function groupChanges(notices: ChangeNotice[]): ChangeBatch {
         if (!kind || !notice.so) break;
         add(batch.orders, notice.so, kind);
         // The technician named on an assignment or a warranty claim follows the order even when not its active one.
-        if ((notice.t === 'technician_assignments' || notice.t === 'warranty_claims') && notice.tech) add(batch.orderTechnicians, notice.so, notice.tech);
+        if ((notice.t === 'technician_assignments' || notice.t === 'warranty_claims' || notice.t === 'part_custodies') && notice.tech) add(batch.orderTechnicians, notice.so, notice.tech);
       }
     }
   }

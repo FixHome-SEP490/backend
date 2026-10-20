@@ -12,6 +12,9 @@ import {
   PartSource,
   Role,
   ServiceOrderStatus,
+  QuotationStatus,
+  AdditionalCostStatus,
+  CostItemType,
 } from '../../shared/enums';
 import { ErrorCodes } from '../../shared/constants/error-codes';
 import { BusinessException } from '../../common/exceptions/business.exception';
@@ -24,6 +27,12 @@ import { FixHomePart } from '../parts-catalog/entities/fixhome-part.entity';
 import { User } from '../users/entities/user.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { PartRequestStateMachine } from './part-request-state-machine';
+import { Quotation } from '../quotations/entities/quotation.entity';
+import { QuotationItem } from '../quotations/entities/quotation-item.entity';
+import { AdditionalCostRequest } from '../service-orders/entities/additional-cost-request.entity';
+import { custodyUsageForInvoice } from './part-custody.policy';
+import { partRequestCostSource } from './part-request-lifecycle';
+import { MAX_PART_QUANTITY } from './part-custody.rules';
 import {
   CreatePartRequestDto,
   ReceivePartRequestDto,
@@ -206,10 +215,99 @@ export class PartRequestsService {
     });
   }
 
-  /**
-   * Flow 2: Create an Additional Parts Request from an approved Additional Cost
-   * Called internally when Customer approves an Additional Cost with FixHome parts
-   */
+  /** Caller holds the order lock. Legacy/tracking-only usage can only decide whole lines. */
+  async assertQuotationPartQuantities(
+    manager: EntityManager,
+    orderId: string,
+    technicianId: string,
+    items: Pick<QuotationItem, 'type' | 'partSource' | 'partCatalogId' | 'quantity'>[],
+  ): Promise<void> {
+    const required = new Map<string, number>();
+    for (const item of items) {
+      if (item.type === CostItemType.PARTS_EQUIPMENT && item.partSource === PartSource.FIXHOME && item.partCatalogId) {
+        required.set(item.partCatalogId, (required.get(item.partCatalogId) ?? 0) + item.quantity);
+      }
+    }
+    if (!required.size) return;
+    const requests = await manager.find(PartRequest, { where: { serviceOrderId: orderId, technicianId }, relations: ['items'] });
+    const lines = requests.filter(request => request.technicianId === technicianId && request.requestType === PartRequestType.PRE_REPAIR &&
+      [PartRequestStatus.REQUESTED, PartRequestStatus.READY, PartRequestStatus.DELIVERING, PartRequestStatus.RECEIVED].includes(request.status))
+      .flatMap(request => request.items).filter(item => item.partSource === PartSource.FIXHOME && item.usageStatus !== PartUsageStatus.RETURNED);
+    for (const [sku, quantity] of required) {
+      const quantities = lines.filter(item => item.partCatalogId === sku).map(item => item.quantity);
+      // A positive deficit gets a new exact QUOTATION line. If stock covers the
+      // quote, some subset of its whole lines must equal the approved quantity.
+      if (quantities.reduce((sum, value) => sum + value, 0) <= quantity) continue;
+      let reachable = new Set([0]);
+      for (const value of quantities) {
+        const next = new Set(reachable);
+        for (const sum of reachable) {
+          if (sum + value <= quantity) next.add(sum + value);
+        }
+        reachable = next;
+        if (reachable.has(quantity)) break;
+      }
+      if (!reachable.has(quantity)) {
+        throw new BusinessException(ErrorCodes.CONFLICT,
+          'Số lượng linh kiện FixHome trong báo giá không khớp các dòng đã yêu cầu. Vui lòng điều chỉnh số lượng để dùng hoặc trả nguyên dòng; nếu yêu cầu trước sửa chữa còn chờ chuẩn bị, hãy hủy trước khi lập lại báo giá để kho cấp đúng số lượng.');
+      }
+    }
+  }
+
+  /** Caller holds the order lock and has persisted the customer's APPROVED decision. */
+  async createRequestFromApprovedQuotation(manager: EntityManager, quote: Quotation, actor: { id: string; role: string }): Promise<PartRequest | null> {
+    if (quote.status !== QuotationStatus.APPROVED) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Báo giá chưa được duyệt.');
+    if (!await manager.findOneBy(TechnicianAssignment, { serviceOrderId: quote.serviceOrderId, technicianId: quote.technicianId, isActive: true })) {
+      throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Kỹ thuật viên không còn phụ trách đơn sửa chữa.');
+    }
+    const existing = await manager.findOne(PartRequest, { where: { quotationId: quote.id }, relations: ['items'] });
+    if (existing) return existing;
+    const required = new Map<string, { quantity: number; name: string; unitPrice: number }>();
+    for (const item of quote.items) {
+      if (item.type !== CostItemType.PARTS_EQUIPMENT || item.partSource !== PartSource.FIXHOME) continue;
+      if (!item.partCatalogId || !Number.isSafeInteger(item.quantity) || item.quantity < 1 ||
+          !Number.isSafeInteger(Number(item.unitPrice)) || Number(item.unitPrice) < 0) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Linh kiện trong báo giá không hợp lệ.');
+      }
+      const prior = required.get(item.partCatalogId);
+      required.set(item.partCatalogId, { quantity: (prior?.quantity ?? 0) + item.quantity,
+        name: prior?.name ?? item.partNameSnapshot ?? item.description, unitPrice: prior?.unitPrice ?? Number(item.unitPrice) });
+    }
+    if (!required.size) return null;
+    const requests = await manager.find(PartRequest, { where: { serviceOrderId: quote.serviceOrderId, technicianId: quote.technicianId }, relations: ['items'] });
+    for (const request of requests) {
+      if (request.technicianId !== quote.technicianId || request.requestType !== PartRequestType.PRE_REPAIR ||
+          ![PartRequestStatus.REQUESTED, PartRequestStatus.READY, PartRequestStatus.DELIVERING, PartRequestStatus.RECEIVED].includes(request.status)) continue;
+      for (const item of request.items) {
+        const need = item.partCatalogId && required.get(item.partCatalogId);
+        if (need && item.partSource === PartSource.FIXHOME && item.usageStatus !== PartUsageStatus.RETURNED) need.quantity = Math.max(0, need.quantity - item.quantity);
+      }
+    }
+    const deficit = [...required].filter(([, item]) => item.quantity > 0);
+    if (!deficit.length) return null;
+    for (const [partCatalogId] of deficit) {
+      if (!await manager.findOne(FixHomePart, { where: { id: partCatalogId, isActive: true } })) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Linh kiện trong báo giá không còn được cấp từ kho.');
+      }
+    }
+    const request = await manager.save(PartRequest, manager.create(PartRequest, {
+      serviceOrderId: quote.serviceOrderId, technicianId: quote.technicianId, requestType: PartRequestType.QUOTATION,
+      quotationId: quote.id, additionalCostId: null, fulfillmentMethod: FulfillmentMethod.PICKUP, shippingFee: 0,
+      status: PartRequestStatus.REQUESTED, reason: 'Linh kiện theo báo giá đã được khách hàng duyệt',
+    }));
+    // Group approvals by SKU for deficit calculation, then respect the existing depot/custody line limit.
+    request.items = await manager.save(PartRequestItem, deficit.flatMap(([partCatalogId, item]) =>
+      Array.from({ length: Math.ceil(item.quantity / MAX_PART_QUANTITY) }, (_, index) => manager.create(PartRequestItem, {
+        partRequestId: request.id, partCatalogId, partSource: PartSource.FIXHOME, partNameSnapshot: item.name,
+        quantity: Math.min(MAX_PART_QUANTITY, item.quantity - index * MAX_PART_QUANTITY), unitPriceSnapshot: item.unitPrice, usageStatus: PartUsageStatus.PENDING,
+      }))));
+    await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role,
+      action: 'QUOTATION_PART_REQUEST_CREATED', resourceType: 'part_request', resourceId: request.id,
+      after: { serviceOrderId: quote.serviceOrderId, quotationId: quote.id, itemCount: request.items.length } });
+    return request;
+  }
+
+  /** Flow 2: called when the customer approves an additional cost with FixHome parts. */
   async createAdditionalRequestFromApprovedCost(
     manager: EntityManager,
     orderId: string,
@@ -634,11 +732,14 @@ export class PartRequestsService {
       }
 
       const previous = item.usageStatus;
+      if (item.partSource === PartSource.FIXHOME && dto.usageStatus === PartUsageStatus.USED) {
+        await this.assertUsageApproved(manager, request, item, dto.usedQty ?? item.quantity);
+      }
       const custodyRecorded = await this.custodyService?.recordUsage(manager, request, item, order, dto, actor);
       if (!custodyRecorded && [dto.usedQty, dto.expectedVersion, dto.idempotencyKey].some(value => value !== undefined)) {
         throw new BadRequestException('Số lượng chi tiết chỉ áp dụng cho linh kiện được bàn giao sau khi mở chức năng trả linh kiện.');
       }
-      if (custodyRecorded && dto.usageStatus !== (dto.usedQty > 0 ? PartUsageStatus.USED : PartUsageStatus.RETURNED)) throw new BadRequestException('Trạng thái sử dụng không khớp số lượng đã dùng.');
+      if (custodyRecorded && dto.usedQty !== undefined && dto.usageStatus !== (dto.usedQty > 0 ? PartUsageStatus.USED : PartUsageStatus.RETURNED)) throw new BadRequestException('Trạng thái sử dụng không khớp số lượng đã dùng.');
       if (custodyRecorded === 'replayed') return item;
       item.usageStatus = dto.usageStatus;
       const saved = await manager.save(PartRequestItem, item);
@@ -656,6 +757,35 @@ export class PartRequestsService {
 
       return saved;
     });
+  }
+
+  /** The order lock serializes USED changes across all requests sharing an approval. */
+  private async assertUsageApproved(manager: EntityManager, request: PartRequest, item: PartRequestItem, usedQty: number): Promise<void> {
+    if (request.requestType === PartRequestType.ADDITIONAL && !request.additionalCostId) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Yêu cầu linh kiện chưa liên kết chi phí đã duyệt.');
+    }
+    const approval = request.requestType === PartRequestType.ADDITIONAL
+      ? await manager.findOne(AdditionalCostRequest, { where: { id: request.additionalCostId!, serviceOrderId: request.serviceOrderId, technicianId: request.technicianId, status: AdditionalCostStatus.APPROVED }, relations: ['items'] })
+      : await manager.findOne(Quotation, { where: { serviceOrderId: request.serviceOrderId, technicianId: request.technicianId, status: QuotationStatus.APPROVED }, relations: ['items'] });
+    const source = partRequestCostSource(request, request.requestType === PartRequestType.ADDITIONAL ? undefined : approval?.id);
+    if (!approval || !source || !item.partCatalogId || !Number.isSafeInteger(usedQty) || usedQty < 1 || usedQty > item.quantity || !Array.isArray(approval.items)) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Chỉ được dùng linh kiện đúng báo giá đã duyệt.');
+    }
+    const approvedQty = approval.items.filter(i => i.partSource === PartSource.FIXHOME && i.partCatalogId === item.partCatalogId)
+      .reduce((sum, i) => sum + i.quantity, 0);
+    const requests = await manager.find(PartRequest, { where: { serviceOrderId: request.serviceOrderId, technicianId: request.technicianId }, relations: ['items'] });
+    const custodyUsage = await custodyUsageForInvoice(manager, request.serviceOrderId);
+    let totalUsed = usedQty;
+    for (const other of requests) {
+      if (other.technicianId !== request.technicianId || ![PartRequestStatus.RECEIVED, PartRequestStatus.COMPLETED].includes(other.status) ||
+          partRequestCostSource(other, request.requestType === PartRequestType.ADDITIONAL ? undefined : approval.id) !== source) continue;
+      for (const line of other.items) {
+        if (line.id !== item.id && line.partSource === PartSource.FIXHOME && line.partCatalogId === item.partCatalogId && line.usageStatus === PartUsageStatus.USED) {
+          totalUsed += custodyUsage.get(line.id) ?? line.quantity;
+        }
+      }
+    }
+    if (totalUsed > approvedQty) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Số lượng sử dụng vượt báo giá đã duyệt. Vui lòng đề xuất chi phí phát sinh.');
   }
 
   /**
@@ -703,6 +833,20 @@ export class PartRequestsService {
           ErrorCodes.ORDER_INVALID_TRANSITION,
           `Cannot cancel request in ${request.status} status`,
         );
+      }
+
+      if ([PartRequestType.QUOTATION, PartRequestType.PRE_REPAIR].includes(request.requestType)) {
+        const quote = await manager.findOne(Quotation, {
+          where: { serviceOrderId: request.serviceOrderId, technicianId: request.technicianId, status: QuotationStatus.APPROVED,
+            ...(request.requestType === PartRequestType.QUOTATION ? { id: request.quotationId! } : {}) },
+          relations: ['items'],
+        });
+        if (quote && (request.requestType === PartRequestType.QUOTATION || request.items.some(item =>
+          item.partSource === PartSource.FIXHOME && item.usageStatus !== PartUsageStatus.RETURNED && quote.items.some(line =>
+            line.type === CostItemType.PARTS_EQUIPMENT && line.partSource === PartSource.FIXHOME && line.partCatalogId === item.partCatalogId && line.quantity > 0)))) {
+          throw new BusinessException(ErrorCodes.CONFLICT,
+            'Không thể hủy yêu cầu linh kiện đang cấp cho báo giá đã duyệt. Vui lòng tiếp tục nhận linh kiện; nếu cần hủy đơn sửa chữa, hãy liên hệ quản lý dịch vụ.');
+        }
       }
 
       const previous = request.status;

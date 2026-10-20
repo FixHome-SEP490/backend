@@ -3,16 +3,37 @@ import { describe, expect, it } from 'vitest';
 import { validate } from 'class-validator';
 import { DECORATORS } from '@nestjs/swagger/dist/constants';
 import { FinanceController } from './finance.controller';
+import { CustomerWalletController } from './customer-wallet.controller';
+import { PATH_METADATA, METHOD_METADATA, GUARDS_METADATA } from '@nestjs/common/constants';
+import { RequestMethod } from '@nestjs/common';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard, PermissionGuard } from '../../common/guards';
+import { TransformInterceptor } from '../../common/interceptors/transform.interceptor';
+import { firstValueFrom, of } from 'rxjs';
 import {
   CashSettlementConfirmationDto,
   CashSettlementDeclarationDto,
   InitiatePaymentDto,
   PlatformDueResponseDto,
   PaymentResponseDto,
+  NoChargeInvoiceResponseDto,
 } from './dto';
 import { PaymentMode, PaymentPurpose, PaymentAttemptStatus } from '../../shared/enums';
 
 describe('Finance API contract metadata', () => {
+  it('P013 exposes the exact guarded no-charge route and single existing response envelope', async () => {
+    const route = CustomerWalletController.prototype.noCharge;
+    expect(Reflect.getMetadata(PATH_METADATA, route)).toBe('invoices/:id/no-charge');
+    expect(Reflect.getMetadata(METHOD_METADATA, route)).toBe(RequestMethod.POST);
+    expect(Reflect.getMetadata(GUARDS_METADATA, CustomerWalletController)).toEqual([JwtAuthGuard, RolesGuard, PermissionGuard]);
+    expect(Reflect.getMetadata(DECORATORS.API_RESPONSE, route)['200'].type).toBe(NoChargeInvoiceResponseDto);
+    const data = { invoiceId: 'invoice', paymentStatus: 'paid', settlementMethod: 'NO_CHARGE' };
+    const result = await firstValueFrom(new TransformInterceptor().intercept(
+      { switchToHttp: () => ({ getResponse: () => ({ statusCode: 200 }) }) } as any,
+      { handle: () => of(data) },
+    ));
+    expect(result).toEqual({ success: true, statusCode: 200, message: 'Success', data });
+  });
   it('requires a durable idempotency key without accepting a client amount/provider', async () => {
     const invalid = Object.assign(new InitiatePaymentDto(), {
       idempotencyKey: 'short',

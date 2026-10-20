@@ -56,6 +56,15 @@ import { SupportCasesService } from '../support-cases/support-cases.service';
 import { buildPaymentUrl, buildQueryDrRequest, verifySignature, withWebOrigin } from './vnpay/vnpay.util';
 import { SettlementService } from '../wallet/settlement.service';
 import { WalletService } from '../wallet/wallet.service';
+import { AuditLog } from '../audit-log/entities/audit-log.entity';
+import { Quotation } from '../quotations/entities/quotation.entity';
+import { AdditionalCostRequest } from '../service-orders/entities/additional-cost-request.entity';
+import { InvoiceItem } from '../service-orders/entities/invoice-item.entity';
+import { RepairEvidence } from '../service-orders/entities/repair-evidence.entity';
+import { assertApprovedPartsResolved, assertPartsResolved, closeOrderPartRequests, holderPartRequests, usedPartQuantities } from '../part-requests/part-request-lifecycle';
+import { custodyUsageForInvoice } from '../part-requests/part-custody.policy';
+import { AdditionalCostStatus, CostItemType, EvidenceType, PartSource, QuotationStatus, ServicePricingMode } from '../../shared/enums';
+import { NoChargeInvoiceResponseDto } from './dto';
 
 export interface FinanceActor {
   id: string;
@@ -178,6 +187,10 @@ export class FinanceService {
         throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Invoice not found');
       }
 
+      if (this.requireWholeVnd(invoice.grandTotal, 'Invoice amount') <= 0) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hóa đơn 0 ₫ cần được xác nhận miễn phí.');
+      }
+
       const payment = paymentRepository.create({
         invoiceId: invoice.id,
         commissionDueId: null,
@@ -282,6 +295,9 @@ export class FinanceService {
         throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Invoice not found');
       }
 
+      if (this.requireWholeVnd(invoice.grandTotal, 'Invoice amount') < 5000) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'VNPay chỉ áp dụng cho hóa đơn từ 5.000 ₫. Vui lòng chọn ví hoặc tiền mặt.');
+      }
       const txnRef = randomUUID().replace(/-/g, '');
       const created = paymentRepository.create({
         invoiceId: invoice.id,
@@ -595,6 +611,10 @@ export class FinanceService {
       }
       if (invoice.paymentStatus === PaymentStatus.PAID) {
         throw new BusinessException(ErrorCodes.CONFLICT, 'Invoice is already paid');
+      }
+
+      if (this.requireWholeVnd(invoice.grandTotal, 'Invoice amount') <= 0) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hóa đơn 0 ₫ cần được khách hàng xác nhận miễn phí.');
       }
 
       let settlement = await settlementRepository.findOne({
@@ -1235,6 +1255,9 @@ export class FinanceService {
    * settled into their wallet. The caller holds the invoice row lock.
    */
   private async markInvoicePaidOnline(manager: EntityManager, invoice: Invoice, payerUserId: string, now: Date): Promise<void> {
+    if (this.requireWholeVnd(invoice.grandTotal, 'Invoice amount') <= 0) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hóa đơn 0 ₫ cần được xác nhận miễn phí.');
+    }
     const invoiceRepository = manager.getRepository(Invoice);
     const orderRepository = manager.getRepository(ServiceOrder);
     invoice.paymentStatus = PaymentStatus.PAID;
@@ -1273,6 +1296,109 @@ export class FinanceService {
     if (this.settlementService && order.status === ServiceOrderStatus.COMPLETED) {
       await this.settlementService.trySettleOrder(order.id, manager);
     }
+  }
+
+  /** Read-only reconciliation of a zero snapshot. Never repairs or replaces a persisted invoice. */
+  private async assertNoChargeIntegrity(manager: EntityManager, invoice: Invoice, order: ServiceOrder, booking: Booking): Promise<void> {
+    const fail = () => { throw new BusinessException(ErrorCodes.CONFLICT, 'Hóa đơn chưa khớp chi phí đã duyệt. Vui lòng liên hệ FixHome để kiểm tra.'); };
+    for (const value of [invoice.grandTotal, invoice.laborTotal, invoice.partsTotal, invoice.fixHomePartsTotal,
+      invoice.technicianPartsTotal, invoice.technicianPartWarrantyFeeTotal, invoice.shippingFee, invoice.commissionAmount]) {
+      if (value == null || this.requireWholeVnd(value, 'Invoice snapshot') !== 0) fail();
+    }
+    const persistedItems = await manager.find(InvoiceItem, { where: { invoiceId: invoice.id } });
+    for (const item of persistedItems) {
+      if (!Number.isSafeInteger(item.quantity) || item.quantity < 1 || this.requireWholeVnd(item.unitPrice, 'Invoice item price') !== 0 ||
+          this.requireWholeVnd(item.lineTotal, 'Invoice item total') !== 0 || this.requireWholeVnd(item.warrantyFee ?? 0, 'Invoice warranty') !== 0) fail();
+    }
+    const quotation = await manager.findOne(Quotation, { where: { serviceOrderId: order.id, status: QuotationStatus.APPROVED }, relations: ['items'] });
+    if (booking.pricingModeSnapshot === ServicePricingMode.FIXED_PRICE) {
+      if (booking.fixedUnitPriceSnapshot == null || this.requireWholeVnd(booking.fixedUnitPriceSnapshot, 'Fixed price') !== 0) fail();
+    } else if (booking.pricingModeSnapshot !== ServicePricingMode.INSPECTION_REQUIRED || !quotation) fail();
+    const costs = await manager.find(AdditionalCostRequest, { where: { serviceOrderId: order.id, status: AdditionalCostStatus.APPROVED }, relations: ['items'] });
+    const requests = await holderPartRequests(manager, order.id);
+    assertPartsResolved(requests);
+    const custodyUsage = await custodyUsageForInvoice(manager, order.id);
+    const lines = [
+      ...(quotation?.items ?? []).map(item => ({ ...item, source: 'quotation' })),
+      ...costs.flatMap(cost => cost.items.map(item => ({ ...item, source: cost.id }))),
+    ];
+    assertApprovedPartsResolved(lines, requests, quotation?.id ?? null, custodyUsage);
+    const billable = usedPartQuantities(requests, custodyUsage, quotation?.id ?? null);
+    for (const line of lines) {
+      if (!Object.values(CostItemType).includes(line.type) || !Number.isSafeInteger(line.quantity) || line.quantity < 1 ||
+          (line.type === CostItemType.PARTS_EQUIPMENT && !Object.values(PartSource).includes(line.partSource!))) fail();
+      const price = this.requireWholeVnd(line.unitPrice, 'Approved price');
+      const total = price * line.quantity;
+      if (!Number.isSafeInteger(total) || this.requireWholeVnd(line.lineTotal, 'Approved total') !== total) fail();
+      if (billable(line.source, line) * price > 0 || this.requireWholeVnd(line.warrantyFee ?? 0, 'Approved warranty') > 0) fail();
+    }
+    if (quotation) {
+      const labor = quotation.items.filter(i => i.type === CostItemType.LABOR).reduce((sum, i) => sum + i.quantity * Number(i.unitPrice), 0);
+      const parts = quotation.items.filter(i => i.type === CostItemType.PARTS_EQUIPMENT).reduce((sum, i) => sum + i.quantity * Number(i.unitPrice), 0);
+      if (Number(quotation.laborTotal) !== labor || Number(quotation.partsTotal) !== parts) fail();
+    }
+    for (const cost of costs) {
+      const labor = cost.items.filter(i => i.type === CostItemType.LABOR).reduce((sum, i) => sum + i.quantity * Number(i.unitPrice), 0);
+      const parts = cost.items.filter(i => i.type === CostItemType.PARTS_EQUIPMENT).reduce((sum, i) => sum + i.quantity * Number(i.unitPrice), 0);
+      if (Number(cost.totalLaborDelta) !== labor || Number(cost.totalPartsDelta) !== parts) fail();
+      if (this.requireWholeVnd(cost.shippingFee ?? 0, 'Approved shipping') > 0) fail();
+    }
+    if (await manager.count(Quotation, { where: { serviceOrderId: order.id, status: QuotationStatus.SENT } }) ||
+        await manager.count(AdditionalCostRequest, { where: { serviceOrderId: order.id, status: AdditionalCostStatus.PENDING_APPROVAL } })) fail();
+  }
+
+  /** Customer-authorized zero confirmation: no provider success, Payment row or wallet/settlement entry. */
+  async confirmNoChargeInvoice(invoiceId: string, actor: FinanceActor): Promise<NoChargeInvoiceResponseDto> {
+    if (actor.role !== Role.CUSTOMER) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Chỉ khách hàng được xác nhận hóa đơn.');
+    return this.dataSource.transaction(async manager => {
+      const reference = await manager.findOne(Invoice, { where: { id: invoiceId } });
+      if (!reference) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Không tìm thấy hóa đơn.');
+      let order = await manager.findOne(ServiceOrder, { where: { id: reference.serviceOrderId } });
+      if (!order) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Không tìm thấy đơn sửa chữa.');
+      const booking = await manager.findOne(Booking, { where: { id: order.bookingId } });
+      if (!booking || booking.customerId !== actor.id) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Bạn không có quyền xác nhận hóa đơn này.');
+      // Positive payments use the existing finance lock paths. Reject them before
+      // acquiring an Order lock; the locked zero snapshot is rechecked below.
+      if (this.requireWholeVnd(reference.grandTotal, 'Invoice amount') !== 0) {
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Hóa đơn còn số tiền cần thanh toán.');
+      }
+      // Match parts/completion lock order, then serialize zero confirmation and replay.
+      order = await manager.findOneOrFail(ServiceOrder, { where: { id: order.id }, lock: { mode: 'pessimistic_write' } });
+      const invoice = await manager.findOneOrFail(Invoice, { where: { id: invoiceId, serviceOrderId: order.id }, lock: { mode: 'pessimistic_write' } });
+      const response = (): NoChargeInvoiceResponseDto => ({ invoiceId, paymentStatus: 'paid', settlementMethod: 'NO_CHARGE' });
+      if (invoice.paymentStatus === PaymentStatus.PAID) {
+        const confirmed = await manager.findOne(AuditLog, { where: { resourceType: 'invoice', resourceId: invoice.id, action: 'INVOICE_NO_CHARGE_CONFIRMED', actorUserId: actor.id } });
+        if (confirmed && Number(invoice.grandTotal) === 0) return response();
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Hóa đơn đã được thanh toán.');
+      }
+      if (invoice.paymentStatus !== PaymentStatus.UNPAID || order.status !== ServiceOrderStatus.UNDER_REPAIR || !order.completionRequestedAt) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Đơn sửa chữa chưa sẵn sàng để xác nhận miễn phí.');
+      }
+      await this.assertNoChargeIntegrity(manager, invoice, order, booking);
+      const required = await this.configService.getInt('evidence.after.min_count', 1);
+      if (await manager.count(RepairEvidence, { where: { serviceOrderId: order.id, type: EvidenceType.AFTER } }) < required) {
+        throw new BusinessException(ErrorCodes.EVIDENCE_REQUIRED_AFTER, 'Cần ảnh sau sửa chữa trước khi hoàn tất đơn.');
+      }
+      const now = new Date();
+      invoice.paymentStatus = PaymentStatus.PAID;
+      invoice.paidAt = now;
+      await manager.save(Invoice, invoice);
+      order.paymentStatus = PaymentStatus.PAID;
+      if (!await isCompletionHeld(manager, order.id)) {
+        if (!ServiceOrderStateMachine.canTransition(order.status, ServiceOrderStatus.COMPLETED)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Không thể hoàn tất đơn sửa chữa.');
+        order.status = ServiceOrderStatus.COMPLETED;
+        order.completedAt = now;
+        await manager.insert(OrderStatusHistory, { serviceOrderId: order.id, fromStatus: ServiceOrderStatus.UNDER_REPAIR, toStatus: order.status,
+          actorUserId: actor.id, actorRole: actor.role, reason: 'Customer confirmed NO_CHARGE invoice' });
+        await closeOrderPartRequests(manager, order.id, false);
+        await applyOrderCompletionEffects(manager, order, invoice.id, now);
+      }
+      await manager.save(ServiceOrder, order);
+      await manager.update(Payment, { invoiceId: invoice.id, status: PaymentAttemptStatus.PENDING }, { status: PaymentAttemptStatus.CANCELLED, failureCode: 'NO_CHARGE_CONFIRMED' });
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'INVOICE_NO_CHARGE_CONFIRMED',
+        resourceType: 'invoice', resourceId: invoice.id, after: { serviceOrderId: order.id, amount: 0, method: 'NO_CHARGE', orderStatus: order.status } });
+      return response();
+    });
   }
 
   /**
@@ -1356,6 +1482,9 @@ export class FinanceService {
     manager: EntityManager,
     params: { order: ServiceOrder; invoice: Invoice; settlement: CashSettlement; actor: FinanceActor; now: Date },
   ): Promise<void> {
+    if (this.requireWholeVnd(params.invoice.grandTotal, 'Invoice amount') <= 0) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hóa đơn 0 ₫ cần được khách hàng xác nhận miễn phí.');
+    }
     const { order, invoice, settlement: savedSettlement, actor, now } = params;
     const orderRepository = manager.getRepository(ServiceOrder);
     const invoiceRepository = manager.getRepository(Invoice);

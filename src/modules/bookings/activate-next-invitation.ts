@@ -5,6 +5,7 @@ import { Booking } from './entities/booking.entity';
 import { BookingInvitation } from './entities/booking-invitation.entity';
 import { BookingStatus, InvitationStatus } from '../../shared/enums';
 import { technicianEligibility } from './technician-eligibility';
+import { lockCustodyTechnician, partReturnsTrackingEnabled } from '../part-requests/part-custody.policy';
 
 /**
  * Runs when an invitation is handed to the next technician in the shortlist.
@@ -28,6 +29,13 @@ export async function activateNextInvitation(
     if (booking.status !== BookingStatus.MATCHING) return;
     if (await manager.findOneBy(BookingInvitation, { bookingId: booking.id, status: InvitationStatus.PENDING })) return;
     const standby = await manager.find(BookingInvitation, { where: { bookingId: booking.id, status: InvitationStatus.STANDBY }, order: { priorityOrder: 'ASC' } });
+    // Serialize new invitations with QR handovers/receipts, as Accept already
+    // does. Stable order avoids opposite shortlists locking two users in reverse.
+    if (partReturnsTrackingEnabled()) {
+      for (const technicianId of [...new Set(standby.map(invitation => invitation.technicianId))].sort()) {
+        await lockCustodyTechnician(manager, technicianId);
+      }
+    }
     // Invite only the first eligible technician in customer priority order. The second
     // technician remains STANDBY, without an invitation deadline or conversation, until
     // the first DECLINES or expires. The caller holds the Booking row lock.

@@ -6,10 +6,11 @@ import { PartCustody } from '../part-requests/entities/part-custody.entity';
 import { CustodyPayout } from './entities/custody-payout.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
+import { CashSettlement } from '../service-orders/entities/cash-settlement.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { WalletTransaction } from './entities/wallet-transaction.entity';
 import { User } from '../users/entities/user.entity';
-import { PaymentStatus, ServiceOrderStatus } from '../../shared/enums';
+import { CashSettlementStatus, PaymentStatus, ServiceOrderStatus } from '../../shared/enums';
 
 describe('P1 component settlement (mock storage, not concurrency proof)', () => {
   let service: SettlementService;
@@ -43,6 +44,21 @@ describe('P1 component settlement (mock storage, not concurrency proof)', () => 
     service = new SettlementService(wallet as WalletService, { transaction: async cb => cb(db) } as unknown as DataSource);
   });
   afterEach(() => vi.unstubAllEnvs());
+  it.each([false, true])('preserves whole-order settlement with tracking debt outstanding (cash=%s)', async cash => {
+    vi.stubEnv('P1_CUSTODY_ENABLED', 'false'); vi.stubEnv('PART_RETURNS_TRACKING_ENABLED', 'true');
+    const original = db.findOne.getMockImplementation();
+    db.findOne.mockImplementation(async (entity, options) => entity === CashSettlement && cash
+      ? { status: CashSettlementStatus.CONFIRMED } : original(entity, options));
+    expect(await service.trySettleOrder('order')).toEqual({ settled: true });
+    expect(wallet.mutateBalance).toHaveBeenCalledWith(expect.objectContaining({
+      amount: cash ? 600 : 1100,
+      idempotencyKey: cash ? 'PLATFORM_FEE:ORDER_order' : 'ONLINE_EARNING:ORDER_order',
+      referenceType: 'SERVICE_ORDER',
+    }));
+    expect(payouts).toHaveLength(0);
+    expect(outstanding).toBe(1);
+    expect(db.find.mock.calls.some(([entity]) => entity === PartCustody)).toBe(false);
+  });
   it('credits only nonlabor while full net labor L-C is held, then releases exactly once across callbacks and sweep retries', async () => {
     expect(await service.trySettleOrder('order')).toEqual({ settled: false, reason: 'PART_RETURN_OUTSTANDING' });
     expect(wallet.mutateBalance.mock.calls.map(([v]) => v.amount)).toEqual([200]);

@@ -7,7 +7,7 @@ import {
   Injectable,
   ForbiddenException,
   Logger,
-  NotFoundException, Optional } from '@nestjs/common';
+  NotFoundException, Optional, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, EntityManager, In, SelectQueryBuilder } from 'typeorm';
 import { isUUID } from 'class-validator';
@@ -18,6 +18,12 @@ import { Service } from '../services/entities/service.entity';
 import { Address } from '../users/entities/address.entity';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
+import {
+  bookingStageSql,
+  orderStageSql,
+  type CustomerActivityCounts,
+  type RequestStage,
+} from '../../shared/utils/customer-activity-stage';
 import { BookingStatus, Role, ServicePricingMode, UrgencyLevel } from '../../shared/enums';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
@@ -25,7 +31,7 @@ import { TechnicianSkill } from '../technicians/entities/technician-skill.entity
 
 export { CreateBookingDto } from './booking.dto';
 import { AttachBookingMediaDto, CreateBookingDto, RebookDto, ScheduleBookingDto } from './booking.dto';
-import { BOOKING_SLOTS, resolveBookingWindow, slotWindow, vnDate, type BookingSlot } from './booking-slots';
+import { BOOKING_SLOTS, resolveBookingWindow, vnDate, type BookingSlot } from './booking-slots';
 import { distanceToBooking, servesArea, technicianOrigin } from './technician-location';
 import { technicianDistances } from './technician-distance';
 import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
@@ -84,6 +90,7 @@ type BookingListOptions = {
   search?: string;
   overdue?: boolean;
   sort?: 'created' | 'appointment';
+  stage?: RequestStage;
 };
 
 /**
@@ -94,6 +101,7 @@ function filterBookingList(qb: SelectQueryBuilder<Booking>, options: BookingList
   if (options.status) qb.andWhere('b.status = :status', { status: options.status });
   if (options.statuses?.length) qb.andWhere('b.status IN (:...statuses)', { statuses: options.statuses });
   andWhereTextMatches(qb, ['b.service_name_snapshot', 'b.description'], options.search);
+  if (options.stage) qb.andWhere(bookingStageSql(options.stage, 'b'));
   if (options.overdue === true) qb.andWhere('b.preferred_start_at < now()');
   if (options.overdue === false) qb.andWhere('(b.preferred_start_at IS NULL OR b.preferred_start_at >= now())');
   if (options.sort === 'appointment') qb.orderBy('b.preferredStartAt', 'ASC', 'NULLS LAST').addOrderBy('b.createdAt', 'DESC');
@@ -396,6 +404,39 @@ export class BookingsService {
 
     const [data, total] = await qb.getManyAndCount();
     return { data, total };
+  }
+
+  /** Exact counts of the customer's Activity tabs and their filters, so a client shows numbers without loading every page. */
+  async activityCounts(customerId: string): Promise<CustomerActivityCounts> {
+    await this.closeOverdueBookings();
+    const [orders, bookings] = await Promise.all([
+      this.dataSource.query(
+        `SELECT
+           count(*) FILTER (WHERE ${orderStageSql('in_progress')})::int AS in_progress,
+           count(*) FILTER (WHERE ${orderStageSql('completed')})::int AS completed,
+           count(*) FILTER (WHERE ${orderStageSql('cancelled')})::int AS cancelled
+         FROM service_orders o JOIN bookings b ON b.id = o.booking_id
+         WHERE b.customer_id = $1`,
+        [customerId],
+      ),
+      this.dataSource.query(
+        `SELECT
+           count(*) FILTER (WHERE ${bookingStageSql('no_technician')})::int AS no_technician,
+           count(*) FILTER (WHERE ${bookingStageSql('sent')})::int AS sent,
+           count(*) FILTER (WHERE ${bookingStageSql('cancelled')})::int AS cancelled
+         FROM bookings b
+         WHERE b.customer_id = $1`,
+        [customerId],
+      ),
+    ]);
+    const o = orders[0] ?? {};
+    const b = bookings[0] ?? {};
+    const repair = { in_progress: Number(o.in_progress ?? 0), completed: Number(o.completed ?? 0), cancelled: Number(o.cancelled ?? 0) };
+    const request = { no_technician: Number(b.no_technician ?? 0), sent: Number(b.sent ?? 0), cancelled: Number(b.cancelled ?? 0) };
+    return {
+      repair: { all: repair.in_progress + repair.completed + repair.cancelled, ...repair },
+      request: { all: request.no_technician + request.sent + request.cancelled, ...request },
+    };
   }
 
   /**
@@ -721,7 +762,7 @@ export class BookingsService {
     customer: { id: string },
   ): Promise<Booking> {
     if (dto.mode === 'urgent') {
-      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Dời lịch thì chọn ngày và buổi (sáng hoặc chiều)');
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Dời lịch thì chọn ngày và buổi (sáng, chiều hoặc tối)');
     }
     const window = resolveBookingWindow(dto, new Date(), 0);
     if ('error' in window) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, window.error);
@@ -873,22 +914,32 @@ export class BookingsService {
       || (order && [ServiceOrderStatus.COMPLETED, ServiceOrderStatus.CANCELLED].includes(order.status));
     if (!finished) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chỉ đặt lại từ đơn đã hoàn thành hoặc đã huỷ');
     if (!old.addressId) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Đơn cũ không còn địa chỉ, vui lòng đặt mới');
-    const booking = await this.create(
-      {
-        serviceId: old.serviceId,
-        addressId: old.addressId,
-        description: dto.problemDescription?.trim() || old.description,
-        mode: dto.mode,
-        date: dto.date,
-        slot: dto.slot,
-        preferredStartAt: dto.preferredStartAt,
-        preferredEndAt: dto.preferredEndAt,
-        quantity: dto.quantity ?? old.quantity,
-        urgency: old.urgency,
-        customerNote: dto.customerNote ?? old.customerNote ?? undefined,
-      },
-      customer,
-    );
+    const service = await this.serviceRepo.findOneBy({ id: old.serviceId });
+    if (!service?.isActive) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Dịch vụ của đơn cũ đã ngừng, vui lòng đặt yêu cầu mới');
+    const base = {
+      serviceId: old.serviceId,
+      addressId: old.addressId,
+      description: dto.problemDescription?.trim() || old.description,
+      mode: dto.mode,
+      date: dto.date,
+      slot: dto.slot,
+      preferredStartAt: dto.preferredStartAt,
+      preferredEndAt: dto.preferredEndAt,
+      quantity: dto.quantity ?? old.quantity,
+      urgency: old.urgency,
+      customerNote: dto.customerNote ?? old.customerNote ?? undefined,
+      // Giữ thông tin máy và phạm vi đã chốt để đơn mới ra đúng giá như đơn cũ.
+      deviceAttributes: old.deviceAttributesSnapshot ?? undefined,
+    };
+    const variantCode = old.catalogV2PricingSnapshot?.selectedVariant?.variantCode ?? null;
+    let booking: Booking;
+    try {
+      booking = await this.create({ ...base, selectedVariantCode: variantCode }, customer);
+    } catch (err) {
+      // Phạm vi cũ không còn áp dụng (đã tắt hoặc đổi giá): vẫn đặt lại, thợ báo giá như thường.
+      if (!variantCode || !(err instanceof BadRequestException)) throw err;
+      booking = await this.create(base, customer);
+    }
     return { booking, previousTechnicianId: await this.previousTechnicianId(this.dataSource.manager, old.id) };
   }
 
@@ -923,8 +974,8 @@ export class BookingsService {
     for (let i = 0; i < Math.min(Math.max(days, 1), 30); i++) {
       const date = vnDate(new Date(Date.parse(today + 'T00:00:00Z') + i * 86_400_000));
       for (const slot of Object.keys(BOOKING_SLOTS) as BookingSlot[]) {
-        const window = slotWindow(date, slot)!;
-        if (window.start.getTime() <= now) continue;
+        const window = resolveBookingWindow({ mode: 'scheduled', date, slot }, new Date(now), 0);
+        if ('error' in window) continue;
         let available = true;
         let reason: string | null = null;
         if (technicianId) {

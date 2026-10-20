@@ -129,6 +129,7 @@ export class QuotationsService {
       if (!await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, result: CheckInResult.VALID })) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Verified arrival required before quotation');
       if (await manager.findOneBy(Quotation, { serviceOrderId: orderId, status: QuotationStatus.APPROVED })) throw new BusinessException(ErrorCodes.ADDITIONAL_COST_IMMUTABLE, 'Approved base quotation is immutable; use additional costs');
       const items = await this.validateItems(manager, dto.items, await this.laborWarranty(manager, order, actor.id));
+      await this.partRequestsService.assertQuotationPartQuantities(manager, orderId, actor.id, items);
       const laborTotal = items.filter(i => i.type === CostItemType.LABOR).reduce((v,i) => v+i.quantity*i.unitPrice,0);
       const partsTotal = items.filter(i => i.type === CostItemType.PARTS_EQUIPMENT).reduce((v,i) => v+i.quantity*i.unitPrice,0);
       const version = await manager.count(Quotation, { where: { serviceOrderId: orderId } }) + 1;
@@ -172,6 +173,7 @@ export class QuotationsService {
       if (quote.status === target) return quote;
       if (quote.status !== QuotationStatus.SENT || order.status !== ServiceOrderStatus.EN_ROUTE) throw new BusinessException(ErrorCodes.ADDITIONAL_COST_ALREADY_DECIDED, 'Quotation is no longer pending');
       if (action === 'APPROVE') {
+        await this.partRequestsService.assertQuotationPartQuantities(manager, order.id, quote.technicianId, quote.items);
         this.selectWarranty(quote.items, paidWarrantyItemIds);
         await manager.save(QuotationItem, quote.items);
         await manager.update(ServiceOrder, order.id, { laborTotal: quote.laborTotal, partsTotal: quote.partsTotal, grandTotal: Number(quote.laborTotal)+Number(quote.partsTotal)+quote.items.reduce((v,i)=>v+Number(i.warrantyFee ?? 0),0) });
@@ -180,6 +182,8 @@ export class QuotationsService {
       }
       quote.status = target;
       quote.decidedAt = new Date();
+      await manager.save(Quotation, quote);
+      if (target === QuotationStatus.APPROVED) await this.partRequestsService.createRequestFromApprovedQuotation(manager, quote, actor);
       await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'QUOTATION_DECISION', resourceType: 'quotation', resourceId: id, after: { action, paidWarrantyItemIds } });
       if (this.notificationsService && quote.technicianId) {
         void this.notificationsService.createNotification({
@@ -193,7 +197,7 @@ export class QuotationsService {
           referenceType: 'SERVICE_ORDER',
         });
       }
-      return manager.save(quote);
+      return quote;
     });
     // PO 08/10/2026: no separate "start repair" step; an approved quotation on a
     // checked-in order with its product photo moves it to repair by itself.

@@ -100,7 +100,7 @@ export class ServiceOrdersController {
     const result = await this.serviceOrdersService.findMyOrders(
       req.user.id,
       req.user.role,
-      { page: query.page, limit: query.pageSize, status: query.status, statuses: query.statuses, search: query.search },
+      { page: query.page, limit: query.pageSize, status: query.status, statuses: query.statuses, search: query.search, stage: query.stage },
     );
     return { data: result.data, meta: { total: result.total } };
   }
@@ -166,12 +166,12 @@ export class ServiceOrdersController {
   }
 
   @Post('service-orders/:id/evidence')
-  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 3 } }))
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 4 } }))
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('evidence:upload')
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Technician: upload BEFORE / AFTER / ADDITIONAL evidence', description: 'Multipart/form-data with one image file (max 10 MB) and lowercase type. BEFORE requires a valid check-in while EN_ROUTE; AFTER and ADDITIONAL are only during UNDER_REPAIR before completion request. If the storage provider is unavailable, the API may return 503: an image picker alone is not successful upload.' })
+  @ApiOperation({ summary: 'Technician: upload BEFORE / AFTER / ADDITIONAL evidence', description: 'Multipart/form-data with one image file (max 10 MB) and lowercase type. BEFORE requires valid GPS and face check-in while EN_ROUTE; optionally send deferAutoStart=true on earlier batch photos, then omit or send false on the final sequential upload to attempt automatic repair start. The flag does not reserve the order state. AFTER and ADDITIONAL are only during UNDER_REPAIR before completion request. If the storage provider is unavailable, the API may return 503: an image picker alone is not successful upload.' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({ schema: {
     type: 'object', required: ['type', 'file'],
@@ -180,6 +180,7 @@ export class ServiceOrdersController {
       file: { type: 'string', format: 'binary', description: 'One JPEG, PNG or WebP image up to 10 MB.' },
       note: { type: 'string', maxLength: 2000, description: 'Optional short evidence note.' },
       capturedAt: { type: 'string', format: 'date-time', description: 'Optional ISO 8601 capture timestamp.' },
+      deferAutoStart: { type: 'boolean', default: false, description: 'BEFORE only. Multipart true/false; true defers auto-start for this photo. Omit or send false on the final batch photo.' },
     },
   } })
   async uploadEvidence(
@@ -324,6 +325,31 @@ export class ServiceOrdersController {
       req.user,
     );
     return { data: order };
+  }
+
+  @Get('service-orders/:id/overrun-release')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('order:cancel')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Technician: may this order be released because the current job overruns (no reputation penalty)?' })
+  async overrunReleaseStatus(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    return { data: await this.serviceOrdersService.overrunReleaseStatus(id, req.user) };
+  }
+
+  @Post('service-orders/:id/overrun-release')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('order:cancel')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Technician releases an upcoming order while still on another job; no penalty; the customer picks another technician' })
+  async releaseForOverrun(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    return { data: await this.serviceOrdersService.releaseForOverrun(id, req.user) };
   }
 
   // ── 3. Order Details & History ──

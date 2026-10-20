@@ -36,7 +36,7 @@ export class PartCustodyRuleError extends Error {
   }
 }
 
-const MAX_PART_QUANTITY = 100;
+export const MAX_PART_QUANTITY = 100;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]{8,128}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -97,11 +97,14 @@ function validateSnapshot(snapshot: PartCustodySnapshot): void {
     !isNonEmptyString(snapshot.partRequestItemId) ||
     !isNonEmptyString(snapshot.originalCustodianTechnicianId)
   ) fail('INVALID_SNAPSHOT', 'Custody snapshot identifiers are invalid');
-  if (![PartRequestType.PRE_REPAIR, PartRequestType.ADDITIONAL].includes(snapshot.requestType)) {
+  if (!Object.values(PartRequestType).includes(snapshot.requestType)) {
     fail('INVALID_SNAPSHOT', 'Custody request type is invalid');
   }
   if (snapshot.requestType === PartRequestType.ADDITIONAL && !isNonEmptyString(snapshot.additionalCostId)) {
     fail('INVALID_SNAPSHOT', 'An additional part request must reference its approved cost');
+  }
+  if (snapshot.requestType === PartRequestType.QUOTATION && (!isNonEmptyString(snapshot.quotationId) || snapshot.additionalCostId != null)) {
+    fail('INVALID_SNAPSHOT', 'A quotation part request must reference only its approved quotation');
   }
   if (![PartSource.FIXHOME, PartSource.TECHNICIAN, PartSource.EXTERNAL].includes(snapshot.source)) {
     fail('INVALID_SNAPSHOT', 'Custody part source is invalid');

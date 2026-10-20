@@ -1,0 +1,7 @@
+# DEV VPS only: enabled via the dev-branch deploy workflow.
+# Does not activate finance custody, settlement holds, or production instances.
+services:
+  backend:
+    environment:
+      PART_RETURNS_TRACKING_ENABLED: "true"
+      P1_CUSTODY_ENABLED: "false"

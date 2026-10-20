@@ -49,6 +49,7 @@ describe('Booking Swagger contract: ordered invitations', () => {
         serviceId: { type: 'string', format: 'uuid' },
         addressId: { type: 'string', format: 'uuid' },
         urgency: { enum: ['low', 'medium', 'high', 'critical'] },
+        slot: { enum: ['morning', 'afternoon', 'evening'] },
         photoUploadIds: { type: 'array', maxItems: 7 },
       },
     });

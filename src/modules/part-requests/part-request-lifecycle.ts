@@ -51,13 +51,63 @@ export function assertPartsResolved(requests: PartRequest[]): void {
   }
 }
 
+/** Resolve only explicit request types; quotation stock must match the approved quotation. */
+export function partRequestCostSource(request: PartRequest, quotationId?: string | null): string | null {
+  if (request.requestType === PartRequestType.PRE_REPAIR) return 'quotation';
+  if (request.requestType === PartRequestType.QUOTATION) {
+    return request.quotationId && (quotationId === undefined || request.quotationId === quotationId) && !request.additionalCostId ? 'quotation' : null;
+  }
+  return request.requestType === PartRequestType.ADDITIONAL ? request.additionalCostId ?? null : null;
+}
+
+export interface ApprovedPartLine {
+  source: string;
+  partSource?: PartSource | null;
+  partCatalogId?: string | null;
+  quantity: number;
+}
+
+/** Missing warehouse evidence is not a discount. A resolved return is a legitimate exclusion. */
+export function assertApprovedPartsResolved(lines: ApprovedPartLine[], requests: PartRequest[], quotationId: string | null, custodyUsage: ReadonlyMap<string, number> = new Map()): void {
+  const approved = new Map<string, number>();
+  const resolved = new Map<string, number>();
+  const used = new Map<string, number>();
+  const key = (source: string, catalogId: string) => `${source}:${catalogId}`;
+  const fail = () => { throw new BusinessException(ErrorCodes.CONFLICT, 'Linh kiện chưa khớp báo giá và bàn giao. Vui lòng liên hệ FixHome để kiểm tra hóa đơn.'); };
+  for (const line of lines) {
+    if (line.partSource !== PartSource.FIXHOME) continue;
+    if (!line.partCatalogId || !Number.isSafeInteger(line.quantity) || line.quantity < 1) fail();
+    const k = key(line.source, line.partCatalogId!);
+    approved.set(k, (approved.get(k) ?? 0) + line.quantity);
+  }
+  for (const request of requests) {
+    if (![PartRequestStatus.RECEIVED, PartRequestStatus.COMPLETED].includes(request.status)) continue;
+    const source = partRequestCostSource(request, quotationId);
+    if (!source) {
+      if (request.items.some(i => i.partSource === PartSource.FIXHOME && i.usageStatus === PartUsageStatus.USED)) fail();
+      continue;
+    }
+    for (const item of request.items) {
+      if (item.partSource !== PartSource.FIXHOME || !item.partCatalogId) continue;
+      if (![PartUsageStatus.USED, PartUsageStatus.RETURNED].includes(item.usageStatus)) continue;
+      const k = key(source, item.partCatalogId);
+      resolved.set(k, (resolved.get(k) ?? 0) + item.quantity);
+      const quantity = item.usageStatus === PartUsageStatus.USED ? custodyUsage.get(item.id) ?? item.quantity : 0;
+      if (!Number.isSafeInteger(quantity) || quantity < 0 || quantity > item.quantity) fail();
+      used.set(k, (used.get(k) ?? 0) + quantity);
+    }
+  }
+  for (const [k, quantity] of approved) if ((resolved.get(k) ?? 0) < quantity) fail();
+  for (const [k, quantity] of used) if (quantity > (approved.get(k) ?? 0)) fail();
+}
+
 /** Consume each received USED quantity once, within its approved cost source. */
-export function usedPartQuantities(requests: PartRequest[], custodyUsage: ReadonlyMap<string, number> = new Map()) {
+export function usedPartQuantities(requests: PartRequest[], custodyUsage: ReadonlyMap<string, number> = new Map(), quotationId?: string | null) {
   const quantities = new Map<string, number>();
   const key = (source: string, catalogId: string) => `${source}:${catalogId}`;
   for (const request of requests) {
     if (![PartRequestStatus.RECEIVED, PartRequestStatus.COMPLETED].includes(request.status)) continue;
-    const source = request.requestType === PartRequestType.PRE_REPAIR ? 'quotation' : request.additionalCostId;
+    const source = partRequestCostSource(request, quotationId);
     if (!source) continue;
     for (const item of request.items) {
       if (item.partSource !== PartSource.FIXHOME || item.usageStatus !== PartUsageStatus.USED || !item.partCatalogId) continue;

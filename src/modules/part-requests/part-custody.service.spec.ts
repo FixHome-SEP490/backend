@@ -7,7 +7,9 @@ import { PartCustody, PartCustodyActivation, PartCustodyEntry } from './entities
 import { PartRequest } from './entities/part-request.entity';
 import { PartRequestItem } from './entities/part-request-item.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
+import { custodyUsageForInvoice, hasPartReturnRestriction } from './part-custody.policy';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
+import { Quotation } from '../quotations/entities/quotation.entity';
 import { PartRequestStatus, PartRequestType, PartSource, PartUsageStatus, Role, ServiceOrderStatus } from '../../shared/enums';
 
 const tech = { id: 'tech', role: Role.TECHNICIAN };
@@ -27,7 +29,7 @@ describe('persistent P1 custody', () => {
     rows = []; entries = []; frozen = false;
     order = { id: 'order', status: ServiceOrderStatus.UNDER_REPAIR, completionRequestedAt: null };
     request = { id: 'request', serviceOrderId: 'order', technicianId: tech.id, requestType: PartRequestType.PRE_REPAIR,
-      receivedAt: new Date(), items: [{ id: 'item', partRequestId: 'request', partSource: PartSource.FIXHOME, quantity: 3, usageStatus: PartUsageStatus.PENDING, partNameSnapshot: 'Part' }] };
+      receivedAt: new Date(), items: [{ id: 'item', partRequestId: 'request', partCatalogId: 'catalog', partSource: PartSource.FIXHOME, quantity: 3, usageStatus: PartUsageStatus.PENDING, partNameSnapshot: 'Part' }] };
     db = {
       findOne: vi.fn(async (entity, options) => {
         if (entity === PartCustodyActivation) return { id: 1, enabled: true, activatedAt: new Date('2026-01-01T00:00:00Z') };
@@ -35,11 +37,12 @@ describe('persistent P1 custody', () => {
         if (entity === Invoice) return frozen ? { id: 'invoice' } : null;
         if (entity === PartRequest) return request;
         if (entity === PartRequestItem) return request.items[0];
+        if (entity === Quotation) return { id: 'quote', items: [{ partSource: PartSource.FIXHOME, partCatalogId: 'catalog', quantity: 3 }] };
         if (entity === PartCustody) return rows.find(row => row.partRequestItemId === options.where.partRequestItemId) ?? null;
         if (entity === PartCustodyEntry) return entries.find(row => row.custodyId === options.where.custodyId && row.idempotencyKey === options.where.idempotencyKey) ?? null;
         return { id: tech.id };
       }),
-      find: vi.fn(async (entity, options) => entity === PartCustody ? rows.filter(row => !options?.where?.serviceOrderId || row.serviceOrderId === options.where.serviceOrderId) : []),
+      find: vi.fn(async (entity, options) => entity === PartCustody ? rows.filter(row => !options?.where?.serviceOrderId || row.serviceOrderId === options.where.serviceOrderId) : entity === PartRequest ? [request] : []),
       create: vi.fn((_entity, value) => value),
       save: vi.fn(async (entity, value) => {
         if (entity === PartCustody && !rows.includes(value)) { value.id = 'custody'; rows.push(value); }
@@ -51,6 +54,133 @@ describe('persistent P1 custody', () => {
   });
   afterEach(() => vi.unstubAllEnvs());
   const enroll = () => service.enrollHandover(db, request, order);
+
+  const tracking = () => {
+    vi.stubEnv('P1_CUSTODY_ENABLED', 'false');
+    vi.stubEnv('PART_RETURNS_TRACKING_ENABLED', 'true');
+    order.createdAt = new Date('2026-02-01T00:00:00Z');
+  };
+  it('tracks only new orders handed over after activation with finance P1 OFF', async () => {
+    tracking();
+    order.createdAt = new Date('2025-12-31T00:00:00Z');
+    await enroll(); expect(rows).toHaveLength(0);
+    order.createdAt = new Date('2026-02-01T00:00:00Z');
+    await enroll();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ trackingOnly: true, state: { outstandingQty: 3 } });
+  });
+  it('P013 enrolls linked QUOTATION QR stock in tracking-only mode without finance P1', async () => {
+    tracking();
+    request.requestType = PartRequestType.QUOTATION;
+    request.quotationId = 'quote';
+    await enroll();
+    expect(rows[0]).toMatchObject({ trackingOnly: true, state: { requestType: 'quotation', quotationId: 'quote', additionalCostId: null } });
+    await service.recordUsage(db, request, request.items[0], order, { usageStatus: PartUsageStatus.RETURNED }, tech);
+    expect(rows[0].state).toMatchObject({ usedQty: 0, outstandingQty: 3 });
+    expect(process.env.P1_CUSTODY_ENABLED).toBe('false');
+  });
+  it.each([PartUsageStatus.RETURNED, PartUsageStatus.USED])('accepts existing status-only %s for tracking without changing invoice quantities', async usageStatus => {
+    tracking(); await enroll(); request.status = PartRequestStatus.RECEIVED;
+    const parts = Object.assign(Object.create(PartRequestsService.prototype), {
+      dataSource: { transaction: async cb => cb(db) }, custodyService: service,
+      auditLogService: { logWithManager: vi.fn() },
+    }) as PartRequestsService;
+    vi.spyOn(parts as any, 'lockRequest').mockResolvedValue({ request, order });
+    expect(await parts.updateItemUsage('request', 'item', { usageStatus }, tech)).toMatchObject({ usageStatus, quantity: 3 });
+    expect(rows[0].state).toMatchObject(usageStatus === PartUsageStatus.RETURNED ? { usedQty: 0, outstandingQty: 3 } : { usedQty: 3, outstandingQty: 0 });
+    await parts.updateItemUsage('request', 'item', { usageStatus }, tech);
+    expect(entries).toHaveLength(1);
+  });
+  it('tracking-only: issued 3, used 1, return 2; NEW invoice consumes one approved unit', async () => {
+    tracking(); await enroll();
+    request.status = PartRequestStatus.RECEIVED;
+    const parts = Object.assign(Object.create(PartRequestsService.prototype), {
+      dataSource: { transaction: async cb => cb(db) }, custodyService: service,
+      auditLogService: { logWithManager: vi.fn() },
+    }) as PartRequestsService;
+    vi.spyOn(parts as any, 'lockRequest').mockResolvedValue({ request, order });
+    const command = { usageStatus: PartUsageStatus.USED, usedQty: 1, expectedVersion: 0, idempotencyKey: 'usage-partial-01' };
+    await parts.updateItemUsage('request', 'item', command, tech);
+    expect(rows[0].state).toMatchObject({ issuedQty: 3, usedQty: 1, returnDueQty: 2, outstandingQty: 2, version: 1 });
+    expect(request.items[0].usageStatus).toBe(PartUsageStatus.USED);
+    await expect(service.recordUsage(db, request, request.items[0], order,
+      { usageStatus: PartUsageStatus.USED }, tech)).rejects.toMatchObject({ status: 409 });
+    expect(rows[0].state.usedQty).toBe(1);
+    const custody = await custodyUsageForInvoice(db, order.id);
+    expect(custody.get('item')).toBe(1);
+    const chargedQty = usedPartQuantities([request], custody, 'quote')('quotation',
+      { partSource: PartSource.FIXHOME, partCatalogId: 'catalog', quantity: 3 });
+    expect(chargedQty).toBe(1);
+    expect(chargedQty * 5000).toBe(5000);
+    const declared = await service.command('request', 'item', 'declare_return', body(2, 1), tech);
+    expect(declared).toMatchObject({ usedQty: 1, outstandingQty: 2, declaredQty: 2, managerAcceptedQty: 0 });
+    await expect(parts.updateItemUsage('request', 'item', { ...command, usedQty: 2, expectedVersion: 2 }, tech))
+      .rejects.toMatchObject({ status: 409 });
+    const accepted = await service.command('request', 'item', 'accept_return',
+      body(2, 2, 'accept-partial-01'), managerActor);
+    expect(accepted).toMatchObject({ usedQty: 1, managerAcceptedQty: 2, outstandingQty: 0 });
+  });
+  it('keeps old status-only used/returned calls compatible in tracking-only mode', async () => {
+    tracking(); await enroll();
+    request.status = PartRequestStatus.RECEIVED;
+    await service.recordUsage(db, request, request.items[0], order, { usageStatus: PartUsageStatus.RETURNED }, tech);
+    expect(rows[0].state).toMatchObject({ usedQty: 0, outstandingQty: 3 });
+    const custody = await custodyUsageForInvoice(db, order.id);
+    expect(custody.get('item')).toBe(0);
+  });
+  it('allows physical receipts after customer completion; partial and missing receipts retain the obligation', async () => {
+    tracking(); await enroll();
+    db.query = vi.fn(async (_sql, params) => [{ blocked: rows.some(row => row.technicianId === params[0] && row.trackingOnly && row.state.outstandingQty > 0) }]);
+    expect(await hasPartReturnRestriction(db, tech.id)).toBe(true);
+    await service.recordUsage(db, request, request.items[0], order, { usedQty: 0, expectedVersion: 0, idempotencyKey: 'usage-return-01' }, tech);
+    order.status = ServiceOrderStatus.COMPLETED; frozen = true;
+    await service.command('request', 'item', 'declare_return', body(3, 1), tech);
+    const first = await service.command('request', 'item', 'accept_return', body(1, 2, 'receipt-first-01'), managerActor);
+    expect(first).toMatchObject({ outstandingQty: 2, returnStatus: 'partially_received', trackingOnly: true });
+    expect(await hasPartReturnRestriction(db, tech.id)).toBe(true);
+    expect(await service.command('request', 'item', 'accept_return', body(1, 2, 'receipt-first-01'), managerActor)).toEqual(first);
+    const last = await service.command('request', 'item', 'accept_return', body(2, 3, 'receipt-final-01'), managerActor);
+    expect(last).toMatchObject({ outstandingQty: 0, returnStatus: 'received' });
+    expect(await hasPartReturnRestriction(db, tech.id)).toBe(false);
+    expect(order.status).toBe(ServiceOrderStatus.COMPLETED);
+    expect(frozen).toBe(true);
+  });
+  it('lists undeclared obligations for managers and filters the technician queue to the original owner', async () => {
+    tracking(); await enroll();
+    let owner: string | undefined;
+    const query = {
+      where: vi.fn(() => query),
+      andWhere: vi.fn((_sql, params) => { owner = params.technicianId; return query; }),
+      orderBy: vi.fn(() => query), addOrderBy: vi.fn(() => query), take: vi.fn(() => query),
+      getMany: vi.fn(async () => rows.filter(row => row.state.outstandingQty > 0 && (!owner || row.technicianId === owner))),
+    };
+    db.createQueryBuilder = vi.fn(() => { owner = undefined; return query; });
+    expect(await service.pending(managerActor)).toHaveLength(1);
+    expect(await service.pending(tech)).toHaveLength(1);
+    expect(await service.pending({ id: 'other', role: Role.TECHNICIAN })).toEqual([]);
+    await expect(service.pending({ id: 'customer', role: Role.CUSTOMER })).rejects.toMatchObject({ status: 403 });
+  });
+  it('can stop new enrollment without hiding existing tracking obligations or preventing receipt', async () => {
+    tracking(); await enroll();
+    await service.command('request', 'item', 'declare_return', body(3, 0), tech);
+    const original = db.findOne.getMockImplementation();
+    db.findOne.mockImplementation(async (entity, options) => entity === PartCustodyActivation
+      ? { enabled: false, activatedAt: new Date('2026-01-01T00:00:00Z') } : original(entity, options));
+    expect(await service.byOrder('order', tech)).toHaveLength(1);
+    expect(await service.command('request', 'item', 'accept_return', body(3, 1, 'accept-paused-01'), managerActor)).toMatchObject({ outstandingQty: 0 });
+    rows.length = 0;
+    await enroll(); expect(rows).toHaveLength(0);
+  });
+  it('records damaged or missing returns as an exception without accepting stock or clearing debt', async () => {
+    tracking(); await enroll();
+    await service.command('request', 'item', 'declare_return', body(3, 0), tech);
+    const exception = { declaredQty: 3, observedQty: 0, expectedVersion: 1, idempotencyKey: 'damaged-return-01', reason: 'Linh kiện bị hỏng' };
+    const result = await service.command('request', 'item', 'report_discrepancy', exception, managerActor);
+    expect(result).toMatchObject({ outstandingQty: 3, managerAcceptedQty: 0, returnStatus: 'exception', discrepancies: [{ declaredQty: 3, observedQty: 0 }] });
+    expect(await service.command('request', 'item', 'report_discrepancy', exception, managerActor)).toEqual(result);
+    await expect(service.command('request', 'item', 'report_discrepancy', { ...exception, observedQty: 1 }, managerActor)).rejects.toMatchObject({ status: 409 });
+    await expect(service.command('request', 'item', 'report_discrepancy', exception, tech)).rejects.toMatchObject({ status: 403 });
+  });
 
   it('does not query new storage when the flag is absent', async () => {
     vi.stubEnv('P1_CUSTODY_ENABLED', 'false');

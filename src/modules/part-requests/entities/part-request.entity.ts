@@ -51,6 +51,9 @@ export class PartRequest extends BaseEntity {
   @Column({ name: 'additional_cost_id', type: 'uuid', nullable: true })
   additionalCostId?: string | null;
 
+  @Column({ name: 'quotation_id', type: 'uuid', nullable: true })
+  quotationId?: string | null;
+
   // QR handover token — generated when SM marks READY
   @Column({ name: 'qr_token', type: 'varchar', length: 128, nullable: true })
   qrToken?: string | null;

@@ -23,6 +23,8 @@ const ALLOWED_MIME_TYPES = [
   'image/png',
   'image/webp',
   'application/pdf',
+  'video/webm',
+  'video/mp4',
 ];
 
 export class DocumentMetadataDto {
@@ -50,7 +52,7 @@ export class DocumentMetadataDto {
   @IsString()
   @IsNotEmpty({ message: 'fileName is required' })
   @MaxLength(255)
-  @Matches(/^[^\\/]+\.(jpe?g|png|webp|pdf)$/iu)
+  @Matches(/^[^\\/]+\.(jpe?g|png|webp|pdf|webm|mp4)$/iu)
   fileName: string;
 
   @ApiProperty({
@@ -66,12 +68,12 @@ export class DocumentMetadataDto {
     example: 'image/jpeg',
     enum: ALLOWED_MIME_TYPES,
     description:
-      'Allowed MIME types: image/jpeg, image/png, image/webp, application/pdf',
+      'Allowed MIME types: image/jpeg, image/png, image/webp, application/pdf, video/webm, video/mp4',
   })
   @IsString()
   @IsIn(ALLOWED_MIME_TYPES, {
     message:
-      'mimeType must be one of image/jpeg, image/png, image/webp, application/pdf',
+      'mimeType must be one of image/jpeg, image/png, image/webp, application/pdf, video/webm, video/mp4',
   })
   mimeType: string;
 }

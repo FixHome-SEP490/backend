@@ -1,6 +1,6 @@
 import { andWhereTextMatches } from '../../shared/utils/list-search';
 import { NO_DEPARTURE_CANCEL_REASON } from './no-departure';
-import { closeOrderPartRequests, assertPartsResolved, usedPartQuantities, holderPartRequests, releaseOutgoingTechnicianPartRequests } from '../part-requests/part-request-lifecycle';
+import { closeOrderPartRequests, assertPartsResolved, assertApprovedPartsResolved, usedPartQuantities, holderPartRequests, releaseOutgoingTechnicianPartRequests } from '../part-requests/part-request-lifecycle';
 import { custodyUsageForInvoice, p1CustodyEnabled } from '../part-requests/part-custody.policy';
 import { Payment } from '../finance/entities/payment.entity';
 import { PartRequest } from '../part-requests/entities/part-request.entity';
@@ -58,6 +58,7 @@ import {
   PaymentAttemptStatus,
   CashSettlementStatus,
 } from '../../shared/enums';
+import { orderStageSql, type RepairStage } from '../../shared/utils/customer-activity-stage';
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { FinanceService, FinanceActor } from '../finance/finance.service';
@@ -78,6 +79,7 @@ import { authorizeOrder } from './order-access';
 import { isCompletionHeld } from '../support-cases/completion-hold';
 import { historicalOrderSummary, type HistoricalOrderSummary } from './historical-order-summary';
 import { repairHistoryStatuses } from './repair-history-filter';
+import { checkOverrunRelease, OVERRUN_RELEASE_WINDOW_DEFAULT_MINUTES, OVERRUN_RELEASE_WINDOW_KEY, type OverrunReleaseCheck } from './overrun-release';
 
 /** A cancellation as the review list shows it: who cancelled, and which order. */
 export type CancellationListItem = Cancellation & {
@@ -403,7 +405,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   async findMyOrders(
     userId: string,
     role: string,
-    options: { page?: number; limit?: number; status?: ServiceOrderStatus; statuses?: ServiceOrderStatus[]; search?: string },
+    options: { page?: number; limit?: number; status?: ServiceOrderStatus; statuses?: ServiceOrderStatus[]; search?: string; stage?: RepairStage },
   ): Promise<{ data: (ServiceOrder | HistoricalOrderSummary)[]; total: number }> {
     await this.cancelOverdueOrders();
     const page = options.page || 1;
@@ -414,6 +416,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     if (role === Role.CUSTOMER) {
       qb.innerJoin('bookings', 'b', 'b.id = o.booking_id')
         .where('b.customer_id = :userId', { userId });
+      if (options.stage) qb.andWhere(orderStageSql(options.stage, 'o'));
     } else if (role === Role.TECHNICIAN) {
       qb.innerJoin(
         'technician_assignments',
@@ -782,7 +785,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         booking.status = BookingStatus.MATCHING;
         await manager.save(booking);
         await activateNextInvitation(manager, booking, await this.configService.getInt('matching.invitation_ttl_minutes', 30), invitationActivatedHook(this.notificationsService));
-        await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from, actorUserId: actor.id, actorRole: actor.role, reason: 'Technician withdrew before arrival; awaiting replacement: ' + body.reason });
+        await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from, actorUserId: actor.id, actorRole: actor.role, reason: 'Kỹ thuật viên rút trước khi tới, đang tìm thợ thay. Lý do: ' + body.reason });
         await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'TECHNICIAN_WITHDRAWAL_REMATCH', resourceType: 'service_order', resourceId: orderId, after: { reason: body.reason, strikeApplied: false } });
         return order;
       }
@@ -821,8 +824,57 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   }
 
 
-  async uploadEvidence(orderId: string, body: { type: EvidenceType; note?: string; capturedAt?: string }, actor: { id: string; role: string }, file?: EvidenceFile): Promise<RepairEvidence> {
+  /** Thợ xem đơn này có được nhả vì đơn trước chưa xong không (PO 20/10/2026). */
+  async overrunReleaseStatus(orderId: string, actor: { id: string; role: string }): Promise<OverrunReleaseCheck> {
+    const order = await authorizeOrder(this.dataSource.manager, orderId, actor, 'technician');
+    const windowMinutes = await this.configService.getInt(OVERRUN_RELEASE_WINDOW_KEY, OVERRUN_RELEASE_WINDOW_DEFAULT_MINUTES);
+    return checkOverrunRelease(this.dataSource.manager, order, actor.id, windowMinutes);
+  }
+
+  /**
+   * Thợ đang ở đơn khác chưa xong nhả đơn kế tiếp: không trừ điểm, không tự mời
+   * thợ dự phòng; yêu cầu quay về chờ khách chọn thợ khác với giá và lịch cũ.
+   */
+  async releaseForOverrun(orderId: string, actor: { id: string; role: string }): Promise<{ order: ServiceOrder; currentOrderCode: string }> {
+    const reference = await authorizeOrder(this.dataSource.manager, orderId, actor, 'technician');
+    const windowMinutes = await this.configService.getInt(OVERRUN_RELEASE_WINDOW_KEY, OVERRUN_RELEASE_WINDOW_DEFAULT_MINUTES);
+    return this.dataSource.transaction(async manager => {
+      const booking = await manager.findOneOrFail(Booking, { where: { id: reference.bookingId }, lock: { mode: 'pessimistic_write' } });
+      const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
+      const check = await checkOverrunRelease(manager, order, actor.id, windowMinutes);
+      if (!check.eligible) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chỉ nhả đơn khi bạn đang làm đơn khác và đơn này sắp tới giờ hẹn.', { block: check.block });
+      }
+      const reason = `Kỹ thuật viên đang làm đơn #${check.currentOrderCode} chưa xong, không kịp tới buổi hẹn`;
+      const from = order.status;
+      await manager.update(TechnicianAssignment, { serviceOrderId: orderId, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: reason });
+      await releaseOutgoingTechnicianPartRequests(manager, orderId, actor.id);
+      await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: CancelActor.TECHNICIAN, actorUserId: actor.id, reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
+      // Khách tự chọn thợ khác: dọn lượt mời còn treo và đóng lượt ghép, để không bị
+      // coi là "hết thợ nhận lời mời" (thông báo sai) mà vẫn mở được danh sách mới.
+      await manager.update(BookingInvitation, { bookingId: booking.id, status: In([InvitationStatus.PENDING, InvitationStatus.STANDBY]) }, { status: InvitationStatus.CANCELLED, respondedAt: new Date() });
+      booking.status = BookingStatus.CLOSED;
+      await manager.save(booking);
+      await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from, actorUserId: actor.id, actorRole: actor.role, reason: reason + '. Khách chọn thợ khác.' });
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'TECHNICIAN_OVERRUN_RELEASE', resourceType: 'service_order', resourceId: orderId, after: { currentOrderCode: check.currentOrderCode, strikeApplied: false } });
+      if (this.notificationsService && booking.customerId) {
+        void this.notificationsService.createNotification({
+          userId: booking.customerId,
+          title: 'Thợ không kịp tới buổi hẹn',
+          message: `Kỹ thuật viên chưa xong đơn trước nên không sắp xếp kịp thời gian cho yêu cầu #${order.code}. Bạn chọn thợ khác, giá và lịch hẹn giữ nguyên.`,
+          type: 'TECHNICIAN_RELEASED',
+          referenceId: booking.id,
+          referenceType: 'BOOKING',
+        });
+      }
+      return { order: await manager.findOneByOrFail(ServiceOrder, { id: orderId }), currentOrderCode: check.currentOrderCode! };
+    });
+  }
+
+
+  async uploadEvidence(orderId: string, body: { type: EvidenceType; note?: string; capturedAt?: string; deferAutoStart?: boolean }, actor: { id: string; role: string }, file?: EvidenceFile): Promise<RepairEvidence> {
     this.evidenceStorage.validate(file);
+    if (body.deferAutoStart === true && body.type !== EvidenceType.BEFORE) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'deferAutoStart is only supported for BEFORE evidence');
     if (body.capturedAt && new Date(body.capturedAt) > new Date()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Evidence timestamp cannot be in the future');
     // Check-in face and the before photo belong to the arrival (EN_ROUTE); the rest to the repair.
     const atArrival = body.type === EvidenceType.BEFORE || body.type === EvidenceType.CHECKIN_FACE;
@@ -853,7 +905,9 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       });
       // Check-in with the product photo is the last step before repair for a
       // fixed-price job; an inspection job also needs the approved quotation.
-      if (body.type === EvidenceType.BEFORE) await this.autoStartRepair(orderId);
+      // A camera batch defers this attempt on earlier photos, then omits the
+      // flag on its final upload. All evidence and transition gates stay intact.
+      if (body.type === EvidenceType.BEFORE && body.deferAutoStart !== true) await this.autoStartRepair(orderId);
       return saved;
     } catch (error) {
       await this.evidenceStorage.delete(mediaUrl); // avoid an orphaned upload when the re-check rejects it
@@ -1383,8 +1437,14 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     }
 
     const requests = await manager.find(PartRequest, { where: { serviceOrderId: orderId }, relations: ['items'] });
-    assertPartsResolved(await holderPartRequests(manager, orderId, requests));
-    const billableQuantity = usedPartQuantities(requests, await custodyUsageForInvoice(manager, orderId));
+    const heldRequests = await holderPartRequests(manager, orderId, requests);
+    assertPartsResolved(heldRequests);
+    const custodyUsage = await custodyUsageForInvoice(manager, orderId);
+    assertApprovedPartsResolved([
+      ...(quotation?.items ?? []).map(item => ({ ...item, source: 'quotation' })),
+      ...additionalItems.map(item => ({ ...item, source: item.requestId })),
+    ], heldRequests, quotation?.id ?? null, custodyUsage);
+    const billableQuantity = usedPartQuantities(heldRequests, custodyUsage, quotation?.id ?? null);
 
     // Calculate totals
     let laborTotal = 0;

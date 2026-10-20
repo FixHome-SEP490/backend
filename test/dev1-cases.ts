@@ -565,6 +565,64 @@ export function registerDev1Cases(context: () => Context) {
       await post(path + '/cancel', f.spare, { reason: 'Kẹt xe không tới kịp' }).expect(200);
     });
 
+    it('lets a technician on an unfinished job release the next order without losing points; the customer picks another technician (PO 20/10/2026)', async () => {
+      const f = await fixture(), db = context().db;
+      const { BusinessConfigService } = runtimeRequire('./dist/modules/system-config/business-config.service.js');
+      const setWindow = async (minutes: number) => {
+        await db.query(`UPDATE "system_configs" SET "value" = $1 WHERE "key" = 'matching.overrun_release_window_minutes'`, [String(minutes)]);
+        context().app.get(BusinessConfigService).invalidateCache();
+      };
+      const { order: current } = await accept(f);
+      // Next order in the following session (morning job at 08:00, this one at 13:00).
+      const laterStart = new Date(+new Date(f.body.preferredStartAt) + 5 * 3600_000);
+      const next = unwrap((await post('/bookings', f.owner, { ...f.body, preferredStartAt: laterStart.toISOString(), preferredEndAt: new Date(+laterStart + 3600_000).toISOString() }).expect(201)).body);
+      await post(`/bookings/${next.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id] }).expect(201);
+      const invitation = await db.getRepository('BookingInvitation').findOneByOrFail({ bookingId: next.id, status: 'pending' });
+      const nextOrder = unwrap((await post(`/invitations/${invitation.id}/respond`, f.tech, { action: 'ACCEPT' }).expect(200)).body).serviceOrder;
+      const path = `/service-orders/${nextOrder.id}/overrun-release`;
+      // Not on another job yet: the usual cancel (with points) is the only way out.
+      expect(unwrap((await get(path, f.tech).expect(200)).body)).toMatchObject({ eligible: false, block: 'NO_CURRENT_JOB' });
+      await arrived(current.id, f.tech);
+      const [{ code: currentCode }] = await db.query('SELECT code FROM service_orders WHERE id = $1', [current.id]);
+      // On a job, but the next order is not due within the window.
+      expect(unwrap((await get(path, f.tech).expect(200)).body)).toMatchObject({ eligible: false, block: 'NOT_STARTING_SOON', currentOrderCode: currentCode, windowMinutes: 180 });
+      denied(await post(path, f.tech));
+      await setWindow(100000);
+      try {
+        expect(unwrap((await get(path, f.tech).expect(200)).body)).toMatchObject({ eligible: true, block: null, currentOrderCode: currentCode });
+        denied(await post(path, f.spare));
+        denied(await post(path, f.owner));
+        // The order on site can never be released this way.
+        expect(unwrap((await get(`/service-orders/${current.id}/overrun-release`, f.tech).expect(200)).body).eligible).toBe(false);
+        const released = unwrap((await post(path, f.tech).expect(200)).body);
+        expect(released.currentOrderCode).toBe(currentCode);
+        denied(await post(path, f.tech));
+      } finally {
+        await setWindow(180);
+      }
+      const [{ reputation_points: points }] = await db.query('SELECT reputation_points FROM users WHERE id = $1', [f.tech.user.id]);
+      expect(Number(points)).toBe(100);
+      const [cancellation] = await db.query('SELECT actor, strike_applied, reason FROM cancellations WHERE service_order_id = $1', [nextOrder.id]);
+      expect(cancellation).toMatchObject({ actor: 'technician', strike_applied: false });
+      expect(cancellation.reason).toContain(currentCode);
+      expect(await db.getRepository('TechnicianAssignment').count({ where: { serviceOrderId: nextOrder.id, isActive: true } })).toBe(0);
+      // Closed, not matching: no "nobody accepted" notice; the customer can still choose.
+      expect((await db.getRepository('Booking').findOneByOrFail({ id: next.id })).status).toBe('closed');
+      expect(await db.query("SELECT 1 FROM notifications WHERE type = 'BOOKING_MATCHING_EXHAUSTED' AND reference_id = $1", [next.id])).toEqual([]);
+      // The job on site is untouched: still in progress and still theirs.
+      expect(['en_route', 'under_repair']).toContain((await db.getRepository('ServiceOrder').findOneByOrFail({ id: current.id })).status);
+      expect((await db.getRepository('TechnicianAssignment').findOneByOrFail({ serviceOrderId: current.id, isActive: true })).technicianId).toBe(f.tech.user.id);
+      const told = await db.query("SELECT user_id, title FROM notifications WHERE type = 'TECHNICIAN_RELEASED' AND reference_id = $1", [next.id]);
+      expect(told).toEqual([{ user_id: f.owner.user.id, title: 'Thợ không kịp tới buổi hẹn' }]);
+      // The customer chooses another technician for the same request; the price stays.
+      await post(`/bookings/${next.id}/shortlist`, f.owner, { technicianIds: [f.spare.user.id] }).expect(201);
+      const spareInvite = await db.getRepository('BookingInvitation').findOneByOrFail({ bookingId: next.id, technicianId: f.spare.user.id, status: 'pending' });
+      await post(`/invitations/${spareInvite.id}/respond`, f.spare, { action: 'ACCEPT' }).expect(200);
+      const assignment = await db.getRepository('TechnicianAssignment').findOneByOrFail({ serviceOrderId: nextOrder.id, isActive: true });
+      expect(assignment.technicianId).toBe(f.spare.user.id);
+      expect(Number((await db.getRepository('Booking').findOneByOrFail({ id: next.id })).fixedUnitPriceSnapshot)).toBe(200000);
+    });
+
     it('lets an admin find a technician by name, email, phone, CCCD or id, never by address, and read everything about them (PO 08/10/2026)', async () => {
       const f = await fixture(), db = context().db;
       const admin = await context().register();
