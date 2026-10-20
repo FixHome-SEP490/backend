@@ -7,7 +7,7 @@ import {
   Injectable,
   ForbiddenException,
   Logger,
-  NotFoundException, Optional } from '@nestjs/common';
+  NotFoundException, Optional, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, EntityManager, In, SelectQueryBuilder } from 'typeorm';
 import { isUUID } from 'class-validator';
@@ -914,22 +914,32 @@ export class BookingsService {
       || (order && [ServiceOrderStatus.COMPLETED, ServiceOrderStatus.CANCELLED].includes(order.status));
     if (!finished) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chỉ đặt lại từ đơn đã hoàn thành hoặc đã huỷ');
     if (!old.addressId) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Đơn cũ không còn địa chỉ, vui lòng đặt mới');
-    const booking = await this.create(
-      {
-        serviceId: old.serviceId,
-        addressId: old.addressId,
-        description: dto.problemDescription?.trim() || old.description,
-        mode: dto.mode,
-        date: dto.date,
-        slot: dto.slot,
-        preferredStartAt: dto.preferredStartAt,
-        preferredEndAt: dto.preferredEndAt,
-        quantity: dto.quantity ?? old.quantity,
-        urgency: old.urgency,
-        customerNote: dto.customerNote ?? old.customerNote ?? undefined,
-      },
-      customer,
-    );
+    const service = await this.serviceRepo.findOneBy({ id: old.serviceId });
+    if (!service?.isActive) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Dịch vụ của đơn cũ đã ngừng, vui lòng đặt yêu cầu mới');
+    const base = {
+      serviceId: old.serviceId,
+      addressId: old.addressId,
+      description: dto.problemDescription?.trim() || old.description,
+      mode: dto.mode,
+      date: dto.date,
+      slot: dto.slot,
+      preferredStartAt: dto.preferredStartAt,
+      preferredEndAt: dto.preferredEndAt,
+      quantity: dto.quantity ?? old.quantity,
+      urgency: old.urgency,
+      customerNote: dto.customerNote ?? old.customerNote ?? undefined,
+      // Giữ thông tin máy và phạm vi đã chốt để đơn mới ra đúng giá như đơn cũ.
+      deviceAttributes: old.deviceAttributesSnapshot ?? undefined,
+    };
+    const variantCode = old.catalogV2PricingSnapshot?.selectedVariant?.variantCode ?? null;
+    let booking: Booking;
+    try {
+      booking = await this.create({ ...base, selectedVariantCode: variantCode }, customer);
+    } catch (err) {
+      // Phạm vi cũ không còn áp dụng (đã tắt hoặc đổi giá): vẫn đặt lại, thợ báo giá như thường.
+      if (!variantCode || !(err instanceof BadRequestException)) throw err;
+      booking = await this.create(base, customer);
+    }
     return { booking, previousTechnicianId: await this.previousTechnicianId(this.dataSource.manager, old.id) };
   }
 

@@ -327,6 +327,31 @@ export class ServiceOrdersController {
     return { data: order };
   }
 
+  @Get('service-orders/:id/overrun-release')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('order:cancel')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Technician: may this order be released because the current job overruns (no reputation penalty)?' })
+  async overrunReleaseStatus(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    return { data: await this.serviceOrdersService.overrunReleaseStatus(id, req.user) };
+  }
+
+  @Post('service-orders/:id/overrun-release')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('order:cancel')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Technician releases an upcoming order while still on another job; no penalty; the customer picks another technician' })
+  async releaseForOverrun(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    return { data: await this.serviceOrdersService.releaseForOverrun(id, req.user) };
+  }
+
   // ── 3. Order Details & History ──
 
   @Get('service-orders/:id/status-history')
