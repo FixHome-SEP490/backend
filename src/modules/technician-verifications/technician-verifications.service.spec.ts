@@ -200,6 +200,16 @@ describe('TechnicianVerificationsService', () => {
       expect(result.documents).toHaveLength(2);
     });
 
+    it('accepts a CCCD image together with a face video instead of a photo', async () => {
+      verificationRepository.findOne.mockResolvedValue(null);
+      const video = { ...validDocuments[1], documentType: DocumentType.FACE_VIDEO, storageObjectPath: 'kyc/tech-uuid-1/face.webm', fileName: 'face-liveness.webm', mimeType: 'video/webm' };
+      const result = await verificationsService.submitVerification('tech-uuid-1', { documents: [validDocuments[0], video] });
+      expect(result.documents).toHaveLength(2);
+      await expect(verificationsService.submitVerification('tech-uuid-1', {
+        documents: [validDocuments[0], { ...video, fileName: 'face.png' }],
+      })).rejects.toThrow(BadRequestException);
+    });
+
     it('rejects submission if a request is already PENDING', async () => {
       verificationRepository.findOne.mockResolvedValueOnce(mockVerification);
 

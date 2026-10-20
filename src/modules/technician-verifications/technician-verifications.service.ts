@@ -64,6 +64,8 @@ export class TechnicianVerificationsService {
       'image/png': ['png'],
       'image/webp': ['webp'],
       'application/pdf': ['pdf'],
+      'video/webm': ['webm'],
+      'video/mp4': ['mp4'],
     };
     for (const doc of dto.documents) {
       this.storageService.validateObjectPath(
@@ -455,9 +457,10 @@ export class TechnicianVerificationsService {
 
     if (
       !documents.some(
-        (document) => document.documentType === DocumentType.FACE_PHOTO,
+        (document) => document.documentType === DocumentType.FACE_PHOTO
+          || document.documentType === DocumentType.FACE_VIDEO,
       )
     )
-      throw new BadRequestException('A face photo is required for verification');
+      throw new BadRequestException('A face photo or face video is required for verification');
   }
 }
