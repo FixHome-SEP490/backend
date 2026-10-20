@@ -98,6 +98,8 @@ Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức c
 
 ### P013 báo giá, cấp linh kiện và hóa đơn miễn phí (20/10/2026, source only)
 
+Bằng chứng BEFORE đơn giá cố định có thể gửi nhiều ảnh trong một lượt camera: multipart `POST /service-orders/:id/evidence` nhận `deferAutoStart=true` cho ảnh BEFORE trung gian và `false`/bỏ trống cho ảnh cuối để tự chuyển `UNDER_REPAIR`. Client cũ không gửi trường này vẫn tự chuyển sau ảnh đầu. GPS check-in, ảnh khuôn mặt thợ, trạng thái `EN_ROUTE`, giới hạn ảnh, quyền sở hữu và khóa sau hoàn thành vẫn được giữ. QA tích hợp nhiều vai trò CHƯA KIỂM CHỨNG.
+
 Duyệt báo giá gốc có linh kiện FixHome tạo yêu cầu kho `quotation` liên kết `quotation_id`, chỉ cấp phần thiếu so với PRE_REPAIR chưa hủy/chưa trả của kỹ thuật viên đang phụ trách. Gửi lại APPROVE giữ nguyên snapshot và không backfill báo giá đã duyệt từ trước. USED bị giới hạn theo từng SKU và nguồn duyệt; ADDITIONAL vẫn tách riêng. Trước khi lưu hóa đơn mới, phải có đủ bằng chứng nhận kho và USED/RETURNED tương ứng; thiếu nguồn hàng không được âm thầm thành giảm giá hay hóa đơn 0. Hóa đơn đã lưu không được tính lại.
 
 Tạo báo giá và APPROVE kiểm lại dưới khóa order: số lượng FixHome phải biểu diễn được bằng các dòng PRE_REPAIR nguyên vẹn cộng phần thiếu cấp mới. Ví dụ đã cấp một dòng 3 nhưng báo giá chỉ 2 bị từ chối 409, hướng dẫn chỉnh số lượng hoặc hủy yêu cầu còn REQUESTED trước khi lập lại báo giá. Không mở usage một phần hay đổi P1 finance. Không được hủy QUOTATION liên kết hoặc PRE_REPAIR mà báo giá APPROVED đang phụ thuộc; trả 409 và hướng dẫn tiếp tục nhận hàng hoặc liên hệ quản lý để hủy đơn theo luồng riêng. PRE_REPAIR khác SKU và ADDITIONAL giữ quy tắc hủy cũ.
@@ -297,6 +299,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 ## 9. Nhật ký cập nhật context
 
 - 2026-10-20 20:13 (UTC+7) | Hgnv11 | fix/departure-grace-and-catalog-copy | Ân hạn cảnh báo chưa xuất phát order.departure_grace_minutes đổi 0 thành 15 (seed và DB); mô tả dịch vụ seed bỏ chữ Catalog V2/V3 và câu staging
+- 2026-10-20 18:40 (UTC+7) | foxonworld | foxonworld/tech-job-v3-be-20261020 | Thêm multipart deferAutoStart cho nhiều ảnh BEFORE trước khi tự bắt đầu sửa; giữ GPS, ảnh mặt, trạng thái và client cũ.
 - 2026-10-20 17:32 (UTC+7) | ToanAltF4 | fix/catalog-v3-idempotent-parts | seed:catalog-v3 đọc giá linh kiện trước khi ghi để chạy lại không báo cập nhật giả (UPDATE TypeORM trả [rows, count]); đã nạp V3 vào DB chung 20/10
 - 2026-10-20 17:02 (UTC+7) | ToanAltF4 | feat/catalog-v3 | Catalog V3: thêm 8 dịch vụ (WM-06 FR-02 WH-03 KT-06..10), 14 biến thể giá cố định (tủ đứng AC-02-31, máy giặt sấy WM-02-34...), giá tham khảo theo loại máy cho dịch vụ sửa, 44 linh kiện mới + sửa 11 giá linh kiện; thuộc tính acMounting=floor, washerHasDryer; lệnh nạp npm run seed:catalog-v3 (chỉ bổ sung, chạy lại an toàn)
 - 2026-10-20 14:36 (UTC+7) | foxonworld | foxonworld/fixhome-p013-quote-billing-20261020 | Chặn sớm báo giá lệch số lượng nguyên dòng PRE_REPAIR và hủy nguồn kho cần thiết sau duyệt; giữ usage/P1 finance và dữ liệu lịch sử.
@@ -335,5 +338,4 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-12 01:22 (UTC+7) | ToanAltF4 | feat/search-by-technician | Tìm đơn (search) thêm tên kỹ thuật viên đang giữ đơn, để khách tìm được đơn theo tên thợ như trước khi chuyển sang phân trang trên server
 - 2026-10-12 01:02 (UTC+7) | ToanAltF4 | feat/list-search | Danh sách đơn và yêu cầu đặt lịch tìm và lọc trên server để web phân trang không mất tìm kiếm: search (mã đơn, tên dịch vụ, tên khách; không dấu, không phân biệt hoa thường), statuses nhiều trạng thái một lần; bảng booking của quản lý có overdue (đã quá giờ hẹn) và sort=appointment
 - 2026-10-12 00:40 (UTC+7) | ToanAltF4 | feat/geo-hybrid-search | Gợi ý địa chỉ hỏi song song OpenStreetMap (Photon) và MapTiler: gõ có số nhà ở đầu thì MapTiler đứng trước (tên phường sau sáp nhập), gõ tên địa điểm thì OpenStreetMap đứng trước; bỏ trùng cùng nơi, tối đa 6; một nguồn lỗi thì nguồn kia trả lời
-- 2026-10-12 00:22 (UTC+7) | ToanAltF4 | feat/earnings-period-paging | Thu nhập của thợ theo kỳ: GET /technicians/me/earnings nhận from/to (ngày lịch giờ VN, tính cả hai đầu) và page/pageSize, tổng tính trên cả kỳ (số đơn, tiền công, phí, thực nhận, giá trị đơn, số đơn đã thanh toán), danh sách đơn có tên dịch vụ, giá trị đơn, đã thanh toán chưa; không tham số thì như cũ. GET /warranty-claims/mine nhận page/pageSize và trả meta
 

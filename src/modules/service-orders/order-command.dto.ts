@@ -33,6 +33,9 @@ export class EvidenceDto {
   @IsOptional() @IsString() @MaxLength(2000) note?: string;
   @ApiPropertyOptional({ format: 'date-time', description: 'Optional ISO 8601 capture timestamp, not in the future.' })
   @IsOptional() @IsDateString() capturedAt?: string;
+  @ApiPropertyOptional({ type: Boolean, default: false, description: 'BEFORE only: true defers the auto-start attempt for this upload. Upload batch photos sequentially; omit or send false on the final photo to keep automatic repair flow. Does not relax evidence timing or reserve the order state.' })
+  @Transform(({ value }) => value === 'true' ? true : value === 'false' ? false : value)
+  @IsOptional() @IsBoolean() deferAutoStart?: boolean;
 }
 export class CompletionRequestDto {
   @ApiPropertyOptional({ maxLength: 2000, example: 'Đã hoàn tất công việc', description: 'Optional technician note. AFTER evidence and required approvals must exist; this does not mark the order paid.' })
