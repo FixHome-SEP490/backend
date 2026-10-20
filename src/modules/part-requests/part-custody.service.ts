@@ -126,13 +126,18 @@ export class PartCustodyService {
       // Existing clients send a whole-line status. Derive the ledger decision
       // server-side under the caller's Order lock; never enable partial billing.
       const usedQty = body.usageStatus === PartUsageStatus.USED ? item.quantity : 0;
+      // A stale client must not replace a partially recorded decision with
+      // USED-for-all (which would otherwise bill additional approved pieces).
+      if (row.state.events.some(event => event.type === 'USAGE_RECORDED') &&
+          row.state.usedQty > 0 && row.state.usedQty < item.quantity) {
+        throw new ConflictException('Linh kiện đã ghi số lượng thực dùng. Vui lòng tải lại và kiểm tra trước khi cập nhật.');
+      }
       if (row.state.usedQty === usedQty && row.state.events.some(event => event.type === 'USAGE_RECORDED')) return 'replayed';
       body = { usedQty, expectedVersion: row.state.version, idempotencyKey: `tracking-usage:${item.id}:${body.usageStatus}` };
     }
     if (body.usedQty === undefined || body.expectedVersion === undefined || !body.idempotencyKey) throw new BadRequestException('Vui lòng gửi số lượng đã dùng, phiên bản và mã chống gửi trùng.');
-    // The legacy invoice bills a USED line at its full quantity. Partial usage needs
-    // a separately approved billing change; tracking must never silently change it.
-    if (row.trackingOnly && body.usedQty !== 0 && body.usedQty !== item.quantity) throw new BadRequestException('Vui lòng chọn dùng toàn bộ hoặc trả toàn bộ linh kiện của dòng này.');
+    // Enrolled tracking-only rows may record partial usage. Only NEW invoices
+    // consume ledger quantities; older non-enrolled parts remain whole-line.
     await lockCustodyTechnician(manager, row.technicianId);
     const result = await this.execute(manager, item.id, { kind: 'record_usage', partRequestId: request.id, partRequestItemId: item.id,
       usedQty: body.usedQty, expectedVersion: body.expectedVersion, idempotencyKey: body.idempotencyKey }, actor, order);

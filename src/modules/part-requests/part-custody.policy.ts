@@ -84,7 +84,9 @@ export async function hasPartReturnRestriction(manager: EntityManager, technicia
 
 /** Only called for a NEW invoice, under the existing Order lock. Never modifies old invoices. */
 export async function custodyUsageForInvoice(manager: EntityManager, orderId: string): Promise<Map<string, number>> {
-  if (!p1CustodyEnabled()) return new Map();
+  if (!custodyTrackingEnabled()) return new Map();
   const rows = await manager.find(PartCustody, { where: { serviceOrderId: orderId } });
-  return new Map(rows.map(row => [row.partRequestItemId, row.state.usedQty]));
+  return new Map(rows
+    .filter(row => row.trackingOnly ? partReturnsTrackingEnabled() : p1CustodyEnabled())
+    .map(row => [row.partRequestItemId, row.state.usedQty]));
 }

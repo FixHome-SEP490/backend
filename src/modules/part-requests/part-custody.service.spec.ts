@@ -7,7 +7,7 @@ import { PartCustody, PartCustodyActivation, PartCustodyEntry } from './entities
 import { PartRequest } from './entities/part-request.entity';
 import { PartRequestItem } from './entities/part-request-item.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
-import { hasPartReturnRestriction } from './part-custody.policy';
+import { custodyUsageForInvoice, hasPartReturnRestriction } from './part-custody.policy';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { Quotation } from '../quotations/entities/quotation.entity';
 import { PartRequestStatus, PartRequestType, PartSource, PartUsageStatus, Role, ServiceOrderStatus } from '../../shared/enums';
@@ -91,14 +91,42 @@ describe('persistent P1 custody', () => {
     await parts.updateItemUsage('request', 'item', { usageStatus }, tech);
     expect(entries).toHaveLength(1);
   });
-  it('keeps tracking usage compatible with legacy billing and freezes the decision after declaring returns', async () => {
+  it('tracking-only: issued 3, used 1, return 2; NEW invoice consumes one approved unit', async () => {
     tracking(); await enroll();
-    const usage = { usedQty: 2, expectedVersion: 0, idempotencyKey: 'usage-partial-01' };
-    await expect(service.recordUsage(db, request, request.items[0], order, usage, tech)).rejects.toMatchObject({ status: 400 });
-    await service.recordUsage(db, request, request.items[0], order, { ...usage, usedQty: 0 }, tech);
-    expect(request.items[0].usageStatus).toBe(PartUsageStatus.RETURNED);
-    await service.command('request', 'item', 'declare_return', body(3, 1), tech);
-    await expect(service.recordUsage(db, request, request.items[0], order, { ...usage, usedQty: 3, expectedVersion: 2 }, tech)).rejects.toMatchObject({ status: 409 });
+    request.status = PartRequestStatus.RECEIVED;
+    const parts = Object.assign(Object.create(PartRequestsService.prototype), {
+      dataSource: { transaction: async cb => cb(db) }, custodyService: service,
+      auditLogService: { logWithManager: vi.fn() },
+    }) as PartRequestsService;
+    vi.spyOn(parts as any, 'lockRequest').mockResolvedValue({ request, order });
+    const command = { usageStatus: PartUsageStatus.USED, usedQty: 1, expectedVersion: 0, idempotencyKey: 'usage-partial-01' };
+    await parts.updateItemUsage('request', 'item', command, tech);
+    expect(rows[0].state).toMatchObject({ issuedQty: 3, usedQty: 1, returnDueQty: 2, outstandingQty: 2, version: 1 });
+    expect(request.items[0].usageStatus).toBe(PartUsageStatus.USED);
+    await expect(service.recordUsage(db, request, request.items[0], order,
+      { usageStatus: PartUsageStatus.USED }, tech)).rejects.toMatchObject({ status: 409 });
+    expect(rows[0].state.usedQty).toBe(1);
+    const custody = await custodyUsageForInvoice(db, order.id);
+    expect(custody.get('item')).toBe(1);
+    const chargedQty = usedPartQuantities([request], custody, 'quote')('quotation',
+      { partSource: PartSource.FIXHOME, partCatalogId: 'catalog', quantity: 3 });
+    expect(chargedQty).toBe(1);
+    expect(chargedQty * 5000).toBe(5000);
+    const declared = await service.command('request', 'item', 'declare_return', body(2, 1), tech);
+    expect(declared).toMatchObject({ usedQty: 1, outstandingQty: 2, declaredQty: 2, managerAcceptedQty: 0 });
+    await expect(parts.updateItemUsage('request', 'item', { ...command, usedQty: 2, expectedVersion: 2 }, tech))
+      .rejects.toMatchObject({ status: 409 });
+    const accepted = await service.command('request', 'item', 'accept_return',
+      body(2, 2, 'accept-partial-01'), managerActor);
+    expect(accepted).toMatchObject({ usedQty: 1, managerAcceptedQty: 2, outstandingQty: 0 });
+  });
+  it('keeps old status-only used/returned calls compatible in tracking-only mode', async () => {
+    tracking(); await enroll();
+    request.status = PartRequestStatus.RECEIVED;
+    await service.recordUsage(db, request, request.items[0], order, { usageStatus: PartUsageStatus.RETURNED }, tech);
+    expect(rows[0].state).toMatchObject({ usedQty: 0, outstandingQty: 3 });
+    const custody = await custodyUsageForInvoice(db, order.id);
+    expect(custody.get('item')).toBe(0);
   });
   it('allows physical receipts after customer completion; partial and missing receipts retain the obligation', async () => {
     tracking(); await enroll();

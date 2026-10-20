@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-20 22:15 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/overrun-release-closed
+> Cập nhật lần cuối: 2026-10-20 23:16 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/tech-partial-qty-20261020
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -170,6 +170,8 @@ Không dùng thư viện lịch; `src/common/background-job.ts` chạy mỗi `BA
 
 Phase A được giữ và bổ sung validation phân biệt command, audit quyết định dùng 0. Phase B đã viết persistence/receipt, bốn API trả linh kiện và migration 039 cộng thêm, nhưng `P1_CUSTODY_ENABLED` mặc định `false`, singleton activation mặc định inactive. Chỉ QR bàn giao FixHome sau cutover mới enroll, không backfill. Hỗ trợ 3 cấp / 2 dùng / 1 trả mà không đổi quantity gốc hoặc tính lại hóa đơn cũ. CASH chặn nhận/assign mới và rút ví tại transaction sau khai tiền mặt; ONLINE có ledger NET_LABOR/NONLABOR riêng và đi chung callback/sweep. Chưa bật/deploy; xem gate còn chặn activation và API chính xác tại `docs/P1-CUSTODY-MIGRATION-PLAN.md`.
 
+**Technician partial parts + stable UI (20/10/2026):** New FixHome PART custody tracking-only workflow now accepts partial usedQty for newly enrolled QR-received rows (e.g., issued 3, used 1, return due 2). A new invoice consumes that ledger quantity without changing older invoices, historic unenrolled parts, P1_CUSTODY_ENABLED, wallet/payment/commission rules; authorization, quote approval, version/idempotency, non-reversal, declaration and manager acceptance remain guarded. Old clients sending whole-line status cannot overwrite a prior recorded partial decision.
+
 ## 4. Kiến trúc và thư mục chính
 
 Kiểu modular monolith: mỗi module `controller → service → TypeORM repository/entity`, DTO dùng `class-validator`, `ValidationPipe` toàn cục bật `whitelist` và `forbidNonWhitelisted`.
@@ -298,6 +300,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-20 23:16 (UTC+7) | foxonworld | foxonworld/tech-partial-qty-20261020 | Tracking-only partial USED quantity and new-invoice actual charge for 3/1/2; forbid legacy overwrite; return and owner gates unchanged.
 - 2026-10-20 22:15 (UTC+7) | ToanAltF4 | fix/overrun-release-closed | Nhả đơn đặt yêu cầu về closed (không còn thông báo sai Chưa có kỹ thuật viên nhận lời mời); ghi chú tiến trình nhả/rút đơn bằng tiếng Việt
 - 2026-10-20 21:41 (UTC+7) | ToanAltF4 | fix/kyc-face-video | Hồ sơ xác minh thợ nhận video khuôn mặt (face_video, video/webm|mp4) thay ảnh khuôn mặt, migration 046 thêm enum IF NOT EXISTS và mở bucket kyc-private cho video
 - 2026-10-20 21:06 (UTC+7) | ToanAltF4 | feat/technician-overrun-release | Thợ nhả đơn kế tiếp khi đơn đang làm chưa xong (GET/POST /service-orders/:id/overrun-release): không trừ điểm, khách nhận TECHNICIAN_RELEASED và tự chọn thợ khác, ngưỡng matching.overrun_release_window_minutes mặc định 180; đặt lại (rebook) giữ thiết bị + phạm vi đã chốt
@@ -337,5 +340,4 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-14 17:59 (UTC+7) | ToanAltF4 | fix/urgent-matching-and-reads | Giảm egress thêm: kiểm token mỗi request chỉ đọc 6 cột user, cache cấu hình chỉ đọc key/value
 - 2026-10-14 16:03 (UTC+7) | ToanAltF4 | fix/profile-cartesian-join | Giảm egress Supabase: hồ sơ thợ đọc đúng quan hệ cần (không nhân dòng), chi tiết booking đọc ảnh/lời mời tách câu, danh sách hội thoại chỉ lấy cột cần, cache phân quyền chỉ đọc mã
 - 2026-10-14 15:55 (UTC+7) | ToanAltF4 | fix/profile-cartesian-join | Hồ sơ thợ đọc từng quan hệ bằng câu riêng (relationLoadStrategy query): tránh nhân dòng kỹ năng x khu vực x lịch làm egress Supabase tăng vọt
-- 2026-10-12 16:47 (UTC+7) | ToanAltF4 | fix/address-text | Địa chỉ một dòng gọn: bỏ mã bưu chính, Việt Nam, phần lặp (tạo booking và đọc snapshot cũ)
 
