@@ -76,5 +76,23 @@ jobs:
             set -e
             cd ~/backend
             git pull --ff-only
-            docker compose -f docker-compose.prod.yml up -d --build backend
+            # Reject an existing P1 finance cutover rather than override its semantics.
+            if [ -f .env ] && grep -Eq '^[[:space:]]*P1_CUSTODY_ENABLED[[:space:]]*=[[:space:]]*["\x27]?true["\x27]?[[:space:]]*$' .env; then
+              echo "Blocked: VPS env currently enables P1 finance custody"
+              exit 1
+            fi
+            # Dev-only, non-secret Compose overlay; do not change payout/settlement.
+            # Abort if an existing container is using finance custody (P1).
+            existing="$(docker compose -f docker-compose.prod.yml ps -q backend || true)"
+            if [ -n "$existing" ] && docker inspect "$existing" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -Fxq 'P1_CUSTODY_ENABLED=true'; then
+              echo "Blocked: existing backend uses P1 finance custody"
+              exit 1
+            fi
+            docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml up -d --build backend
+            active="$(docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml ps -q backend)"
+            test -n "$active"
+            runtime_flags="$(docker inspect "$active" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^(PART_RETURNS_TRACKING_ENABLED|P1_CUSTODY_ENABLED)=')"
+            printf '%s\n' "$runtime_flags" | grep -Fxq 'PART_RETURNS_TRACKING_ENABLED=true'
+            printf '%s\n' "$runtime_flags" | grep -Fxq 'P1_CUSTODY_ENABLED=false'
+            echo "Dev-only physical returns tracking configured; finance custody remains disabled"
             docker image prune -f

@@ -177,3 +177,13 @@ Documentation:
 
 - `docs/CONTEXT.md`
 - `docs/PART-RETURNS-TRACKING.md`
+
+
+## DEV VPS activation note (20/10/2026)
+
+The `dev` deploy workflow uses `docker-compose.part-returns.dev.yml` as a
+non-secret override alongside the VPS `docker-compose.prod.yml`, forcing
+`PART_RETURNS_TRACKING_ENABLED=true` and `P1_CUSTODY_ENABLED=false`.
+Do not use the production Compose file alone for a manual restart once tracking
+rows exist: that would omit the opt-in and fail the custody startup check.
+This deployment switch does NOT activate the DB singleton/cohort by itself.
