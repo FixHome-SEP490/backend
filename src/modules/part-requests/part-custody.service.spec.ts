@@ -9,6 +9,7 @@ import { PartRequestItem } from './entities/part-request-item.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
 import { hasPartReturnRestriction } from './part-custody.policy';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
+import { Quotation } from '../quotations/entities/quotation.entity';
 import { PartRequestStatus, PartRequestType, PartSource, PartUsageStatus, Role, ServiceOrderStatus } from '../../shared/enums';
 
 const tech = { id: 'tech', role: Role.TECHNICIAN };
@@ -28,7 +29,7 @@ describe('persistent P1 custody', () => {
     rows = []; entries = []; frozen = false;
     order = { id: 'order', status: ServiceOrderStatus.UNDER_REPAIR, completionRequestedAt: null };
     request = { id: 'request', serviceOrderId: 'order', technicianId: tech.id, requestType: PartRequestType.PRE_REPAIR,
-      receivedAt: new Date(), items: [{ id: 'item', partRequestId: 'request', partSource: PartSource.FIXHOME, quantity: 3, usageStatus: PartUsageStatus.PENDING, partNameSnapshot: 'Part' }] };
+      receivedAt: new Date(), items: [{ id: 'item', partRequestId: 'request', partCatalogId: 'catalog', partSource: PartSource.FIXHOME, quantity: 3, usageStatus: PartUsageStatus.PENDING, partNameSnapshot: 'Part' }] };
     db = {
       findOne: vi.fn(async (entity, options) => {
         if (entity === PartCustodyActivation) return { id: 1, enabled: true, activatedAt: new Date('2026-01-01T00:00:00Z') };
@@ -36,11 +37,12 @@ describe('persistent P1 custody', () => {
         if (entity === Invoice) return frozen ? { id: 'invoice' } : null;
         if (entity === PartRequest) return request;
         if (entity === PartRequestItem) return request.items[0];
+        if (entity === Quotation) return { id: 'quote', items: [{ partSource: PartSource.FIXHOME, partCatalogId: 'catalog', quantity: 3 }] };
         if (entity === PartCustody) return rows.find(row => row.partRequestItemId === options.where.partRequestItemId) ?? null;
         if (entity === PartCustodyEntry) return entries.find(row => row.custodyId === options.where.custodyId && row.idempotencyKey === options.where.idempotencyKey) ?? null;
         return { id: tech.id };
       }),
-      find: vi.fn(async (entity, options) => entity === PartCustody ? rows.filter(row => !options?.where?.serviceOrderId || row.serviceOrderId === options.where.serviceOrderId) : []),
+      find: vi.fn(async (entity, options) => entity === PartCustody ? rows.filter(row => !options?.where?.serviceOrderId || row.serviceOrderId === options.where.serviceOrderId) : entity === PartRequest ? [request] : []),
       create: vi.fn((_entity, value) => value),
       save: vi.fn(async (entity, value) => {
         if (entity === PartCustody && !rows.includes(value)) { value.id = 'custody'; rows.push(value); }
@@ -66,6 +68,16 @@ describe('persistent P1 custody', () => {
     await enroll();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ trackingOnly: true, state: { outstandingQty: 3 } });
+  });
+  it('P013 enrolls linked QUOTATION QR stock in tracking-only mode without finance P1', async () => {
+    tracking();
+    request.requestType = PartRequestType.QUOTATION;
+    request.quotationId = 'quote';
+    await enroll();
+    expect(rows[0]).toMatchObject({ trackingOnly: true, state: { requestType: 'quotation', quotationId: 'quote', additionalCostId: null } });
+    await service.recordUsage(db, request, request.items[0], order, { usageStatus: PartUsageStatus.RETURNED }, tech);
+    expect(rows[0].state).toMatchObject({ usedQty: 0, outstandingQty: 3 });
+    expect(process.env.P1_CUSTODY_ENABLED).toBe('false');
   });
   it.each([PartUsageStatus.RETURNED, PartUsageStatus.USED])('accepts existing status-only %s for tracking without changing invoice quantities', async usageStatus => {
     tracking(); await enroll(); request.status = PartRequestStatus.RECEIVED;

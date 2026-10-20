@@ -6,10 +6,21 @@ import { Quotation } from '../quotations/entities/quotation.entity';
 import { AdditionalCostRequest } from './entities/additional-cost-request.entity';
 import { PartRequest } from '../part-requests/entities/part-request.entity';
 import { InvoiceItem } from './entities/invoice-item.entity';
+import { Invoice } from './entities/invoice.entity';
 import { assertPartsResolved, usedPartQuantities } from '../part-requests/part-request-lifecycle';
 import { PartRequestStatus, PartRequestType, PartSource, PartUsageStatus } from '../../shared/enums';
 
 describe('Parts reconciliation at invoice freeze', () => {
+  it('preserves every existing invoice snapshot without recalculation, including historical paid and invalid unpaid zero', async () => {
+    for (const paymentStatus of ['paid', 'unpaid']) {
+      const existing = { id: 'invoice', serviceOrderId: 'order', paymentStatus, grandTotal: 0 };
+      const manager = { findOneBy: vi.fn().mockResolvedValue(existing), save: vi.fn(), insert: vi.fn() };
+      const service = Object.create(ServiceOrdersService.prototype);
+      expect(await service.generateInvoice('order', manager)).toBe(existing);
+      expect(manager.findOneBy).toHaveBeenCalledWith(Invoice, { serviceOrderId: 'order' });
+      expect(manager.save).not.toHaveBeenCalled(); expect(manager.insert).not.toHaveBeenCalled();
+    }
+  });
   it('bills exactly 2 of 3 issued for an enrolled item while preserving legacy quantity and approvals', () => {
     const requests = [{ id: 'request', status: PartRequestStatus.RECEIVED, requestType: PartRequestType.PRE_REPAIR,
       items: [{ id: 'item', quantity: 3, partSource: PartSource.FIXHOME, partCatalogId: 'part', usageStatus: PartUsageStatus.USED }] }] as PartRequest[];
@@ -32,7 +43,7 @@ describe('Parts reconciliation at invoice freeze', () => {
     ];
     const manager = {
       findOneBy: vi.fn().mockResolvedValue(null),
-      findOne: vi.fn(async entity => entity === ServiceOrder ? { bookingId: 'booking' } : entity === Booking ? { pricingModeSnapshot: 'inspection_required' } : entity === Quotation ? { items: [approved('q1', 'used', 1), approved('q2', 'used', 3), approved('q3', 'returned'), approved('q4', 'missing')] } : null),
+      findOne: vi.fn(async entity => entity === ServiceOrder ? { bookingId: 'booking' } : entity === Booking ? { pricingModeSnapshot: 'inspection_required' } : entity === Quotation ? { id: 'quote', items: [approved('q1', 'used', 1), approved('q2', 'used', 1), approved('q3', 'returned')] } : null),
       find: vi.fn(async entity => entity === PartRequest ? requests : entity === AdditionalCostRequest ? [{ id: 'cost', shippingFee: 25 }] : []),
       createQueryBuilder: vi.fn(() => ({ where: () => ({ getMany: async () => [{ ...approved('a1', 'extra'), requestId: 'cost' }] }) })),
       create: vi.fn((_entity, value) => value),
@@ -46,6 +57,34 @@ describe('Parts reconciliation at invoice freeze', () => {
     const lines = manager.insert.mock.calls.filter(([entity]) => entity === InvoiceItem).map(([, item]) => item);
     expect(lines.map(item => item.sourceItemId)).toEqual(['q1', 'q2', 'a1']);
     expect(lines.map(item => item.quantity)).toEqual([1, 1, 1]);
+  });
+
+  it('B01 pools linked quotation supply with pre-repair and never leaks it into additional costs', () => {
+    const requests = [{ requestType: 'quotation', quotationId: 'quote', status: 'received',
+      items: [{ partSource: 'fixhome', partCatalogId: 'part', quantity: 2, usageStatus: 'used' }] }] as PartRequest[];
+    const bill = usedPartQuantities(requests);
+    const item = { partSource: PartSource.FIXHOME, partCatalogId: 'part', quantity: 1 };
+    expect(bill('cost', item)).toBe(0);
+    expect(bill('quotation', item)).toBe(1);
+    expect(bill('quotation', item)).toBe(1);
+    expect(bill('quotation', item)).toBe(0);
+  });
+
+  it('B05 rejects an approved positive part with no supply before inserting an invoice', async () => {
+    const manager = {
+      findOneBy: vi.fn().mockResolvedValue(null),
+      findOne: vi.fn(async entity => entity === ServiceOrder ? { bookingId: 'booking' } : entity === Booking
+        ? { pricingModeSnapshot: 'inspection_required' } : entity === Quotation
+          ? { id: 'quote', items: [{ id: 'qi', type: 'parts_equipment', partSource: 'fixhome', partCatalogId: 'part', quantity: 1, unitPrice: 550000 }] } : null),
+      find: vi.fn().mockResolvedValue([]),
+      create: vi.fn((_entity, value) => value), save: vi.fn(async (_entity, value) => value),
+      insert: vi.fn(), update: vi.fn(),
+    };
+    const service = Object.create(ServiceOrdersService.prototype);
+    service.configService = { getInt: vi.fn().mockResolvedValue(1000) };
+    await expect(service.generateInvoice('order', manager)).rejects.toThrow();
+    expect(manager.save).not.toHaveBeenCalled();
+    expect(manager.insert).not.toHaveBeenCalled();
   });
 
   it('blocks pending usage and does not consume another additional approval or cancelled request', () => {

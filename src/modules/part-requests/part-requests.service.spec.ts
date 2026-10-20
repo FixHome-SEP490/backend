@@ -6,6 +6,7 @@ import {
   PartRequestType,
   FulfillmentMethod,
   PartUsageStatus,
+  PartSource,
   Role,
   ServiceOrderStatus,
 } from '../../shared/enums';
@@ -13,6 +14,9 @@ import { PartRequestStateMachine } from './part-request-state-machine';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { PartRequestItem } from './entities/part-request-item.entity';
 import { BusinessException } from '../../common/exceptions/business.exception';
+import { Quotation } from '../quotations/entities/quotation.entity';
+import { PartRequest } from './entities/part-request.entity';
+import { AdditionalCostRequest } from '../service-orders/entities/additional-cost-request.entity';
 
 describe('PartRequestStateMachine', () => {
   it('should allow valid transitions for PICKUP', () => {
@@ -399,6 +403,27 @@ describe('PartRequestsService', () => {
   });
 
   describe('updateItemUsage', () => {
+    it.each([
+      { approved: 0, otherUsed: 0, quantity: 1, requestType: 'pre_repair' },
+      { approved: 1, otherUsed: 1, quantity: 1, requestType: 'quotation' },
+      { approved: 1, otherUsed: 0, quantity: 2, requestType: 'additional' },
+    ])('P013 prevents unapproved and excess USED across the same cost source: %j', async scenario => {
+      const request: any = { id: 'pr', serviceOrderId: 'order-1', technicianId: 'tech-1', status: PartRequestStatus.RECEIVED,
+        requestType: scenario.requestType, quotationId: scenario.requestType === 'quotation' ? 'quote' : null,
+        additionalCostId: scenario.requestType === 'additional' ? 'cost' : null, items: [] };
+      const item: any = { id: 'item', partRequestId: 'pr', quantity: scenario.quantity, partSource: PartSource.FIXHOME,
+        partCatalogId: 'sku', usageStatus: PartUsageStatus.PENDING };
+      request.items = [item];
+      const approved = { id: scenario.requestType === 'additional' ? 'cost' : 'quote', items: [{ partSource: 'fixhome', partCatalogId: 'sku', quantity: scenario.approved }] };
+      mockMutation(request, item);
+      mockEntityManager.findOne.mockImplementation(async (entity: any) => entity === ServiceOrder ? { id: 'order-1', status: ServiceOrderStatus.UNDER_REPAIR }
+        : entity === PartRequestItem ? item : [Quotation, AdditionalCostRequest].includes(entity) ? approved : request);
+      mockEntityManager.find.mockImplementation(async (entity: any) => entity === PartRequest ? [request, { ...request, id: 'other',
+        items: [{ ...item, id: 'other-item', quantity: scenario.otherUsed, usageStatus: PartUsageStatus.USED }] }] : []);
+      await expect(service.updateItemUsage('pr', 'item', { usageStatus: PartUsageStatus.USED }, { id: 'tech-1', role: Role.TECHNICIAN })).rejects.toThrow();
+      expect(item.usageStatus).toBe(PartUsageStatus.PENDING);
+    });
+
     it('should update item status to USED or RETURNED', async () => {
       const request = {
         id: 'pr-1',

@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-20 01:53 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: feat/customer-activity-stages
+> Cập nhật lần cuối: 2026-10-20 14:36 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-p013-quote-billing-20261020
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -96,6 +96,14 @@ Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức c
 
 Đã chạy được trọn luồng: đăng ký có OTP email, đăng nhập (kể cả Google), hồ sơ và KYC kỹ thuật viên, danh mục dịch vụ và linh kiện, đặt lịch, mời tuần tự, nhận đơn, đi đến, check-in GPS, ảnh trước và sau, báo giá, chi phí phát sinh, yêu cầu linh kiện, hoá đơn, thanh toán VNPay hoặc tiền mặt, ví kỹ thuật viên (nạp, rút qua payOS), ví khách (nạp, trả hoá đơn, rút về ngân hàng qua payOS sau khi admin duyệt CCCD), bảo hành, đánh giá, hỗ trợ và tranh chấp, huỷ đơn và vi phạm, chat và gọi thoại, AI chẩn đoán và chatbot qua `ai-service`.
 
+### P013 báo giá, cấp linh kiện và hóa đơn miễn phí (20/10/2026, source only)
+
+Duyệt báo giá gốc có linh kiện FixHome tạo yêu cầu kho `quotation` liên kết `quotation_id`, chỉ cấp phần thiếu so với PRE_REPAIR chưa hủy/chưa trả của kỹ thuật viên đang phụ trách. Gửi lại APPROVE giữ nguyên snapshot và không backfill báo giá đã duyệt từ trước. USED bị giới hạn theo từng SKU và nguồn duyệt; ADDITIONAL vẫn tách riêng. Trước khi lưu hóa đơn mới, phải có đủ bằng chứng nhận kho và USED/RETURNED tương ứng; thiếu nguồn hàng không được âm thầm thành giảm giá hay hóa đơn 0. Hóa đơn đã lưu không được tính lại.
+
+Tạo báo giá và APPROVE kiểm lại dưới khóa order: số lượng FixHome phải biểu diễn được bằng các dòng PRE_REPAIR nguyên vẹn cộng phần thiếu cấp mới. Ví dụ đã cấp một dòng 3 nhưng báo giá chỉ 2 bị từ chối 409, hướng dẫn chỉnh số lượng hoặc hủy yêu cầu còn REQUESTED trước khi lập lại báo giá. Không mở usage một phần hay đổi P1 finance. Không được hủy QUOTATION liên kết hoặc PRE_REPAIR mà báo giá APPROVED đang phụ thuộc; trả 409 và hướng dẫn tiếp tục nhận hàng hoặc liên hệ quản lý để hủy đơn theo luồng riêng. PRE_REPAIR khác SKU và ADDITIONAL giữ quy tắc hủy cũ.
+
+`POST /invoices/:id/no-charge` cho đúng khách xác nhận hóa đơn thực sự miễn phí, audit đúng một lần và giữ gate ảnh sau sửa, yêu cầu hoàn tất, báo giá/chi phí phát sinh và hold khiếu nại. Không tạo Payment, không gọi provider, không trừ ví hoặc đổi P1 finance. Hóa đơn 0 mâu thuẫn chi phí đã duyệt bị chặn. VNPay cho hóa đơn từ 5.000 ₫; 1–4.999 ₫ vẫn dùng ví khách/tiền mặt; nạp ví vẫn tối thiểu 10.000 ₫. Migration #0044 chưa chạy; PostgreSQL/Docker/runtime và liên repo: NOT VERIFIED. Hợp đồng và giới hạn: `docs/P013-QUOTE-BILLING.md`.
+
 ### Luồng lõi
 
 1. Khách tạo booking (`POST /bookings`), chọn 1 đến 2 kỹ thuật viên theo thứ tự (`POST /bookings/:id/shortlist`).
@@ -165,7 +173,7 @@ Phase A được giữ và bổ sung validation phân biệt command, audit quy�
 Kiểu modular monolith: mỗi module `controller → service → TypeORM repository/entity`, DTO dùng `class-validator`, `ValidationPipe` toàn cục bật `whitelist` và `forbidNonWhitelisted`.
 
 - `src/modules/`: 29 module. Quan trọng nhất: `auth`, `users`, `bookings` (booking, shortlist, lời mời, điều kiện nhận việc), `service-orders` (state machine, check-in, bằng chứng, hoá đơn, tiền mặt, huỷ, vi phạm, bảo hành), `quotations`, `part-requests`, `finance` (VNPay, Payment, PlatformDue), `wallet` (ví, nạp, rút, quyết toán), `technician-assignment`, `messaging` (chat, Socket.IO, gọi thoại), `ai-diagnosis` (proxy tới `ai-service`), `support-cases`, `notifications`, `system-config`, `rbac`, `audit-log`, `technician-verifications` (KYC), `media` (Cloudinary).
-- `src/database/migrations/`: migration TypeORM; mới nhất `1790000000041-BookingEveningSession.ts` (chưa chạy trên DB; #0040 đã rehearsal cô lập, chưa chạy DB dùng chung). `src/database/seeds/`: dữ liệu demo.
+- `src/database/migrations/`: migration TypeORM; mới nhất `1790000000044-QuotationPartRequests.ts` thêm enum/link/unique cho yêu cầu kho theo báo giá, chưa chạy DB hoặc rehearsal PostgreSQL trong task P013. Trạng thái các migration trước giữ theo mục 8. `src/database/seeds/`: dữ liệu demo.
 - `src/shared/`: enum, hằng số, DTO dùng chung (`PaginationDto`, `PageSizeQueryDto`), validator văn bản và tên người.
 - `src/common/`: guard (JWT, Roles, Permission), filter lỗi, interceptor bọc response.
 - `test/`: e2e chạy migration trên Postgres sạch.
@@ -175,6 +183,8 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 ## 5. Hợp đồng với repo khác
 
 ### Với `web` và `mobile`
+
+- P013: `POST /invoices/:id/no-charge` dùng JWT khách + `invoice:pay_own`, không nhận số tiền; trả qua wrapper hiện có `{ invoiceId, paymentStatus: 'paid', settlementMethod: 'NO_CHARGE' }`. Gửi lại hợp lệ trả cùng kết quả, không ghi audit lần hai. Hóa đơn 0 thiếu bằng chứng nguồn hàng hoặc còn chi phí thực tế dương trả `CONFLICT` (409), không sửa hóa đơn; chờ hoàn tất dùng `ORDER_INVALID_TRANSITION`. `POST /invoices/:id/vnpay-url` dưới 5.000 ₫ trả `VALIDATION_FAILED` (422); ví/tiền mặt cho số dương nhỏ giữ API cũ. Yêu cầu kho có thêm `requestType: 'quotation'` và `quotationId`; GET danh sách/chi tiết và QR/usage dùng route cũ. Consumer cần phân biệt tổng báo giá với snapshot hóa đơn cuối cùng và đọc lại đơn sau xác nhận miễn phí; Web/Mobile/runtime NOT VERIFIED. Chi tiết: `docs/P013-QUOTE-BILLING.md`.
 
 - Trả linh kiện vật lý (owner 20/10/2026): thêm cờ độc lập `PART_RETURNS_TRACKING_ENABLED` mặc định OFF, phải giữ `P1_CUSTODY_ENABLED=false`. Chỉ QR của đơn tạo sau activation mới ghi custody `tracking_only`; không backfill đơn cũ/đang làm. Khách vẫn PAID/COMPLETED, không giữ hay đổi wallet/commission/invoice/payment/cash/withdrawal. Outstanding tracking chặn việc mới qua eligibility/discovery/invitation/Accept, không chặn giữ đơn đang làm; SM nhận đủ hàng hợp lệ mới hết nghĩa vụ. API thêm `/part-returns/mine`, `return-discrepancy` và trạng thái exception; queue SM gồm cả chưa khai trả. Migration #0042 bảo vệ chế độ và discrepancy, #0043 bổ sung realtime item/custody thành `order:updated kinds=['part']`; READY/RECEIVED đã có ở #0038. Hợp đồng, giới hạn usage toàn dòng giữ billing cũ và activation: `docs/PART-RETURNS-TRACKING.md`. Chưa migrate/bật flag; Web/Mobile/runtime NOT VERIFIED.
 - Ca tối đã duyệt 19/10/2026: `slot: evening` cho create/schedule/rebook, Booking/order/invitation response giữ slot và timestamps. `available-slots` dùng cùng phép tính khung đến, còn ca tối hôm nay tới trước 23:00. Lịch tuần qua nửa đêm chỉ mở phần giờ có giao với khung đến; không bảo đảm nhận được thợ hay sửa xong trước cuối ca. Chỉ kiểm tra lịch của cuộc hẹn tương lai, không dự đoán thời lượng sửa; eligibility được kiểm lại lúc matching/Accept. Hợp đồng và ví dụ: `docs/BOOKING-EVENING-SESSION.md`. Web/Mobile parity: NOT VERIFIED, cần PR của các repo tiêu thụ.
@@ -220,6 +230,8 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 7. Quyết định đã chốt
 
+- P013 owner 20/10/2026: linh kiện FixHome trong báo giá gốc cần nguồn cấp kho thực tế; tái dùng PRE_REPAIR, chỉ yêu cầu phần thiếu. Không cấp trùng khi duyệt lại, không dùng nguồn ADDITIONAL để bù nguồn báo giá gốc, không vượt số lượng duyệt. Xác nhận miễn phí chỉ cho hóa đơn 0 hợp lệ; VNPay tối thiểu 5.000 ₫ cho hóa đơn, nạp ví giữ 10.000 ₫. Không tự sửa hóa đơn cũ; hoa hồng LABOR, ví và P1 finance giữ nguyên.
+
 - ServiceOrder chỉ tạo khi kỹ thuật viên nhận lời mời.
 - Dữ liệu tài chính đã duyệt là bất biến; đổi thì tạo bản mới (báo giá, chi phí phát sinh, hoá đơn, tỉ lệ hoa hồng snapshot).
 - AI chỉ gợi ý; AI hỏng không chặn đặt lịch.
@@ -264,6 +276,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 8. Việc đang dở và rủi ro đã biết
 
+- P013 source/tests đã triển khai, chưa ghi DB/env, chưa commit/push. Migration #0044 cần rehearsal PostgreSQL 17 cô lập và review độc lập trước release; chưa chứng minh khóa/rollback/concurrency nhiều instance trên PostgreSQL. Không chạy Docker, shared DB hoặc E2E trong task cấm DB writes. Cần migration theo quy trình release riêng trước restart backend mới, rồi QA Web/Mobile/HTTP/QR/socket; các mục này NOT VERIFIED. Báo giá đã APPROVED và hóa đơn cũ không tự backfill/tính lại; dữ liệu lỗi cần quyết định xử lý riêng. Đã chặn hủy nguồn kho cần thiết sau duyệt; yêu cầu đã hủy từ trước không tự tạo lại.
+
 - Physical-return tracking #0042/#0043 chưa chạy trên PostgreSQL; trigger/rollback, concurrency nhiều instance, Docker/HTTP/QR/socket và Web/Mobile/browser parity: NOT VERIFIED. Chỉ units/DDL contract và typecheck/build trong phạm vi backend; không DB/env write, không full suite/E2E. Không dùng P1 finance để mở tracking: P1 cũ giữ tiền công online. Cần release riêng theo `docs/PART-RETURNS-TRACKING.md`, consumer phải hiển thị nghĩa vụ riêng khỏi COMPLETED. Sau enrollment không đổi mode hoặc tắt cờ runtime; muốn dừng cohort mới chỉ tắt DB enrollment, vẫn cho nhận/trả nghĩa vụ cũ. Không kiểm lại 792 SKU trên DB trong task này.
 - Ca tối #0041 chưa chạy migration, PostgreSQL/E2E/Docker runtime và Web/Mobile parity: NOT VERIFIED. Task chỉ sửa backend và chạy kiểm tra không ghi DB. Phải migrate bằng quy trình phát hành riêng rồi restart backend trước runtime QA; không chạy Compose/migration trên shared-dev trong task này. Rollback CHECK là atomic và sẽ từ chối nếu còn hàng evening, không đổi/xóa lịch sử. Khung đến không đại diện thời lượng sửa; không hứa hoàn tất trước 23:00 hoặc tự coi đơn qua nửa đêm là đã rảnh.
 - P012 price-binding đã qua unit và harness PostgreSQL/HTTP cô lập (28 tier, 32 fallback, matching/accept, snapshot bất biến); chưa migrate shared DB/preview 3101, chưa restart preview. Full `npm run test:e2e` trên DB cô lập trống: FAIL, `test/app.e2e-spec.ts` worker thoát bất thường; `test/web-accept-isolated.e2e-spec.ts` lỗi migration cũ `urgency_level_enum` không tồn tại. Không sửa migration cũ hoặc nới gate. Web/Mobile/browser parity và Docker Compose runtime: NOT VERIFIED.
@@ -282,6 +296,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-20 14:36 (UTC+7) | foxonworld | foxonworld/fixhome-p013-quote-billing-20261020 | Chặn sớm báo giá lệch số lượng nguyên dòng PRE_REPAIR và hủy nguồn kho cần thiết sau duyệt; giữ usage/P1 finance và dữ liệu lịch sử.
+- 2026-10-20 14:25 (UTC+7) | foxonworld | foxonworld/fixhome-p013-quote-billing-20261020 | Thêm cấp kho theo phần thiếu của báo giá, chặn hóa đơn thiếu bằng chứng, xác nhận miễn phí và ngưỡng VNPay 5.000 ₫; chưa ghi DB/runtime.
 - 2026-10-20 01:53 (UTC+7) | Hgnv11 | feat/customer-activity-stages | Thêm stage cho danh sách booking và đơn của khách và GET /bookings/my/activity-counts để mobile phân trang, phân loại và đếm ở server
 - 2026-10-20 01:05 (UTC+7) | foxonworld | foxonworld/fixhome-p012-integration-20261019 | Thêm tracking trả vật lý độc lập P1 finance, chặn việc mới theo nghĩa vụ, discrepancy/queue và realtime item/custody qua migration cộng thêm; giữ dormant, không ghi DB/env.
 - 2026-10-19 22:15 (UTC+7) | foxonworld | foxonworld/fixhome-p012-integration-20261019 | Thêm ca tối 18-23 qua #0041, khung đến còn lại cho tạo/đổi/đặt lại và chặn urgent khi đơn đang chạy qua nửa đêm; không ghi DB, chưa kiểm chứng liên repo/runtime.
@@ -320,6 +336,4 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-12 00:11 (UTC+7) | ToanAltF4 | feat/geo-place-search | Gợi ý địa chỉ hỏi OpenStreetMap qua Photon trước (có dữ liệu địa điểm như Nhà Văn Hóa Sinh Viên), ưu tiên gần lat/lng người dùng gửi hoặc TP HCM, chỉ giữ kết quả ở Việt Nam; Photon lỗi hoặc không có kết quả thì MapTiler trả lời, cũng ưu tiên gần vị trí đó
 - 2026-10-11 23:39 (UTC+7) | ToanAltF4 | feat/checkin-face | Check-in gồm GPS và ảnh khuôn mặt thợ chụp bằng camera: ảnh bằng chứng loại mới checkin_face (migration 035 thêm giá trị enum), chỉ nộp khi EN_ROUTE đã check-in hợp lệ, không xoá được; ảnh trước sửa chỉ nhận khi đã có ảnh khuôn mặt; GPS qua khi cách địa chỉ không quá 5 km và sai số báo về không quá 5 km (geofence.radius_meters = geofence.min_gps_accuracy_meters = 5000, đã ACTIVE trong trang cấu hình)
 - 2026-10-10 02:40 (UTC+7) | ToanAltF4 | feat/technician-auto-accept | Thợ bật/tắt tự nhận việc (technician_profiles.auto_accept_invitations, migration 034, PATCH /technicians/me/profile autoAcceptInvitations): lời mời tới thợ đang bật được nhận thay qua respond(ACCEPT) sau khi commit (tạo shortlist, chuyển lời mời kế tiếp, vòng quét mỗi phút), nhận không được thì để thợ tự trả lời; thợ nhận thông báo INVITATION_AUTO_ACCEPTED, lịch sử đơn và audit ghi là tự nhận
-- 2026-10-10 02:09 (UTC+7) | ToanAltF4 | fix/booking-photo-seed-ids | Ảnh đặt lịch riêng tư không còn trả 404 cho tài khoản seed: kiểm id theo dạng uuid của PostgreSQL (shared/utils/db-uuid.ts) thay cho isUUID() vốn từ chối id không theo phiên bản RFC 4122
-- 2026-10-10 01:20 (UTC+7) | ToanAltF4 | feat/technician-default-warranty | Thợ đặt bảo hành công mặc định (PUT /technicians/me/warranty-default, áp cho tất cả dịch vụ tuỳ chọn); đơn chụp bảo hành công lúc giao thợ (service_orders.labor_warranty_days, migration 033); báo giá/chi phí phát sinh để trống ngày bảo hành công thì lấy mặc định, vượt warranty.max_days bị từ chối; hoá đơn giá cố định ghi bảo hành công theo đơn thay vì 0; thẻ ứng viên không còn hiện 30 ngày khi thợ chưa đặt; warranty.default_days và warranty.max_days chuyển ACTIVE
 

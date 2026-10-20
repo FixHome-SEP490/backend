@@ -97,6 +97,7 @@ export interface PartCustodySnapshotInput {
   readonly partRequestItemId: string;
   readonly requestType: PartRequestType;
   readonly additionalCostId: string | null;
+  readonly quotationId?: string | null;
   readonly partCatalogId: string | null;
   readonly source: PartSource;
   readonly originalCustodianTechnicianId: string;

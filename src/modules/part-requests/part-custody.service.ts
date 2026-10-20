@@ -39,6 +39,7 @@ export class PartCustodyService {
         state: createPartCustodySnapshot({
           serviceOrderId: order.id, partRequestId: request.id, partRequestItemId: item.id,
           requestType: request.requestType, additionalCostId: request.additionalCostId ?? null,
+          ...(request.quotationId ? { quotationId: request.quotationId } : {}),
           partCatalogId: item.partCatalogId ?? null, source: item.partSource,
           originalCustodianTechnicianId: request.technicianId, issuedQty: item.quantity,
           usedQty: 0, serviceOrderStatus: order.status, invoiceFrozen: false,

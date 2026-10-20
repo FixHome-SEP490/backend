@@ -60,6 +60,7 @@ describe('physical return tracking stays separate from the customer lifecycle (m
     };
     const service = Object.assign(Object.create(QuotationsService.prototype), {
       dataSource: { transaction: async cb => cb(db) }, auditLogService: { logWithManager: vi.fn() },
+      partRequestsService: Object.create(PartRequestsService.prototype),
     });
     const actor = { id: 'tech', role: Role.TECHNICIAN };
     const quote = await service.createQuotation('order', { items: [{ type: CostItemType.LABOR, description: 'Sửa chữa', quantity: 1, unitPrice: 1000 }] }, actor);

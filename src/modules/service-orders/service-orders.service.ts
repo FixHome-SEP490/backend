@@ -1,6 +1,6 @@
 import { andWhereTextMatches } from '../../shared/utils/list-search';
 import { NO_DEPARTURE_CANCEL_REASON } from './no-departure';
-import { closeOrderPartRequests, assertPartsResolved, usedPartQuantities, holderPartRequests, releaseOutgoingTechnicianPartRequests } from '../part-requests/part-request-lifecycle';
+import { closeOrderPartRequests, assertPartsResolved, assertApprovedPartsResolved, usedPartQuantities, holderPartRequests, releaseOutgoingTechnicianPartRequests } from '../part-requests/part-request-lifecycle';
 import { custodyUsageForInvoice, p1CustodyEnabled } from '../part-requests/part-custody.policy';
 import { Payment } from '../finance/entities/payment.entity';
 import { PartRequest } from '../part-requests/entities/part-request.entity';
@@ -1385,8 +1385,14 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     }
 
     const requests = await manager.find(PartRequest, { where: { serviceOrderId: orderId }, relations: ['items'] });
-    assertPartsResolved(await holderPartRequests(manager, orderId, requests));
-    const billableQuantity = usedPartQuantities(requests, await custodyUsageForInvoice(manager, orderId));
+    const heldRequests = await holderPartRequests(manager, orderId, requests);
+    assertPartsResolved(heldRequests);
+    const custodyUsage = await custodyUsageForInvoice(manager, orderId);
+    assertApprovedPartsResolved([
+      ...(quotation?.items ?? []).map(item => ({ ...item, source: 'quotation' })),
+      ...additionalItems.map(item => ({ ...item, source: item.requestId })),
+    ], heldRequests, quotation?.id ?? null, custodyUsage);
+    const billableQuantity = usedPartQuantities(heldRequests, custodyUsage, quotation?.id ?? null);
 
     // Calculate totals
     let laborTotal = 0;

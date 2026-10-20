@@ -50,6 +50,17 @@ export class InitiatePaymentDto {
   idempotencyKey: string;
 }
 
+export class NoChargeInvoiceResponseDto {
+  @ApiProperty({ format: 'uuid' })
+  invoiceId: string;
+
+  @ApiProperty({ enum: [PaymentStatus.PAID] })
+  paymentStatus: 'paid';
+
+  @ApiProperty({ enum: ['NO_CHARGE'] })
+  settlementMethod: 'NO_CHARGE';
+}
+
 export class CashSettlementDeclarationDto {
   @ApiProperty({ example: 125000, minimum: 0, description: 'Whole VND amount.' })
   @Type(() => Number)

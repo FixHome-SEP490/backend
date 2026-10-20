@@ -1,5 +1,5 @@
 import { Body, Controller, forwardRef, Get, HttpCode, HttpStatus, Inject, Param, ParseUUIDPipe, Post, Query, Req, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiConflictResponse, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { PermissionGuard } from '../../common/guards/permission.guard';
@@ -12,6 +12,7 @@ import { TopUpRequestDto } from '../wallet/dto/top-up.dto';
 import { CustomerWalletService } from '../customer-wallet/customer-wallet.service';
 import { CustomerWithdrawalPayoutService } from '../wallet/customer-withdrawal-payout.service';
 import { FinanceService } from './finance.service';
+import { NoChargeInvoiceResponseDto } from './dto';
 
 type Req = { user: { id: string; role: string }; ip?: string; headers?: Record<string, string> };
 
@@ -68,5 +69,15 @@ export class CustomerWalletController {
   @ApiOperation({ summary: 'Customer: pay the whole invoice from the wallet balance' })
   payWithWallet(@Req() req: Req, @Param('id', ParseUUIDPipe) id: string) {
     return this.finance.payInvoiceWithWallet(id, req.user);
+  }
+
+  @Post('invoices/:id/no-charge')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('invoice:pay_own')
+  @ApiOperation({ summary: 'Customer: confirm a genuine zero invoice without a provider or wallet transaction' })
+  @ApiOkResponse({ type: NoChargeInvoiceResponseDto })
+  @ApiConflictResponse({ description: 'Zero invoice is inconsistent with approved costs or stock evidence' })
+  noCharge(@Req() req: Req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.finance.confirmNoChargeInvoice(id, req.user);
   }
 }
