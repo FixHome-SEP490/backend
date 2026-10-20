@@ -298,7 +298,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
-- 2026-10-20 20:13 (UTC+7) | Hgnv11 | fix/departure-grace-and-catalog-copy | Ân hạn cảnh báo chưa xuất phát order.departure_grace_minutes đổi 0 thành 15 (seed và DB); mô tả dịch vụ seed bỏ chữ Catalog V2/V3 và câu staging
+- 2026-10-20 20:13 (UTC+7) | Hgnv11 | fix/departure-grace-and-catalog-copy | Ân hạn cảnh báo chưa xuất phát order.departure_grace_minutes đổi 0 thành 15 (seed, DB và migration 1790000000045 chỉ đổi khi còn giá trị 0); mô tả dịch vụ seed bỏ chữ Catalog V2/V3 và câu staging
 - 2026-10-20 18:40 (UTC+7) | foxonworld | foxonworld/tech-job-v3-be-20261020 | Thêm multipart deferAutoStart cho nhiều ảnh BEFORE trước khi tự bắt đầu sửa; giữ GPS, ảnh mặt, trạng thái và client cũ.
 - 2026-10-20 17:32 (UTC+7) | ToanAltF4 | fix/catalog-v3-idempotent-parts | seed:catalog-v3 đọc giá linh kiện trước khi ghi để chạy lại không báo cập nhật giả (UPDATE TypeORM trả [rows, count]); đã nạp V3 vào DB chung 20/10
 - 2026-10-20 17:02 (UTC+7) | ToanAltF4 | feat/catalog-v3 | Catalog V3: thêm 8 dịch vụ (WM-06 FR-02 WH-03 KT-06..10), 14 biến thể giá cố định (tủ đứng AC-02-31, máy giặt sấy WM-02-34...), giá tham khảo theo loại máy cho dịch vụ sửa, 44 linh kiện mới + sửa 11 giá linh kiện; thuộc tính acMounting=floor, washerHasDryer; lệnh nạp npm run seed:catalog-v3 (chỉ bổ sung, chạy lại an toàn)
