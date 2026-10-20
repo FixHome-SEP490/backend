@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-20 17:32 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/catalog-v3-idempotent-parts
+> Cập nhật lần cuối: 2026-10-20 20:13 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: fix/departure-grace-and-catalog-copy
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -243,7 +243,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - Duyệt KYC và quản lý danh mục chỉ admin làm; quản lý dịch vụ xử lý ngoại lệ (BRX-041, BRX-045).
 - Huỷ đơn tự trừ điểm uy tín (thay BRX-032/033 theo PO 08-09/10/2026), không còn vi phạm do quản lý xác nhận (xem dưới).
 - PlatformDue chỉ có ở đơn tiền mặt và bằng hoa hồng + linh kiện FixHome + phí giao (BRX-030, BRX-057); khi quyết toán được trừ thẳng vào ví kỹ thuật viên.
-- BRX-063 (PO 07/10/2026): đến giờ hẹn (đầu khung giờ khách chọn, hoặc lúc nhận đơn nếu muộn hơn) mà kỹ thuật viên chưa bấm "Đang đến" thì báo cho kỹ thuật viên và khách; 10 phút sau vẫn chưa xuất phát thì tự huỷ đơn và booking. Hai mốc là cấu hình `order.departure_grace_minutes` (0) và `order.departure_cancel_minutes` (10).
+- BRX-063 (PO 07/10/2026): đến giờ hẹn (đầu khung giờ khách chọn, hoặc lúc nhận đơn nếu muộn hơn) mà kỹ thuật viên chưa bấm "Đang đến" thì báo cho kỹ thuật viên và khách; 10 phút sau vẫn chưa xuất phát thì tự huỷ đơn và booking. Hai mốc là cấu hình `order.departure_grace_minutes` (15 từ 20/10/2026, trước là 0 nên đơn vừa nhận đã bị cảnh báo ngay) và `order.departure_cancel_minutes` (10).
 - BRX-064 (PO 07/10/2026): chẩn đoán AI bắt buộc có mô tả, ảnh không bắt buộc.
 - Khi tài liệu chính thức lệch với code thì code là chuẩn; tài liệu chính thức đã được sửa khớp ngày 07/10/2026 (shortlist 1 đến 2, có ví và mức tối thiểu, AI tự host, PlatformDue trừ qua ví).
 - Không có xác thực giữa `backend` và `ai-service`; PO xác định đây không phải phạm vi cần làm.
@@ -296,6 +296,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-20 20:13 (UTC+7) | Hgnv11 | fix/departure-grace-and-catalog-copy | Ân hạn cảnh báo chưa xuất phát order.departure_grace_minutes đổi 0 thành 15 (seed và DB); mô tả dịch vụ seed bỏ chữ Catalog V2/V3 và câu staging
 - 2026-10-20 17:32 (UTC+7) | ToanAltF4 | fix/catalog-v3-idempotent-parts | seed:catalog-v3 đọc giá linh kiện trước khi ghi để chạy lại không báo cập nhật giả (UPDATE TypeORM trả [rows, count]); đã nạp V3 vào DB chung 20/10
 - 2026-10-20 17:02 (UTC+7) | ToanAltF4 | feat/catalog-v3 | Catalog V3: thêm 8 dịch vụ (WM-06 FR-02 WH-03 KT-06..10), 14 biến thể giá cố định (tủ đứng AC-02-31, máy giặt sấy WM-02-34...), giá tham khảo theo loại máy cho dịch vụ sửa, 44 linh kiện mới + sửa 11 giá linh kiện; thuộc tính acMounting=floor, washerHasDryer; lệnh nạp npm run seed:catalog-v3 (chỉ bổ sung, chạy lại an toàn)
 - 2026-10-20 14:36 (UTC+7) | foxonworld | foxonworld/fixhome-p013-quote-billing-20261020 | Chặn sớm báo giá lệch số lượng nguyên dòng PRE_REPAIR và hủy nguồn kho cần thiết sau duyệt; giữ usage/P1 finance và dữ liệu lịch sử.
@@ -335,5 +336,4 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-12 01:02 (UTC+7) | ToanAltF4 | feat/list-search | Danh sách đơn và yêu cầu đặt lịch tìm và lọc trên server để web phân trang không mất tìm kiếm: search (mã đơn, tên dịch vụ, tên khách; không dấu, không phân biệt hoa thường), statuses nhiều trạng thái một lần; bảng booking của quản lý có overdue (đã quá giờ hẹn) và sort=appointment
 - 2026-10-12 00:40 (UTC+7) | ToanAltF4 | feat/geo-hybrid-search | Gợi ý địa chỉ hỏi song song OpenStreetMap (Photon) và MapTiler: gõ có số nhà ở đầu thì MapTiler đứng trước (tên phường sau sáp nhập), gõ tên địa điểm thì OpenStreetMap đứng trước; bỏ trùng cùng nơi, tối đa 6; một nguồn lỗi thì nguồn kia trả lời
 - 2026-10-12 00:22 (UTC+7) | ToanAltF4 | feat/earnings-period-paging | Thu nhập của thợ theo kỳ: GET /technicians/me/earnings nhận from/to (ngày lịch giờ VN, tính cả hai đầu) và page/pageSize, tổng tính trên cả kỳ (số đơn, tiền công, phí, thực nhận, giá trị đơn, số đơn đã thanh toán), danh sách đơn có tên dịch vụ, giá trị đơn, đã thanh toán chưa; không tham số thì như cũ. GET /warranty-claims/mine nhận page/pageSize và trả meta
-- 2026-10-12 00:11 (UTC+7) | ToanAltF4 | feat/geo-place-search | Gợi ý địa chỉ hỏi OpenStreetMap qua Photon trước (có dữ liệu địa điểm như Nhà Văn Hóa Sinh Viên), ưu tiên gần lat/lng người dùng gửi hoặc TP HCM, chỉ giữ kết quả ở Việt Nam; Photon lỗi hoặc không có kết quả thì MapTiler trả lời, cũng ưu tiên gần vị trí đó
 

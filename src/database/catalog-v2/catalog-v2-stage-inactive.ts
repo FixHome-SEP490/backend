@@ -61,8 +61,8 @@ export async function stageCatalogV2Inactive(dataSource: DataSource): Promise<Ca
         ON CONFLICT ("code") DO NOTHING
       `, [
         s.code, categoryId, s.name, s.code.toLowerCase(),
-        'Catalog V2 staging — chưa mở. Giá tùy thuộc xác minh thuộc tính/khảo sát.',
-        'PHẠM VI CẦN XÁC MINH: tiền công tiêu chuẩn chưa gồm vật tư P và công ngoài S.',
+        'Giá tùy thuộc thuộc tính thiết bị hoặc khảo sát.',
+        'Tiền công tiêu chuẩn chưa gồm linh kiện, vật tư và công phát sinh ngoài phạm vi.',
       ]);
       ids.set(s.code, await requireInactive(db, 'services', s.code));
     }

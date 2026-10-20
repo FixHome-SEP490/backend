@@ -21,7 +21,7 @@ export const CONFIG_SEED: ConfigSeedItem[] = [
   // v1.4 §10: Invitation is sequential (not simultaneous). Corrected from legacy SIMULTANEOUS default.
   { key: 'matching.mode', value: 'SEQUENTIAL', valueType: 'enum', description: 'Matching mode: SEQUENTIAL (v1.4 canonical). SIMULTANEOUS is removed.' },
   { key: 'matching.invitation_ttl_minutes', value: '30', valueType: 'int', description: 'Invitation expiration in minutes' },
-  { key: 'order.departure_grace_minutes', value: '0', valueType: 'int', description: 'Minutes after the appointment time before warning a technician who has not set out (BRX-063)' },
+  { key: 'order.departure_grace_minutes', value: '15', valueType: 'int', description: 'Minutes after the appointment time before warning a technician who has not set out (BRX-063)' },
   { key: 'order.departure_cancel_minutes', value: '10', valueType: 'int', description: 'Minutes after that warning before the order and booking are cancelled (BRX-063)' },
   { key: 'geofence.radius_meters', value: '5000', valueType: 'int', description: 'Geofence radius for arrival check-in' },
   { key: 'geofence.min_gps_accuracy_meters', value: '5000', valueType: 'int', description: 'Minimum GPS accuracy for valid check-in' },

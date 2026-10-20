@@ -62,7 +62,7 @@ export async function applyCatalogV3(db: QueryFn): Promise<CatalogV3ApplyResult>
       RETURNING "id"
     `, [
       code, categories[0].id, draft.name, code.toLowerCase(),
-      'Catalog V3 — giá tùy thuộc thuộc tính thiết bị hoặc khảo sát.',
+      'Giá tùy thuộc thuộc tính thiết bị hoặc khảo sát.',
       'Tiền công tiêu chuẩn chưa gồm linh kiện, vật tư và công phát sinh ngoài phạm vi.',
       active,
     ]) as { id: string }[];
