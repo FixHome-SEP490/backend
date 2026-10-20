@@ -785,7 +785,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         booking.status = BookingStatus.MATCHING;
         await manager.save(booking);
         await activateNextInvitation(manager, booking, await this.configService.getInt('matching.invitation_ttl_minutes', 30), invitationActivatedHook(this.notificationsService));
-        await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from, actorUserId: actor.id, actorRole: actor.role, reason: 'Technician withdrew before arrival; awaiting replacement: ' + body.reason });
+        await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from, actorUserId: actor.id, actorRole: actor.role, reason: 'Kỹ thuật viên rút trước khi tới, đang tìm thợ thay. Lý do: ' + body.reason });
         await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'TECHNICIAN_WITHDRAWAL_REMATCH', resourceType: 'service_order', resourceId: orderId, after: { reason: body.reason, strikeApplied: false } });
         return order;
       }
@@ -850,11 +850,12 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       await manager.update(TechnicianAssignment, { serviceOrderId: orderId, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: reason });
       await releaseOutgoingTechnicianPartRequests(manager, orderId, actor.id);
       await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: CancelActor.TECHNICIAN, actorUserId: actor.id, reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
-      // Khách tự chọn thợ khác: dọn lượt mời còn treo để mở được danh sách mới.
+      // Khách tự chọn thợ khác: dọn lượt mời còn treo và đóng lượt ghép, để không bị
+      // coi là "hết thợ nhận lời mời" (thông báo sai) mà vẫn mở được danh sách mới.
       await manager.update(BookingInvitation, { bookingId: booking.id, status: In([InvitationStatus.PENDING, InvitationStatus.STANDBY]) }, { status: InvitationStatus.CANCELLED, respondedAt: new Date() });
-      booking.status = BookingStatus.MATCHING;
+      booking.status = BookingStatus.CLOSED;
       await manager.save(booking);
-      await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from, actorUserId: actor.id, actorRole: actor.role, reason: 'Technician released for an overrunning job; customer chooses another technician: ' + reason });
+      await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from, actorUserId: actor.id, actorRole: actor.role, reason: reason + '. Khách chọn thợ khác.' });
       await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'TECHNICIAN_OVERRUN_RELEASE', resourceType: 'service_order', resourceId: orderId, after: { currentOrderCode: check.currentOrderCode, strikeApplied: false } });
       if (this.notificationsService && booking.customerId) {
         void this.notificationsService.createNotification({
