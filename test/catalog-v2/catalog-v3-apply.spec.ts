@@ -40,11 +40,16 @@ function fakeDatabase() {
       parts.set(String(p[0]), { selling_price: Number(p[3]), description: String(p[2]) });
       return [{ id: String(p[0]) }];
     }
+    if (statement.includes('SELECT "selling_price", "description" FROM "fixhome_parts"')) {
+      const row = parts.get(String(p[0]));
+      return row ? [{ selling_price: row.selling_price.toFixed(2), description: row.description }] : [];
+    }
     if (statement.includes('UPDATE "fixhome_parts"')) {
       const row = parts.get(String(p[0]));
-      if (!row || (row.selling_price === Number(p[1]) && row.description === p[2])) return [];
-      parts.set(String(p[0]), { selling_price: Number(p[1]), description: String(p[2]) });
-      return [{ id: String(p[0]) }];
+      const changed = Boolean(row) && !(row!.selling_price === Number(p[1]) && row!.description === p[2]);
+      if (changed) parts.set(String(p[0]), { selling_price: Number(p[1]), description: String(p[2]) });
+      // Như TypeORM với Postgres: UPDATE trả [rows, rowCount], mảng luôn có 2 phần tử.
+      return [[], changed ? 1 : 0];
     }
     return [];
   });

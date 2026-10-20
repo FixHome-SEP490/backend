@@ -108,12 +108,17 @@ export async function applyCatalogV3(db: QueryFn): Promise<CatalogV3ApplyResult>
     if (inserted.length) result.partsInserted.push(part.sku);
   }
   for (const part of priceFixes) {
-    const updated = await db.query(`
+    // Đọc trước rồi mới ghi: UPDATE của TypeORM trả [rows, count] nên không đếm được bằng độ dài mảng.
+    const current = await db.query(
+      'SELECT "selling_price", "description" FROM "fixhome_parts" WHERE "sku" = $1', [part.sku],
+    ) as { selling_price: string | number; description: string | null }[];
+    if (!current.length) continue;
+    if (Number(current[0].selling_price) === part.sellingPrice && current[0].description === part.description) continue;
+    await db.query(`
       UPDATE "fixhome_parts" SET "selling_price" = $2::numeric, "description" = $3::text, "updated_at" = now()
-      WHERE "sku" = $1 AND ("selling_price" <> $2::numeric OR "description" IS DISTINCT FROM $3::text)
-      RETURNING "id"
-    `, [part.sku, part.sellingPrice, part.description]) as { id: string }[];
-    if (updated.length) result.partPricesUpdated.push(part.sku);
+      WHERE "sku" = $1
+    `, [part.sku, part.sellingPrice, part.description]);
+    result.partPricesUpdated.push(part.sku);
   }
   return result;
 }
