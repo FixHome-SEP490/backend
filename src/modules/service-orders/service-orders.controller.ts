@@ -1,5 +1,6 @@
 // src/modules/service-orders/service-orders.controller.ts
 import { ReviewCancellationDto } from './dto/review-cancellation.dto';
+import { RepairFailedDto } from './dto/repair-failed.dto';
 import { OrderBoardQueryDto, OrderListQueryDto, StrikeListQueryDto } from './dto/order-list-query.dto';
 import { PageSizeQueryDto } from '../../shared/dto/page-size-query.dto';
 import {
@@ -241,6 +242,23 @@ export class ServiceOrdersController {
   ) {
     const order = await this.serviceOrdersService.startRepair(id, req.user);
     return { data: order };
+  }
+
+  @Post('service-orders/:id/repair-failed')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('order:update_status')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Technician: an approved device of a visit could not be repaired',
+    description: 'Visit devices only, while UNDER_REPAIR. One step: a reason chip (no_part, beyond_repair, needs_workshop, other), an optional note, and Đã lắp/Trả lại kho for every part received. The device ends at 0 đồng (order cancelled without invoice or points), the customer is told and a support case opens for the managers.',
+  })
+  async reportRepairFailed(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: RepairFailedDto,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    return { data: await this.serviceOrdersService.reportRepairFailed(id, body, req.user) };
   }
 
   @Post('service-orders/:id/request-completion')

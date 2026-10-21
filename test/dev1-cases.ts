@@ -500,6 +500,71 @@ export function registerDev1Cases(context: () => Context) {
       }
     });
 
+    it('arrives once for a visit, quotes every device on site even at a fixed price, and a refused quote costs nothing (PO 21/10/2026)', async () => {
+      const f = await fixture(), db = context().db;
+      const { BusinessConfigService } = runtimeRequire('./dist/modules/system-config/business-config.service.js');
+      const setGroups = async (on: boolean) => {
+        await db.query(`UPDATE "system_configs" SET "value" = $1 WHERE "key" = 'visit_group.enabled'`, [String(on)]);
+        context().app.get(BusinessConfigService).invalidateCache();
+      };
+      const day = new Date(Date.now() + 7 * 3600000 + 2 * 86400000).toISOString().slice(0, 10);
+      const body = { addressId: f.address.id, mode: 'scheduled', date: day, slot: 'morning', items: [{ serviceId: f.service.id, description: 'Máy kêu to' }, { serviceId: f.service.id, description: 'Không lạnh', deviceLabel: 'Máy phòng ngủ' }] };
+      try {
+        await setGroups(true);
+        const group = unwrap((await post('/visit-groups', f.owner, body).expect(201)).body);
+        const [lead, second] = group.items.map((item: any) => item.booking.id);
+        await post(`/visit-groups/${group.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id] }).expect(201);
+        const [invitation] = unwrap((await get('/invitations/my', f.tech).expect(200)).body);
+        await post(`/invitations/${invitation.id}/respond`, f.tech, { action: 'ACCEPT' }).expect(200);
+        const orderOf = async (bookingId: string) => (await db.query('SELECT id, status FROM service_orders WHERE booking_id = $1', [bookingId]))[0];
+        const [one, two] = [await orderOf(lead), await orderOf(second)];
+
+        // One trip, one check-in, one face for the whole visit.
+        await post(`/service-orders/${one.id}/en-route`, f.tech).expect(200);
+        expect((await orderOf(second)).status).toBe('en_route');
+        expect(unwrap((await post(`/service-orders/${one.id}/check-in`, f.tech, { lat: 10.77, lng: 106.69, accuracyMeters: 5 }).expect(200)).body).result).toBe('valid');
+        expect((await db.query("SELECT COUNT(*)::int n FROM arrival_check_ins WHERE service_order_id = $1 AND result = 'valid'", [two.id]))[0].n).toBe(1);
+        await evidence(one.id, f.tech, 'checkin_face').expect(201);
+        await evidence(two.id, f.tech, 'before').expect(201);
+        await evidence(one.id, f.tech, 'before').expect(201);
+        // A fixed price is still approved on site before the repair starts.
+        expect((await orderOf(lead)).status).toBe('en_route');
+
+        const labor = (unitPrice: number) => [{ type: 'labor', description: 'Sửa theo giá niêm yết', quantity: 1, unitPrice }];
+        const wrong = await post(`/service-orders/${one.id}/quotations`, f.tech, { items: labor(250000) });
+        expect(wrong.status, JSON.stringify(wrong.body)).toBe(422);
+        const quote = unwrap((await post(`/service-orders/${one.id}/quotations`, f.tech, { items: labor(200000) }).expect(201)).body);
+        await post(`/quotations/${quote.id}/decision`, f.owner, { action: 'APPROVE' }).expect(200);
+        expect((await orderOf(lead)).status).toBe('under_repair');
+
+        // Refused on site: that device is not repaired and costs nothing; the other carries on.
+        const refused = unwrap((await post(`/service-orders/${two.id}/quotations`, f.tech, { items: labor(200000) }).expect(201)).body);
+        await post(`/quotations/${refused.id}/decision`, f.owner, { action: 'REJECT' }).expect(200);
+        expect((await orderOf(second)).status).toBe('cancelled');
+        const outcomes = await db.query('SELECT booking_id, outcome FROM visit_group_items WHERE group_id = $1 ORDER BY sequence', [group.id]);
+        expect(outcomes.map((row: any) => row.outcome)).toEqual([null, 'quote_declined']);
+        expect((await orderOf(lead)).status).toBe('under_repair');
+
+        // "Không sửa được": one step for the technician, 0 đồng, a case for the managers, no points.
+        const techPoints = (await db.query('SELECT COUNT(*)::int n FROM reputation_events WHERE user_id = $1', [f.tech.user.id]))[0].n;
+        denied(await post(`/service-orders/${one.id}/repair-failed`, f.tech, { reason: 'made_up' }));
+        denied(await post(`/service-orders/${one.id}/repair-failed`, f.owner, { reason: 'beyond_repair' }));
+        await post(`/service-orders/${one.id}/repair-failed`, f.tech, { reason: 'beyond_repair', note: 'Bo mạch cháy' }).expect(200);
+        expect((await orderOf(lead)).status).toBe('cancelled');
+        const [failed] = await db.query('SELECT outcome, outcome_reason FROM visit_group_items WHERE booking_id = $1', [lead]);
+        expect(failed).toEqual({ outcome: 'failed', outcome_reason: 'Máy hỏng nặng, không sửa được. Bo mạch cháy' });
+        const [supportCase] = await db.query('SELECT case_type, status, technician_id, customer_id FROM support_cases WHERE service_order_id = $1', [one.id]);
+        expect(supportCase).toEqual({ case_type: 'mid_job_interruption', status: 'open', technician_id: f.tech.user.id, customer_id: f.owner.user.id });
+        expect((await db.query('SELECT COUNT(*)::int n FROM invoices WHERE service_order_id = $1', [one.id]))[0].n).toBe(0);
+        expect((await db.query('SELECT COUNT(*)::int n FROM reputation_events WHERE user_id = $1', [f.tech.user.id]))[0].n).toBe(techPoints);
+        // Not for a booking outside a visit.
+        const { order: single } = await accept(f);
+        expect((await post(`/service-orders/${single.id}/repair-failed`, f.tech, { reason: 'other' })).status).toBe(409);
+      } finally {
+        await setGroups(false);
+      }
+    });
+
     it('takes a firm-priced booking without words and asks for them when a technician quotes on site (PO 21/10/2026)', async () => {
       const f = await fixture();
       const silent = await post('/bookings', f.owner, { ...f.body, description: undefined });
