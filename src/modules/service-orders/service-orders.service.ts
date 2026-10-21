@@ -76,6 +76,9 @@ import type { EntityManager } from 'typeorm';
 import { OrderEvidenceStorage, EvidenceFile, evidenceStampText } from '../media/order-evidence-storage.service';
 import { expireAdditionalCosts } from './expire-additional-costs';
 import { authorizeOrder } from './order-access';
+import { groupSiblings, mirrorGroupStatus, refuseLoneGroupedBookingAction } from '../bookings/visit-group-guard';
+import { VisitGroup } from '../visit-groups/entities/visit-group.entity';
+import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity';
 import { isCompletionHeld } from '../support-cases/completion-hold';
 import { historicalOrderSummary, type HistoricalOrderSummary } from './historical-order-summary';
 import { repairHistoryStatuses } from './repair-history-filter';
@@ -746,81 +749,143 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     const reference = await authorizeOrder(this.dataSource.manager, orderId, actor);
     return this.dataSource.transaction(async manager => {
       const booking = await manager.findOneOrFail(Booking, { where: { id: reference.bookingId }, lock: { mode: 'pessimistic_write' } });
-      const order = await authorizeOrder(manager, orderId, actor, actor.role === Role.TECHNICIAN ? 'technician' : 'read', true);
-      if (order.status === ServiceOrderStatus.CANCELLED) return order;
-      const arrived = await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, result: CheckInResult.VALID });
-      // A technician has arrived only with their own check-in: after a replacement the earlier
-      // technician's check-in stays on the order but says nothing about the new one.
-      const selfArrived = actor.role === Role.TECHNICIAN
-        ? await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, result: CheckInResult.VALID })
-        : arrived;
-      if (actor.role === Role.TECHNICIAN && selfArrived) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'After arrival, request Service Manager exception handling');
-      if (actor.role === Role.CUSTOMER && order.status === ServiceOrderStatus.UNDER_REPAIR) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'During repair, request Service Manager exception handling');
-      const from = order.status;
-      if (actor.role === Role.TECHNICIAN && !selfArrived && [ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(from)) {
-        await manager.update(TechnicianAssignment, { serviceOrderId: orderId, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: body.reason });
-        await releaseOutgoingTechnicianPartRequests(manager, orderId, actor.id);
-        const withdrawal = await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: CancelActor.TECHNICIAN, actorUserId: actor.id, reason: body.reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
-        await this.reputationService?.penalize(manager, { userId: actor.id, role: Role.TECHNICIAN, reason: `Huỷ nhận đơn #${order.code}: ${body.reason}`, serviceOrderId: orderId, cancellationId: withdrawal.id });
-        if (this.notificationsService && booking.customerId) {
-          void this.notificationsService.createNotification({
-            userId: booking.customerId,
-            title: 'Kỹ thuật viên đã huỷ nhận đơn',
-            message: `Kỹ thuật viên đã xin rút khỏi đơn #${order.code} (Lý do: "${body.reason}"). Hệ thống đang tự động tìm kiếm thợ thay thế cho bạn.`,
-            type: 'ORDER_CANCELLED',
-            referenceId: order.id,
-            referenceType: 'SERVICE_ORDER',
-          });
-        }
-        const previous = await manager.find(BookingInvitation, { where: { bookingId: booking.id }, order: { priorityOrder: 'ASC' } });
-        const last = Math.max(0, ...previous.filter(inv => inv.status === InvitationStatus.ACCEPTED).map(inv => inv.priorityOrder));
-        // Append a fresh invitation round; the original dispatch history stays immutable.
-        const remaining = previous.filter(inv => inv.priorityOrder > last && inv.status === InvitationStatus.CANCELLED);
-        const offset = Math.max(0, ...previous.map(inv => inv.priorityOrder));
-        const group = remaining.length > 0
-          ? manager.create(BookingInvitationGroup, { id: randomUUID(), bookingId: booking.id })
-          : null;
-        if (group) await manager.save(group);
-        for (const [index, candidate] of remaining.entries()) await manager.save(BookingInvitation, manager.create(BookingInvitation, { groupId: group!.id, bookingId: booking.id, technicianId: candidate.technicianId, priorityOrder: offset + index + 1, status: InvitationStatus.STANDBY, invitedAt: new Date(), expiresAt: null }));
-        booking.status = BookingStatus.MATCHING;
-        await manager.save(booking);
-        await activateNextInvitation(manager, booking, await this.configService.getInt('matching.invitation_ttl_minutes', 30), invitationActivatedHook(this.notificationsService));
-        await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from, actorUserId: actor.id, actorRole: actor.role, reason: 'Kỹ thuật viên rút trước khi tới, đang tìm thợ thay. Lý do: ' + body.reason });
-        await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'TECHNICIAN_WITHDRAWAL_REMATCH', resourceType: 'service_order', resourceId: orderId, after: { reason: body.reason, strikeApplied: false } });
+      // One device of a visit is not cancelled or dropped alone by the customer or the
+      // technician (PO 21/10/2026); staff may still handle one order as an exception.
+      if (actor.role === Role.CUSTOMER || actor.role === Role.TECHNICIAN) refuseLoneGroupedBookingAction(booking);
+      return this.cancelLocked(manager, booking, orderId, body, actor);
+    });
+  }
+
+  /**
+   * Cancel a whole visit of several devices after its technician accepted
+   * (PO 21/10/2026): the customer cancels every order, or the technician, before
+   * arriving, drops every order and the visit is matched again through its lead
+   * booking. Each order is cancelled by the single-order rules; points are taken
+   * and people are told once for the visit, not once per device.
+   */
+  async cancelVisit(groupId: string, body: { reason: string }, actor: { id: string; role: string }): Promise<ServiceOrder[]> {
+    if (!body.reason?.trim()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Cancellation reason required');
+    if (actor.role !== Role.CUSTOMER && actor.role !== Role.TECHNICIAN) throw new ForbiddenException('Order not found or access denied');
+    return this.dataSource.transaction(async manager => {
+      // The lead booking's row is the visit's lock, taken first like Accept.
+      const leadItem = await manager.findOne(VisitGroupItem, { where: { groupId }, order: { sequence: 'ASC' } });
+      const lead = leadItem && await manager.findOne(Booking, { where: { id: leadItem.bookingId }, lock: { mode: 'pessimistic_write' } });
+      if (!lead) throw new ForbiddenException('Order not found or access denied');
+      await manager.findOne(VisitGroup, { where: { id: groupId }, lock: { mode: 'pessimistic_write' } });
+      // The lead goes last: its rematch moves the other devices back to matching with it.
+      const children = [...await groupSiblings(manager, lead, true), lead];
+      const held: Array<{ booking: Booking; order: ServiceOrder }> = [];
+      for (const booking of children) {
+        const order = await manager.findOneBy(ServiceOrder, { bookingId: booking.id });
+        if (order && order.status !== ServiceOrderStatus.CANCELLED) held.push({ booking, order: await authorizeOrder(manager, order.id, actor, actor.role === Role.TECHNICIAN ? 'technician' : 'customer', true) });
+      }
+      if (!held.length) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chưa có thợ nhận lượt sửa này.');
+      // Refuse before writing anything, so the visit never ends half cancelled.
+      for (const { order } of held) {
+        if (actor.role === Role.TECHNICIAN && await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: order.id, technicianId: actor.id, result: CheckInResult.VALID })) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'After arrival, request Service Manager exception handling');
+        if (actor.role === Role.CUSTOMER && order.status === ServiceOrderStatus.UNDER_REPAIR) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'During repair, request Service Manager exception handling');
+      }
+      const results: ServiceOrder[] = [];
+      for (const [index, { booking, order }] of held.entries()) {
+        results.push(await this.cancelLocked(manager, booking, order.id, body, actor, { primary: index === held.length - 1 }));
+      }
+      if (actor.role === Role.CUSTOMER) await manager.update(VisitGroup, groupId, { status: 'cancelled' });
+      return results;
+    });
+  }
+
+  /**
+   * One order's cancellation, the booking row already locked. \`visit.primary\`
+   * false marks another device of a visit being cancelled together: its order is
+   * closed or dropped the same way, without points, notices or a rematch of its own.
+   */
+  private async cancelLocked(
+    manager: EntityManager, booking: Booking, orderId: string, body: { reason: string }, actor: { id: string; role: string },
+    visit?: { primary: boolean },
+  ): Promise<ServiceOrder> {
+    const secondary = visit?.primary === false;
+    const order = await authorizeOrder(manager, orderId, actor, actor.role === Role.TECHNICIAN ? 'technician' : 'read', true);
+    if (order.status === ServiceOrderStatus.CANCELLED) return order;
+    const arrived = await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, result: CheckInResult.VALID });
+    // A technician has arrived only with their own check-in: after a replacement the earlier
+    // technician's check-in stays on the order but says nothing about the new one.
+    const selfArrived = actor.role === Role.TECHNICIAN
+      ? await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, result: CheckInResult.VALID })
+      : arrived;
+    if (actor.role === Role.TECHNICIAN && selfArrived) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'After arrival, request Service Manager exception handling');
+    if (actor.role === Role.CUSTOMER && order.status === ServiceOrderStatus.UNDER_REPAIR) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'During repair, request Service Manager exception handling');
+    const from = order.status;
+    if (actor.role === Role.TECHNICIAN && !selfArrived && [ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(from)) {
+      await manager.update(TechnicianAssignment, { serviceOrderId: orderId, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: body.reason });
+      await releaseOutgoingTechnicianPartRequests(manager, orderId, actor.id);
+      const withdrawal = await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: CancelActor.TECHNICIAN, actorUserId: actor.id, reason: body.reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
+      if (secondary) {
+        // Another device of the visit: the lead booking's rematch below finds the replacement for all.
+        await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from, actorUserId: actor.id, actorRole: actor.role, reason: 'Kỹ thuật viên rút trước khi tới, đang tìm thợ thay cho cả lượt. Lý do: ' + body.reason });
+        await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'TECHNICIAN_WITHDRAWAL_REMATCH', resourceType: 'service_order', resourceId: orderId, after: { reason: body.reason, strikeApplied: false, visitGroupId: booking.visitGroupId } });
         return order;
       }
-      await this.commitTransition(manager, order, ServiceOrderStatus.CANCELLED, actor, body.reason);
-      await closeBookingForCancelledOrder(manager, booking.id);
-      const cancellation = await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: actor.role as unknown as CancelActor, actorUserId: actor.id, reason: body.reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
-      // A customer who cancels an order a technician already holds loses points (PO 08/10/2026); staff cancellations cost nobody points.
-      if (actor.role === Role.CUSTOMER) await this.reputationService?.penalize(manager, { userId: actor.id, role: Role.CUSTOMER, reason: `Huỷ đơn #${order.code} đã có thợ nhận: ${body.reason}`, serviceOrderId: orderId, cancellationId: cancellation.id });
-      await manager.update(TechnicianAssignment, { serviceOrderId: orderId, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: body.reason });
-      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: arrived ? 'CANCELLATION_REQUIRES_REVIEW' : 'ORDER_CANCEL', resourceType: 'service_order', resourceId: orderId, after: { reason: body.reason, strikeApplied: false } });
-      if (this.notificationsService) {
-        const assignment = await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: orderId }, order: { assignedAt: 'DESC' } });
-        if (assignment?.technicianId && actor.role !== Role.TECHNICIAN) {
-          void this.notificationsService.createNotification({
-            userId: assignment.technicianId,
-            title: 'Đơn hàng đã bị huỷ',
-            message: `Đơn hàng #${order.code} đã bị huỷ bởi ${actor.role === Role.CUSTOMER ? 'Khách hàng' : 'Quản trị viên'}. Lý do: "${body.reason}".`,
-            type: 'ORDER_CANCELLED',
-            referenceId: order.id,
-            referenceType: 'SERVICE_ORDER',
-          });
-        }
-        if (booking.customerId && actor.role !== Role.CUSTOMER) {
-          void this.notificationsService.createNotification({
-            userId: booking.customerId,
-            title: 'Đơn hàng đã bị huỷ',
-            message: `Đơn hàng #${order.code} đã bị huỷ. Lý do: "${body.reason}".`,
-            type: 'ORDER_CANCELLED',
-            referenceId: order.id,
-            referenceType: 'SERVICE_ORDER',
-          });
-        }
+      await this.reputationService?.penalize(manager, { userId: actor.id, role: Role.TECHNICIAN, reason: `Huỷ nhận đơn #${order.code}: ${body.reason}`, serviceOrderId: orderId, cancellationId: withdrawal.id });
+      if (this.notificationsService && booking.customerId) {
+        void this.notificationsService.createNotification({
+          userId: booking.customerId,
+          title: 'Kỹ thuật viên đã huỷ nhận đơn',
+          message: `Kỹ thuật viên đã xin rút khỏi đơn #${order.code} (Lý do: "${body.reason}"). Hệ thống đang tự động tìm kiếm thợ thay thế cho bạn.`,
+          type: 'ORDER_CANCELLED',
+          referenceId: order.id,
+          referenceType: 'SERVICE_ORDER',
+        });
       }
-      return manager.findOneByOrFail(ServiceOrder, { id: orderId });
-    });
+      const previous = await manager.find(BookingInvitation, { where: { bookingId: booking.id }, order: { priorityOrder: 'ASC' } });
+      const last = Math.max(0, ...previous.filter(inv => inv.status === InvitationStatus.ACCEPTED).map(inv => inv.priorityOrder));
+      // Append a fresh invitation round; the original dispatch history stays immutable.
+      const remaining = previous.filter(inv => inv.priorityOrder > last && inv.status === InvitationStatus.CANCELLED);
+      const offset = Math.max(0, ...previous.map(inv => inv.priorityOrder));
+      const group = remaining.length > 0
+        ? manager.create(BookingInvitationGroup, { id: randomUUID(), bookingId: booking.id })
+        : null;
+      if (group) await manager.save(group);
+      for (const [index, candidate] of remaining.entries()) await manager.save(BookingInvitation, manager.create(BookingInvitation, { groupId: group!.id, bookingId: booking.id, technicianId: candidate.technicianId, priorityOrder: offset + index + 1, status: InvitationStatus.STANDBY, invitedAt: new Date(), expiresAt: null }));
+      booking.status = BookingStatus.MATCHING;
+      await manager.save(booking);
+      await mirrorGroupStatus(manager, booking, BookingStatus.MATCHING);
+      await activateNextInvitation(manager, booking, await this.configService.getInt('matching.invitation_ttl_minutes', 30), invitationActivatedHook(this.notificationsService));
+      await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from, actorUserId: actor.id, actorRole: actor.role, reason: 'Kỹ thuật viên rút trước khi tới, đang tìm thợ thay. Lý do: ' + body.reason });
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'TECHNICIAN_WITHDRAWAL_REMATCH', resourceType: 'service_order', resourceId: orderId, after: { reason: body.reason, strikeApplied: false } });
+      return order;
+    }
+    await this.commitTransition(manager, order, ServiceOrderStatus.CANCELLED, actor, body.reason);
+    await closeBookingForCancelledOrder(manager, booking.id);
+    const cancellation = await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: actor.role as unknown as CancelActor, actorUserId: actor.id, reason: body.reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
+    // A customer who cancels an order a technician already holds loses points (PO 08/10/2026); staff cancellations cost nobody points.
+    // A visit cancelled together costs the points of one cancellation.
+    if (actor.role === Role.CUSTOMER && !secondary) await this.reputationService?.penalize(manager, { userId: actor.id, role: Role.CUSTOMER, reason: `Huỷ đơn #${order.code} đã có thợ nhận: ${body.reason}`, serviceOrderId: orderId, cancellationId: cancellation.id });
+    await manager.update(TechnicianAssignment, { serviceOrderId: orderId, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: body.reason });
+    await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: arrived ? 'CANCELLATION_REQUIRES_REVIEW' : 'ORDER_CANCEL', resourceType: 'service_order', resourceId: orderId, after: { reason: body.reason, strikeApplied: false } });
+    if (this.notificationsService && !secondary) {
+      const assignment = await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: orderId }, order: { assignedAt: 'DESC' } });
+      if (assignment?.technicianId && actor.role !== Role.TECHNICIAN) {
+        void this.notificationsService.createNotification({
+          userId: assignment.technicianId,
+          title: 'Đơn hàng đã bị huỷ',
+          message: `Đơn hàng #${order.code} đã bị huỷ bởi ${actor.role === Role.CUSTOMER ? 'Khách hàng' : 'Quản trị viên'}. Lý do: "${body.reason}".`,
+          type: 'ORDER_CANCELLED',
+          referenceId: order.id,
+          referenceType: 'SERVICE_ORDER',
+        });
+      }
+      if (booking.customerId && actor.role !== Role.CUSTOMER) {
+        void this.notificationsService.createNotification({
+          userId: booking.customerId,
+          title: 'Đơn hàng đã bị huỷ',
+          message: `Đơn hàng #${order.code} đã bị huỷ. Lý do: "${body.reason}".`,
+          type: 'ORDER_CANCELLED',
+          referenceId: order.id,
+          referenceType: 'SERVICE_ORDER',
+        });
+      }
+    }
+    return manager.findOneByOrFail(ServiceOrder, { id: orderId });
   }
 
 

@@ -36,7 +36,8 @@ import { distanceToBooking, servesArea, technicianOrigin } from './technician-lo
 import { technicianDistances } from './technician-distance';
 import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
 import { loadEligibilityPreload, technicianEligibility } from './technician-eligibility';
-import { refuseLoneGroupedBookingAction } from './visit-group-guard';
+import { groupSiblings, refuseLoneGroupedBookingAction } from './visit-group-guard';
+import { VisitGroup } from '../visit-groups/entities/visit-group.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { BookingInvitation } from './entities/booking-invitation.entity';
@@ -786,6 +787,7 @@ export class BookingsService {
     bookingId: string,
     dto: ScheduleBookingDto,
     customer: { id: string },
+    opts: { asVisit?: boolean } = {},
   ): Promise<Booking> {
     if (dto.mode === 'urgent') {
       throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Dời lịch thì chọn ngày và buổi (sáng, chiều hoặc tối)');
@@ -800,12 +802,18 @@ export class BookingsService {
         lock: { mode: 'pessimistic_write' },
       });
       if (!booking) throw new ForbiddenException('Booking not found');
-      refuseLoneGroupedBookingAction(booking);
-      if (![BookingStatus.SUBMITTED, BookingStatus.MATCHING, BookingStatus.MATCHED].includes(booking.status)) {
+      // A visit of several devices moves together, through its lead booking (PO 21/10/2026).
+      if (!opts.asVisit) refuseLoneGroupedBookingAction(booking);
+      const siblings = await groupSiblings(manager, booking, true);
+      const siblingIds = siblings.map((sibling) => sibling.id);
+      if ([booking, ...siblings].some((b) => ![BookingStatus.SUBMITTED, BookingStatus.MATCHING, BookingStatus.MATCHED].includes(b.status))) {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Booking cannot be rescheduled');
       }
       const order = await manager.findOne(ServiceOrder, { where: { bookingId }, lock: { mode: 'pessimistic_write' } });
-      if (order && ![ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(order.status)) {
+      const siblingOrders = siblingIds.length
+        ? await manager.find(ServiceOrder, { where: { bookingId: In(siblingIds) }, order: { id: 'ASC' }, lock: { mode: 'pessimistic_write' } })
+        : [];
+      if ([order, ...siblingOrders].some((o) => o && ![ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(o.status))) {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Repair already started or order closed');
       }
       // A description-only edit is not a reschedule: same window keeps the
@@ -824,8 +832,9 @@ export class BookingsService {
         });
         return manager.save(booking);
       }
-      // One move of the arrival session per booking (PO 21/10/2026); the description stays editable.
-      if ((booking.rescheduleCount ?? 0) >= 1) {
+      // One move of the arrival session per booking (PO 21/10/2026), per visit for several devices;
+      // the description stays editable.
+      if ([booking, ...siblings].some((b) => (b.rescheduleCount ?? 0) >= 1)) {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Mỗi đơn chỉ được đổi lịch hẹn một lần.');
       }
       booking.rescheduleCount = (booking.rescheduleCount ?? 0) + 1;
@@ -850,6 +859,27 @@ export class BookingsService {
       } else {
         await this.cancelOpenInvitations(manager, bookingId);
         booking.status = BookingStatus.SUBMITTED;
+      }
+      if (siblingIds.length) {
+        await manager.update(Booking, { id: In(siblingIds) }, {
+          rescheduleCount: booking.rescheduleCount,
+          preferredStartAt: booking.preferredStartAt,
+          preferredEndAt: booking.preferredEndAt,
+          bookingMode: booking.bookingMode,
+          slot: booking.slot ?? null,
+          ...(order ? {} : { status: BookingStatus.SUBMITTED }),
+        });
+        if (siblingOrders.length) {
+          await manager.update(ServiceOrder, { id: In(siblingOrders.map((o) => o.id)) }, { scheduledAt: booking.preferredStartAt, departureWarnedAt: null });
+        }
+      }
+      if (booking.visitGroupId) {
+        await manager.update(VisitGroup, booking.visitGroupId, {
+          preferredStartAt: booking.preferredStartAt!,
+          preferredEndAt: booking.preferredEndAt!,
+          bookingMode: booking.bookingMode,
+          slot: booking.slot ?? null,
+        });
       }
       await this.auditLogService.logWithManager(manager, {
         actorUserId: customer.id,
@@ -1011,7 +1041,7 @@ export class BookingsService {
       ? await loadEligibilityPreload(manager, technicianId, {
         start: new Date(now),
         end: new Date(Date.parse(today + 'T00:00:00Z') + (dayCount + 1) * 86_400_000),
-      }, excludeOrderId)
+      }, excludeOrderId, booking.visitGroupId)
       : undefined;
     const sessions: Array<{ date: string; slot: BookingSlot; label: string; available: boolean; reason: string | null }> = [];
     for (let i = 0; i < dayCount; i++) {

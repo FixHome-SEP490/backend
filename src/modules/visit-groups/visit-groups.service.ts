@@ -7,6 +7,8 @@ import { BookingStatus, Role, SupportCaseType } from '../../shared/enums';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { BookingsService } from '../bookings/bookings.service';
 import { InvitationsService } from '../bookings/invitations.service';
+import { ScheduleBookingDto } from '../bookings/booking.dto';
+import { ServiceOrdersService } from '../service-orders/service-orders.service';
 import { Booking } from '../bookings/entities/booking.entity';
 import { BookingInvitation } from '../bookings/entities/booking-invitation.entity';
 import { CreateBookingDto } from '../bookings/booking.dto';
@@ -42,6 +44,7 @@ export class VisitGroupsService {
     private readonly supportCases: SupportCasesService,
     private readonly auditLogService: AuditLogService,
     private readonly invitations: InvitationsService,
+    private readonly serviceOrders: ServiceOrdersService,
   ) {}
 
   /** What a booking screen needs before it offers more than one device. */
@@ -210,9 +213,35 @@ export class VisitGroupsService {
     return this.invitations.createShortlist(lead, technicianIds, customer, { asVisit: true });
   }
 
+  /**
+   * Move the whole visit to another session, once per visit (PO 21/10/2026),
+   * with the same rules as one booking: the technician who holds it must be
+   * free then, otherwise matching starts again. Descriptions stay per device.
+   */
+  async reschedule(groupId: string, dto: ScheduleBookingDto, customer: Customer) {
+    const lead = await this.leadBookingId(groupId, customer);
+    await this.bookingsService.reschedule(lead, { ...dto, description: undefined }, customer, { asVisit: true });
+    return this.detail(groupId, customer);
+  }
+
+  /** The technician drops the whole visit before arriving; it is matched again through its lead booking. */
+  async withdraw(groupId: string, reason: string, technician: Customer) {
+    if (technician.role !== Role.TECHNICIAN) throw new ForbiddenException('Technician role required');
+    const orders = await this.serviceOrders.cancelVisit(groupId, { reason }, technician);
+    return { visitGroupId: groupId, orderIds: orders.map((order) => order.id) };
+  }
+
   /** The one extension of the live invitation round, for the whole visit. */
   async extendMatching(groupId: string, customer: Customer) {
     return this.invitations.extendPendingInvitationGroup(await this.leadBookingId(groupId, customer), customer);
+  }
+
+  private async hasOrders(groupId: string): Promise<boolean> {
+    const rows: Array<{ n: number }> = await this.dataSource.query(
+      'SELECT COUNT(*)::int AS n FROM service_orders o JOIN bookings b ON b.id = o.booking_id WHERE b.visit_group_id = $1',
+      [groupId],
+    );
+    return (rows[0]?.n ?? 0) > 0;
   }
 
   private async leadBookingId(groupId: string, customer: { id: string }): Promise<string> {
@@ -229,6 +258,11 @@ export class VisitGroupsService {
    * cancelled on its own (see refuseLoneGroupedBookingAction).
    */
   async cancel(groupId: string, reason: string, customer: { id: string; role: string }) {
+    // Once a technician holds the visit, every order is cancelled by the order rules.
+    if (await this.hasOrders(groupId)) {
+      await this.serviceOrders.cancelVisit(groupId, { reason }, customer);
+      return this.detail(groupId, customer);
+    }
     await this.dataSource.transaction(async (manager) => {
       // The lead booking's row is the visit's lock, taken first as Accept and the matching sweep do.
       const lead = await manager.findOne(VisitGroupItem, { where: { groupId }, order: { sequence: 'ASC' } });

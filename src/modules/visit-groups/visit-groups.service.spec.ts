@@ -25,6 +25,7 @@ function harness(config: Record<string, string> = { 'visit_group.enabled': 'true
   const dataSource = {
     transaction: vi.fn(async (work: (m: typeof manager) => Promise<unknown>) => work(manager)),
     getRepository: vi.fn(() => ({ find: vi.fn(async () => []), findBy: vi.fn(async () => []) })),
+    query: vi.fn(async () => [{ n: 0 }]),
   };
   const groupRepo = { findOneBy: vi.fn(async () => null as unknown), find: vi.fn(async () => []) };
   const itemRepo = { find: vi.fn(async () => []), findOne: vi.fn(async () => ({ bookingId: 'booking-lead' })) };
@@ -35,17 +36,19 @@ function harness(config: Record<string, string> = { 'visit_group.enabled': 'true
       return { id: `booking-${created}`, serviceId: dto.serviceId, preferredStartAt: new Date(start.getTime() + created), preferredEndAt: end, bookingMode: 'scheduled', slot: 'afternoon' };
     }),
     getCandidates: vi.fn(async () => []),
+    reschedule: vi.fn(async () => ({})),
   };
   const businessConfig = { getString: vi.fn(async (key: string, fallback: string) => config[key] ?? fallback) };
   const supportCases = { openCase: vi.fn(async () => ({ id: 'case-1', status: 'open' })) };
   const audit = { logWithManager: vi.fn(async () => undefined) };
   const invitations = { createShortlist: vi.fn(async () => []), extendPendingInvitationGroup: vi.fn(async () => ({})) };
+  const serviceOrders = { cancelVisit: vi.fn(async () => [{ id: 'order-1' }, { id: 'order-2' }]) };
   const service = new VisitGroupsService(
     dataSource as never, groupRepo as never, itemRepo as never, bookingsService as never,
-    businessConfig as never, supportCases as never, audit as never, invitations as never,
+    businessConfig as never, supportCases as never, audit as never, invitations as never, serviceOrders as never,
   );
   vi.spyOn(service, 'detail').mockImplementation(async (id: string) => ({ id }) as never);
-  return { service, manager, dataSource, groupRepo, itemRepo, bookingsService, supportCases, invitations };
+  return { service, manager, dataSource, groupRepo, itemRepo, bookingsService, supportCases, invitations, serviceOrders };
 }
 
 const dto = (items: Array<{ serviceId: string }>, extra: object = {}) => ({
@@ -142,6 +145,29 @@ describe('VisitGroupsService matching', () => {
     await expect(off.service.shortlist('group-1', ['tech-1'], customer)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'FEATURE_DISABLED' }) });
     expect(h.invitations.createShortlist).not.toHaveBeenCalled();
     expect(off.invitations.createShortlist).not.toHaveBeenCalled();
+  });
+});
+
+describe('VisitGroupsService after a technician holds the visit', () => {
+  it('moves every device through the lead booking, keeping each description', async () => {
+    const h = harness();
+    h.groupRepo.findOneBy.mockResolvedValue({ id: 'group-1', status: 'submitted' });
+    await h.service.reschedule('group-1', { mode: 'scheduled', date: '2030-10-23', slot: 'morning', description: 'Đổi mô tả' }, customer);
+    expect(h.bookingsService.reschedule).toHaveBeenCalledWith('booking-lead', { mode: 'scheduled', date: '2030-10-23', slot: 'morning', description: undefined }, customer, { asVisit: true });
+  });
+
+  it('cancels a held visit through the order rules, all orders at once', async () => {
+    const h = harness();
+    h.dataSource.query.mockResolvedValueOnce([{ n: 2 }]);
+    await h.service.cancel('group-1', 'Bận việc', customer);
+    expect(h.serviceOrders.cancelVisit).toHaveBeenCalledWith('group-1', { reason: 'Bận việc' }, customer);
+    expect(h.dataSource.transaction).not.toHaveBeenCalled();
+  });
+
+  it('lets only a technician drop the visit', async () => {
+    const h = harness();
+    await expect(h.service.withdraw('group-1', 'Xe hỏng', customer)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(await h.service.withdraw('group-1', 'Xe hỏng', { id: 'tech-1', role: 'technician' })).toEqual({ visitGroupId: 'group-1', orderIds: ['order-1', 'order-2'] });
   });
 });
 
