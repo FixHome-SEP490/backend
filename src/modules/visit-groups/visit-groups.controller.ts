@@ -8,6 +8,8 @@ import { ScheduleBookingDto, ShortlistDto } from '../bookings/booking.dto';
 import { toBookingInvitationResponse } from '../bookings/booking-privacy.dto';
 import { CreateVisitGroupDto, VisitGroupConsultationDto } from './visit-group.dto';
 import { VisitGroupsService } from './visit-groups.service';
+import { FinanceService } from '../finance/finance.service';
+import { CashSettlementConfirmationDto, CashSettlementDeclarationDto } from '../finance/dto';
 
 type AuthedRequest = { user: { id: string; role: string } };
 
@@ -16,7 +18,10 @@ type AuthedRequest = { user: { id: string; role: string } };
 @Controller('visit-groups')
 @UseGuards(JwtAuthGuard, PermissionGuard)
 export class VisitGroupsController {
-  constructor(private readonly visitGroups: VisitGroupsService) {}
+  constructor(
+    private readonly visitGroups: VisitGroupsService,
+    private readonly finance: FinanceService,
+  ) {}
 
   @Get('contact')
   @RequirePermission('booking:create')
@@ -87,6 +92,46 @@ export class VisitGroupsController {
   @ApiOperation({ summary: 'Technician: drop the whole visit before arriving', description: 'Every device\'s order loses its technician and the visit is matched again; points are taken once. After arrival, ask a Service Manager.' })
   async withdraw(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ReasonDto, @Req() req: AuthedRequest) {
     return { data: await this.visitGroups.withdraw(id, dto.reason, req.user) };
+  }
+
+  @Get(':id/checkout')
+  @RequirePermission('invoice:read_related')
+  @ApiOperation({ summary: 'Customer or technician: what the visit owes', description: 'Each device with its state (succeeded, failed, quote_declined, cancelled, open) and amount; only repaired devices are charged. ready is true once every device has its result (PO 21/10/2026: one payment per visit).' })
+  async checkout(@Param('id', ParseUUIDPipe) id: string, @Req() req: AuthedRequest) {
+    return { data: await this.finance.visitCheckout(id, req.user) };
+  }
+
+  @Post(':id/checkout/wallet')
+  @RequirePermission('invoice:pay_own')
+  @ApiOperation({ summary: 'Customer: pay the whole visit with one wallet debit' })
+  async payWithWallet(@Param('id', ParseUUIDPipe) id: string, @Req() req: AuthedRequest) {
+    return { data: await this.finance.payVisitWithWallet(id, req.user) };
+  }
+
+  @Post(':id/checkout/vnpay')
+  @RequirePermission('invoice:pay_own')
+  @ApiOperation({ summary: 'Customer: one VNPay transaction for the whole visit', description: 'The IPN splits it over the repaired devices\' invoices frozen at this call.' })
+  async payWithVnpay(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: AuthedRequest & { ip: string; headers?: Record<string, string | undefined> },
+  ) {
+    const ua = req.headers?.['user-agent']?.toLowerCase() ?? '';
+    const isMobile = req.headers?.['x-client-platform'] === 'mobile' || ua.includes('okhttp') || ua.includes('cfnetwork');
+    return { data: await this.finance.createVisitVnpayUrl(id, req.user, req.ip, isMobile ? 'mobile' : 'web', req.headers?.origin) };
+  }
+
+  @Post(':id/checkout/cash/declare')
+  @RequirePermission('order:update_status')
+  @ApiOperation({ summary: 'Technician: report the cash of the whole visit, once', description: 'declaredAmount must equal the visit total; the customer then confirms.' })
+  async declareCash(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CashSettlementDeclarationDto, @Req() req: AuthedRequest) {
+    return { data: await this.finance.declareVisitCash(id, dto, req.user) };
+  }
+
+  @Post(':id/checkout/cash/confirm')
+  @RequirePermission('order:read_related')
+  @ApiOperation({ summary: 'Customer: confirm the visit cash, once', description: 'Agreeing pays every repaired device\'s invoice; disagreeing opens a cash mismatch case.' })
+  async confirmCash(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CashSettlementConfirmationDto, @Req() req: AuthedRequest) {
+    return { data: await this.finance.confirmVisitCash(id, dto, req.user) };
   }
 
   @Post(':id/cancel')

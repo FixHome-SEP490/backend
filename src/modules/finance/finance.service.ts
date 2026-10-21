@@ -54,6 +54,9 @@ import {
 import { PaymentVerificationPort, PAYMENT_VERIFICATION_PORT } from './payment-verification.port';
 import { SupportCasesService } from '../support-cases/support-cases.service';
 import { buildPaymentUrl, buildQueryDrRequest, verifySignature, withWebOrigin } from './vnpay/vnpay.util';
+import { loadVisitCharge, sameAllocations, type VisitCharge } from './visit-charge';
+import { VisitGroup } from '../visit-groups/entities/visit-group.entity';
+import { VisitGroupPayment } from '../visit-groups/entities/visit-group-payment.entity';
 import { SettlementService } from '../wallet/settlement.service';
 import { WalletService } from '../wallet/wallet.service';
 import { AuditLog } from '../audit-log/entities/audit-log.entity';
@@ -186,6 +189,7 @@ export class FinanceService {
       if (!booking || booking.customerId !== actor.id) {
         throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Invoice not found');
       }
+      this.refuseVisitInvoice(booking);
 
       if (this.requireWholeVnd(invoice.grandTotal, 'Invoice amount') <= 0) {
         throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hóa đơn 0 ₫ cần được xác nhận miễn phí.');
@@ -294,6 +298,7 @@ export class FinanceService {
       if (!booking || booking.customerId !== actor.id) {
         throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Invoice not found');
       }
+      this.refuseVisitInvoice(booking);
 
       if (this.requireWholeVnd(invoice.grandTotal, 'Invoice amount') < 5000) {
         throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'VNPay chỉ áp dụng cho hóa đơn từ 5.000 ₫. Vui lòng chọn ví hoặc tiền mặt.');
@@ -438,7 +443,8 @@ export class FinanceService {
       where: { idempotencyKey: query.vnp_TxnRef, provider: 'vnpay' },
     });
     if (!payment) {
-      return { RspCode: '01', Message: 'Order not found' };
+      // Not an invoice payment: perhaps one for a whole visit of several devices.
+      return this.handleVisitVnpayIpn(query);
     }
     if (payment.status !== PaymentAttemptStatus.PENDING) {
       return { RspCode: '02', Message: 'Order already confirmed' };
@@ -489,6 +495,8 @@ export class FinanceService {
     ok: boolean;
     invoiceId: string | null;
     serviceOrderId: string | null;
+    /** Set for a visit payment of several devices (PO 21/10/2026). */
+    visitGroupId?: string;
     purpose?: PaymentPurpose;
     amount?: number;
     orderInfo?: string;
@@ -502,7 +510,7 @@ export class FinanceService {
       where: { idempotencyKey: query.vnp_TxnRef, provider: 'vnpay' },
     });
     if (!payment) {
-      return { ok: false, invoiceId: null, serviceOrderId: null };
+      return this.handleVisitVnpayReturn(query, hashSecret);
     }
     if (query.vnp_ResponseCode === '00' && payment.status === PaymentAttemptStatus.PENDING) {
       await this.reconcileVnpayPayment(payment, hashSecret).catch((error) => {
@@ -591,6 +599,7 @@ export class FinanceService {
       if (!assignment) {
         throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Order not found');
       }
+      this.refuseVisitInvoice(await manager.findOne(Booking, { where: { id: order.bookingId } }));
       // Serializes CASH-COLLECTED self-declaration with new jobs and withdrawal writes.
       await lockCustodyTechnician(manager, actor.id);
       if (
@@ -741,6 +750,7 @@ export class FinanceService {
       if (!booking || booking.customerId !== actor.id) {
         throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Order not found');
       }
+      this.refuseVisitInvoice(booking);
       const invoice = await invoiceRepository.findOne({
         where: { serviceOrderId: orderId },
         lock: { mode: 'pessimistic_write' },
@@ -1423,6 +1433,7 @@ export class FinanceService {
       if (!booking || booking.customerId !== actor.id) {
         throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Invoice not found');
       }
+      this.refuseVisitInvoice(booking);
       if (invoice.paymentStatus === PaymentStatus.PAID) {
         throw new BusinessException(ErrorCodes.CONFLICT, 'Hoá đơn đã được thanh toán');
       }
@@ -1672,6 +1683,308 @@ export class FinanceService {
         settledAt: null,
       }),
     );
+  }
+
+  // ── One payment for a visit of several devices (PO 21/10/2026, G0-4 4B) ──
+
+  /**
+   * What the visit owes, for the customer or the technician holding it: each
+   * device's state and amount, the total of the devices repaired, and whether
+   * every device has its result yet (the visit is paid once, after that).
+   */
+  async visitCheckout(groupId: string, actor: FinanceActor) {
+    await this.visitAccess(this.dataSource.manager, groupId, actor);
+    const charge = await loadVisitCharge(this.dataSource.manager, groupId);
+    const pendingCash = await this.dataSource.getRepository(VisitGroupPayment).findOne({
+      where: { visitGroupId: groupId, rail: 'cash', status: 'pending_confirmation' },
+      order: { createdAt: 'DESC' },
+    });
+    return {
+      visitGroupId: groupId,
+      devices: charge.devices,
+      total: charge.total,
+      waiting: charge.waiting,
+      ready: charge.ready,
+      paid: charge.paid,
+      pendingCash: pendingCash ? { id: pendingCash.id, amount: Number(pendingCash.amount), declaredAt: pendingCash.requestedAt } : null,
+    };
+  }
+
+  /** One wallet debit for the whole visit, split over the repaired devices' invoices. */
+  async payVisitWithWallet(groupId: string, actor: FinanceActor): Promise<{ visitGroupId: string; paid: true; amount: number; balance: number }> {
+    if (actor.role !== Role.CUSTOMER) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Only the visit customer can pay it');
+    if (!this.customerWalletService) throw new BusinessException(ErrorCodes.PAYMENT_PROVIDER_UNAVAILABLE, 'Ví chưa sẵn sàng, vui lòng thử lại sau');
+    const wallet = this.customerWalletService;
+    return this.dataSource.transaction(async (manager) => {
+      await this.visitAccess(manager, groupId, actor, true);
+      const charge = await this.readyVisitCharge(manager, groupId);
+      const now = new Date();
+      const tx = await wallet.apply(manager, {
+        userId: actor.id,
+        type: 'invoice_payment',
+        amount: charge.total,
+        idempotencyKey: `VISIT:${groupId}`,
+        referenceType: 'VISIT_GROUP',
+        referenceId: groupId,
+        description: `Thanh toán lượt sửa ${charge.allocations.length} thiết bị`,
+      });
+      await this.cancelOpenVisitPayments(manager, groupId, 'PAID_FROM_WALLET');
+      for (const allocation of charge.allocations) {
+        const invoice = await manager.findOneOrFail(Invoice, { where: { id: allocation.invoiceId } });
+        await manager.update(Payment, { invoiceId: invoice.id, status: PaymentAttemptStatus.PENDING }, { status: PaymentAttemptStatus.CANCELLED, failureCode: 'PAID_FROM_WALLET' });
+        await manager.save(Payment, manager.create(Payment, {
+          invoiceId: invoice.id, commissionDueId: null, purpose: PaymentPurpose.INVOICE, amount: allocation.amount, currency: 'VND',
+          mode: PaymentMode.LIVE, provider: 'wallet', status: PaymentAttemptStatus.VERIFIED, idempotencyKey: `WALLET_VISIT:${invoice.id}`,
+          providerReference: `WALLET_TX:${tx.id}:${invoice.id}`, requestedByUserId: actor.id, failureCode: null, requestedAt: now, verifiedAt: now,
+        }));
+        await this.markInvoicePaidOnline(manager, invoice, actor.id, now);
+      }
+      const payment = await manager.save(VisitGroupPayment, manager.create(VisitGroupPayment, {
+        visitGroupId: groupId, rail: 'wallet', status: 'verified', amount: charge.total, allocations: charge.allocations,
+        idempotencyKey: `WALLET:${groupId}`, providerReference: `WALLET_TX:${tx.id}`, requestedByUserId: actor.id, requestedAt: now, verifiedAt: now,
+      }));
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: Role.CUSTOMER, action: 'VISIT_PAYMENT_VERIFIED', resourceType: 'visit_group_payment', resourceId: payment.id, after: { rail: 'wallet', amount: charge.total, invoices: charge.allocations.length } });
+      return { visitGroupId: groupId, paid: true as const, amount: charge.total, balance: tx.balanceAfter };
+    });
+  }
+
+  /** One VNPay transaction for the whole visit; the IPN splits it over the invoices frozen here. */
+  async createVisitVnpayUrl(groupId: string, actor: FinanceActor, ipAddr: string, platform: 'web' | 'mobile' = 'web', webOrigin?: string): Promise<{ paymentUrl: string }> {
+    if (actor.role !== Role.CUSTOMER) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Only the visit customer can pay it');
+    if ((await this.getPaymentMode()) !== PaymentMode.LIVE) throw new BusinessException(ErrorCodes.PAYMENT_PROVIDER_UNAVAILABLE, 'Payment mode is not LIVE');
+    const tmnCode = this.config.get<string>('VNPAY_TMN_CODE');
+    const hashSecret = this.config.get<string>('VNPAY_HASH_SECRET');
+    const vnpayPaymentUrl = this.config.get<string>('VNPAY_PAYMENT_URL');
+    const returnUrl = this.config.get<string>('VNPAY_RETURN_URL');
+    if (!tmnCode || !hashSecret || !vnpayPaymentUrl || !returnUrl) throw new BusinessException(ErrorCodes.PAYMENT_PROVIDER_UNAVAILABLE, 'VNPay is not configured');
+    const payment = await this.dataSource.transaction(async (manager) => {
+      await this.visitAccess(manager, groupId, actor, true);
+      const charge = await this.readyVisitCharge(manager, groupId);
+      if (charge.total < 5000) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'VNPay chỉ áp dụng từ 5.000 ₫. Vui lòng chọn ví hoặc tiền mặt.');
+      return manager.save(VisitGroupPayment, manager.create(VisitGroupPayment, {
+        visitGroupId: groupId, rail: 'vnpay', status: 'pending', amount: charge.total, allocations: charge.allocations,
+        idempotencyKey: randomUUID().replace(/-/g, ''), requestedByUserId: actor.id, requestedAt: new Date(),
+      }));
+    });
+    return {
+      paymentUrl: buildPaymentUrl({
+        paymentUrl: vnpayPaymentUrl,
+        tmnCode,
+        hashSecret,
+        amount: Number(payment.amount),
+        txnRef: payment.idempotencyKey,
+        orderInfo: `Thanh toan luot sua ${groupId}${platform === 'mobile' ? ' mobile' : ''}`,
+        returnUrl: platform === 'web' ? withWebOrigin(returnUrl, webOrigin) : returnUrl,
+        ipAddr,
+        createdAt: payment.requestedAt,
+      }),
+    };
+  }
+
+  /** The technician reports the cash of the whole visit, once; the customer then confirms it. */
+  async declareVisitCash(groupId: string, dto: CashSettlementDeclarationDto, actor: FinanceActor) {
+    if (actor.role !== Role.TECHNICIAN) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Only the assigned technician can declare cash received');
+    return this.dataSource.transaction(async (manager) => {
+      await this.visitAccess(manager, groupId, actor, true);
+      await lockCustodyTechnician(manager, actor.id);
+      const charge = await this.readyVisitCharge(manager, groupId);
+      if (this.requireWholeVnd(dto.declaredAmount, 'Declared amount') !== charge.total) {
+        throw new BusinessException(ErrorCodes.CASH_SETTLEMENT_MISMATCH, `Tiền mặt của cả lượt là ${charge.total.toLocaleString('vi-VN')}đ, vui lòng kiểm lại số tiền đã nhận.`);
+      }
+      await manager.update(VisitGroupPayment, { visitGroupId: groupId, rail: 'cash', status: 'pending_confirmation' }, { status: 'cancelled', failureCode: 'REDECLARED' });
+      const payment = await manager.save(VisitGroupPayment, manager.create(VisitGroupPayment, {
+        visitGroupId: groupId, rail: 'cash', status: 'pending_confirmation', amount: charge.total, allocations: charge.allocations,
+        idempotencyKey: `CASH:${groupId}:${randomUUID()}`, requestedByUserId: actor.id, requestedAt: new Date(),
+        providerReference: dto.technicianNotes?.slice(0, 255) ?? null,
+      }));
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'VISIT_CASH_DECLARED', resourceType: 'visit_group_payment', resourceId: payment.id, after: { amount: charge.total } });
+      return { id: payment.id, status: payment.status, amount: Number(payment.amount) };
+    });
+  }
+
+  /**
+   * The customer confirms the visit's cash, once: every repaired device's
+   * invoice is paid by the same confirmed collection. Disagreeing opens a
+   * cash mismatch case for the managers and pays nothing.
+   */
+  async confirmVisitCash(groupId: string, dto: CashSettlementConfirmationDto, actor: FinanceActor) {
+    if (actor.role !== Role.CUSTOMER) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Only the visit customer can confirm cash payment');
+    const result = await this.dataSource.transaction(async (manager) => {
+      await this.visitAccess(manager, groupId, actor, true);
+      const payment = await manager.findOne(VisitGroupPayment, { where: { visitGroupId: groupId, rail: 'cash', status: 'pending_confirmation' }, order: { createdAt: 'DESC' }, lock: { mode: 'pessimistic_write' } });
+      if (!payment) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Thợ chưa báo nhận tiền mặt cho lượt này');
+      const charge = await loadVisitCharge(manager, groupId, true);
+      const amount = Number(payment.amount);
+      const agreed = dto.agreed === true && (dto.confirmedAmount === undefined || this.requireWholeVnd(dto.confirmedAmount, 'Confirmed amount') === amount);
+      if (!agreed || !sameAllocations(payment.allocations, charge.allocations)) {
+        payment.status = 'disputed';
+        payment.failureCode = agreed ? 'ALLOCATION_CHANGED' : 'CUSTOMER_DISPUTED';
+        await manager.save(payment);
+        const [first] = payment.allocations;
+        const order = first ? await manager.findOneBy(ServiceOrder, { id: first.serviceOrderId }) : null;
+        await this.supportCasesService.openCase({
+          caseType: SupportCaseType.CASH_MISMATCH,
+          reason: 'Tiền mặt của lượt sửa nhiều máy chưa khớp',
+          description: [`Lượt ${groupId}: thợ báo ${amount} VND`, dto.confirmedAmount === undefined ? null : `khách xác nhận ${dto.confirmedAmount} VND`, dto.disputeReason ?? null].filter(Boolean).join('; '),
+          bookingId: order?.bookingId ?? null,
+          serviceOrderId: order?.id ?? null,
+          customerId: actor.id,
+          technicianId: payment.requestedByUserId,
+          createdByUserId: actor.id,
+        }, manager);
+        await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'VISIT_CASH_DISPUTED', resourceType: 'visit_group_payment', resourceId: payment.id, after: { amount, confirmedAmount: dto.confirmedAmount ?? null } });
+        return { payment, mismatch: true };
+      }
+      const now = new Date();
+      for (const allocation of payment.allocations) {
+        const order = await manager.findOneOrFail(ServiceOrder, { where: { id: allocation.serviceOrderId }, lock: { mode: 'pessimistic_write' } });
+        const invoice = await manager.findOneOrFail(Invoice, { where: { id: allocation.invoiceId } });
+        const settlement = await manager.save(CashSettlement, manager.create(CashSettlement, {
+          serviceOrderId: order.id, declaredByTechnicianId: payment.requestedByUserId, declaredAmount: allocation.amount, declaredAt: payment.requestedAt,
+          status: CashSettlementStatus.CONFIRMED, confirmedByCustomerId: actor.id, confirmedAmount: allocation.amount, confirmedAt: now,
+          technicianNotes: `Thu chung lượt sửa ${groupId}`,
+        }));
+        await this.applyConfirmedCash(manager, { order, invoice, settlement, actor, now });
+      }
+      await this.cancelOpenVisitPayments(manager, groupId, 'CASH_CONFIRMED');
+      payment.status = 'verified';
+      payment.verifiedAt = now;
+      await manager.save(payment);
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'VISIT_PAYMENT_VERIFIED', resourceType: 'visit_group_payment', resourceId: payment.id, after: { rail: 'cash', amount, invoices: payment.allocations.length } });
+      return { payment, mismatch: false };
+    });
+    if (result.mismatch) throw new BusinessException(ErrorCodes.CASH_SETTLEMENT_MISMATCH, 'Cash amount was not confirmed; support review is required');
+    return { id: result.payment.id, status: result.payment.status, amount: Number(result.payment.amount) };
+  }
+
+  /** VNPay IPN for a visit payment (the txnRef is not an invoice payment's). The signature is already verified. */
+  private async handleVisitVnpayIpn(query: Record<string, string>): Promise<{ RspCode: string; Message: string }> {
+    const payment = await this.dataSource.getRepository(VisitGroupPayment).findOneBy({ idempotencyKey: query.vnp_TxnRef, rail: 'vnpay' });
+    if (!payment) return { RspCode: '01', Message: 'Order not found' };
+    if (payment.status !== 'pending') return { RspCode: '02', Message: 'Order already confirmed' };
+    const vnpAmount = Number(query.vnp_Amount) / 100;
+    if (!Number.isSafeInteger(vnpAmount) || vnpAmount !== Number(payment.amount)) return { RspCode: '04', Message: 'Invalid amount' };
+    if (query.vnp_ResponseCode === '00' && query.vnp_TransactionStatus === '00') {
+      await this.applyVisitVnpay(payment.id, query.vnp_TransactionNo || query.vnp_TxnRef);
+    } else {
+      await this.dataSource.getRepository(VisitGroupPayment).update({ id: payment.id, status: 'pending' }, { status: 'failed', failureCode: `VNPAY_${query.vnp_ResponseCode ?? 'UNKNOWN'}` });
+    }
+    return { RspCode: '00', Message: 'Confirm Success' };
+  }
+
+  /**
+   * A verified VNPay visit payment pays every invoice it froze, in one
+   * transaction. When the split no longer matches (an invoice was paid some
+   * other way meanwhile) nothing is applied and the payment is held as failed
+   * with ALLOCATION_CHANGED for the managers to reconcile; never a double payment.
+   */
+  private async applyVisitVnpay(paymentId: string, providerReference: string): Promise<void> {
+    await this.dataSource.transaction(async (manager) => {
+      // The visit row first, as every visit payment takes it, then the attempt.
+      const ref = await manager.findOneBy(VisitGroupPayment, { id: paymentId });
+      if (!ref) return;
+      await manager.findOne(VisitGroup, { where: { id: ref.visitGroupId }, lock: { mode: 'pessimistic_write' } });
+      const payment = await manager.findOne(VisitGroupPayment, { where: { id: paymentId }, lock: { mode: 'pessimistic_write' } });
+      if (!payment || payment.status !== 'pending') return;
+      const charge = await loadVisitCharge(manager, payment.visitGroupId, true);
+      if (!sameAllocations(payment.allocations, charge.allocations)) {
+        payment.status = 'failed';
+        payment.failureCode = 'ALLOCATION_CHANGED';
+        payment.providerReference = providerReference.slice(0, 255);
+        await manager.save(payment);
+        this.logger.warn(`VNPay visit payment ${payment.id} verified but its invoices changed; held for reconciliation`);
+        return;
+      }
+      const now = new Date();
+      for (const allocation of payment.allocations) {
+        const invoice = await manager.findOneOrFail(Invoice, { where: { id: allocation.invoiceId } });
+        await manager.update(Payment, { invoiceId: invoice.id, status: PaymentAttemptStatus.PENDING }, { status: PaymentAttemptStatus.CANCELLED, failureCode: 'PAID_BY_VISIT' });
+        await manager.save(Payment, manager.create(Payment, {
+          invoiceId: invoice.id, commissionDueId: null, purpose: PaymentPurpose.INVOICE, amount: allocation.amount, currency: 'VND',
+          mode: PaymentMode.LIVE, provider: 'vnpay', status: PaymentAttemptStatus.VERIFIED, idempotencyKey: `${payment.idempotencyKey}:${invoice.id}`,
+          providerReference: `${providerReference}:${invoice.id}`.slice(0, 255), requestedByUserId: payment.requestedByUserId, failureCode: null, requestedAt: payment.requestedAt, verifiedAt: now,
+        }));
+        await this.markInvoicePaidOnline(manager, invoice, payment.requestedByUserId, now);
+      }
+      await this.cancelOpenVisitPayments(manager, payment.visitGroupId, 'PAID_BY_VNPAY', payment.id);
+      payment.status = 'verified';
+      payment.verifiedAt = now;
+      payment.providerReference = providerReference.slice(0, 255);
+      await manager.save(payment);
+      await this.auditLogService.logWithManager(manager, { actorUserId: payment.requestedByUserId, actorRole: Role.CUSTOMER, action: 'VISIT_PAYMENT_VERIFIED', resourceType: 'visit_group_payment', resourceId: payment.id, after: { rail: 'vnpay', amount: Number(payment.amount), invoices: payment.allocations.length } });
+    });
+  }
+
+  /** Browser return leg of a visit payment: one best-effort querydr, like an invoice's. */
+  private async handleVisitVnpayReturn(query: Record<string, string>, hashSecret: string) {
+    const payment = await this.dataSource.getRepository(VisitGroupPayment).findOneBy({ idempotencyKey: query.vnp_TxnRef, rail: 'vnpay' });
+    if (!payment) return { ok: false, invoiceId: null, serviceOrderId: null };
+    if (query.vnp_ResponseCode === '00' && payment.status === 'pending') {
+      await this.reconcileVisitVnpay(payment, hashSecret).catch((error) => {
+        this.logger.warn(`VNPay visit querydr reconciliation failed: ${(error as Error)?.message}`);
+      });
+    }
+    return {
+      ok: query.vnp_ResponseCode === '00',
+      invoiceId: null,
+      serviceOrderId: payment.allocations[0]?.serviceOrderId ?? null,
+      visitGroupId: payment.visitGroupId,
+      purpose: PaymentPurpose.INVOICE,
+      amount: Number(payment.amount),
+      orderInfo: query.vnp_OrderInfo,
+      payerRole: Role.CUSTOMER,
+    };
+  }
+
+  private async reconcileVisitVnpay(payment: VisitGroupPayment, hashSecret: string): Promise<void> {
+    const tmnCode = this.config.get<string>('VNPAY_TMN_CODE');
+    const queryDrUrl = this.config.get<string>('VNPAY_QUERYDR_URL');
+    if (!tmnCode || !queryDrUrl) return;
+    const body = buildQueryDrRequest({ tmnCode, hashSecret, txnRef: payment.idempotencyKey, orderInfo: `Thanh toan luot sua ${payment.visitGroupId}`, transactionDate: payment.requestedAt, ipAddr: '127.0.0.1' });
+    const response = await firstValueFrom(this.httpService.post(queryDrUrl, body).pipe(timeout(8000)));
+    const data = response.data as Record<string, string>;
+    if (data?.vnp_ResponseCode === '00' && data?.vnp_TransactionStatus === '00' && Number(data.vnp_Amount) / 100 === Number(payment.amount)) {
+      await this.applyVisitVnpay(payment.id, data.vnp_TransactionNo || payment.idempotencyKey);
+    }
+  }
+
+  /** The visit, readable by its customer and by the technician holding one of its orders; locked for a payment. */
+  private async visitAccess(manager: EntityManager, groupId: string, actor: FinanceActor, lock = false): Promise<VisitGroup> {
+    const group = await manager.findOne(VisitGroup, { where: { id: groupId }, ...(lock ? { lock: { mode: 'pessimistic_write' as const } } : {}) });
+    if (group && actor.role === Role.CUSTOMER && group.customerId === actor.id) return group;
+    if (group && actor.role === Role.TECHNICIAN) {
+      const held = await manager.createQueryBuilder(TechnicianAssignment, 'a')
+        .innerJoin(ServiceOrder, 'o', 'o.id = a.service_order_id')
+        .innerJoin(Booking, 'b', 'b.id = o.booking_id')
+        .where('a.technician_id = :technicianId AND a.is_active = true AND b.visit_group_id = :groupId', { technicianId: actor.id, groupId })
+        .getCount();
+      if (held) return group;
+    }
+    throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Visit group not found');
+  }
+
+  /** The visit's charge, refused while a device is still being worked on or when nothing is owed. */
+  private async readyVisitCharge(manager: EntityManager, groupId: string): Promise<VisitCharge> {
+    const charge = await loadVisitCharge(manager, groupId, true);
+    if (charge.paid) throw new BusinessException(ErrorCodes.CONFLICT, 'Lượt sửa này đã thanh toán');
+    if (charge.waiting > 0) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Còn thiết bị đang sửa, thanh toán khi mọi thiết bị đã có kết quả.');
+    if (!charge.ready) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Lượt sửa này không có khoản nào cần thanh toán.');
+    return charge;
+  }
+
+  private async cancelOpenVisitPayments(manager: EntityManager, groupId: string, code: string, exceptId?: string): Promise<void> {
+    const query = manager.createQueryBuilder().update(VisitGroupPayment)
+      .set({ status: 'cancelled', failureCode: code })
+      .where('visit_group_id = :groupId AND status IN (:...open)', { groupId, open: ['pending', 'pending_confirmation'] });
+    if (exceptId) query.andWhere('id != :exceptId', { exceptId });
+    await query.execute();
+  }
+
+  /** A device of a visit is paid with the visit, never on its own invoice. */
+  private refuseVisitInvoice(booking: { visitGroupId?: string | null } | null | undefined): void {
+    if (booking?.visitGroupId) {
+      throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Thiết bị này thuộc lượt sửa nhiều máy, thanh toán chung một lần cho cả lượt.', { visitGroupId: booking.visitGroupId });
+    }
   }
 
   private async openCashMismatchCase(

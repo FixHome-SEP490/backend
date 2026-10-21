@@ -15,16 +15,18 @@ const UPLOAD_ID = '690718f8-2e51-4595-9ba7-13ec1e9f7e60';
 const CUSTOMER_ID = 'f60c274d-3ab1-4c29-8ad2-982495f7d3e6';
 const INVITED_ID = '7bd6466d-900b-4f3f-a03c-fc16b9874e13';
 const OTHER_TECH_ID = '065be324-1173-4c8f-a739-b1af7c36d16c';
+const LEAD_ID = 'c2a3c7a4-5bb1-4d5f-9d0e-6c0f6c2b9a11';
 const MP4 = Buffer.concat([Buffer.from([0, 0, 0, 0x20]), Buffer.from('ftypisom'), Buffer.alloc(16)]);
 
 /** PO 18/10/2026: the technician the booking is offered to sees its photos and videos before accepting. */
 function harness(opts: {
   bookingStatus?: BookingStatus;
+  visitGroupId?: string;
   invitation?: Partial<BookingInvitation> | null;
   mimeType?: string;
   content?: { buffer: Buffer; mimeType: string };
 } = {}) {
-  const booking = { id: BOOKING_ID, customerId: CUSTOMER_ID, status: opts.bookingStatus ?? BookingStatus.MATCHING };
+  const booking = { id: BOOKING_ID, customerId: CUSTOMER_ID, status: opts.bookingStatus ?? BookingStatus.MATCHING, visitGroupId: opts.visitGroupId ?? null };
   const invitation = opts.invitation === undefined
     ? { bookingId: BOOKING_ID, technicianId: INVITED_ID, status: InvitationStatus.PENDING, expiresAt: new Date(Date.now() + 60_000) }
     : opts.invitation;
@@ -33,11 +35,14 @@ function harness(opts: {
   const matches = (row: Record<string, unknown> | null | undefined, where: Record<string, unknown> = {}) =>
     !!row && Object.entries(where).every(([key, value]) => {
       if (value instanceof FindOperator) {
+        if (value.type === 'in') return (value.value as unknown[]).includes(row[key]);
         return value.type === 'moreThan' ? (row[key] as Date) > (value.value as Date) : false;
       }
       return row[key] === value;
     });
   const manager = {
+    // The devices of a visit, when the booking is one (PO 21/10/2026).
+    find: vi.fn(async () => (opts.visitGroupId ? [{ id: BOOKING_ID }, { id: LEAD_ID }] : [])),
     findOne: vi.fn(async (entity: unknown, options: { where?: Record<string, unknown> }) => {
       const row = entity === Booking ? booking
         : entity === BookingInvitation ? invitation
@@ -57,6 +62,14 @@ function harness(opts: {
 const invited = { id: INVITED_ID, role: Role.TECHNICIAN };
 
 describe('Invited technician reads booking photos and videos', () => {
+  it('serves another device of a visit to the technician invited for the visit on its lead booking (PO 21/10/2026)', async () => {
+    const live = { bookingId: LEAD_ID, technicianId: INVITED_ID, status: InvitationStatus.PENDING, expiresAt: new Date(Date.now() + 60_000) };
+    const { service } = harness({ visitGroupId: 'visit-1', invitation: live });
+    await expect(service.download(BOOKING_ID, MEDIA_ID, invited)).resolves.toBeDefined();
+    const outsider = harness({ visitGroupId: 'visit-1', invitation: { ...live, technicianId: OTHER_TECH_ID } });
+    await expect(outsider.service.download(BOOKING_ID, MEDIA_ID, invited)).rejects.toBeInstanceOf(BusinessException);
+  });
+
   it('serves a video to the technician holding the live invitation', async () => {
     const { service, storage } = harness();
     await expect(service.download(BOOKING_ID, MEDIA_ID, invited)).resolves.toEqual({ buffer: MP4, mimeType: 'video/mp4' });

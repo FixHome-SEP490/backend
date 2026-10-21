@@ -565,6 +565,135 @@ export function registerDev1Cases(context: () => Context) {
       }
     });
 
+    /** A visit of two fixed-price devices, accepted, arrived and both quotes approved: both orders under repair. */
+    async function visitUnderRepair(f: Awaited<ReturnType<typeof fixture>>, dayOffset: number) {
+      const db = context().db;
+      const day = new Date(Date.now() + 7 * 3600000 + dayOffset * 86400000).toISOString().slice(0, 10);
+      const group = unwrap((await post('/visit-groups', f.owner, { addressId: f.address.id, mode: 'scheduled', date: day, slot: 'morning', items: [{ serviceId: f.service.id, description: 'Máy kêu to' }, { serviceId: f.service.id, description: 'Không lạnh' }] }).expect(201)).body);
+      await post(`/visit-groups/${group.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id] }).expect(201);
+      const [invitation] = unwrap((await get('/invitations/my', f.tech).expect(200)).body);
+      await post(`/invitations/${invitation.id}/respond`, f.tech, { action: 'ACCEPT' }).expect(200);
+      const orders: Array<{ id: string }> = [];
+      for (const item of group.items) orders.push((await db.query('SELECT id FROM service_orders WHERE booking_id = $1', [item.booking.id]))[0]);
+      await post(`/service-orders/${orders[0].id}/en-route`, f.tech).expect(200);
+      await post(`/service-orders/${orders[0].id}/check-in`, f.tech, { lat: 10.77, lng: 106.69, accuracyMeters: 5 }).expect(200);
+      await evidence(orders[0].id, f.tech, 'checkin_face').expect(201);
+      for (const order of orders) {
+        await evidence(order.id, f.tech, 'before').expect(201);
+        const quote = unwrap((await post(`/service-orders/${order.id}/quotations`, f.tech, { items: [{ type: 'labor', description: 'Sửa theo giá niêm yết', quantity: 1, unitPrice: 200000 }] }).expect(201)).body);
+        await post(`/quotations/${quote.id}/decision`, f.owner, { action: 'APPROVE' }).expect(200);
+      }
+      return { group, orders };
+    }
+    const setVisitGroups = async (on: boolean) => {
+      const { BusinessConfigService } = runtimeRequire('./dist/modules/system-config/business-config.service.js');
+      await context().db.query(`UPDATE "system_configs" SET "value" = $1 WHERE "key" = 'visit_group.enabled'`, [String(on)]);
+      context().app.get(BusinessConfigService).invalidateCache();
+    };
+
+    it('pays a visit once, after every device has its result, only for the devices repaired, in cash (PO 21/10/2026)', async () => {
+      const f = await fixture(), db = context().db;
+      try {
+        await setVisitGroups(true);
+        const { group, orders: [one, two] } = await visitUnderRepair(f, 2);
+        await evidence(one.id, f.tech, 'after').expect(201);
+        await post(`/service-orders/${one.id}/request-completion`, f.tech).expect(200);
+        const invoice = unwrap((await get(`/service-orders/${one.id}/invoice`, f.owner).expect(200)).body);
+
+        // One device is still being worked on: nothing can be paid yet, and never one invoice alone.
+        const waiting = unwrap((await get(`/visit-groups/${group.id}/checkout`, f.owner).expect(200)).body);
+        expect(waiting).toMatchObject({ ready: false, waiting: 1, paid: false });
+        expect((await post(`/visit-groups/${group.id}/checkout/cash/declare`, f.tech, { declaredAmount: 200000 })).status).toBe(409);
+        await db.query('INSERT INTO customer_wallets (user_id, balance) VALUES ($1, $2)', [f.owner.user.id, 1000000]);
+        const lone = await post(`/invoices/${invoice.id}/pay-with-wallet`, f.owner);
+        expect(lone.status, JSON.stringify(lone.body)).toBe(409);
+        expect(JSON.stringify(lone.body)).toContain('cả lượt');
+
+        // The other device could not be repaired: 0 dong, and the visit is ready to pay.
+        await post(`/service-orders/${two.id}/repair-failed`, f.tech, { reason: 'no_part' }).expect(200);
+        const ready = unwrap((await get(`/visit-groups/${group.id}/checkout`, f.tech).expect(200)).body);
+        expect(ready).toMatchObject({ ready: true, waiting: 0, total: Number(invoice.grandTotal) });
+        expect(ready.devices.map((d: any) => [d.state, d.amount])).toEqual([['succeeded', Number(invoice.grandTotal)], ['failed', 0]]);
+        expect((await get(`/visit-groups/${group.id}/checkout`, f.outsider)).status).toBe(404);
+
+        // Cash once: the technician reports the visit total, the customer confirms.
+        expect((await post(`/visit-groups/${group.id}/checkout/cash/declare`, f.tech, { declaredAmount: 1000 })).status).toBe(409);
+        denied(await post(`/visit-groups/${group.id}/checkout/cash/declare`, f.owner, { declaredAmount: ready.total }));
+        await post(`/visit-groups/${group.id}/checkout/cash/declare`, f.tech, { declaredAmount: ready.total }).expect(201);
+        expect(unwrap((await get(`/visit-groups/${group.id}/checkout`, f.owner).expect(200)).body).pendingCash).toMatchObject({ amount: ready.total });
+        await post(`/visit-groups/${group.id}/checkout/cash/confirm`, f.owner, { agreed: true }).expect(201);
+        const [paid] = await db.query('SELECT i.payment_status, o.status FROM invoices i JOIN service_orders o ON o.id = i.service_order_id WHERE i.id = $1', [invoice.id]);
+        expect(paid).toEqual({ payment_status: 'paid', status: 'completed' });
+        expect(unwrap((await get(`/visit-groups/${group.id}/checkout`, f.owner).expect(200)).body)).toMatchObject({ paid: true, ready: false, total: 0 });
+        expect((await db.query("SELECT COUNT(*)::int n FROM visit_group_payments WHERE visit_group_id = $1 AND status = 'verified'", [group.id]))[0].n).toBe(1);
+        // Paid once: a second confirmation or a wallet payment finds nothing owed.
+        expect((await post(`/visit-groups/${group.id}/checkout/wallet`, f.owner)).status).toBe(409);
+        expect(unwrap((await get('/customer/wallet', f.owner).expect(200)).body)).toMatchObject({ balance: 1000000 });
+      } finally {
+        await setVisitGroups(false);
+      }
+    });
+
+    it('pays a visit with one wallet debit or one VNPay transaction, never both (PO 21/10/2026)', async () => {
+      const f = await fixture(), db = context().db;
+      const { createHmac } = runtimeRequire('crypto');
+      const { ConfigService } = runtimeRequire('@nestjs/config');
+      const { FinanceService } = runtimeRequire('./dist/modules/finance/finance.service.js');
+      const config = context().app.get(ConfigService);
+      process.env.VNPAY_HASH_SECRET ||= 'e2e-visit-secret';
+      const secret = config.get('VNPAY_HASH_SECRET') as string;
+      const signed = (params: Record<string, string>) => {
+        const query = Object.keys(params).sort().map((key) => `${key}=${encodeURIComponent(params[key]).replace(/%20/g, '+')}`).join('&');
+        return { ...params, vnp_SecureHash: createHmac('sha512', secret).update(Buffer.from(query, 'utf-8')).digest('hex') };
+      };
+      try {
+        await setVisitGroups(true);
+        // A visit with both devices repaired.
+        const first = await visitUnderRepair(f, 2);
+        for (const order of first.orders) {
+          await evidence(order.id, f.tech, 'after').expect(201);
+          await post(`/service-orders/${order.id}/request-completion`, f.tech).expect(200);
+        }
+        const owed = unwrap((await get(`/visit-groups/${first.group.id}/checkout`, f.owner).expect(200)).body);
+        expect(owed).toMatchObject({ ready: true, total: 400000 });
+
+        // Wallet: one debit for the whole visit; an open VNPay attempt can no longer pay it.
+        const allocations = owed.devices.map((d: any) => ({ invoiceId: d.invoiceId, serviceOrderId: d.serviceOrderId, amount: d.amount }));
+        await db.query("INSERT INTO visit_group_payments (visit_group_id, rail, status, amount, allocations, idempotency_key, requested_by_user_id) VALUES ($1, 'vnpay', 'pending', 400000, $2, $3, $4)", [first.group.id, JSON.stringify(allocations), 'e2evisitstale', f.owner.user.id]);
+        denied(await post(`/visit-groups/${first.group.id}/checkout/wallet`, f.owner));
+        await db.query('INSERT INTO customer_wallets (user_id, balance) VALUES ($1, $2)', [f.owner.user.id, 1000000]);
+        denied(await post(`/visit-groups/${first.group.id}/checkout/wallet`, f.tech));
+        const walletPaid = await post(`/visit-groups/${first.group.id}/checkout/wallet`, f.owner);
+        expect(walletPaid.status, JSON.stringify(walletPaid.body)).toBe(201);
+        expect(unwrap(walletPaid.body)).toMatchObject({ paid: true, amount: 400000, balance: 600000 });
+        expect((await db.query("SELECT COUNT(*)::int n FROM customer_wallet_transactions WHERE reference_id = $1", [first.group.id]))[0].n).toBe(1);
+        const finance = context().app.get(FinanceService);
+        const late = await finance.handleVnpayIpn(signed({ vnp_TxnRef: 'e2evisitstale', vnp_Amount: '40000000', vnp_ResponseCode: '00', vnp_TransactionStatus: '00', vnp_TransactionNo: '1' }));
+        expect(late.RspCode).toBe('02');
+        expect(unwrap((await get('/customer/wallet', f.owner).expect(200)).body)).toMatchObject({ balance: 600000 });
+
+        // VNPay: one transaction; its IPN pays every invoice it froze, once.
+        const second = await visitUnderRepair(f, 3);
+        for (const order of second.orders) {
+          await evidence(order.id, f.tech, 'after').expect(201);
+          await post(`/service-orders/${order.id}/request-completion`, f.tech).expect(200);
+        }
+        const due = unwrap((await get(`/visit-groups/${second.group.id}/checkout`, f.owner).expect(200)).body);
+        const split = due.devices.map((d: any) => ({ invoiceId: d.invoiceId, serviceOrderId: d.serviceOrderId, amount: d.amount }));
+        await db.query("INSERT INTO visit_group_payments (visit_group_id, rail, status, amount, allocations, idempotency_key, requested_by_user_id) VALUES ($1, 'vnpay', 'pending', $2, $3, $4, $5)", [second.group.id, due.total, JSON.stringify(split), 'e2evisitpay', f.owner.user.id]);
+        expect((await finance.handleVnpayIpn(signed({ vnp_TxnRef: 'e2evisitpay', vnp_Amount: '100', vnp_ResponseCode: '00', vnp_TransactionStatus: '00', vnp_TransactionNo: '2' }))).RspCode).toBe('04');
+        expect((await finance.handleVnpayIpn({ vnp_TxnRef: 'e2evisitpay', vnp_Amount: String(due.total * 100), vnp_SecureHash: 'forged' })).RspCode).toBe('97');
+        const ipn = signed({ vnp_TxnRef: 'e2evisitpay', vnp_Amount: String(due.total * 100), vnp_ResponseCode: '00', vnp_TransactionStatus: '00', vnp_TransactionNo: '3' });
+        expect((await finance.handleVnpayIpn(ipn)).RspCode).toBe('00');
+        expect((await finance.handleVnpayIpn(ipn)).RspCode).toBe('02');
+        const statuses = await db.query('SELECT i.payment_status, o.status FROM invoices i JOIN service_orders o ON o.id = i.service_order_id WHERE i.id = ANY($1)', [split.map((s: any) => s.invoiceId)]);
+        expect(statuses).toEqual([{ payment_status: 'paid', status: 'completed' }, { payment_status: 'paid', status: 'completed' }]);
+        expect((await db.query("SELECT COUNT(*)::int n FROM payments WHERE invoice_id = ANY($1) AND status = 'verified'", [split.map((s: any) => s.invoiceId)]))[0].n).toBe(2);
+      } finally {
+        await setVisitGroups(false);
+      }
+    });
+
     it('takes a firm-priced booking without words and asks for them when a technician quotes on site (PO 21/10/2026)', async () => {
       const f = await fixture();
       const silent = await post('/bookings', f.owner, { ...f.body, description: undefined });
