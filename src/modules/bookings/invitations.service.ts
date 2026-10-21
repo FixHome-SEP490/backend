@@ -21,6 +21,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { Optional } from '@nestjs/common';
 import { activateNextInvitation, invitationActivatedHook } from './activate-next-invitation';
 import { eligibilityErrorCode, technicianEligibility } from './technician-eligibility';
+import { refuseLoneGroupedBookingAction } from './visit-group-guard';
 import { newOrderCode } from '../service-orders/order-code';
 import { startBackgroundJob } from '../../common/background-job';
 import { randomUUID } from 'crypto';
@@ -138,6 +139,7 @@ export class InvitationsService implements OnModuleInit, OnModuleDestroy {
     return this.dataSource.transaction(async manager => {
       const booking = await manager.findOne(Booking, { where: { id: bookingId, customerId: customer.id }, lock: { mode: 'pessimistic_write' } });
       if (!booking) throw new ForbiddenException('Booking not found');
+      refuseLoneGroupedBookingAction(booking);
       if (![BookingStatus.SUBMITTED, BookingStatus.MATCHING, BookingStatus.CLOSED].includes(booking.status)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Booking cannot be shortlisted');
       const existing = await manager.findOneBy(ServiceOrder, { bookingId });
       if (existing && (![ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(existing.status) || await manager.count(TechnicianAssignment, { where: { serviceOrderId: existing.id, isActive: true } }))) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Order already has an active technician');

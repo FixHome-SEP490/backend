@@ -36,6 +36,7 @@ import { distanceToBooking, servesArea, technicianOrigin } from './technician-lo
 import { technicianDistances } from './technician-distance';
 import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
 import { loadEligibilityPreload, technicianEligibility } from './technician-eligibility';
+import { refuseLoneGroupedBookingAction } from './visit-group-guard';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { BookingInvitation } from './entities/booking-invitation.entity';
@@ -153,7 +154,16 @@ export class BookingsService {
   /**
    * Create a new booking. Validates service, address ownership, and suspension.
    */
-  async create(dto: CreateBookingDto, customer: { id: string; role: string }): Promise<Booking> {
+  /**
+   * `group` (PO 21/10/2026): the booking is one device of a VisitGroup and is
+   * written inside the group's own transaction, so either every device of the
+   * group is created or none is.
+   */
+  async create(
+    dto: CreateBookingDto,
+    customer: { id: string; role: string },
+    group?: { manager: EntityManager; visitGroupId: string },
+  ): Promise<Booking> {
     if (customer.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
     this.validateCreateMediaInput(dto);
     const urgentMinutes = dto.mode === 'urgent' ? await this.configService.getInt('booking.urgent_window_minutes', 120) : 0;
@@ -247,7 +257,9 @@ export class BookingsService {
 
     const aiSummary = dto.aiSessionId ? await this.aiSummaryFor(dto.aiSessionId, customer.id) : null;
 
-    const saved = await this.dataSource.transaction(async (manager) => {
+    const inTransaction = <T>(work: (manager: EntityManager) => Promise<T>): Promise<T> =>
+      group ? work(group.manager) : this.dataSource.transaction(work);
+    const saved = await inTransaction(async (manager) => {
       // Lock the active parent/category and tiers until the immutable snapshot is stored.
       const pricingPreview = catalogV2 ? await resolveCatalogV2Pricing(manager, service.id, dto, true) : null;
       const catalogV2PricingSnapshot = pricingPreview ? { ...pricingPreview, priceBinding: pricingPreview.bindingReady } : null;
@@ -290,6 +302,7 @@ export class BookingsService {
         urgency: dto.urgency || UrgencyLevel.MEDIUM,
         status: BookingStatus.SUBMITTED,
         aiSummary,
+        visitGroupId: group?.visitGroupId ?? null,
       });
       const created = await bookingRepository.save(booking);
       let media: BookingMedia[] = [];
@@ -323,7 +336,7 @@ export class BookingsService {
 
     if (dto.aiDiagnosisId) {
       try {
-        await this.dataSource.query(
+        await (group?.manager ?? this.dataSource).query(
           `UPDATE "ai_diagnoses" AS diagnosis SET "booking_id" = $1 FROM "bookings" AS source WHERE diagnosis."id" = $2 AND diagnosis."booking_id" = source."id" AND source."customer_id" = $3 RETURNING diagnosis."id"`,
           [saved.id, dto.aiDiagnosisId, customer.id],
         );
@@ -332,14 +345,16 @@ export class BookingsService {
       }
     }
 
-    await this.auditLogService.log({
+    const audit = {
       actorUserId: customer.id,
       actorRole: customer.role,
       action: 'BOOKING_CREATE',
       resourceType: 'booking',
       resourceId: saved.id,
-      after: { serviceId: dto.serviceId, urgency: saved.urgency },
-    });
+      after: { serviceId: dto.serviceId, urgency: saved.urgency, ...(group ? { visitGroupId: group.visitGroupId } : {}) },
+    };
+    if (group) await this.auditLogService.logWithManager(group.manager, audit);
+    else await this.auditLogService.log(audit);
 
     return saved;
   }
@@ -617,6 +632,7 @@ export class BookingsService {
     if (!booking) {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
     }
+    refuseLoneGroupedBookingAction(booking);
 
     // Find technicians with the matching skill; the location/radius hard-filter below decides who's shown.
     const qb = this.techProfileRepo
@@ -781,6 +797,7 @@ export class BookingsService {
         lock: { mode: 'pessimistic_write' },
       });
       if (!booking) throw new ForbiddenException('Booking not found');
+      refuseLoneGroupedBookingAction(booking);
       if (![BookingStatus.SUBMITTED, BookingStatus.MATCHING, BookingStatus.MATCHED].includes(booking.status)) {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Booking cannot be rescheduled');
       }
@@ -877,6 +894,7 @@ export class BookingsService {
       });
       if (!booking) throw new ForbiddenException('Booking not found');
       if (booking.status === BookingStatus.CANCELLED) return booking;
+      refuseLoneGroupedBookingAction(booking);
       if (
         ![BookingStatus.SUBMITTED, BookingStatus.MATCHING, BookingStatus.CLOSED].includes(booking.status) ||
         (await manager.findOneBy(ServiceOrder, { bookingId }))
