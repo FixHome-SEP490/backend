@@ -26,24 +26,26 @@ function harness(config: Record<string, string> = { 'visit_group.enabled': 'true
     transaction: vi.fn(async (work: (m: typeof manager) => Promise<unknown>) => work(manager)),
     getRepository: vi.fn(() => ({ find: vi.fn(async () => []), findBy: vi.fn(async () => []) })),
   };
-  const groupRepo = { findOneBy: vi.fn(async () => null), find: vi.fn(async () => []) };
-  const itemRepo = { find: vi.fn(async () => []) };
+  const groupRepo = { findOneBy: vi.fn(async () => null as unknown), find: vi.fn(async () => []) };
+  const itemRepo = { find: vi.fn(async () => []), findOne: vi.fn(async () => ({ bookingId: 'booking-lead' })) };
   const bookingsService = {
     create: vi.fn(async (dto: { serviceId: string }) => {
       created += 1;
       // "Come now" is computed per call: later devices get a slightly later window.
       return { id: `booking-${created}`, serviceId: dto.serviceId, preferredStartAt: new Date(start.getTime() + created), preferredEndAt: end, bookingMode: 'scheduled', slot: 'afternoon' };
     }),
+    getCandidates: vi.fn(async () => []),
   };
   const businessConfig = { getString: vi.fn(async (key: string, fallback: string) => config[key] ?? fallback) };
   const supportCases = { openCase: vi.fn(async () => ({ id: 'case-1', status: 'open' })) };
   const audit = { logWithManager: vi.fn(async () => undefined) };
+  const invitations = { createShortlist: vi.fn(async () => []), extendPendingInvitationGroup: vi.fn(async () => ({})) };
   const service = new VisitGroupsService(
     dataSource as never, groupRepo as never, itemRepo as never, bookingsService as never,
-    businessConfig as never, supportCases as never, audit as never,
+    businessConfig as never, supportCases as never, audit as never, invitations as never,
   );
   vi.spyOn(service, 'detail').mockImplementation(async (id: string) => ({ id }) as never);
-  return { service, manager, dataSource, groupRepo, bookingsService, supportCases };
+  return { service, manager, dataSource, groupRepo, itemRepo, bookingsService, supportCases, invitations };
 }
 
 const dto = (items: Array<{ serviceId: string }>, extra: object = {}) => ({
@@ -71,10 +73,10 @@ describe('VisitGroupsService.create', () => {
     expect(groupWindow[2].preferredStartAt.getTime()).toBe(start.getTime() + 1);
   });
 
-  it('refuses a fourth device with the hotline, before writing anything', async () => {
+  it('refuses a fourth device by stating the limit only, before writing anything', async () => {
     const h = harness();
     await expect(h.service.create(dto([item(), item(), item(), item()]), customer)).rejects.toMatchObject({
-      response: expect.objectContaining({ code: 'VISIT_GROUP_DEVICE_LIMIT', details: { limit: 3, hotline: '1900 0000' } }),
+      response: expect.objectContaining({ code: 'VISIT_GROUP_DEVICE_LIMIT', message: 'Mỗi lần đặt được tối đa 3 thiết bị.' }),
     });
     expect(h.dataSource.transaction).not.toHaveBeenCalled();
   });
@@ -116,6 +118,30 @@ describe('VisitGroupsService.create', () => {
       caseType: 'other', customerId: 'customer-1', description: 'Nhà có 5 máy lạnh\nThiết bị: Máy lạnh 1',
     }));
     expect(result).toEqual({ id: 'case-1', status: 'open', hotline: '1900 0000' });
+  });
+});
+
+describe('VisitGroupsService matching', () => {
+  it('lists candidates and shortlists on the lead booking for the whole visit', async () => {
+    const h = harness();
+    h.groupRepo.findOneBy.mockResolvedValue({ id: 'group-1', status: 'submitted' });
+    await h.service.candidates('group-1', customer);
+    expect(h.bookingsService.getCandidates).toHaveBeenCalledWith('booking-lead', customer, { asVisit: true });
+    await h.service.shortlist('group-1', ['tech-1'], customer);
+    expect(h.invitations.createShortlist).toHaveBeenCalledWith('booking-lead', ['tech-1'], customer, { asVisit: true });
+    expect(h.itemRepo.findOne).toHaveBeenCalledWith({ where: { groupId: 'group-1' }, order: { sequence: 'ASC' } });
+  });
+
+  it('matches nothing for another customer, a cancelled visit or while the feature is off', async () => {
+    const h = harness();
+    await expect(h.service.candidates('group-1', customer)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'OWNERSHIP_DENIED' }) });
+    h.groupRepo.findOneBy.mockResolvedValue({ id: 'group-1', status: 'cancelled' });
+    await expect(h.service.shortlist('group-1', ['tech-1'], customer)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'ORDER_INVALID_TRANSITION' }) });
+    const off = harness({ 'visit_group.enabled': 'false' });
+    off.groupRepo.findOneBy.mockResolvedValue({ id: 'group-1', status: 'submitted' });
+    await expect(off.service.shortlist('group-1', ['tech-1'], customer)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'FEATURE_DISABLED' }) });
+    expect(h.invitations.createShortlist).not.toHaveBeenCalled();
+    expect(off.invitations.createShortlist).not.toHaveBeenCalled();
   });
 });
 

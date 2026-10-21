@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-21 18:51 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/visit-groups-p1
+> Cập nhật lần cuối: 2026-10-21 20:53 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/visit-groups-p2
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -302,6 +302,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-21 20:53 (UTC+7) | ToanAltF4 | feat/visit-groups-p2 | Đặt nhiều máy P2a: tìm thợ đủ kỹ năng mọi máy (GET /visit-groups/:id/technician-candidates), mời thợ cho cả lượt (POST :id/shortlist, :id/matching/extend) trên booking đầu, máy còn lại theo trạng thái booking đầu, thợ thấy mọi máy trong lời mời (visitDevices), nhận một lần tạo đơn cho mọi máy trong một transaction, đơn cùng lượt không tính trùng buổi; báo vượt 3 máy chỉ nêu giới hạn
 - 2026-10-21 18:51 (UTC+7) | ToanAltF4 | feat/visit-groups-p1 | Đặt nhiều thiết bị phần 1: bảng visit_groups/visit_group_items (migration 050, CHECK sequence 1..3), POST/GET /visit-groups, huỷ cả lượt, tư vấn từ máy thứ 4, cờ visit_group.enabled tắt mặc định, hotline support.hotline; booking con không được ghép thợ/đổi lịch/huỷ lẻ
 - 2026-10-21 11:26 (UTC+7) | ToanAltF4 | fix/reschedule-once-fast-slots | Đổi lịch: mỗi booking chỉ đổi buổi một lần (cột reschedule_count, migration 048 điền từ audit BOOKING_RESCHEDULE), sửa mô tả vẫn được; available-slots đọc dữ liệu thợ một lần (loadEligibilityPreload) thay vì mỗi buổi (15 s -> dưới 1 s); mô tả không bắt buộc khi giá chắc chắn (cố định hoặc biến thể đã chốt), việc khảo sát vẫn bắt buộc; migration 049 xoá câu tự sinh "Yêu cầu dịch vụ: ..."; GET /services sắp theo danh mục (sortOrder, tên) rồi tên dịch vụ
 - 2026-10-20 23:16 (UTC+7) | foxonworld | foxonworld/tech-partial-qty-20261020 | Tracking-only partial USED quantity and new-invoice actual charge for 3/1/2; forbid legacy overwrite; return and owner gates unchanged.
@@ -341,5 +342,4 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-14 23:11 (UTC+7) | ToanAltF4 | feat/customer-withdrawal-kyc | Khách rút ví về ngân hàng qua payOS sau khi admin duyệt CCCD; bảng KYC, tài khoản, lệnh rút của khách (migration 036)
 - 2026-10-14 22:17 (UTC+7) | ToanAltF4 | fix/reputation-reset-sweep | Sửa job làm mới điểm uy tín: đọc đúng kết quả UPDATE RETURNING ([rows, rowCount]) nên không còn ghi NaN mỗi phút
 - 2026-10-14 21:56 (UTC+7) | ToanAltF4 | feat/ai-session-history | Ghi việc gửi history cho ai-service từ bản ghi phiên của backend để dựng lại phiên AI đã mất
-- 2026-10-14 17:59 (UTC+7) | ToanAltF4 | fix/urgent-matching-and-reads | Giảm egress thêm: kiểm token mỗi request chỉ đọc 6 cột user, cache cấu hình chỉ đọc key/value
 

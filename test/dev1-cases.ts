@@ -374,6 +374,64 @@ export function registerDev1Cases(context: () => Context) {
       }
     });
 
+    it('matches a visit to one technician with every skill, who takes all its devices in one Accept (PO 21/10/2026)', async () => {
+      const f = await fixture(), db = context().db;
+      const { BusinessConfigService } = runtimeRequire('./dist/modules/system-config/business-config.service.js');
+      const setGroups = async (on: boolean) => {
+        await db.query(`UPDATE "system_configs" SET "value" = $1 WHERE "key" = 'visit_group.enabled'`, [String(on)]);
+        context().app.get(BusinessConfigService).invalidateCache();
+      };
+      // A second service only the spare technician offers.
+      const other = await save('Service', { categoryId: f.service.categoryId, name: 'Second fixture', code: randomUUID(), pricingMode: 'fixed_price', fixedPrice: 150000, scopeDescription: 'Fixture scope', unit: 'job' });
+      const spareProfile = await db.getRepository('TechnicianProfile').findOneByOrFail({ userId: f.spare.user.id });
+      await save('TechnicianSkill', { technicianId: spareProfile.id, serviceId: other.id, listedLaborPrice: 100000, verificationStatus: 'verified' });
+      const day = new Date(Date.now() + 7 * 3600000 + 3 * 86400000).toISOString().slice(0, 10);
+      const body = { addressId: f.address.id, mode: 'scheduled', date: day, slot: 'afternoon', items: [{ serviceId: f.service.id, description: 'Máy kêu to' }, { serviceId: other.id, description: 'Không lên nguồn', deviceLabel: 'Máy phòng khách' }] };
+      try {
+        await setGroups(true);
+        const group = unwrap((await post('/visit-groups', f.owner, body).expect(201)).body);
+        const [lead, second] = group.items.map((item: any) => item.booking.id);
+        expect(group.leadBookingId).toBe(lead);
+
+        // Only the technician who offers both services is a candidate, or can be invited.
+        const candidates = unwrap((await get(`/visit-groups/${group.id}/technician-candidates`, f.owner).expect(200)).body);
+        expect(candidates.map((c: any) => c.userId)).toEqual([f.spare.user.id]);
+        const refused = await post(`/visit-groups/${group.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id] });
+        expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+        expect((await get(`/visit-groups/${group.id}/technician-candidates`, f.outsider)).status).toBe(404);
+
+        await post(`/visit-groups/${group.id}/shortlist`, f.owner, { technicianIds: [f.spare.user.id] }).expect(201);
+        const statuses = async () => (await db.query('SELECT id, status FROM bookings WHERE visit_group_id = $1', [group.id])).reduce((all: any, row: any) => ({ ...all, [row.id]: row.status }), {});
+        expect(await statuses()).toEqual({ [lead]: 'matching', [second]: 'matching' });
+        expect(await db.getRepository('BookingInvitation').count({ where: { bookingId: second } })).toBe(0);
+
+        // The invitation shows every device of the visit, contact details still masked.
+        const [invitation] = unwrap((await get('/invitations/my', f.spare).expect(200)).body);
+        expect(invitation.bookingId).toBe(lead);
+        expect(invitation.visitDevices.map((d: any) => [d.sequence, d.deviceLabel, d.booking.serviceName])).toEqual([[1, null, 'Repair fixture'], [2, 'Máy phòng khách', 'Second fixture']]);
+        expect(JSON.stringify(invitation)).not.toContain('1 Test Street');
+
+        // One Accept: an order per device, all with the same technician, in the same session.
+        const result = unwrap((await post(`/invitations/${invitation.id}/respond`, f.spare, { action: 'ACCEPT' }).expect(200)).body);
+        expect(result.serviceOrder.bookingId).toBe(lead);
+        const orders = await db.query(
+          `SELECT o.booking_id, o.status, a.technician_id FROM service_orders o JOIN technician_assignments a ON a.service_order_id = o.id AND a.is_active WHERE o.booking_id = ANY($1) ORDER BY o.booking_id`,
+          [[lead, second]],
+        );
+        expect(orders).toHaveLength(2);
+        expect(orders.every((o: any) => o.status === 'accepted' && o.technician_id === f.spare.user.id)).toBe(true);
+        expect(await statuses()).toEqual({ [lead]: 'matched', [second]: 'matched' });
+
+        // The visit's own orders do not clash with each other, but another job in that session does.
+        const elsewhere = await post('/bookings', f.owner, { serviceId: f.service.id, addressId: f.address.id, mode: 'scheduled', date: day, slot: 'afternoon', description: 'Một máy khác' });
+        expect(elsewhere.status, JSON.stringify(elsewhere.body)).toBe(201);
+        const busy = await post(`/bookings/${unwrap(elsewhere.body).id}/shortlist`, f.owner, { technicianIds: [f.spare.user.id] });
+        expect(busy.status, JSON.stringify(busy.body)).toBe(409);
+      } finally {
+        await setGroups(false);
+      }
+    });
+
     it('takes a firm-priced booking without words and asks for them when a technician quotes on site (PO 21/10/2026)', async () => {
       const f = await fixture();
       const silent = await post('/bookings', f.owner, { ...f.body, description: undefined });

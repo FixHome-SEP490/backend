@@ -4,6 +4,8 @@ import { PermissionGuard } from '../../common/guards/permission.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ReasonDto } from '../service-orders/order-command.dto';
+import { ShortlistDto } from '../bookings/booking.dto';
+import { toBookingInvitationResponse } from '../bookings/booking-privacy.dto';
 import { CreateVisitGroupDto, VisitGroupConsultationDto } from './visit-group.dto';
 import { VisitGroupsService } from './visit-groups.service';
 
@@ -49,6 +51,28 @@ export class VisitGroupsController {
   @ApiOperation({ summary: 'Customer: one visit group with its devices and their bookings' })
   async detail(@Param('id', ParseUUIDPipe) id: string, @Req() req: AuthedRequest) {
     return { data: await this.visitGroups.detail(id, req.user) };
+  }
+
+  @Get(':id/technician-candidates')
+  @RequirePermission('invitation:shortlist')
+  @ApiOperation({ summary: 'Customer: technicians who offer every device of the visit and are free for its session' })
+  async candidates(@Param('id', ParseUUIDPipe) id: string, @Req() req: AuthedRequest) {
+    return { data: await this.visitGroups.candidates(id, req.user) };
+  }
+
+  @Post(':id/shortlist')
+  @RequirePermission('invitation:shortlist')
+  @ApiOperation({ summary: 'Customer: invite one or two technicians for the whole visit', description: 'Same rules as POST /bookings/:id/shortlist, on the visit\'s lead booking (leadBookingId in GET /visit-groups/:id). Accept creates one ServiceOrder per device in one transaction.' })
+  async shortlist(@Param('id', ParseUUIDPipe) id: string, @Body() body: ShortlistDto, @Req() req: AuthedRequest) {
+    const invitations = await this.visitGroups.shortlist(id, body.technicianIds, req.user);
+    return { data: invitations.map(toBookingInvitationResponse) };
+  }
+
+  @Post(':id/matching/extend')
+  @RequirePermission('booking:create')
+  @ApiOperation({ summary: 'Customer: the one extension of the live invitation round, for the whole visit' })
+  async extendMatching(@Param('id', ParseUUIDPipe) id: string, @Req() req: AuthedRequest) {
+    return { data: await this.visitGroups.extendMatching(id, req.user) };
   }
 
   @Post(':id/cancel')

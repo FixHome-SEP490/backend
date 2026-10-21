@@ -6,6 +6,7 @@ import { ErrorCodes } from '../../shared/constants';
 import { BookingStatus, Role, SupportCaseType } from '../../shared/enums';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { BookingsService } from '../bookings/bookings.service';
+import { InvitationsService } from '../bookings/invitations.service';
 import { Booking } from '../bookings/entities/booking.entity';
 import { BookingInvitation } from '../bookings/entities/booking-invitation.entity';
 import { CreateBookingDto } from '../bookings/booking.dto';
@@ -40,6 +41,7 @@ export class VisitGroupsService {
     private readonly config: BusinessConfigService,
     private readonly supportCases: SupportCasesService,
     private readonly auditLogService: AuditLogService,
+    private readonly invitations: InvitationsService,
   ) {}
 
   /** What a booking screen needs before it offers more than one device. */
@@ -53,7 +55,8 @@ export class VisitGroupsService {
     if (dto.items.length > VISIT_GROUP_DEVICE_LIMIT) {
       throw new BusinessException(
         ErrorCodes.VISIT_GROUP_DEVICE_LIMIT,
-        `Mỗi lần đặt được tối đa ${VISIT_GROUP_DEVICE_LIMIT} thiết bị. Từ thiết bị thứ ${VISIT_GROUP_DEVICE_LIMIT + 1}, bạn gọi hotline hoặc gửi yêu cầu tư vấn để FixHome sắp xếp.`,
+        // PO 21/10/2026: the screen locks adding at the limit and says so; no hotline, no "contact us".
+        `Mỗi lần đặt được tối đa ${VISIT_GROUP_DEVICE_LIMIT} thiết bị.`,
         { limit: VISIT_GROUP_DEVICE_LIMIT, hotline: await this.hotline() },
       );
     }
@@ -153,6 +156,8 @@ export class VisitGroupsService {
     const byId = new Map(bookings.map((booking) => [booking.id, booking]));
     return {
       ...group,
+      // Matching (candidates, shortlist, the invitations) runs on this booking for the whole visit.
+      leadBookingId: items[0]?.bookingId ?? null,
       items: items.map((item) => ({
         id: item.id,
         sequence: item.sequence,
@@ -186,11 +191,48 @@ export class VisitGroupsService {
   }
 
   /**
+   * Technicians who offer every device of the visit and are free for its
+   * session, ranked like a single booking's candidates (PO 21/10/2026: one
+   * technician with all the skills takes the whole visit).
+   */
+  async candidates(groupId: string, customer: Customer) {
+    await this.assertEnabled();
+    return this.bookingsService.getCandidates(await this.leadBookingId(groupId, customer), customer, { asVisit: true });
+  }
+
+  /**
+   * Invite one or two technicians for the whole visit, in priority order. The
+   * invitation lives on the lead booking; Accept creates every device's order.
+   */
+  async shortlist(groupId: string, technicianIds: string[], customer: Customer) {
+    await this.assertEnabled();
+    const lead = await this.leadBookingId(groupId, customer);
+    return this.invitations.createShortlist(lead, technicianIds, customer, { asVisit: true });
+  }
+
+  /** The one extension of the live invitation round, for the whole visit. */
+  async extendMatching(groupId: string, customer: Customer) {
+    return this.invitations.extendPendingInvitationGroup(await this.leadBookingId(groupId, customer), customer);
+  }
+
+  private async leadBookingId(groupId: string, customer: { id: string }): Promise<string> {
+    const group = await this.groupRepo.findOneBy({ id: groupId, customerId: customer.id });
+    if (!group) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Visit group not found');
+    if (group.status === 'cancelled') throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Lượt sửa này đã huỷ.');
+    const lead = await this.itemRepo.findOne({ where: { groupId }, order: { sequence: 'ASC' } });
+    if (!lead) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Visit group not found');
+    return lead.bookingId;
+  }
+
+  /**
    * Cancel the whole visit before a technician holds it. No device can be
    * cancelled on its own (see refuseLoneGroupedBookingAction).
    */
   async cancel(groupId: string, reason: string, customer: { id: string; role: string }) {
     await this.dataSource.transaction(async (manager) => {
+      // The lead booking's row is the visit's lock, taken first as Accept and the matching sweep do.
+      const lead = await manager.findOne(VisitGroupItem, { where: { groupId }, order: { sequence: 'ASC' } });
+      if (lead) await manager.findOne(Booking, { where: { id: lead.bookingId }, lock: { mode: 'pessimistic_write' } });
       const group = await manager.findOne(VisitGroup, { where: { id: groupId, customerId: customer.id }, lock: { mode: 'pessimistic_write' } });
       if (!group) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Visit group not found');
       if (group.status === 'cancelled') return;

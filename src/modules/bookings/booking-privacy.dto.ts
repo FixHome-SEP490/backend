@@ -152,6 +152,18 @@ export interface TechnicianInvitationPreviewDto {
   invitedAt: Date;
   expiresAt: Date | null;
   booking: TechnicianBookingPreviewDto;
+  /**
+   * Present when the invitation is for a visit of several devices (PO 21/10/2026):
+   * every device the technician takes on Accept, in the customer's order, each
+   * with the same pre-accept masking as the booking above.
+   */
+  visitDevices?: TechnicianVisitDevicePreviewDto[];
+}
+
+export interface TechnicianVisitDevicePreviewDto {
+  sequence: number;
+  deviceLabel: string | null;
+  booking: TechnicianBookingPreviewDto;
 }
 
 export function toTechnicianBookingPreview(
@@ -182,8 +194,9 @@ export function toTechnicianBookingPreview(
 
 export function toTechnicianInvitationPreview(
   invitation: BookingInvitation,
-  extras: { distanceKm?: number | null } = {},
+  extras: { distanceKm?: number | null; visitDevices?: Array<{ sequence: number; deviceLabel: string | null; booking: Booking }> } = {},
 ): TechnicianInvitationPreviewDto {
+  const { visitDevices, ...bookingExtras } = extras;
   return {
     id: invitation.id,
     bookingId: invitation.bookingId,
@@ -191,6 +204,13 @@ export function toTechnicianInvitationPreview(
     status: invitation.status,
     invitedAt: invitation.invitedAt,
     expiresAt: invitation.expiresAt ?? null,
-    booking: toTechnicianBookingPreview(invitation.booking, extras),
+    booking: toTechnicianBookingPreview(invitation.booking, bookingExtras),
+    ...(visitDevices?.length ? {
+      visitDevices: visitDevices.map((device) => ({
+        sequence: device.sequence,
+        deviceLabel: device.deviceLabel,
+        booking: toTechnicianBookingPreview(device.booking, bookingExtras),
+      })),
+    } : {}),
   };
 }
