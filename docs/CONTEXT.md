@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-21 21:06 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/visit-groups-p2b
+> Cập nhật lần cuối: 2026-10-21 21:21 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/visit-groups-p3
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -302,6 +302,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-21 21:21 (UTC+7) | ToanAltF4 | feat/visit-groups-p3 | Đặt nhiều máy P3: cả lượt xuất phát, check-in và ảnh khuôn mặt một lần (chép sang đơn các máy khác); máy giá cố định trong lượt vẫn phải gửi báo giá tại nhà đúng giá niêm yết và khách duyệt mới sửa; khách từ chối báo giá -> máy ghi quote_declined, 0 đồng; POST /service-orders/:id/repair-failed (chip lý do, ghi chú, Đã lắp/Trả lại kho từng linh kiện đã nhận) -> máy ghi failed, 0 đồng, không trừ điểm, mở support case cho SM; migration 051 thêm outcome cho visit_group_items
 - 2026-10-21 21:06 (UTC+7) | ToanAltF4 | feat/visit-groups-p2b | Đặt nhiều máy P2b: đổi lịch cả lượt một lần (POST /visit-groups/:id/reschedule, mọi máy và đơn cùng dời, thợ đang giữ phải rảnh), thợ rút cả lượt trước khi tới (POST :id/withdraw, trừ điểm 1 lần, mời lại trên booking đầu, thợ mới nhận lại đúng các đơn cũ), khách huỷ cả lượt sau khi thợ nhận theo luật huỷ đơn (trừ điểm 1 lần); khách/thợ không huỷ lẻ đơn của một máy; lịch rảnh available-slots bỏ qua đơn cùng lượt
 - 2026-10-21 20:53 (UTC+7) | ToanAltF4 | feat/visit-groups-p2 | Đặt nhiều máy P2a: tìm thợ đủ kỹ năng mọi máy (GET /visit-groups/:id/technician-candidates), mời thợ cho cả lượt (POST :id/shortlist, :id/matching/extend) trên booking đầu, máy còn lại theo trạng thái booking đầu, thợ thấy mọi máy trong lời mời (visitDevices), nhận một lần tạo đơn cho mọi máy trong một transaction, đơn cùng lượt không tính trùng buổi; báo vượt 3 máy chỉ nêu giới hạn
 - 2026-10-21 18:51 (UTC+7) | ToanAltF4 | feat/visit-groups-p1 | Đặt nhiều thiết bị phần 1: bảng visit_groups/visit_group_items (migration 050, CHECK sequence 1..3), POST/GET /visit-groups, huỷ cả lượt, tư vấn từ máy thứ 4, cờ visit_group.enabled tắt mặc định, hotline support.hotline; booking con không được ghép thợ/đổi lịch/huỷ lẻ
@@ -341,5 +342,4 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-16 00:14 (UTC+7) | ToanAltF4 | feat/staff-customer-withdrawals | SM/Admin xem lệnh rút tiền của khách tách riêng với thợ: danh sách có tìm kiếm, tổng quan, hỏi lại payOS (/service-manager/customer-withdrawals)
 - 2026-10-15 13:40 (UTC+7) | Hgnv11 | dev | Thanh toán hoá đơn VNPay chia hai nhánh trả về: mobile (header x-client-platform) về app qua fixhome://app/order-payment, web vẫn FRONTEND_URL; CHƯA KIỂM CHỨNG trên máy thật
 - 2026-10-14 23:11 (UTC+7) | ToanAltF4 | feat/customer-withdrawal-kyc | Khách rút ví về ngân hàng qua payOS sau khi admin duyệt CCCD; bảng KYC, tài khoản, lệnh rút của khách (migration 036)
-- 2026-10-14 22:17 (UTC+7) | ToanAltF4 | fix/reputation-reset-sweep | Sửa job làm mới điểm uy tín: đọc đúng kết quả UPDATE RETURNING ([rows, rowCount]) nên không còn ghi NaN mỗi phút
 

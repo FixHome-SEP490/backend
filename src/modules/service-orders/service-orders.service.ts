@@ -57,6 +57,9 @@ import {
   PartWarrantyOption,
   PaymentAttemptStatus,
   CashSettlementStatus,
+  PartRequestStatus,
+  SupportCaseStatus,
+  SupportCaseType,
 } from '../../shared/enums';
 import { orderStageSql, type RepairStage } from '../../shared/utils/customer-activity-stage';
 import { BusinessConfigService } from '../system-config/business-config.service';
@@ -76,7 +79,9 @@ import type { EntityManager } from 'typeorm';
 import { OrderEvidenceStorage, EvidenceFile, evidenceStampText } from '../media/order-evidence-storage.service';
 import { expireAdditionalCosts } from './expire-additional-costs';
 import { authorizeOrder } from './order-access';
-import { groupSiblings, mirrorGroupStatus, refuseLoneGroupedBookingAction } from '../bookings/visit-group-guard';
+import { groupSiblings, mirrorGroupStatus, recordVisitOutcome, refuseLoneGroupedBookingAction } from '../bookings/visit-group-guard';
+import { REPAIR_FAILURE_REASONS, type RepairFailedDto } from './dto/repair-failed.dto';
+import { SupportCase } from '../support-cases/entities/support-case.entity';
 import { VisitGroup } from '../visit-groups/entities/visit-group.entity';
 import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity';
 import { isCompletionHeld } from '../support-cases/completion-hold';
@@ -580,6 +585,10 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       actor,
       'Technician en route',
     );
+    // One trip for a visit of several devices (PO 21/10/2026): every order sets out together.
+    for (const sibling of await this.visitSiblingOrders(this.dataSource.manager, res, actor.id, ServiceOrderStatus.ACCEPTED)) {
+      await this.transitionStatus(sibling.id, ServiceOrderStatus.EN_ROUTE, actor, 'Technician en route (cả lượt)');
+    }
     void this.notifyCustomerForOrder(
       orderId,
       'Kỹ thuật viên đang di chuyển',
@@ -614,8 +623,31 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
           'TECHNICIAN_ARRIVED',
         );
       }
-      return manager.save(ArrivalCheckIn, manager.create(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, lat: body.lat, lng: body.lng, accuracyMeters: body.accuracyMeters, distanceMeters, result, checkedInAt: new Date(), deviceInfo: body.deviceInfo || null }));
+      const checkIn = { technicianId: actor.id, lat: body.lat, lng: body.lng, accuracyMeters: body.accuracyMeters, distanceMeters, result, checkedInAt: new Date(), deviceInfo: body.deviceInfo || null };
+      const saved = await manager.save(ArrivalCheckIn, manager.create(ArrivalCheckIn, { ...checkIn, serviceOrderId: orderId }));
+      // Arriving once counts for every device of the visit.
+      if (result === CheckInResult.VALID) {
+        for (const sibling of await this.visitSiblingOrders(manager, order, actor.id, ServiceOrderStatus.EN_ROUTE)) {
+          await manager.save(ArrivalCheckIn, manager.create(ArrivalCheckIn, { ...checkIn, serviceOrderId: sibling.id }));
+        }
+      }
+      return saved;
     });
+  }
+
+  /**
+   * The other orders of a visit (PO 21/10/2026) this technician holds in `status`:
+   * setting out, arriving and the check-in face happen once for the whole visit.
+   */
+  private async visitSiblingOrders(manager: EntityManager, order: ServiceOrder, technicianId: string, status: ServiceOrderStatus): Promise<ServiceOrder[]> {
+    const booking = await manager.findOneBy(Booking, { id: order.bookingId });
+    if (!booking?.visitGroupId) return [];
+    return manager.createQueryBuilder(ServiceOrder, 'o')
+      .innerJoin(Booking, 'b', 'b.id = o.booking_id')
+      .innerJoin(TechnicianAssignment, 'a', 'a.service_order_id = o.id AND a.is_active = true AND a.technician_id = :technicianId', { technicianId })
+      .where('b.visit_group_id = :groupId AND o.id != :orderId AND o.status = :status', { groupId: booking.visitGroupId, orderId: order.id, status })
+      .orderBy('o.id', 'ASC')
+      .getMany();
   }
 
   /**
@@ -889,6 +921,69 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   }
 
 
+  /**
+   * "Không sửa được" (PO 21/10/2026, G0-2 2A): an approved device of a visit that
+   * the technician could not make work. In one step the device ends at 0 đồng
+   * (no invoice, no points taken from anyone), the customer is told, and a support
+   * case carries the reason and what became of each part received, so a manager
+   * checks the parts and settles any dispute. The other devices go on and the
+   * visit is paid once without this one. Parts already received stay with their
+   * requests for the manager; only what nobody picked up is released.
+   */
+  async reportRepairFailed(orderId: string, dto: RepairFailedDto, actor: { id: string; role: string }): Promise<ServiceOrder> {
+    const reference = await authorizeOrder(this.dataSource.manager, orderId, actor, 'technician');
+    let notice: { customerId: string; code: string } | null = null;
+    const result = await this.dataSource.transaction(async manager => {
+      const booking = await manager.findOneOrFail(Booking, { where: { id: reference.bookingId }, lock: { mode: 'pessimistic_write' } });
+      const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
+      if (!booking.visitGroupId) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chỉ dùng cho thiết bị trong lượt sửa nhiều máy.');
+      if (order.status !== ServiceOrderStatus.UNDER_REPAIR || order.completionRequestedAt) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chỉ báo không sửa được khi đang sửa thiết bị đã duyệt.');
+      const received = await manager.find(PartRequest, { where: { serviceOrderId: orderId, technicianId: actor.id, status: PartRequestStatus.RECEIVED }, relations: ['items'] });
+      const declared = new Map((dto.parts ?? []).map(part => [part.partRequestId, part.outcome]));
+      if (received.some(part => !declared.has(part.id)) || [...declared.keys()].some(id => !received.some(part => part.id === id))) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Chọn Đã lắp hoặc Trả lại kho cho từng linh kiện đã nhận.');
+      }
+      const label = REPAIR_FAILURE_REASONS[dto.reason];
+      const reason = [label, dto.note?.trim()].filter(Boolean).join('. ');
+      await this.commitTransition(manager, order, ServiceOrderStatus.CANCELLED, actor, `Không sửa được: ${reason}`);
+      await releaseOutgoingTechnicianPartRequests(manager, orderId, actor.id);
+      await manager.update(Booking, booking.id, { status: BookingStatus.CANCELLED });
+      await recordVisitOutcome(manager, booking, 'failed', reason);
+      const partLines = received.map(part => {
+        const names = (part.items ?? []).map(item => `${item.partNameSnapshot ?? 'Linh kiện'} x${item.quantity}`).join(', ') || 'Linh kiện';
+        return `- ${names}: ${declared.get(part.id) === 'installed' ? 'Đã lắp' : 'Trả lại kho'}`;
+      });
+      await manager.save(SupportCase, manager.create(SupportCase, {
+        caseType: SupportCaseType.MID_JOB_INTERRUPTION,
+        status: SupportCaseStatus.OPEN,
+        bookingId: booking.id,
+        serviceOrderId: orderId,
+        customerId: booking.customerId,
+        technicianId: actor.id,
+        createdByUserId: actor.id,
+        reason: `Không sửa được thiết bị đơn #${order.code}`,
+        description: [reason, partLines.length ? 'Linh kiện đã nhận:' : 'Không có linh kiện đã nhận.', ...partLines].join('\n'),
+        evidenceRefs: [],
+        isUrgent: false,
+      }));
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'VISIT_DEVICE_REPAIR_FAILED', resourceType: 'service_order', resourceId: orderId, after: { reason: dto.reason, note: dto.note ?? null, parts: dto.parts ?? [], visitGroupId: booking.visitGroupId } });
+      if (booking.customerId) notice = { customerId: booking.customerId, code: order.code };
+      return manager.findOneByOrFail(ServiceOrder, { id: orderId });
+    });
+    const told = notice as { customerId: string; code: string } | null;
+    if (told && this.notificationsService) {
+      await this.notificationsService.createNotification({
+        userId: told.customerId,
+        title: 'Một thiết bị không sửa được',
+        message: `Kỹ thuật viên không sửa được thiết bị của đơn #${told.code}. Thiết bị này không tính tiền sửa; FixHome sẽ liên hệ nếu cần.`,
+        type: 'VISIT_DEVICE_REPAIR_FAILED',
+        referenceId: result.id,
+        referenceType: 'SERVICE_ORDER',
+      }).catch(() => undefined);
+    }
+    return result;
+  }
+
   /** Thợ xem đơn này có được nhả vì đơn trước chưa xong không (PO 20/10/2026). */
   async overrunReleaseStatus(orderId: string, actor: { id: string; role: string }): Promise<OverrunReleaseCheck> {
     const order = await authorizeOrder(this.dataSource.manager, orderId, actor, 'technician');
@@ -966,7 +1061,16 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     try {
       const saved = await this.dataSource.transaction(async manager => {
         await checkEligible(manager); // re-validate: state may have changed during the upload
-        return manager.save(RepairEvidence, manager.create(RepairEvidence, { serviceOrderId: orderId, uploaderId: actor.id, type: body.type, mediaUrl, mimeType: file.mimetype, fileSize: file.size, note: body.note || null, capturedAt }));
+        const evidence = { uploaderId: actor.id, type: body.type, mediaUrl, mimeType: file.mimetype, fileSize: file.size, note: body.note || null, capturedAt };
+        const row = await manager.save(RepairEvidence, manager.create(RepairEvidence, { ...evidence, serviceOrderId: orderId }));
+        // The check-in face is shown once for a visit; each device still gets its own photos.
+        if (body.type === EvidenceType.CHECKIN_FACE) {
+          const order = await manager.findOneByOrFail(ServiceOrder, { id: orderId });
+          for (const sibling of await this.visitSiblingOrders(manager, order, actor.id, ServiceOrderStatus.EN_ROUTE)) {
+            await manager.save(RepairEvidence, manager.create(RepairEvidence, { ...evidence, serviceOrderId: sibling.id }));
+          }
+        }
+        return row;
       });
       // Check-in with the product photo is the last step before repair for a
       // fixed-price job; an inspection job also needs the approved quotation.
@@ -1410,7 +1514,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         if (!await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, result: CheckInResult.VALID })) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Valid arrival required');
         const required = await this.configService.getInt('evidence.before.min_count', 1);
         if (await manager.count(RepairEvidence, { where: { serviceOrderId: orderId, type: EvidenceType.BEFORE, uploaderId: actor.id } }) < required) throw new BusinessException(ErrorCodes.EVIDENCE_REQUIRED_BEFORE, 'BEFORE evidence required');
-        if (booking.pricingModeSnapshot !== ServicePricingMode.FIXED_PRICE && !await manager.findOneBy(Quotation, { serviceOrderId: orderId, technicianId: actor.id, status: QuotationStatus.APPROVED })) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Approved official quotation required');
+        // A device of a visit is quoted on site even at a fixed price (PO 21/10/2026, G0-1 1B).
+        if ((booking.pricingModeSnapshot !== ServicePricingMode.FIXED_PRICE || booking.visitGroupId) && !await manager.findOneBy(Quotation, { serviceOrderId: orderId, technicianId: actor.id, status: QuotationStatus.APPROVED })) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Approved official quotation required');
         if (booking.pricingModeSnapshot === ServicePricingMode.FIXED_PRICE && booking.fixedUnitPriceSnapshot == null) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Fixed price snapshot missing');
         if (await manager.count(AdditionalCostRequest, { where: { serviceOrderId: orderId, status: AdditionalCostStatus.PENDING_APPROVAL } })) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Additional approval required');
       }
