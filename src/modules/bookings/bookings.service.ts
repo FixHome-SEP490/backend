@@ -35,7 +35,7 @@ import { BOOKING_SLOTS, resolveBookingWindow, vnDate, type BookingSlot } from '.
 import { distanceToBooking, servesArea, technicianOrigin } from './technician-location';
 import { technicianDistances } from './technician-distance';
 import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
-import { technicianEligibility } from './technician-eligibility';
+import { loadEligibilityPreload, technicianEligibility } from './technician-eligibility';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { BookingInvitation } from './entities/booking-invitation.entity';
@@ -252,6 +252,13 @@ export class BookingsService {
       const pricingPreview = catalogV2 ? await resolveCatalogV2Pricing(manager, service.id, dto, true) : null;
       const catalogV2PricingSnapshot = pricingPreview ? { ...pricingPreview, priceBinding: pricingPreview.bindingReady } : null;
       const selectedVariant = catalogV2PricingSnapshot?.selectedVariant;
+      // A firm price needs no words from the customer; nothing is invented in their
+      // place (PO 21/10/2026). A job quoted on site still needs a description.
+      const description = dto.description?.trim() ?? '';
+      const firmPrice = catalogV2PricingSnapshot ? !!selectedVariant : isFixed;
+      if (!description && !firmPrice) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Vui lòng mô tả sơ bộ tình trạng thiết bị.');
+      }
       const bookingRepository = manager.getRepository(Booking);
       const mediaRepository = manager.getRepository(BookingMedia);
       const booking = bookingRepository.create({
@@ -266,7 +273,7 @@ export class BookingsService {
         serviceNameSnapshot: service.name,
         latitudeSnapshot,
         longitudeSnapshot,
-        description: dto.description,
+        description,
         preferredStartAt: window.start,
         preferredEndAt: window.end,
         bookingMode: window.mode,
@@ -797,6 +804,11 @@ export class BookingsService {
         });
         return manager.save(booking);
       }
+      // One move of the arrival session per booking (PO 21/10/2026); the description stays editable.
+      if ((booking.rescheduleCount ?? 0) >= 1) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Mỗi đơn chỉ được đổi lịch hẹn một lần.');
+      }
+      booking.rescheduleCount = (booking.rescheduleCount ?? 0) + 1;
       booking.preferredStartAt = window.start;
       booking.preferredEndAt = window.end;
       booking.bookingMode = window.mode;
@@ -970,8 +982,18 @@ export class BookingsService {
     };
     const now = Date.now();
     const today = vnDate(new Date(now));
+    const dayCount = Math.min(Math.max(days, 1), 30);
+    const excludeOrderId = previous ? undefined : order?.id;
+    // The technician's schedule, time off and held orders are read once for the whole
+    // range, not once per session (PO 21/10/2026: 42 sessions took about 15 s).
+    const preload = technicianId
+      ? await loadEligibilityPreload(manager, technicianId, {
+        start: new Date(now),
+        end: new Date(Date.parse(today + 'T00:00:00Z') + (dayCount + 1) * 86_400_000),
+      }, excludeOrderId)
+      : undefined;
     const sessions: Array<{ date: string; slot: BookingSlot; label: string; available: boolean; reason: string | null }> = [];
-    for (let i = 0; i < Math.min(Math.max(days, 1), 30); i++) {
+    for (let i = 0; i < dayCount; i++) {
       const date = vnDate(new Date(Date.parse(today + 'T00:00:00Z') + i * 86_400_000));
       for (const slot of Object.keys(BOOKING_SLOTS) as BookingSlot[]) {
         const window = resolveBookingWindow({ mode: 'scheduled', date, slot }, new Date(now), 0);
@@ -980,7 +1002,7 @@ export class BookingsService {
         let reason: string | null = null;
         if (technicianId) {
           const probe = Object.assign(Object.create(Booking.prototype) as Booking, booking, { bookingMode: 'scheduled', slot, preferredStartAt: window.start, preferredEndAt: window.end });
-          const verdict = await technicianEligibility(manager, technicianId, probe, previous ? undefined : order?.id, { keepingExistingOrder: true });
+          const verdict = await technicianEligibility(manager, technicianId, probe, excludeOrderId, { keepingExistingOrder: true, preload });
           available = verdict.eligible;
           reason = verdict.eligible ? null : reasons[verdict.reason ?? ''] ?? 'Thợ không nhận buổi này';
         }

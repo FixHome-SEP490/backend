@@ -134,6 +134,10 @@ export class Booking extends BaseEntity {
   @Column({ name: 'catalog_v2_pricing_snapshot', type: 'jsonb', nullable: true })
   catalogV2PricingSnapshot?: CatalogV2BookingPricingSnapshot | null;
 
+  /** Times the customer moved the arrival session; one move per booking (PO 21/10/2026). */
+  @Column({ name: 'reschedule_count', type: 'int', default: 0 })
+  rescheduleCount: number;
+
   @Column({
     type: 'enum',
     enum: BookingStatus,

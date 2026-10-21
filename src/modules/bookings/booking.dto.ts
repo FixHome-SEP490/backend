@@ -1,6 +1,6 @@
 import { Transform, Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsBoolean, IsDateString, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsBoolean, IsDateString, IsEnum, IsIn, IsInt, IsNumber, IsObject, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateNested } from 'class-validator';
 import type { CatalogV2DeviceAttributes } from '../../database/catalog-v2/catalog-v2-device-attributes';
 import { UrgencyLevel } from '../../shared/enums';
 
@@ -76,9 +76,9 @@ export class CreateBookingDto extends ScheduleBookingDto {
   addressId: string;
 
   @Transform(({ value }) => typeof value === 'string' ? value.trim() : value)
-  @ApiProperty({ required: true, maxLength: 5000, example: 'Thiết bị không hoạt động', description: 'Required problem description for a new Booking.' })
-  @IsString() @IsNotEmpty() @MaxLength(5000)
-  description: string;
+  @ApiPropertyOptional({ maxLength: 5000, example: 'Thiết bị không hoạt động', description: 'What the customer sees. Optional when the price is firm (a fixed-price service or a confirmed catalog tier); required when a technician quotes on site (PO 21/10/2026).' })
+  @IsOptional() @IsString() @MaxLength(5000)
+  description?: string;
 
   @ApiPropertyOptional({ minimum: 1, maximum: 1000, example: 1, description: 'Number of units for this service, especially for fixed-price services.' })
   @IsOptional() @IsInt() @Min(1) @Max(1000)

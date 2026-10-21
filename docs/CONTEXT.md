@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-20 23:16 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/tech-partial-qty-20261020
+> Cập nhật lần cuối: 2026-10-21 11:26 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/reschedule-once-fast-slots
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -300,6 +300,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-21 11:26 (UTC+7) | ToanAltF4 | fix/reschedule-once-fast-slots | Đổi lịch: mỗi booking chỉ đổi buổi một lần (cột reschedule_count, migration 048 điền từ audit BOOKING_RESCHEDULE), sửa mô tả vẫn được; available-slots đọc dữ liệu thợ một lần (loadEligibilityPreload) thay vì mỗi buổi (15 s -> dưới 1 s); mô tả không bắt buộc khi giá chắc chắn (cố định hoặc biến thể đã chốt), việc khảo sát vẫn bắt buộc; migration 049 xoá câu tự sinh "Yêu cầu dịch vụ: ..."; GET /services sắp theo danh mục (sortOrder, tên) rồi tên dịch vụ
 - 2026-10-20 23:16 (UTC+7) | foxonworld | foxonworld/tech-partial-qty-20261020 | Tracking-only partial USED quantity and new-invoice actual charge for 3/1/2; forbid legacy overwrite; return and owner gates unchanged.
 - 2026-10-20 22:15 (UTC+7) | ToanAltF4 | fix/overrun-release-closed | Nhả đơn đặt yêu cầu về closed (không còn thông báo sai Chưa có kỹ thuật viên nhận lời mời); ghi chú tiến trình nhả/rút đơn bằng tiếng Việt
 - 2026-10-20 21:41 (UTC+7) | ToanAltF4 | fix/kyc-face-video | Hồ sơ xác minh thợ nhận video khuôn mặt (face_video, video/webm|mp4) thay ảnh khuôn mặt, migration 046 thêm enum IF NOT EXISTS và mở bucket kyc-private cho video
@@ -339,5 +340,4 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-14 21:56 (UTC+7) | ToanAltF4 | feat/ai-session-history | Ghi việc gửi history cho ai-service từ bản ghi phiên của backend để dựng lại phiên AI đã mất
 - 2026-10-14 17:59 (UTC+7) | ToanAltF4 | fix/urgent-matching-and-reads | Giảm egress thêm: kiểm token mỗi request chỉ đọc 6 cột user, cache cấu hình chỉ đọc key/value
 - 2026-10-14 16:03 (UTC+7) | ToanAltF4 | fix/profile-cartesian-join | Giảm egress Supabase: hồ sơ thợ đọc đúng quan hệ cần (không nhân dòng), chi tiết booking đọc ảnh/lời mời tách câu, danh sách hội thoại chỉ lấy cột cần, cache phân quyền chỉ đọc mã
-- 2026-10-14 15:55 (UTC+7) | ToanAltF4 | fix/profile-cartesian-join | Hồ sơ thợ đọc từng quan hệ bằng câu riêng (relationLoadStrategy query): tránh nhân dòng kỹ năng x khu vực x lịch làm egress Supabase tăng vọt
 

@@ -42,9 +42,11 @@ describe('Booking Swagger contract: ordered invitations', () => {
     const shortlist = doc.paths['/api/v1/bookings/{id}/shortlist']?.post;
     const respond = doc.paths['/api/v1/invitations/{id}/respond']?.post;
     const createBooking = doc.paths['/api/v1/bookings']?.post;
+    expect(doc.components?.schemas?.CreateBookingDto).not.toMatchObject({ required: expect.arrayContaining(['description']) });
     expect(createBooking?.summary).toContain('create a Booking');
     expect(doc.components?.schemas?.CreateBookingDto).toMatchObject({
-      required: expect.arrayContaining(['serviceId', 'addressId', 'description']),
+      // The description is optional for a firm price and required by the service otherwise (PO 21/10/2026).
+      required: expect.arrayContaining(['serviceId', 'addressId']),
       properties: {
         serviceId: { type: 'string', format: 'uuid' },
         addressId: { type: 'string', format: 'uuid' },
