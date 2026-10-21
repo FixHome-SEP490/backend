@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-21 21:40 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/visit-groups-p4
+> Cập nhật lần cuối: 2026-10-21 22:09 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/visit-groups-order-link
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -302,6 +302,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-21 22:09 (UTC+7) | ToanAltF4 | feat/visit-groups-order-link | Đơn sửa chữa trả visitGroupId (máy thuộc lượt sửa nhiều máy) để web dẫn thanh toán, đổi lịch, huỷ về trang lượt
 - 2026-10-21 21:40 (UTC+7) | ToanAltF4 | feat/visit-groups-p4 | Đặt nhiều máy P4 thanh toán gộp: bảng visit_group_payments (migration 052, mỗi lượt tối đa 1 lần verified), GET /visit-groups/:id/checkout (trạng thái từng máy, chỉ máy sửa được mới tính tiền, chờ mọi máy có kết quả), POST checkout/wallet (trừ ví 1 lần), checkout/vnpay (1 giao dịch, IPN chia về hoá đơn từng máy đã chốt lúc tạo, lệch thì giữ ALLOCATION_CHANGED), checkout/cash/declare (thợ khai đúng tổng) + cash/confirm (khách xác nhận, không đồng ý mở case CASH_MISMATCH); hoá đơn của máy trong lượt không trả lẻ được; báo hoàn thành máy trong lượt ghi outcome succeeded; thợ đang được mời cả lượt xem được ảnh/video riêng tư của mọi máy trong lượt; payments.provider_reference của thanh toán gộp kèm id hoá đơn (unique)
 - 2026-10-21 21:21 (UTC+7) | ToanAltF4 | feat/visit-groups-p3 | Đặt nhiều máy P3: cả lượt xuất phát, check-in và ảnh khuôn mặt một lần (chép sang đơn các máy khác); máy giá cố định trong lượt vẫn phải gửi báo giá tại nhà đúng giá niêm yết và khách duyệt mới sửa; khách từ chối báo giá -> máy ghi quote_declined, 0 đồng; POST /service-orders/:id/repair-failed (chip lý do, ghi chú, Đã lắp/Trả lại kho từng linh kiện đã nhận) -> máy ghi failed, 0 đồng, không trừ điểm, mở support case cho SM; migration 051 thêm outcome cho visit_group_items
 - 2026-10-21 21:06 (UTC+7) | ToanAltF4 | feat/visit-groups-p2b | Đặt nhiều máy P2b: đổi lịch cả lượt một lần (POST /visit-groups/:id/reschedule, mọi máy và đơn cùng dời, thợ đang giữ phải rảnh), thợ rút cả lượt trước khi tới (POST :id/withdraw, trừ điểm 1 lần, mời lại trên booking đầu, thợ mới nhận lại đúng các đơn cũ), khách huỷ cả lượt sau khi thợ nhận theo luật huỷ đơn (trừ điểm 1 lần); khách/thợ không huỷ lẻ đơn của một máy; lịch rảnh available-slots bỏ qua đơn cùng lượt
@@ -341,5 +342,4 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-16 02:38 (UTC+7) | ToanAltF4 | feat/ai-feedback-quality | Phản hồi đúng/sai của khách về câu trả lời AI và trang chất lượng AI cho admin
 - 2026-10-16 02:17 (UTC+7) | ToanAltF4 | feat/ai-rate-limit | Giới hạn tần suất gọi AI theo khách hoặc IP
 - 2026-10-16 00:14 (UTC+7) | ToanAltF4 | feat/staff-customer-withdrawals | SM/Admin xem lệnh rút tiền của khách tách riêng với thợ: danh sách có tìm kiếm, tổng quan, hỏi lại payOS (/service-manager/customer-withdrawals)
-- 2026-10-15 13:40 (UTC+7) | Hgnv11 | dev | Thanh toán hoá đơn VNPay chia hai nhánh trả về: mobile (header x-client-platform) về app qua fixhome://app/order-payment, web vẫn FRONTEND_URL; CHƯA KIỂM CHỨNG trên máy thật
 

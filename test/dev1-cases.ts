@@ -519,6 +519,8 @@ export function registerDev1Cases(context: () => Context) {
         const orderOf = async (bookingId: string) => (await db.query('SELECT id, status FROM service_orders WHERE booking_id = $1', [bookingId]))[0];
         const [one, two] = [await orderOf(lead), await orderOf(second)];
 
+        // Each device's order says which visit it belongs to.
+        expect(unwrap((await get(`/service-orders/${one.id}`, f.owner).expect(200)).body).visitGroupId).toBe(group.id);
         // One trip, one check-in, one face for the whole visit.
         await post(`/service-orders/${one.id}/en-route`, f.tech).expect(200);
         expect((await orderOf(second)).status).toBe('en_route');
