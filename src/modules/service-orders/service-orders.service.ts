@@ -711,6 +711,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       if (order.completionRequestedAt) return order;
       await this.generateInvoice(orderId, manager);
       await manager.update(ServiceOrder, orderId, { completionRequestedAt: new Date(), completionNote: body.completionNote?.trim() || null });
+      // A repaired device of a visit is charged with the visit's single payment.
+      await recordVisitOutcome(manager, await manager.findOneByOrFail(Booking, { id: order.bookingId }), 'succeeded');
       await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'ORDER_COMPLETION_REQUESTED', resourceType: 'service_order', resourceId: orderId });
       void this.notifyCustomerForOrder(
         orderId,
