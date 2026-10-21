@@ -432,6 +432,74 @@ export function registerDev1Cases(context: () => Context) {
       }
     });
 
+    it('moves, drops and cancels a held visit as one, never one device alone (PO 21/10/2026)', async () => {
+      const f = await fixture(), db = context().db;
+      const { BusinessConfigService } = runtimeRequire('./dist/modules/system-config/business-config.service.js');
+      const setGroups = async (on: boolean) => {
+        await db.query(`UPDATE "system_configs" SET "value" = $1 WHERE "key" = 'visit_group.enabled'`, [String(on)]);
+        context().app.get(BusinessConfigService).invalidateCache();
+      };
+      const other = await save('Service', { categoryId: f.service.categoryId, name: 'Second fixture', code: randomUUID(), pricingMode: 'fixed_price', fixedPrice: 150000, scopeDescription: 'Fixture scope', unit: 'job' });
+      for (const actor of [f.tech, f.spare]) {
+        const profile = await db.getRepository('TechnicianProfile').findOneByOrFail({ userId: actor.user.id });
+        await save('TechnicianSkill', { technicianId: profile.id, serviceId: other.id, listedLaborPrice: 100000, verificationStatus: 'verified' });
+      }
+      const day = (offset: number) => new Date(Date.now() + 7 * 3600000 + offset * 86400000).toISOString().slice(0, 10);
+      const body = { addressId: f.address.id, mode: 'scheduled', date: day(3), slot: 'afternoon', items: [{ serviceId: f.service.id, description: 'Máy kêu to' }, { serviceId: other.id, description: 'Không lên nguồn' }] };
+      const ordersOf = (ids: string[]) => db.query(
+        `SELECT o.id, o.booking_id, o.status, o.scheduled_at, a.technician_id FROM service_orders o LEFT JOIN technician_assignments a ON a.service_order_id = o.id AND a.is_active WHERE o.booking_id = ANY($1) ORDER BY o.booking_id`,
+        [ids],
+      );
+      try {
+        await setGroups(true);
+        const group = unwrap((await post('/visit-groups', f.owner, body).expect(201)).body);
+        const ids = group.items.map((item: any) => item.booking.id);
+        await post(`/visit-groups/${group.id}/shortlist`, f.owner, { technicianIds: [f.spare.user.id, f.tech.user.id] }).expect(201);
+        const [invitation] = unwrap((await get('/invitations/my', f.spare).expect(200)).body);
+        await post(`/invitations/${invitation.id}/respond`, f.spare, { action: 'ACCEPT' }).expect(200);
+        const held = await ordersOf(ids);
+        expect(held.map((o: any) => o.technician_id)).toEqual([f.spare.user.id, f.spare.user.id]);
+
+        // Neither side drops one device of the visit on its own.
+        for (const [session, response] of [[f.owner, 'customer'], [f.spare, 'technician']] as const) {
+          const lone = await post(`/service-orders/${held[0].id}/cancel`, session, { reason: `Huỷ lẻ (${response})` });
+          expect(lone.status, JSON.stringify(lone.body)).toBe(409);
+          expect(JSON.stringify(lone.body)).toContain('cả lượt');
+        }
+
+        // The whole visit moves once; every device and order follows.
+        await post(`/visit-groups/${group.id}/reschedule`, f.owner, { mode: 'scheduled', date: day(4), slot: 'morning' }).expect(201);
+        const moved = await db.query('SELECT reschedule_count, slot, preferred_start_at, status FROM bookings WHERE visit_group_id = $1', [group.id]);
+        expect(moved.every((b: any) => b.reschedule_count === 1 && b.slot === 'morning' && b.status === 'matched')).toBe(true);
+        expect(new Set(moved.map((b: any) => new Date(b.preferred_start_at).toISOString())).size).toBe(1);
+        expect(new Set((await ordersOf(ids)).map((o: any) => new Date(o.scheduled_at).toISOString()))).toEqual(new Set([new Date(moved[0].preferred_start_at).toISOString()]));
+        const again = await post(`/visit-groups/${group.id}/reschedule`, f.owner, { mode: 'scheduled', date: day(5), slot: 'morning' });
+        expect(again.status, JSON.stringify(again.body)).toBe(409);
+
+        // The technician drops the visit before arriving: points once, the next technician is invited for all of it.
+        const pointsBefore = (await db.query('SELECT COUNT(*)::int n FROM reputation_events WHERE user_id = $1', [f.spare.user.id]))[0].n;
+        expect(unwrap((await post(`/visit-groups/${group.id}/withdraw`, f.spare, { reason: 'Xe hỏng giữa đường' }).expect(201)).body).orderIds).toHaveLength(2);
+        expect((await db.query('SELECT COUNT(*)::int n FROM reputation_events WHERE user_id = $1', [f.spare.user.id]))[0].n).toBe(pointsBefore + 1);
+        expect((await ordersOf(ids)).map((o: any) => o.technician_id)).toEqual([null, null]);
+        expect((await db.query('SELECT status FROM bookings WHERE visit_group_id = $1', [group.id])).map((b: any) => b.status)).toEqual(['matching', 'matching']);
+        expect((await post(`/visit-groups/${group.id}/withdraw`, f.owner, { reason: 'Không phải thợ' })).status).toBeGreaterThanOrEqual(400);
+
+        const [next] = unwrap((await get('/invitations/my', f.tech).expect(200)).body);
+        expect(next.visitDevices).toHaveLength(2);
+        await post(`/invitations/${next.id}/respond`, f.tech, { action: 'ACCEPT' }).expect(200);
+        expect((await ordersOf(ids)).map((o: any) => [o.id, o.technician_id])).toEqual(held.map((o: any) => [o.id, f.tech.user.id]));
+
+        // The customer cancels the held visit: every order closes, points once.
+        const ownerPoints = (await db.query('SELECT COUNT(*)::int n FROM reputation_events WHERE user_id = $1', [f.owner.user.id]))[0].n;
+        const cancelled = unwrap((await post(`/visit-groups/${group.id}/cancel`, f.owner, { reason: 'Đi công tác' }).expect(201)).body);
+        expect(cancelled.status).toBe('cancelled');
+        expect((await ordersOf(ids)).map((o: any) => o.status)).toEqual(['cancelled', 'cancelled']);
+        expect((await db.query('SELECT COUNT(*)::int n FROM reputation_events WHERE user_id = $1', [f.owner.user.id]))[0].n).toBe(ownerPoints + 1);
+      } finally {
+        await setGroups(false);
+      }
+    });
+
     it('takes a firm-priced booking without words and asks for them when a technician quotes on site (PO 21/10/2026)', async () => {
       const f = await fixture();
       const silent = await post('/bookings', f.owner, { ...f.body, description: undefined });

@@ -4,7 +4,7 @@ import { PermissionGuard } from '../../common/guards/permission.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ReasonDto } from '../service-orders/order-command.dto';
-import { ShortlistDto } from '../bookings/booking.dto';
+import { ScheduleBookingDto, ShortlistDto } from '../bookings/booking.dto';
 import { toBookingInvitationResponse } from '../bookings/booking-privacy.dto';
 import { CreateVisitGroupDto, VisitGroupConsultationDto } from './visit-group.dto';
 import { VisitGroupsService } from './visit-groups.service';
@@ -75,9 +75,23 @@ export class VisitGroupsController {
     return { data: await this.visitGroups.extendMatching(id, req.user) };
   }
 
+  @Post(':id/reschedule')
+  @RequirePermission('booking:create')
+  @ApiOperation({ summary: 'Customer: move the whole visit to another session (once per visit)', description: 'Same rules as PATCH /bookings/:id/schedule for every device together; the technician holding the visit must be free in the new session.' })
+  async reschedule(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ScheduleBookingDto, @Req() req: AuthedRequest) {
+    return { data: await this.visitGroups.reschedule(id, dto, req.user) };
+  }
+
+  @Post(':id/withdraw')
+  @RequirePermission('order:cancel')
+  @ApiOperation({ summary: 'Technician: drop the whole visit before arriving', description: 'Every device\'s order loses its technician and the visit is matched again; points are taken once. After arrival, ask a Service Manager.' })
+  async withdraw(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ReasonDto, @Req() req: AuthedRequest) {
+    return { data: await this.visitGroups.withdraw(id, dto.reason, req.user) };
+  }
+
   @Post(':id/cancel')
   @RequirePermission('booking:create')
-  @ApiOperation({ summary: 'Customer: cancel the whole visit before a technician holds it' })
+  @ApiOperation({ summary: 'Customer: cancel the whole visit', description: 'Before a technician holds it the bookings are cancelled; after, every order is cancelled by the order rules (not during repair), with the points of one cancellation.' })
   async cancel(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ReasonDto, @Req() req: AuthedRequest) {
     return { data: await this.visitGroups.cancel(id, dto.reason, req.user) };
   }
