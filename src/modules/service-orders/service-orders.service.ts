@@ -542,6 +542,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       quantity: booking.quantity || 1,
       scopeDescription: booking.scopeSnapshot || '',
       bookingDescription: booking.description || '',
+      // One device of a visit is paid, moved and cancelled with the visit (PO 21/10/2026).
+      visitGroupId: booking.visitGroupId ?? null,
       customerNote: booking.customerNote ?? null,
       bookingMode: booking.bookingMode ?? 'scheduled',
       slot: booking.slot ?? null,
