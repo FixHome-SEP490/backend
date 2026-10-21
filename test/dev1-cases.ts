@@ -104,7 +104,7 @@ export function registerDev1Cases(context: () => Context) {
 
     it('validates booking DTO, address ownership, snapshots and creates no pre-Accept order', async () => {
       const f = await fixture();
-      for (const changes of [{ preferredEndAt: undefined }, { quantity: 0 }, { quantity: 1.5 }, { preferredStartAt: '2020-01-01T00:00:00Z' }, { description: '  ' }, { status: 'matched' }]) denied(await post('/bookings', f.owner, { ...f.body, ...changes }));
+      for (const changes of [{ preferredEndAt: undefined }, { quantity: 0 }, { quantity: 1.5 }, { preferredStartAt: '2020-01-01T00:00:00Z' }, { status: 'matched' }]) denied(await post('/bookings', f.owner, { ...f.body, ...changes }));
       denied(await post('/bookings', f.outsider, f.body));
       denied(await post('/bookings', f.tech, f.body));
       const b = await f.create();
@@ -308,6 +308,19 @@ export function registerDev1Cases(context: () => Context) {
       await post('/bookings', f.owner, f.body).expect(201);
     });
 
+    it('takes a firm-priced booking without words and asks for them when a technician quotes on site (PO 21/10/2026)', async () => {
+      const f = await fixture();
+      const silent = await post('/bookings', f.owner, { ...f.body, description: undefined });
+      expect(silent.status, JSON.stringify(silent.body)).toBe(201);
+      expect(unwrap(silent.body).description).toBe('');
+      // A job quoted on site, in the same category: words are still required.
+      const survey = await save('Service', { categoryId: f.service.categoryId, name: 'Survey fixture', code: randomUUID(), pricingMode: 'inspection_required', fixedPrice: null, unit: 'job' });
+      const refused = await post('/bookings', f.owner, { ...f.body, serviceId: survey.id, description: '   ' });
+      expect(refused.status, JSON.stringify(refused.body)).toBe(422);
+      expect(JSON.stringify(refused.body)).toContain('mô tả');
+      await post('/bookings', f.owner, { ...f.body, serviceId: survey.id }).expect(201);
+    });
+
     it('moves an accepted order to a session its technician is free for, tells them, and refuses a taken one (PO 08/10/2026)', async () => {
       const f = await fixture(), db = context().db;
       const day = new Date(Date.now() + 7 * 3600000 + 3 * 86400000).toISOString().slice(0, 10);
@@ -322,11 +335,21 @@ export function registerDev1Cases(context: () => Context) {
       const morning = await post('/bookings', f.owner, { ...f.body, preferredStartAt: undefined, preferredEndAt: undefined, mode: 'scheduled', date: day, slot: 'morning' });
       expect(morning.status, JSON.stringify(morning.body)).toBe(201);
       await accept(f, unwrap(morning.body));
-      denied(await patch(`/bookings/${first.booking.id}/schedule`, f.owner, { mode: 'scheduled', date: day, slot: 'morning' }));
+      // One move per booking (PO 21/10/2026): the second one is refused whatever the session,
+      // a description-only edit is still allowed, and the count is on the booking.
+      const again = await patch(`/bookings/${first.booking.id}/schedule`, f.owner, { mode: 'scheduled', date: day, slot: 'evening' });
+      expect(again.status, JSON.stringify(again.body)).toBe(409);
+      expect(JSON.stringify(again.body)).toContain('một lần');
+      await patch(`/bookings/${first.booking.id}/schedule`, f.owner, { mode: 'scheduled', date: day, slot: 'afternoon', description: 'Máy kêu to khi chạy' }).expect(200);
+      expect(unwrap((await get(`/bookings/${first.booking.id}`, f.owner).expect(200)).body)).toMatchObject({ rescheduleCount: 1, description: 'Máy kêu to khi chạy' });
       denied(await patch(`/bookings/${first.booking.id}/schedule`, f.owner, { mode: 'urgent' }));
+      // A booking not moved yet cannot take a session its technician already holds.
+      const third = await accept(f);
+      const taken = await patch(`/bookings/${third.booking.id}/schedule`, f.owner, { mode: 'scheduled', date: day, slot: 'morning' });
+      expect(taken.status, JSON.stringify(taken.body)).toBeGreaterThanOrEqual(400);
+      expect(JSON.stringify(taken.body)).toContain('không rảnh');
       const slots = unwrap((await get(`/bookings/${first.booking.id}/available-slots?days=5`, f.owner).expect(200)).body);
-      const taken = slots.sessions.find((s: any) => s.date === day && s.slot === 'morning');
-      expect(taken).toMatchObject({ available: false });
+      expect(slots.sessions.find((s: any) => s.date === day && s.slot === 'morning')).toMatchObject({ available: false });
     });
 
     it('pays an invoice from the customer wallet, settles like an online payment and refunds into the wallet (PO 08/10/2026)', async () => {

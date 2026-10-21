@@ -24,7 +24,7 @@ describe('public Catalog V2 price summaries', () => {
     const query = vi.fn().mockResolvedValue(rows);
     const items = () => ['AC-02', 'WM-03', 'AC-01', 'LEGACY'].map(code => service(code));
     const qb = { leftJoinAndSelect: vi.fn().mockReturnThis(), andWhere: vi.fn().mockReturnThis(),
-      orderBy: vi.fn().mockReturnThis(), skip: vi.fn().mockReturnThis(), take: vi.fn().mockReturnThis(),
+      orderBy: vi.fn().mockReturnThis(), addOrderBy: vi.fn().mockReturnThis(), skip: vi.fn().mockReturnThis(), take: vi.fn().mockReturnThis(),
       getManyAndCount: vi.fn().mockImplementation(async () => [items(), 4]) };
     const repo = { manager: { query }, createQueryBuilder: () => qb,
       findOne: vi.fn().mockImplementation(async () => service('AC-02')) };

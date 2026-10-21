@@ -17,6 +17,54 @@ import { Wallet } from '../wallet/entities/wallet.entity';
 import { SystemConfig } from '../system-config/entities/system-config.entity';
 import { hasPartReturnRestriction } from '../part-requests/part-custody.policy';
 
+type HeldOrderRow = { orderId: string; status: string; slot: string | null; mode: string | null; busyStart: Date | string | null; busyEnd: Date | string | null };
+
+/** Every order the technician holds that is not cancelled, optionally leaving one out. */
+async function heldOrders(manager: EntityManager, technicianId: string, excludeOrderId?: string): Promise<HeldOrderRow[]> {
+  const held = manager.createQueryBuilder('technician_assignments', 'a')
+    .select('o.id', 'orderId')
+    .addSelect('o.status', 'status')
+    .addSelect('b.slot', 'slot')
+    .addSelect('b.booking_mode', 'mode')
+    .addSelect('b.preferred_start_at', 'busyStart')
+    .addSelect('b.preferred_end_at', 'busyEnd')
+    .innerJoin('service_orders', 'o', 'o.id = a.service_order_id')
+    .innerJoin('bookings', 'b', 'b.id = o.booking_id')
+    .where('a.technician_id = :id AND a.is_active = true', { id: technicianId })
+    .andWhere("o.status <> 'cancelled'");
+  if (excludeOrderId) held.andWhere('o.id != :excludeOrderId', { excludeOrderId });
+  return held.getRawMany<HeldOrderRow>();
+}
+
+/**
+ * What the "free in this session?" check reads about one technician, read once
+ * when many sessions are asked about together (the reschedule and rebook
+ * calendars, PO 21/10/2026: 42 sessions one by one took about 15 s). Time off
+ * is loaded for the whole range and filtered per session in memory.
+ */
+export interface EligibilityPreload {
+  user: User | null;
+  profile: TechnicianProfile | null;
+  schedules: TechnicianSchedule[];
+  timeOff: TechnicianTimeOff[];
+  orders: HeldOrderRow[];
+}
+
+export async function loadEligibilityPreload(
+  manager: EntityManager, technicianId: string, range: { start: Date; end: Date }, excludeOrderId?: string,
+): Promise<EligibilityPreload> {
+  const user = await manager.findOneBy(User, { id: technicianId });
+  const profile = await manager.findOneBy(TechnicianProfile, { userId: technicianId });
+  const schedules = profile ? await manager.find(TechnicianSchedule, { where: { technicianId: profile.id } }) : [];
+  const timeOff = profile
+    ? await manager.createQueryBuilder(TechnicianTimeOff, 't')
+      .where('t.technicianId = :id', { id: profile.id })
+      .andWhere('t.startAt < :end AND t.endAt > :start', { start: range.start, end: range.end }).getMany()
+    : [];
+  const orders = await heldOrders(manager, technicianId, excludeOrderId);
+  return { user, profile, schedules, timeOff, orders };
+}
+
 /** Same authority at discovery, shortlist, activation and Accept. IDs here are User IDs. */
 export async function technicianEligibility(
   manager: EntityManager, technicianId: string, booking: Booking,
@@ -30,14 +78,21 @@ export async function technicianEligibility(
      * not keeping work already accepted; skill and distance did not change.
      */
     keepingExistingOrder?: boolean;
+    /**
+     * Data read once for many sessions of the same technician; only with
+     * keepingExistingOrder, whose checks it covers. The same excludeOrderId
+     * must have been used to load it.
+     */
+    preload?: EligibilityPreload;
   },
 ): Promise<{ eligible: boolean; reason?: string }> {
   const keeping = options?.keepingExistingOrder === true;
   const fail = (reason: string) => ({ eligible: false, reason });
   if (!keeping && await hasPartReturnRestriction(manager, technicianId)) return fail('Cần quản lý xác nhận đã nhận đủ linh kiện FixHome trước khi nhận việc mới.');
-  const user = await manager.findOneBy(User, { id: technicianId });
+  const preload = keeping ? options?.preload : undefined;
+  const user = preload ? preload.user : await manager.findOneBy(User, { id: technicianId });
   if (!user || user.role !== Role.TECHNICIAN || user.status !== AccountStatus.ACTIVE) return fail('Technician account is not active');
-  const profile = await manager.findOneBy(TechnicianProfile, { userId: technicianId });
+  const profile = preload ? preload.profile : await manager.findOneBy(TechnicianProfile, { userId: technicianId });
   if (!profile || profile.verificationStatus !== VerificationStatus.VERIFIED) return fail('Technician is not verified');
   if (profile.workSuspendedUntil && profile.workSuspendedUntil > new Date()) return fail('Technician is unavailable or suspended');
   if (!profile.isAvailable && !options?.allowPausedExistingInvitation && !keeping) return fail('Technician is unavailable or paused');
@@ -60,28 +115,18 @@ export async function technicianEligibility(
   const window: ArrivalInterval = { start: arrivalStart, end };
   const mode = booking.bookingMode === 'urgent' ? 'urgent' : 'scheduled';
   const session = mode === 'scheduled' ? bookingSession(booking) : null;
-  const schedules = await manager.find(TechnicianSchedule, { where: { technicianId: profile.id } });
-  const timeOff = await manager.createQueryBuilder(TechnicianTimeOff, 't')
-    .where('t.technicianId = :id', { id: profile.id })
-    .andWhere('t.startAt < :end AND t.endAt > :start', { start: arrivalStart, end }).getMany();
+  const schedules = preload ? preload.schedules : await manager.find(TechnicianSchedule, { where: { technicianId: profile.id } });
+  const timeOff = preload
+    ? preload.timeOff.filter((t) => new Date(t.startAt) < end && new Date(t.endAt) > arrivalStart)
+    : await manager.createQueryBuilder(TechnicianTimeOff, 't')
+      .where('t.technicianId = :id', { id: profile.id })
+      .andWhere('t.startAt < :end AND t.endAt > :start', { start: arrivalStart, end }).getMany();
   if (timeOff.length) return fail('Technician has time off');
   if (!hasAvailableArrival(window, schedules, [])) return fail('Outside working schedule');
 
   // Every order the technician holds that is not cancelled, completed ones included:
   // a session counts as taken even after its order is done (one scheduled booking per session).
-  const held = manager.createQueryBuilder('technician_assignments', 'a')
-    .select('o.id', 'orderId')
-    .addSelect('o.status', 'status')
-    .addSelect('b.slot', 'slot')
-    .addSelect('b.booking_mode', 'mode')
-    .addSelect('b.preferred_start_at', 'busyStart')
-    .addSelect('b.preferred_end_at', 'busyEnd')
-    .innerJoin('service_orders', 'o', 'o.id = a.service_order_id')
-    .innerJoin('bookings', 'b', 'b.id = o.booking_id')
-    .where('a.technician_id = :id AND a.is_active = true', { id: technicianId })
-    .andWhere("o.status <> 'cancelled'");
-  if (excludeOrderId) held.andWhere('o.id != :excludeOrderId', { excludeOrderId });
-  const orders = (await held.getRawMany<{ orderId: string; status: string; slot: string | null; mode: string | null; busyStart: Date | string | null; busyEnd: Date | string | null }>())
+  const orders = (preload ? preload.orders : await heldOrders(manager, technicianId, excludeOrderId))
     .map((o) => ({ ...o, session: o.mode === 'urgent' ? null : bookingSession({ slot: o.slot, preferredStartAt: o.busyStart, preferredEndAt: o.busyEnd }) }));
   const running = orders.filter((o) => o.status !== 'completed');
 
