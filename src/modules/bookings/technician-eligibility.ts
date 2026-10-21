@@ -16,11 +16,16 @@ import { TechnicianServiceArea } from '../technicians/entities/technician-servic
 import { Wallet } from '../wallet/entities/wallet.entity';
 import { SystemConfig } from '../system-config/entities/system-config.entity';
 import { hasPartReturnRestriction } from '../part-requests/part-custody.policy';
+import { groupServiceIds } from './visit-group-guard';
 
 type HeldOrderRow = { orderId: string; status: string; slot: string | null; mode: string | null; busyStart: Date | string | null; busyEnd: Date | string | null };
 
-/** Every order the technician holds that is not cancelled, optionally leaving one out. */
-async function heldOrders(manager: EntityManager, technicianId: string, excludeOrderId?: string): Promise<HeldOrderRow[]> {
+/**
+ * Every order the technician holds that is not cancelled, optionally leaving one out.
+ * The devices of one visit (PO 21/10/2026) share their session, so the orders of
+ * the visit being asked about never clash with each other.
+ */
+async function heldOrders(manager: EntityManager, technicianId: string, excludeOrderId?: string, visitGroupId?: string | null): Promise<HeldOrderRow[]> {
   const held = manager.createQueryBuilder('technician_assignments', 'a')
     .select('o.id', 'orderId')
     .addSelect('o.status', 'status')
@@ -33,6 +38,7 @@ async function heldOrders(manager: EntityManager, technicianId: string, excludeO
     .where('a.technician_id = :id AND a.is_active = true', { id: technicianId })
     .andWhere("o.status <> 'cancelled'");
   if (excludeOrderId) held.andWhere('o.id != :excludeOrderId', { excludeOrderId });
+  if (visitGroupId) held.andWhere('(b.visit_group_id IS NULL OR b.visit_group_id != :visitGroupId)', { visitGroupId });
   return held.getRawMany<HeldOrderRow>();
 }
 
@@ -51,7 +57,7 @@ export interface EligibilityPreload {
 }
 
 export async function loadEligibilityPreload(
-  manager: EntityManager, technicianId: string, range: { start: Date; end: Date }, excludeOrderId?: string,
+  manager: EntityManager, technicianId: string, range: { start: Date; end: Date }, excludeOrderId?: string, visitGroupId?: string | null,
 ): Promise<EligibilityPreload> {
   const user = await manager.findOneBy(User, { id: technicianId });
   const profile = await manager.findOneBy(TechnicianProfile, { userId: technicianId });
@@ -61,7 +67,7 @@ export async function loadEligibilityPreload(
       .where('t.technicianId = :id', { id: profile.id })
       .andWhere('t.startAt < :end AND t.endAt > :start', { start: range.start, end: range.end }).getMany()
     : [];
-  const orders = await heldOrders(manager, technicianId, excludeOrderId);
+  const orders = await heldOrders(manager, technicianId, excludeOrderId, visitGroupId);
   return { user, profile, schedules, timeOff, orders };
 }
 
@@ -96,7 +102,12 @@ export async function technicianEligibility(
   if (!profile || profile.verificationStatus !== VerificationStatus.VERIFIED) return fail('Technician is not verified');
   if (profile.workSuspendedUntil && profile.workSuspendedUntil > new Date()) return fail('Technician is unavailable or suspended');
   if (!profile.isAvailable && !options?.allowPausedExistingInvitation && !keeping) return fail('Technician is unavailable or paused');
-  if (!keeping && !await manager.findOneBy(TechnicianSkill, { technicianId: profile.id, serviceId: booking.serviceId, isActive: true, verificationStatus: VerificationStatus.VERIFIED })) return fail('Service is not offered or not yet verified');
+  // A visit of several devices needs one technician who offers every one of them.
+  if (!keeping) {
+    for (const serviceId of await groupServiceIds(manager, booking)) {
+      if (!await manager.findOneBy(TechnicianSkill, { technicianId: profile.id, serviceId, isActive: true, verificationStatus: VerificationStatus.VERIFIED })) return fail('Service is not offered or not yet verified');
+    }
+  }
   if (!keeping && await manager.count(CommissionDue, { where: { technicianId, status: CommissionDueStatus.PENDING } })) return fail('Active unpaid PlatformDue');
   const wallet = keeping ? null : await manager.findOneBy(Wallet, { technicianId });
   if (wallet) {
@@ -126,7 +137,7 @@ export async function technicianEligibility(
 
   // Every order the technician holds that is not cancelled, completed ones included:
   // a session counts as taken even after its order is done (one scheduled booking per session).
-  const orders = (preload ? preload.orders : await heldOrders(manager, technicianId, excludeOrderId))
+  const orders = (preload ? preload.orders : await heldOrders(manager, technicianId, excludeOrderId, booking.visitGroupId))
     .map((o) => ({ ...o, session: o.mode === 'urgent' ? null : bookingSession({ slot: o.slot, preferredStartAt: o.busyStart, preferredEndAt: o.busyEnd }) }));
   const running = orders.filter((o) => o.status !== 'completed');
 

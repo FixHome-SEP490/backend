@@ -21,7 +21,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { Optional } from '@nestjs/common';
 import { activateNextInvitation, invitationActivatedHook } from './activate-next-invitation';
 import { eligibilityErrorCode, technicianEligibility } from './technician-eligibility';
-import { refuseLoneGroupedBookingAction } from './visit-group-guard';
+import { groupSiblings, mirrorGroupStatus, refuseLoneGroupedBookingAction, visitDevicesOf } from './visit-group-guard';
 import { newOrderCode } from '../service-orders/order-code';
 import { startBackgroundJob } from '../../common/background-job';
 import { randomUUID } from 'crypto';
@@ -127,20 +127,27 @@ export class InvitationsService implements OnModuleInit, OnModuleDestroy {
     return accepted;
   }
 
-  async createShortlist(bookingId: string, technicianIds: string[], customer: { id: string; role: string }): Promise<BookingInvitation[]> {
-    const invitations = await this.openShortlist(bookingId, technicianIds, customer);
+  /**
+   * `asVisit`: the visit-group endpoint shortlists on the lead booking of a visit
+   * (PO 21/10/2026); the booking endpoint never may, so a device is not matched alone.
+   */
+  async createShortlist(bookingId: string, technicianIds: string[], customer: { id: string; role: string }, opts: { asVisit?: boolean } = {}): Promise<BookingInvitation[]> {
+    const invitations = await this.openShortlist(bookingId, technicianIds, customer, opts);
     if (!(await this.autoAcceptPending(bookingId))) return invitations;
     return this.invitationRepo.find({ where: { bookingId }, order: { priorityOrder: 'ASC' } });
   }
 
-  private async openShortlist(bookingId: string, technicianIds: string[], customer: { id: string; role: string }): Promise<BookingInvitation[]> {
+  private async openShortlist(bookingId: string, technicianIds: string[], customer: { id: string; role: string }, opts: { asVisit?: boolean } = {}): Promise<BookingInvitation[]> {
     if (customer.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
     if (!Array.isArray(technicianIds) || technicianIds.length < 1 || technicianIds.length > 2 || new Set(technicianIds).size !== technicianIds.length) throw new BusinessException(ErrorCodes.SHORTLIST_LIMIT_EXCEEDED, 'Select 1 or 2 distinct technicians in priority order');
     return this.dataSource.transaction(async manager => {
       const booking = await manager.findOne(Booking, { where: { id: bookingId, customerId: customer.id }, lock: { mode: 'pessimistic_write' } });
       if (!booking) throw new ForbiddenException('Booking not found');
-      refuseLoneGroupedBookingAction(booking);
+      if (!opts.asVisit) refuseLoneGroupedBookingAction(booking);
       if (![BookingStatus.SUBMITTED, BookingStatus.MATCHING, BookingStatus.CLOSED].includes(booking.status)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Booking cannot be shortlisted');
+      // The lead booking's lock guards the whole visit; the other devices follow its status.
+      const siblings = await groupSiblings(manager, booking, true);
+      if (siblings.some(sibling => ![BookingStatus.SUBMITTED, BookingStatus.MATCHING, BookingStatus.CLOSED].includes(sibling.status))) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Booking cannot be shortlisted');
       const existing = await manager.findOneBy(ServiceOrder, { bookingId });
       if (existing && (![ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(existing.status) || await manager.count(TechnicianAssignment, { where: { serviceOrderId: existing.id, isActive: true } }))) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Order already has an active technician');
       const previous = await manager.find(BookingInvitation, { where: { bookingId } });
@@ -156,6 +163,7 @@ export class InvitationsService implements OnModuleInit, OnModuleDestroy {
       await manager.save(invitations);
       booking.status = BookingStatus.MATCHING;
       await manager.save(booking);
+      await mirrorGroupStatus(manager, booking, BookingStatus.MATCHING);
       await this.activateNext(manager, booking);
       await this.auditLogService.logWithManager(manager, { actorUserId: customer.id, actorRole: customer.role, action: 'SHORTLIST_CREATE', resourceType: 'booking', resourceId: bookingId, after: { technicianIds } });
       return manager.find(BookingInvitation, { where: { bookingId }, order: { priorityOrder: 'ASC' } });
@@ -202,7 +210,11 @@ export class InvitationsService implements OnModuleInit, OnModuleDestroy {
       invitation.expiresAt > now,
     );
     const distances = await technicianDistances(this.dataSource.manager, technicianId, live.map(i => i.booking));
-    return live.map(invitation => toTechnicianInvitationPreview(invitation, { distanceKm: distances.get(invitation.bookingId) ?? null }));
+    const devices = await visitDevicesOf(this.dataSource.manager, live.map(i => i.booking));
+    return live.map(invitation => toTechnicianInvitationPreview(invitation, {
+      distanceKm: distances.get(invitation.bookingId) ?? null,
+      visitDevices: devices.get(invitation.bookingId),
+    }));
   }
 
   async respond(invitationId: string, action: 'ACCEPT' | 'DECLINE', technician: { id: string; role: string }, opts: { auto?: boolean } = {}): Promise<{ invitation: BookingInvitation; serviceOrder?: ServiceOrder }> {
@@ -250,39 +262,27 @@ export class InvitationsService implements OnModuleInit, OnModuleDestroy {
         return { expired: true as const };
       }
       // Existing, still-valid PENDING invitation may be accepted after pause; all other guards still apply.
+      // For a visit of several devices this also asks for every device's skill.
       const eligibility = await technicianEligibility(manager, technician.id, booking, undefined, { allowPausedExistingInvitation: true });
       if (!eligibility.eligible) throw new BusinessException(eligibilityErrorCode(eligibility.reason), eligibility.reason!);
-      let serviceOrder = await manager.findOneBy(ServiceOrder, { bookingId: booking.id });
+      // One technician takes the whole visit (PO 21/10/2026): every device gets its
+      // order in this transaction, or none does.
+      const siblings = await groupSiblings(manager, booking, true);
+      if (siblings.some(sibling => sibling.status !== BookingStatus.MATCHING)) throw new BusinessException(ErrorCodes.INVITATION_ALREADY_TAKEN, 'Visit is no longer open');
       const now = new Date();
-      const code = serviceOrder?.code ?? newOrderCode(now);
-      const replacement = !!serviceOrder;
-      if (serviceOrder && (![ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(serviceOrder.status) || await manager.count(TechnicianAssignment, { where: { serviceOrderId: serviceOrder.id, isActive: true } }))) throw new BusinessException(ErrorCodes.INVITATION_ALREADY_TAKEN, 'Booking already assigned');
-      if (serviceOrder && serviceOrder.status === ServiceOrderStatus.EN_ROUTE && ServiceOrderStateMachine.canResetForReplacement(serviceOrder.status)) {
-        // #34: the previous technician withdrew on the way; the replacement has
-        // not set out, so the order goes back to ACCEPTED instead of inheriting EN_ROUTE.
-        await manager.update(ServiceOrder, serviceOrder.id, { status: ServiceOrderStatus.ACCEPTED });
-        await manager.insert(OrderStatusHistory, { serviceOrderId: serviceOrder.id, fromStatus: ServiceOrderStatus.EN_ROUTE, toStatus: ServiceOrderStatus.ACCEPTED, actorUserId: technician.id, actorRole: technician.role, reason: 'Replacement technician has not set out yet' });
-        serviceOrder.status = ServiceOrderStatus.ACCEPTED;
-      }
-      if (serviceOrder) {
-        // A new technician gets their own departure clock (BRX-063).
-        await manager.update(ServiceOrder, serviceOrder.id, { departureWarnedAt: null, scheduledAt: booking.preferredStartAt });
-      }
-      serviceOrder ??= await manager.save(ServiceOrder, manager.create(ServiceOrder, { bookingId: booking.id, code, status: ServiceOrderStatus.ACCEPTED, scheduledAt: booking.preferredStartAt }));
-      await manager.save(TechnicianAssignment, manager.create(TechnicianAssignment, { serviceOrderId: serviceOrder.id, technicianId: technician.id, isActive: true, assignedAt: now }));
-      await snapshotLaborWarranty(manager, serviceOrder.id, technician.id, booking.serviceId);
-      await manager.insert(OrderStatusHistory, { serviceOrderId: serviceOrder.id, fromStatus: replacement ? serviceOrder.status : null, toStatus: serviceOrder.status, actorUserId: technician.id, actorRole: technician.role, reason: `${replacement ? 'Replacement technician accepted invitation' : 'Technician accepted invitation'}${opts.auto ? ' (tự nhận việc)' : ''}` });
+      const { serviceOrder, code } = await this.assignOrder(manager, booking, technician, now, opts);
+      const siblingOrders: ServiceOrder[] = [];
+      for (const sibling of siblings) siblingOrders.push((await this.assignOrder(manager, sibling, technician, now, opts)).serviceOrder);
       invitation.status = InvitationStatus.ACCEPTED;
       invitation.respondedAt = now;
       await manager.save(invitation);
       await manager.createQueryBuilder().update(BookingInvitation).set({ status: InvitationStatus.CANCELLED, respondedAt: now }).where('booking_id = :bookingId AND id != :id AND status IN (:...statuses)', { bookingId: booking.id, id: invitation.id, statuses: [InvitationStatus.PENDING, InvitationStatus.STANDBY] }).execute();
-      await manager.update(Booking, booking.id, { status: BookingStatus.MATCHED });
       // Spec 8.6: the accepted thread follows the ServiceOrder; the threads with
       // the technicians who were passed over become read-only, never deleted.
       await this.messagingService.ensureConversation(manager, booking, technician.id);
       await this.messagingService.attachToServiceOrder(manager, booking.id, technician.id, serviceOrder.id);
       await manager.update(TechnicianProfile, { userId: technician.id }, { priorityBoostUntil: null });
-      await this.auditLogService.logWithManager(manager, { actorUserId: technician.id, actorRole: technician.role, action: 'INVITATION_ACCEPT', resourceType: 'booking_invitation', resourceId: invitation.id, after: { serviceOrderId: serviceOrder.id, code, ...(opts.auto ? { autoAccepted: true } : {}) } });
+      await this.auditLogService.logWithManager(manager, { actorUserId: technician.id, actorRole: technician.role, action: 'INVITATION_ACCEPT', resourceType: 'booking_invitation', resourceId: invitation.id, after: { serviceOrderId: serviceOrder.id, code, ...(siblingOrders.length ? { visitGroupId: booking.visitGroupId, visitOrderIds: siblingOrders.map(order => order.id) } : {}), ...(opts.auto ? { autoAccepted: true } : {}) } });
       if (this.notificationsService && booking.customerId) {
         void this.notificationsService.createNotification({
           userId: booking.customerId,
@@ -302,6 +302,36 @@ export class InvitationsService implements OnModuleInit, OnModuleDestroy {
     // After commit: the customer hears from the technician who took the job.
     if (accepted) await this.acceptGreeting?.send({ ...(accepted as { bookingId: string; serviceOrderId: string; orderCode: string }), technicianId: technician.id });
     return outcome;
+  }
+
+  /**
+   * The order of one booking for the technician who accepted: a new one, or the
+   * order a withdrawn technician left (#34). The booking becomes MATCHED.
+   */
+  private async assignOrder(
+    manager: EntityManager, booking: Booking, technician: { id: string; role: string }, now: Date, opts: { auto?: boolean },
+  ): Promise<{ serviceOrder: ServiceOrder; code: string }> {
+    let serviceOrder = await manager.findOneBy(ServiceOrder, { bookingId: booking.id });
+    const code = serviceOrder?.code ?? newOrderCode(now);
+    const replacement = !!serviceOrder;
+    if (serviceOrder && (![ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(serviceOrder.status) || await manager.count(TechnicianAssignment, { where: { serviceOrderId: serviceOrder.id, isActive: true } }))) throw new BusinessException(ErrorCodes.INVITATION_ALREADY_TAKEN, 'Booking already assigned');
+    if (serviceOrder && serviceOrder.status === ServiceOrderStatus.EN_ROUTE && ServiceOrderStateMachine.canResetForReplacement(serviceOrder.status)) {
+      // #34: the previous technician withdrew on the way; the replacement has
+      // not set out, so the order goes back to ACCEPTED instead of inheriting EN_ROUTE.
+      await manager.update(ServiceOrder, serviceOrder.id, { status: ServiceOrderStatus.ACCEPTED });
+      await manager.insert(OrderStatusHistory, { serviceOrderId: serviceOrder.id, fromStatus: ServiceOrderStatus.EN_ROUTE, toStatus: ServiceOrderStatus.ACCEPTED, actorUserId: technician.id, actorRole: technician.role, reason: 'Replacement technician has not set out yet' });
+      serviceOrder.status = ServiceOrderStatus.ACCEPTED;
+    }
+    if (serviceOrder) {
+      // A new technician gets their own departure clock (BRX-063).
+      await manager.update(ServiceOrder, serviceOrder.id, { departureWarnedAt: null, scheduledAt: booking.preferredStartAt });
+    }
+    serviceOrder ??= await manager.save(ServiceOrder, manager.create(ServiceOrder, { bookingId: booking.id, code, status: ServiceOrderStatus.ACCEPTED, scheduledAt: booking.preferredStartAt }));
+    await manager.save(TechnicianAssignment, manager.create(TechnicianAssignment, { serviceOrderId: serviceOrder.id, technicianId: technician.id, isActive: true, assignedAt: now }));
+    await snapshotLaborWarranty(manager, serviceOrder.id, technician.id, booking.serviceId);
+    await manager.insert(OrderStatusHistory, { serviceOrderId: serviceOrder.id, fromStatus: replacement ? serviceOrder.status : null, toStatus: serviceOrder.status, actorUserId: technician.id, actorRole: technician.role, reason: `${replacement ? 'Replacement technician accepted invitation' : 'Technician accepted invitation'}${opts.auto ? ' (tự nhận việc)' : ''}` });
+    await manager.update(Booking, booking.id, { status: BookingStatus.MATCHED });
+    return { serviceOrder, code };
   }
 
   async checkTechnicianEligibility(technicianId: string, booking: Booking, manager?: EntityManager) {

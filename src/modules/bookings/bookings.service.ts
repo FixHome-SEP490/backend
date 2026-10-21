@@ -623,6 +623,7 @@ export class BookingsService {
   async getCandidates(
     bookingId: string,
     actor: { id: string; role?: string },
+    opts: { asVisit?: boolean } = {},
   ): Promise<TechnicianCandidate[]> {
     const isStaff = actor.role === Role.ADMIN || actor.role === Role.SERVICE_MANAGER;
     const booking = await this.bookingRepo.findOne({
@@ -632,7 +633,9 @@ export class BookingsService {
     if (!booking) {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
     }
-    refuseLoneGroupedBookingAction(booking);
+    // A visit of several devices is matched through its lead booking by the visit-group
+    // endpoint; technicianEligibility() below then asks for every device's skill.
+    if (!opts.asVisit) refuseLoneGroupedBookingAction(booking);
 
     // Find technicians with the matching skill; the location/radius hard-filter below decides who's shown.
     const qb = this.techProfileRepo
