@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { PermissionGuard } from '../../common/guards/permission.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
@@ -10,6 +10,10 @@ import { CreateVisitGroupDto, VisitGroupConsultationDto } from './visit-group.dt
 import { VisitGroupsService } from './visit-groups.service';
 import { FinanceService } from '../finance/finance.service';
 import { CashSettlementConfirmationDto, CashSettlementDeclarationDto } from '../finance/dto';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { Role } from '../../shared/enums';
+import { VisitGroupAssignedPageQueryDto, VisitGroupMyPageQueryDto } from './visit-group-page.dto';
 
 type AuthedRequest = { user: { id: string; role: string } };
 
@@ -49,6 +53,24 @@ export class VisitGroupsController {
   @ApiOperation({ summary: 'Customer: my visit groups with each device\'s service and status' })
   async mine(@Req() req: AuthedRequest) {
     return { data: await this.visitGroups.mine(req.user) };
+  }
+
+  @Get('my-page')
+  @RequirePermission('booking:read_own')
+  @ApiOperation({ summary: 'Customer: server-paginated visit groups with child booking/order status' })
+  async myPage(@Req() req: AuthedRequest, @Query() query: VisitGroupMyPageQueryDto) {
+    const result = await this.visitGroups.myPage(req.user.id, query);
+    return { data: result.data, meta: { total: result.total, page: result.page, pageSize: result.pageSize } };
+  }
+
+  @Get('assigned-page')
+  @Roles(Role.TECHNICIAN)
+  @UseGuards(RolesGuard)
+  @RequirePermission('order:read_related')
+  @ApiOperation({ summary: 'Technician: server-paginated visit groups that remain actively assigned to the technician' })
+  async assignedPage(@Req() req: AuthedRequest, @Query() query: VisitGroupAssignedPageQueryDto) {
+    const result = await this.visitGroups.assignedPage(req.user.id, query);
+    return { data: result.data, meta: { total: result.total, page: result.page, pageSize: result.pageSize } };
   }
 
   @Get(':id')

@@ -1,7 +1,7 @@
 // src/modules/service-orders/service-orders.controller.ts
 import { ReviewCancellationDto } from './dto/review-cancellation.dto';
 import { RepairFailedDto } from './dto/repair-failed.dto';
-import { OrderBoardQueryDto, OrderListQueryDto, StrikeListQueryDto } from './dto/order-list-query.dto';
+import { MyOrderListQueryDto, OrderBoardQueryDto, StrikeListQueryDto } from './dto/order-list-query.dto';
 import { PageSizeQueryDto } from '../../shared/dto/page-size-query.dto';
 import {
   Controller,
@@ -96,12 +96,12 @@ export class ServiceOrdersController {
   @ApiOperation({ summary: 'List my service orders (Customer / Technician)' })
   async findMy(
     @Req() req: { user: { id: string; role: string } },
-    @Query() query: OrderListQueryDto,
+    @Query() query: MyOrderListQueryDto,
   ) {
     const result = await this.serviceOrdersService.findMyOrders(
       req.user.id,
       req.user.role,
-      { page: query.page, limit: query.pageSize, status: query.status, statuses: query.statuses, search: query.search, stage: query.stage },
+      { page: query.page, limit: query.pageSize, status: query.status, statuses: query.statuses, search: query.search, stage: query.stage, excludeVisitGroups: query.excludeVisitGroups },
     );
     return { data: result.data, meta: { total: result.total } };
   }
@@ -554,12 +554,12 @@ export class ServiceOrdersController {
   @ApiOperation({ summary: 'Get repair history (D-20 derived read model)' })
   async getRepairHistory(
     @Req() req: { user: { id: string; role: string } },
-    @Query() query: OrderListQueryDto,
+    @Query() query: MyOrderListQueryDto,
   ) {
     const result = await this.serviceOrdersService.getRepairHistory(
       req.user.id,
       req.user.role,
-      { page: query.page, limit: query.pageSize, status: query.status, search: query.search },
+      { page: query.page, limit: query.pageSize, status: query.status, search: query.search, excludeVisitGroups: query.excludeVisitGroups },
     );
     return { data: result.data, meta: { total: result.total } };
   }
