@@ -310,30 +310,6 @@ export class PartRequestsService {
     return request;
   }
 
-  /**
-   * FixHome parts the technician already holds (or has on the way) for this order and no approved document has claimed yet:
-   * every live line of every request, minus what approved quotations and approved additional costs will use.
-   * Caller holds the order lock.
-   */
-  private async unclaimedFixHomeStock(manager: EntityManager, orderId: string, technicianId: string): Promise<Map<string, number>> {
-    const live = [PartRequestStatus.REQUESTED, PartRequestStatus.READY, PartRequestStatus.DELIVERING, PartRequestStatus.RECEIVED];
-    const stock = new Map<string, number>();
-    const add = (id: string, quantity: number) => stock.set(id, (stock.get(id) ?? 0) + quantity);
-    const requests = await manager.find(PartRequest, { where: { serviceOrderId: orderId, technicianId }, relations: ['items'] });
-    for (const request of requests) {
-      if (!live.includes(request.status)) continue;
-      for (const item of request.items) {
-        if (item.partSource === PartSource.FIXHOME && item.partCatalogId && item.usageStatus !== PartUsageStatus.RETURNED) add(item.partCatalogId, item.quantity);
-      }
-    }
-    const quotes = await manager.find(Quotation, { where: { serviceOrderId: orderId, status: QuotationStatus.APPROVED }, relations: ['items'] });
-    const costs = await manager.find(AdditionalCostRequest, { where: { serviceOrderId: orderId, technicianId, status: AdditionalCostStatus.APPROVED }, relations: ['items'] });
-    for (const item of [...quotes.flatMap(q => q.items), ...costs.flatMap(c => c.items)]) {
-      if (item.type === CostItemType.PARTS_EQUIPMENT && item.partSource === PartSource.FIXHOME && item.partCatalogId) add(item.partCatalogId, -item.quantity);
-    }
-    return stock;
-  }
-
   /** Flow 2: called when the customer approves an additional cost with FixHome parts. */
   async createAdditionalRequestFromApprovedCost(
     manager: EntityManager,
@@ -352,18 +328,9 @@ export class PartRequestsService {
     }>,
   ): Promise<PartRequest | null> {
     // Only FixHome parts generate depot parts requests
-    const wanted = items.filter(
+    const fixHomeItems = items.filter(
       (i) => i.partSource === PartSource.FIXHOME,
     );
-    if (wanted.length === 0) return null;
-    // Parts the technician already holds are used first; only the shortfall is requested from the depot.
-    const unclaimed = await this.unclaimedFixHomeStock(manager, orderId, technicianId);
-    const fixHomeItems = wanted.flatMap((item) => {
-      const id = item.partCatalogId;
-      const take = id ? Math.min(Math.max(0, unclaimed.get(id) ?? 0), item.quantity) : 0;
-      if (id && take > 0) unclaimed.set(id, (unclaimed.get(id) ?? 0) - take);
-      return item.quantity - take > 0 ? [{ ...item, quantity: item.quantity - take }] : [];
-    });
     if (fixHomeItems.length === 0) return null;
 
     if (!await manager.findOneBy(TechnicianAssignment, { serviceOrderId: orderId, technicianId, isActive: true })) {

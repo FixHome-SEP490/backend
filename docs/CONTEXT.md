@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-23 03:05 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
+> Cập nhật lần cuối: 2026-10-23 04:05 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -102,7 +102,7 @@ Bằng chứng BEFORE đơn giá cố định có thể gửi nhiều ảnh tron
 
 Duyệt báo giá gốc có linh kiện FixHome tạo yêu cầu kho `quotation` liên kết `quotation_id`, chỉ cấp phần thiếu so với PRE_REPAIR chưa hủy/chưa trả của kỹ thuật viên đang phụ trách. Gửi lại APPROVE giữ nguyên snapshot và không backfill báo giá đã duyệt từ trước. USED bị giới hạn theo từng SKU và nguồn duyệt; ADDITIONAL vẫn tách riêng. Trước khi lưu hóa đơn mới, phải có đủ bằng chứng nhận kho và USED/RETURNED tương ứng; thiếu nguồn hàng không được âm thầm thành giảm giá hay hóa đơn 0. Hóa đơn đã lưu không được tính lại.
 
-Tạo báo giá và APPROVE kiểm lại dưới khóa order: số lượng FixHome phải biểu diễn được bằng các dòng PRE_REPAIR nguyên vẹn cộng phần thiếu cấp mới. Ví dụ đã cấp một dòng 3 nhưng báo giá chỉ 2 bị từ chối 409, hướng dẫn chỉnh số lượng hoặc hủy yêu cầu còn REQUESTED trước khi lập lại báo giá. Không mở usage một phần hay đổi P1 finance. Không được hủy QUOTATION liên kết hoặc PRE_REPAIR mà báo giá APPROVED đang phụ thuộc; trả 409 và hướng dẫn tiếp tục nhận hàng hoặc liên hệ quản lý để hủy đơn theo luồng riêng. PRE_REPAIR khác SKU và ADDITIONAL giữ quy tắc hủy cũ. Duyệt chi phí phát sinh có linh kiện FixHome trừ phần kỹ thuật viên đang giữ (mọi yêu cầu còn hiệu lực của đơn, trừ số lượng báo giá và chi phí phát sinh đã duyệt trước đó) trước khi tạo yêu cầu ADDITIONAL; chỉ cấp phần thiếu, đủ hàng thì không tạo yêu cầu.
+Tạo báo giá và APPROVE kiểm lại dưới khóa order: số lượng FixHome phải biểu diễn được bằng các dòng PRE_REPAIR nguyên vẹn cộng phần thiếu cấp mới. Ví dụ đã cấp một dòng 3 nhưng báo giá chỉ 2 bị từ chối 409, hướng dẫn chỉnh số lượng hoặc hủy yêu cầu còn REQUESTED trước khi lập lại báo giá. Không mở usage một phần hay đổi P1 finance. Không được hủy QUOTATION liên kết hoặc PRE_REPAIR mà báo giá APPROVED đang phụ thuộc; trả 409 và hướng dẫn tiếp tục nhận hàng hoặc liên hệ quản lý để hủy đơn theo luồng riêng. PRE_REPAIR khác SKU và ADDITIONAL giữ quy tắc hủy cũ.
 
 `POST /invoices/:id/no-charge` cho đúng khách xác nhận hóa đơn thực sự miễn phí, audit đúng một lần và giữ gate ảnh sau sửa, yêu cầu hoàn tất, báo giá/chi phí phát sinh và hold khiếu nại. Không tạo Payment, không gọi provider, không trừ ví hoặc đổi P1 finance. Hóa đơn 0 mâu thuẫn chi phí đã duyệt bị chặn. VNPay cho hóa đơn từ 5.000 ₫; 1–4.999 ₫ vẫn dùng ví khách/tiền mặt; nạp ví vẫn tối thiểu 10.000 ₫. Migration #0044 chưa chạy; PostgreSQL/Docker/runtime và liên repo: NOT VERIFIED. Hợp đồng và giới hạn: `docs/P013-QUOTE-BILLING.md`.
 
@@ -303,7 +303,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
-- 2026-10-23 03:05 (UTC+7) | Hgnv11 | dev | Duyệt chi phí phát sinh có linh kiện FixHome chỉ cấp phần thiếu so với số kỹ thuật viên đang giữ (không cấp trùng khi thợ dùng lại linh kiện còn lại sau báo giá); chưa kiểm chứng trên DB và thiết bị thật
+- 2026-10-23 04:05 (UTC+7) | Hgnv11 | dev | Hoàn tác việc trừ linh kiện kỹ thuật viên đang giữ khi duyệt chi phí phát sinh: mỗi chi phí phát sinh có linh kiện FixHome lại luôn tạo yêu cầu ADDITIONAL riêng, vì ghi dùng và đối soát hóa đơn tính theo từng nguồn duyệt (báo giá, từng chi phí phát sinh)
 - 2026-10-23 02:03 (UTC+7) | foxonworld | foxonworld/feature-visit-group-activity-read-20261023 | Thêm trang VisitGroup theo parent, quyền assignment active cho thợ và cờ lọc con group trước phân trang list cũ
 - 2026-10-21 22:09 (UTC+7) | ToanAltF4 | feat/visit-groups-order-link | Đơn sửa chữa trả visitGroupId (máy thuộc lượt sửa nhiều máy) để web dẫn thanh toán, đổi lịch, huỷ về trang lượt
 - 2026-10-21 21:40 (UTC+7) | ToanAltF4 | feat/visit-groups-p4 | Đặt nhiều máy P4 thanh toán gộp: bảng visit_group_payments (migration 052, mỗi lượt tối đa 1 lần verified), GET /visit-groups/:id/checkout (trạng thái từng máy, chỉ máy sửa được mới tính tiền, chờ mọi máy có kết quả), POST checkout/wallet (trừ ví 1 lần), checkout/vnpay (1 giao dịch, IPN chia về hoá đơn từng máy đã chốt lúc tạo, lệch thì giữ ALLOCATION_CHANGED), checkout/cash/declare (thợ khai đúng tổng) + cash/confirm (khách xác nhận, không đồng ý mở case CASH_MISMATCH); hoá đơn của máy trong lượt không trả lẻ được; báo hoàn thành máy trong lượt ghi outcome succeeded; thợ đang được mời cả lượt xem được ảnh/video riêng tư của mọi máy trong lượt; payments.provider_reference của thanh toán gộp kèm id hoá đơn (unique)
