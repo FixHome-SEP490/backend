@@ -1,5 +1,5 @@
 import { Injectable, Optional, ServiceUnavailableException } from '@nestjs/common';
-import { DataSource, EntityManager, MoreThan } from 'typeorm';
+import { DataSource, EntityManager, In, MoreThan } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import { BookingStatus, InvitationStatus, Role, ServiceOrderStatus } from '../../shared/enums';
@@ -158,10 +158,15 @@ export class BookingPrivateMediaContentService {
     const isStaff = actor.role === Role.ADMIN || actor.role === Role.SERVICE_MANAGER;
     const isOwner = actor.role === Role.CUSTOMER && actor.id === booking.customerId;
     // PO 18/10/2026: the technician the booking is offered to right now sees its photos and videos to decide.
+    // A visit of several devices is offered through its lead booking (PO 21/10/2026): the
+    // invitation there shows every device of the visit.
+    const invitedThrough = booking.visitGroupId
+      ? In((await manager.find(Booking, { select: { id: true }, where: { visitGroupId: booking.visitGroupId } })).map((row) => row.id))
+      : booking.id;
     const isInvited = !isStaff && !isOwner && actor.role === Role.TECHNICIAN &&
       booking.status === BookingStatus.MATCHING &&
       !!(await manager.findOne(BookingInvitation, {
-        where: { bookingId: booking.id, technicianId: actor.id, status: InvitationStatus.PENDING, expiresAt: MoreThan(new Date()) },
+        where: { bookingId: invitedThrough, technicianId: actor.id, status: InvitationStatus.PENDING, expiresAt: MoreThan(new Date()) },
       }));
     if (!isStaff && !isOwner && !isInvited) {
       if (actor.role !== Role.TECHNICIAN || booking.status !== BookingStatus.MATCHED) this.notFound();

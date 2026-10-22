@@ -3,7 +3,7 @@ import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import { BookingStatus } from '../../shared/enums';
 import { Booking } from './entities/booking.entity';
-import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity';
+import { VisitGroupItem, type VisitDeviceOutcome } from '../visit-groups/entities/visit-group-item.entity';
 
 /**
  * A booking that is one device of a VisitGroup (PO 21/10/2026) is matched,
@@ -93,4 +93,15 @@ export async function visitDevicesOf(manager: EntityManager, bookings: Array<{ i
       .map((item) => ({ sequence: item.sequence, deviceLabel: item.deviceLabel ?? null, booking: byId.get(item.bookingId)! })));
   }
   return result;
+}
+
+/** The result of one device of a visit; a booking outside any visit has none to record. */
+export async function recordVisitOutcome(
+  manager: EntityManager,
+  booking: { id: string; visitGroupId?: string | null },
+  outcome: VisitDeviceOutcome,
+  reason: string | null = null,
+): Promise<void> {
+  if (!booking.visitGroupId) return;
+  await manager.update(VisitGroupItem, { bookingId: booking.id }, { outcome, outcomeReason: reason, outcomeAt: new Date() });
 }
