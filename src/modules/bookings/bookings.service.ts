@@ -93,6 +93,7 @@ type BookingListOptions = {
   overdue?: boolean;
   sort?: 'created' | 'appointment';
   stage?: RequestStage;
+  excludeVisitGroups?: boolean;
 };
 
 /**
@@ -423,6 +424,9 @@ export class BookingsService {
       .leftJoinAndSelect('b.media', 'media');
 
     filterBookingList(qb, options);
+    if (options.excludeVisitGroups) {
+      qb.andWhere('NOT EXISTS (SELECT 1 FROM visit_group_items vgi WHERE vgi.booking_id = b.id)');
+    }
     qb.skip((page - 1) * limit).take(limit);
 
     const [data, total] = await qb.getManyAndCount();

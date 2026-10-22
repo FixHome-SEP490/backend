@@ -42,3 +42,12 @@ export class BookingListQueryDto extends PageSizeQueryDto {
   @IsIn(['created', 'appointment'])
   sort?: 'created' | 'appointment';
 }
+
+/** Customer list opt-in; legacy booking-list callers keep their existing result set. */
+export class MyBookingListQueryDto extends BookingListQueryDto {
+  @ApiPropertyOptional({ description: 'Exclude bookings that belong to a multi-device visit', default: false })
+  @IsOptional()
+  @Transform(({ value }) => (value === 'true' ? true : value === 'false' ? false : value))
+  @IsBoolean()
+  excludeVisitGroups?: boolean;
+}

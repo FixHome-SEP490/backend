@@ -1,5 +1,5 @@
 // src/modules/bookings/bookings.controller.ts
-import { BookingListQueryDto } from './dto/booking-list-query.dto';
+import { BookingListQueryDto, MyBookingListQueryDto } from './dto/booking-list-query.dto';
 import {
   Controller,
   ParseUUIDPipe,
@@ -56,7 +56,7 @@ export class BookingsController {
   @ApiOperation({ summary: 'List my bookings' })
   async findMy(
     @Req() req: { user: { id: string } },
-    @Query() query: BookingListQueryDto,
+    @Query() query: MyBookingListQueryDto,
   ) {
     const result = await this.bookingsService.findMyBookings(req.user.id, {
       page: query.page,
@@ -65,6 +65,7 @@ export class BookingsController {
       statuses: query.statuses,
       search: query.search,
       stage: query.stage,
+      excludeVisitGroups: query.excludeVisitGroups,
     });
     return { data: result.data.map(toBookingResponse), meta: { total: result.total } };
   }
