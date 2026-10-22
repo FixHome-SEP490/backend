@@ -30,7 +30,7 @@ import { PartRequestStateMachine } from './part-request-state-machine';
 import { Quotation } from '../quotations/entities/quotation.entity';
 import { QuotationItem } from '../quotations/entities/quotation-item.entity';
 import { AdditionalCostRequest } from '../service-orders/entities/additional-cost-request.entity';
-import { custodyUsageForInvoice } from './part-custody.policy';
+import { custodyActivation, custodyUsageForInvoice } from './part-custody.policy';
 import { partRequestCostSource } from './part-request-lifecycle';
 import { MAX_PART_QUANTITY } from './part-custody.rules';
 import {
@@ -229,6 +229,9 @@ export class PartRequestsService {
       }
     }
     if (!required.size) return;
+    // A quote only tells the customer what they pay for. With return tracking on, the technician settles the real use and the
+    // leftover afterwards (usedQty never exceeds the approved quote), so a quote may take fewer pieces than were issued.
+    const partialQuoteAllowed = !!await custodyActivation(manager);
     const requests = await manager.find(PartRequest, { where: { serviceOrderId: orderId, technicianId }, relations: ['items'] });
     const lines = requests.filter(request => request.technicianId === technicianId && request.requestType === PartRequestType.PRE_REPAIR &&
       [PartRequestStatus.REQUESTED, PartRequestStatus.READY, PartRequestStatus.DELIVERING, PartRequestStatus.RECEIVED].includes(request.status))
@@ -237,7 +240,7 @@ export class PartRequestsService {
       const quantities = lines.filter(item => item.partCatalogId === sku).map(item => item.quantity);
       // A positive deficit gets a new exact QUOTATION line. If stock covers the
       // quote, some subset of its whole lines must equal the approved quantity.
-      if (quantities.reduce((sum, value) => sum + value, 0) <= quantity) continue;
+      if (quantities.reduce((sum, value) => sum + value, 0) <= quantity || partialQuoteAllowed) continue;
       let reachable = new Set([0]);
       for (const value of quantities) {
         const next = new Set(reachable);

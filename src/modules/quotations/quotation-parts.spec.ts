@@ -16,6 +16,7 @@ import { AdditionalCostRequest } from '../service-orders/entities/additional-cos
 import { ArrivalCheckIn } from '../service-orders/entities/arrival-check-in.entity';
 import { PartUsageStatus, Role } from '../../shared/enums';
 import { createPartCustodySnapshot } from '../part-requests/part-custody.rules';
+import { PartCustodyActivation } from '../part-requests/entities/part-custody.entity';
 
 function setup(preRepair: any[] = []) {
   const order = { id: 'order', bookingId: 'booking', status: 'en_route' };
@@ -74,6 +75,24 @@ describe('P013 approval creates only missing depot supply', () => {
       .rejects.toMatchObject({ status: 409, message: expect.stringContaining('số lượng') });
     expect(s.manager.save).not.toHaveBeenCalled();
     expect(s.manager.update).not.toHaveBeenCalled();
+  });
+
+  it('quotes fewer pieces than were issued once return tracking is on, and the extra stays with the technician for the usage step', async () => {
+    const previous = process.env.PART_RETURNS_TRACKING_ENABLED;
+    process.env.PART_RETURNS_TRACKING_ENABLED = 'true';
+    try {
+      const s = setup([preRepair([2])]);
+      const base = s.manager.findOne.getMockImplementation()!;
+      s.manager.findOne.mockImplementation(async (entity: any, options: any) =>
+        entity === PartCustodyActivation ? { id: 1, enabled: true, activatedAt: new Date(Date.now() - 86400000) } : base(entity, options));
+      const created = await s.service.createQuotation('order', { items: [{ ...s.quote.items[0], quantity: 1 }] as any }, { id: 'tech', role: Role.TECHNICIAN });
+      Object.assign(s.quote, created, { id: 'quote' });
+      await s.service.decideQuotation('quote', 'APPROVE', { id: 'customer', role: Role.CUSTOMER });
+      expect(s.quote.status).toBe('approved');
+      expect(s.requests).toHaveLength(1);
+    } finally {
+      if (previous === undefined) delete process.env.PART_RETURNS_TRACKING_ENABLED; else process.env.PART_RETURNS_TRACKING_ENABLED = previous;
+    }
   });
 
   it('rechecks whole-line quantities on APPROVE if supply changed after quoting', async () => {
