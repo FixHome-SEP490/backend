@@ -9,6 +9,7 @@ import {
   PartSource,
   Role,
   ServiceOrderStatus,
+  CostItemType,
 } from '../../shared/enums';
 import { PartRequestStateMachine } from './part-request-state-machine';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
@@ -447,5 +448,44 @@ describe('PartRequestsService', () => {
 
       expect(result.usageStatus).toBe(PartUsageStatus.USED);
     });
+  });
+});
+
+describe('PartRequestsService.createAdditionalRequestFromApprovedCost', () => {
+  const PART = 'part-a';
+  const line = (quantity: number) => ({ partCatalogId: PART, partSource: PartSource.FIXHOME, usageStatus: PartUsageStatus.PENDING, quantity });
+  const held = (quantity: number) => ({ technicianId: 'tech-1', serviceOrderId: 'order-1', status: PartRequestStatus.RECEIVED, items: [line(quantity)] });
+  const quote = (quantity: number) => ({ items: [{ type: CostItemType.PARTS_EQUIPMENT, partSource: PartSource.FIXHOME, partCatalogId: PART, quantity }] });
+  const need = (quantity: number) => [{ partCatalogId: PART, partName: 'Part A', quantity, unitPrice: 1000, partSource: PartSource.FIXHOME }];
+
+  const run = async (requests: unknown[], quotes: unknown[], quantity: number) => {
+    const manager: any = {
+      findOneBy: vi.fn().mockResolvedValue({ id: 'assignment' }),
+      findOne: vi.fn().mockResolvedValue({ id: PART }),
+      find: vi.fn(async (entity: unknown) => (entity === PartRequest ? requests : entity === Quotation ? quotes : [])),
+      create: vi.fn((_entity: unknown, data: object) => ({ ...data, id: 'pr-new' })),
+      save: vi.fn(async (_entity: unknown, data: unknown) => data),
+    };
+    const audit = { logWithManager: vi.fn().mockResolvedValue(undefined) };
+    const service = new PartRequestsService({} as any, {} as any, {} as any, {} as any, audit as any, {} as any);
+    const result = await service.createAdditionalRequestFromApprovedCost(manager, 'order-1', 'tech-1', 'cost-1', FulfillmentMethod.PICKUP, 0, need(quantity));
+    return { result, manager };
+  };
+
+  it('uses parts the technician already holds and requests nothing when they cover the cost', async () => {
+    // received 2, the approved quotation uses 1, so 1 is free and the cost needs exactly 1
+    const { result, manager } = await run([held(2)], [quote(1)], 1);
+    expect(result).toBeNull();
+    expect(manager.save).not.toHaveBeenCalled();
+  });
+
+  it('requests only the shortfall beyond what is still held', async () => {
+    const { result } = await run([held(2)], [quote(1)], 3);
+    expect(result?.items).toEqual([expect.objectContaining({ partCatalogId: PART, quantity: 2 })]);
+  });
+
+  it('requests the full quantity when nothing is held', async () => {
+    const { result } = await run([], [], 2);
+    expect(result?.items).toEqual([expect.objectContaining({ partCatalogId: PART, quantity: 2 })]);
   });
 });

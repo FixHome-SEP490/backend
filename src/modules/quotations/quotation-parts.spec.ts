@@ -43,7 +43,7 @@ function setup(preRepair: any[] = []) {
     findOneByOrFail: vi.fn(async () => ({ id: 'booking', pricingModeSnapshot: 'inspection_required' })),
     count: vi.fn(async () => 0),
     findOneOrFail: vi.fn(async (entity, options) => entity === Quotation ? quote : entity === AdditionalCostRequest ? cost : manager.findOne(entity, options)),
-    find: vi.fn(async (entity, options) => entity === PartRequest ? requests : entity === PartRequestItem ? requests.find(r => r.id === options.where.partRequestId)?.items ?? [] : []),
+    find: vi.fn(async (entity, options) => entity === PartRequest ? requests : entity === Quotation ? [quote] : entity === PartRequestItem ? requests.find(r => r.id === options.where.partRequestId)?.items ?? [] : []),
     create: (_entity: any, value: any) => ({ ...value }),
     save: vi.fn(async (entity, value) => {
       if (entity === Quotation) value.id ??= 'quote';
