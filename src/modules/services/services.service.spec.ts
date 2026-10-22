@@ -60,6 +60,7 @@ describe('ServicesService', () => {
         leftJoinAndSelect: vi.fn().mockReturnThis(),
         andWhere: vi.fn().mockReturnThis(),
         orderBy: vi.fn().mockReturnThis(),
+        addOrderBy: vi.fn().mockReturnThis(),
         skip: vi.fn().mockReturnThis(),
         take: vi.fn().mockReturnThis(),
         getManyAndCount: vi.fn().mockResolvedValue([[createMockService()], 1]),
@@ -86,6 +87,13 @@ describe('ServicesService', () => {
 
       expect(result.data).toHaveLength(1);
       expect(result.meta.total).toBe(1);
+    });
+
+    it('keeps the services of one category together across pages (PO 21/10/2026)', async () => {
+      await servicesService.findServices({ page: 2, limit: 9, skip: 9 });
+      const qb = serviceRepository.createQueryBuilder.mock.results[0].value;
+      expect(qb.orderBy).toHaveBeenCalledWith('category.sortOrder', 'ASC');
+      expect(qb.addOrderBy.mock.calls).toEqual([['category.name', 'ASC'], ['service.name', 'ASC']]);
     });
   });
 

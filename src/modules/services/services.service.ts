@@ -70,7 +70,11 @@ export class ServicesService {
       );
     }
 
-    qb.orderBy('service.name', 'ASC');
+    // Services of one category stay together across pages (PO 21/10/2026): the
+    // category's own order, then its name, then the service name.
+    qb.orderBy('category.sortOrder', 'ASC')
+      .addOrderBy('category.name', 'ASC')
+      .addOrderBy('service.name', 'ASC');
     qb.skip(query.skip).take(query.limit);
 
     const [data, total] = await qb.getManyAndCount();

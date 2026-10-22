@@ -14,6 +14,10 @@ export const ErrorCodes = {
 
   // Matching
   SHORTLIST_LIMIT_EXCEEDED: 'SHORTLIST_LIMIT_EXCEEDED',
+  /** More physical devices than one visit takes (PO 21/10/2026: three). */
+  VISIT_GROUP_DEVICE_LIMIT: 'VISIT_GROUP_DEVICE_LIMIT',
+  /** A feature switched off in system_configs. */
+  FEATURE_DISABLED: 'FEATURE_DISABLED',
   INVITATION_EXPIRED: 'INVITATION_EXPIRED',
   INVITATION_ALREADY_TAKEN: 'INVITATION_ALREADY_TAKEN',
 
@@ -76,6 +80,8 @@ export const ErrorCodeHttpStatus: Record<string, number> = {
   [ErrorCodes.RBAC_FORBIDDEN]: 403,
   [ErrorCodes.OWNERSHIP_DENIED]: 404, // 404 not 403, to avoid revealing existence (P5.3)
   [ErrorCodes.SHORTLIST_LIMIT_EXCEEDED]: 422,
+  [ErrorCodes.VISIT_GROUP_DEVICE_LIMIT]: 422,
+  [ErrorCodes.FEATURE_DISABLED]: 403,
   [ErrorCodes.INVITATION_EXPIRED]: 409,
   [ErrorCodes.INVITATION_ALREADY_TAKEN]: 409,
   [ErrorCodes.ORDER_INVALID_TRANSITION]: 409,

@@ -6,6 +6,7 @@ import { BookingInvitation } from './entities/booking-invitation.entity';
 import { BookingStatus, InvitationStatus } from '../../shared/enums';
 import { technicianEligibility } from './technician-eligibility';
 import { lockCustodyTechnician, partReturnsTrackingEnabled } from '../part-requests/part-custody.policy';
+import { mirrorGroupStatus } from './visit-group-guard';
 
 /**
  * Runs when an invitation is handed to the next technician in the shortlist.
@@ -51,6 +52,7 @@ export async function activateNextInvitation(
       return;
     }
     await manager.update(Booking, booking.id, { status: BookingStatus.CLOSED });
+    await mirrorGroupStatus(manager, booking, BookingStatus.CLOSED);
 }
 
 /**

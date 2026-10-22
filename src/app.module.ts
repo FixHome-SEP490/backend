@@ -39,6 +39,9 @@ import { MailModule } from './modules/mail/mail.module';
 import { GeoModule } from './modules/geo/geo.module';
 import { PartRequestsModule } from './modules/part-requests/part-requests.module';
 import { WalletModule } from './modules/wallet/wallet.module';
+// Loaded last on purpose: it reaches SupportCasesService, whose file and FinanceService import
+// each other; finance must finish loading first or Nest sees an undefined constructor parameter.
+import { VisitGroupsModule } from './modules/visit-groups/visit-groups.module';
 
 @Module({
   imports: [
@@ -68,6 +71,7 @@ import { WalletModule } from './modules/wallet/wallet.module';
     ServiceAreasModule,
     ServicesModule,
     BookingsModule,
+    VisitGroupsModule,
     AiDiagnosisModule,
     ServiceOrdersModule,
     ReputationModule,

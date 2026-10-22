@@ -68,6 +68,7 @@ export class VnpayController {
     const params = new URLSearchParams({ payment: isSuccess });
     if (result.invoiceId) params.set('invoiceId', result.invoiceId);
     if (result.serviceOrderId) params.set('orderId', result.serviceOrderId);
+    if (result.visitGroupId) params.set('visitGroupId', result.visitGroupId);
     const isMobileApp = result.orderInfo?.includes('mobile') || query.app === 'mobile' || query.platform === 'mobile';
     res.redirect(isMobileApp ? `fixhome://app/order-payment?${params.toString()}` : `${frontendUrl}/vnpay-return?${params.toString()}`);
   }

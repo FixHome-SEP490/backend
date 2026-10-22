@@ -35,7 +35,9 @@ import { BOOKING_SLOTS, resolveBookingWindow, vnDate, type BookingSlot } from '.
 import { distanceToBooking, servesArea, technicianOrigin } from './technician-location';
 import { technicianDistances } from './technician-distance';
 import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
-import { technicianEligibility } from './technician-eligibility';
+import { loadEligibilityPreload, technicianEligibility } from './technician-eligibility';
+import { groupSiblings, refuseLoneGroupedBookingAction } from './visit-group-guard';
+import { VisitGroup } from '../visit-groups/entities/visit-group.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { BookingInvitation } from './entities/booking-invitation.entity';
@@ -153,7 +155,16 @@ export class BookingsService {
   /**
    * Create a new booking. Validates service, address ownership, and suspension.
    */
-  async create(dto: CreateBookingDto, customer: { id: string; role: string }): Promise<Booking> {
+  /**
+   * `group` (PO 21/10/2026): the booking is one device of a VisitGroup and is
+   * written inside the group's own transaction, so either every device of the
+   * group is created or none is.
+   */
+  async create(
+    dto: CreateBookingDto,
+    customer: { id: string; role: string },
+    group?: { manager: EntityManager; visitGroupId: string },
+  ): Promise<Booking> {
     if (customer.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
     this.validateCreateMediaInput(dto);
     const urgentMinutes = dto.mode === 'urgent' ? await this.configService.getInt('booking.urgent_window_minutes', 120) : 0;
@@ -247,11 +258,20 @@ export class BookingsService {
 
     const aiSummary = dto.aiSessionId ? await this.aiSummaryFor(dto.aiSessionId, customer.id) : null;
 
-    const saved = await this.dataSource.transaction(async (manager) => {
+    const inTransaction = <T>(work: (manager: EntityManager) => Promise<T>): Promise<T> =>
+      group ? work(group.manager) : this.dataSource.transaction(work);
+    const saved = await inTransaction(async (manager) => {
       // Lock the active parent/category and tiers until the immutable snapshot is stored.
       const pricingPreview = catalogV2 ? await resolveCatalogV2Pricing(manager, service.id, dto, true) : null;
       const catalogV2PricingSnapshot = pricingPreview ? { ...pricingPreview, priceBinding: pricingPreview.bindingReady } : null;
       const selectedVariant = catalogV2PricingSnapshot?.selectedVariant;
+      // A firm price needs no words from the customer; nothing is invented in their
+      // place (PO 21/10/2026). A job quoted on site still needs a description.
+      const description = dto.description?.trim() ?? '';
+      const firmPrice = catalogV2PricingSnapshot ? !!selectedVariant : isFixed;
+      if (!description && !firmPrice) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Vui lòng mô tả sơ bộ tình trạng thiết bị.');
+      }
       const bookingRepository = manager.getRepository(Booking);
       const mediaRepository = manager.getRepository(BookingMedia);
       const booking = bookingRepository.create({
@@ -266,7 +286,7 @@ export class BookingsService {
         serviceNameSnapshot: service.name,
         latitudeSnapshot,
         longitudeSnapshot,
-        description: dto.description,
+        description,
         preferredStartAt: window.start,
         preferredEndAt: window.end,
         bookingMode: window.mode,
@@ -283,6 +303,7 @@ export class BookingsService {
         urgency: dto.urgency || UrgencyLevel.MEDIUM,
         status: BookingStatus.SUBMITTED,
         aiSummary,
+        visitGroupId: group?.visitGroupId ?? null,
       });
       const created = await bookingRepository.save(booking);
       let media: BookingMedia[] = [];
@@ -316,7 +337,7 @@ export class BookingsService {
 
     if (dto.aiDiagnosisId) {
       try {
-        await this.dataSource.query(
+        await (group?.manager ?? this.dataSource).query(
           `UPDATE "ai_diagnoses" AS diagnosis SET "booking_id" = $1 FROM "bookings" AS source WHERE diagnosis."id" = $2 AND diagnosis."booking_id" = source."id" AND source."customer_id" = $3 RETURNING diagnosis."id"`,
           [saved.id, dto.aiDiagnosisId, customer.id],
         );
@@ -325,14 +346,16 @@ export class BookingsService {
       }
     }
 
-    await this.auditLogService.log({
+    const audit = {
       actorUserId: customer.id,
       actorRole: customer.role,
       action: 'BOOKING_CREATE',
       resourceType: 'booking',
       resourceId: saved.id,
-      after: { serviceId: dto.serviceId, urgency: saved.urgency },
-    });
+      after: { serviceId: dto.serviceId, urgency: saved.urgency, ...(group ? { visitGroupId: group.visitGroupId } : {}) },
+    };
+    if (group) await this.auditLogService.logWithManager(group.manager, audit);
+    else await this.auditLogService.log(audit);
 
     return saved;
   }
@@ -601,6 +624,7 @@ export class BookingsService {
   async getCandidates(
     bookingId: string,
     actor: { id: string; role?: string },
+    opts: { asVisit?: boolean } = {},
   ): Promise<TechnicianCandidate[]> {
     const isStaff = actor.role === Role.ADMIN || actor.role === Role.SERVICE_MANAGER;
     const booking = await this.bookingRepo.findOne({
@@ -610,6 +634,9 @@ export class BookingsService {
     if (!booking) {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
     }
+    // A visit of several devices is matched through its lead booking by the visit-group
+    // endpoint; technicianEligibility() below then asks for every device's skill.
+    if (!opts.asVisit) refuseLoneGroupedBookingAction(booking);
 
     // Find technicians with the matching skill; the location/radius hard-filter below decides who's shown.
     const qb = this.techProfileRepo
@@ -760,6 +787,7 @@ export class BookingsService {
     bookingId: string,
     dto: ScheduleBookingDto,
     customer: { id: string },
+    opts: { asVisit?: boolean } = {},
   ): Promise<Booking> {
     if (dto.mode === 'urgent') {
       throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Dời lịch thì chọn ngày và buổi (sáng, chiều hoặc tối)');
@@ -774,11 +802,18 @@ export class BookingsService {
         lock: { mode: 'pessimistic_write' },
       });
       if (!booking) throw new ForbiddenException('Booking not found');
-      if (![BookingStatus.SUBMITTED, BookingStatus.MATCHING, BookingStatus.MATCHED].includes(booking.status)) {
+      // A visit of several devices moves together, through its lead booking (PO 21/10/2026).
+      if (!opts.asVisit) refuseLoneGroupedBookingAction(booking);
+      const siblings = await groupSiblings(manager, booking, true);
+      const siblingIds = siblings.map((sibling) => sibling.id);
+      if ([booking, ...siblings].some((b) => ![BookingStatus.SUBMITTED, BookingStatus.MATCHING, BookingStatus.MATCHED].includes(b.status))) {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Booking cannot be rescheduled');
       }
       const order = await manager.findOne(ServiceOrder, { where: { bookingId }, lock: { mode: 'pessimistic_write' } });
-      if (order && ![ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(order.status)) {
+      const siblingOrders = siblingIds.length
+        ? await manager.find(ServiceOrder, { where: { bookingId: In(siblingIds) }, order: { id: 'ASC' }, lock: { mode: 'pessimistic_write' } })
+        : [];
+      if ([order, ...siblingOrders].some((o) => o && ![ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(o.status))) {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Repair already started or order closed');
       }
       // A description-only edit is not a reschedule: same window keeps the
@@ -797,6 +832,12 @@ export class BookingsService {
         });
         return manager.save(booking);
       }
+      // One move of the arrival session per booking (PO 21/10/2026), per visit for several devices;
+      // the description stays editable.
+      if ([booking, ...siblings].some((b) => (b.rescheduleCount ?? 0) >= 1)) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Mỗi đơn chỉ được đổi lịch hẹn một lần.');
+      }
+      booking.rescheduleCount = (booking.rescheduleCount ?? 0) + 1;
       booking.preferredStartAt = window.start;
       booking.preferredEndAt = window.end;
       booking.bookingMode = window.mode;
@@ -818,6 +859,27 @@ export class BookingsService {
       } else {
         await this.cancelOpenInvitations(manager, bookingId);
         booking.status = BookingStatus.SUBMITTED;
+      }
+      if (siblingIds.length) {
+        await manager.update(Booking, { id: In(siblingIds) }, {
+          rescheduleCount: booking.rescheduleCount,
+          preferredStartAt: booking.preferredStartAt,
+          preferredEndAt: booking.preferredEndAt,
+          bookingMode: booking.bookingMode,
+          slot: booking.slot ?? null,
+          ...(order ? {} : { status: BookingStatus.SUBMITTED }),
+        });
+        if (siblingOrders.length) {
+          await manager.update(ServiceOrder, { id: In(siblingOrders.map((o) => o.id)) }, { scheduledAt: booking.preferredStartAt, departureWarnedAt: null });
+        }
+      }
+      if (booking.visitGroupId) {
+        await manager.update(VisitGroup, booking.visitGroupId, {
+          preferredStartAt: booking.preferredStartAt!,
+          preferredEndAt: booking.preferredEndAt!,
+          bookingMode: booking.bookingMode,
+          slot: booking.slot ?? null,
+        });
       }
       await this.auditLogService.logWithManager(manager, {
         actorUserId: customer.id,
@@ -865,6 +927,7 @@ export class BookingsService {
       });
       if (!booking) throw new ForbiddenException('Booking not found');
       if (booking.status === BookingStatus.CANCELLED) return booking;
+      refuseLoneGroupedBookingAction(booking);
       if (
         ![BookingStatus.SUBMITTED, BookingStatus.MATCHING, BookingStatus.CLOSED].includes(booking.status) ||
         (await manager.findOneBy(ServiceOrder, { bookingId }))
@@ -970,8 +1033,18 @@ export class BookingsService {
     };
     const now = Date.now();
     const today = vnDate(new Date(now));
+    const dayCount = Math.min(Math.max(days, 1), 30);
+    const excludeOrderId = previous ? undefined : order?.id;
+    // The technician's schedule, time off and held orders are read once for the whole
+    // range, not once per session (PO 21/10/2026: 42 sessions took about 15 s).
+    const preload = technicianId
+      ? await loadEligibilityPreload(manager, technicianId, {
+        start: new Date(now),
+        end: new Date(Date.parse(today + 'T00:00:00Z') + (dayCount + 1) * 86_400_000),
+      }, excludeOrderId, booking.visitGroupId)
+      : undefined;
     const sessions: Array<{ date: string; slot: BookingSlot; label: string; available: boolean; reason: string | null }> = [];
-    for (let i = 0; i < Math.min(Math.max(days, 1), 30); i++) {
+    for (let i = 0; i < dayCount; i++) {
       const date = vnDate(new Date(Date.parse(today + 'T00:00:00Z') + i * 86_400_000));
       for (const slot of Object.keys(BOOKING_SLOTS) as BookingSlot[]) {
         const window = resolveBookingWindow({ mode: 'scheduled', date, slot }, new Date(now), 0);
@@ -980,7 +1053,7 @@ export class BookingsService {
         let reason: string | null = null;
         if (technicianId) {
           const probe = Object.assign(Object.create(Booking.prototype) as Booking, booking, { bookingMode: 'scheduled', slot, preferredStartAt: window.start, preferredEndAt: window.end });
-          const verdict = await technicianEligibility(manager, technicianId, probe, previous ? undefined : order?.id, { keepingExistingOrder: true });
+          const verdict = await technicianEligibility(manager, technicianId, probe, excludeOrderId, { keepingExistingOrder: true, preload });
           available = verdict.eligible;
           reason = verdict.eligible ? null : reasons[verdict.reason ?? ''] ?? 'Thợ không nhận buổi này';
         }

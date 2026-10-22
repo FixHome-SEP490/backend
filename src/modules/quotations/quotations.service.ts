@@ -29,6 +29,8 @@ import { FixHomePart } from '../parts-catalog/entities/fixhome-part.entity';
 import { PartRequestsService } from '../part-requests/part-requests.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Optional } from '@nestjs/common';
+import { assertFixedPriceQuote } from './visit-fixed-quote';
+import { recordVisitOutcome } from '../bookings/visit-group-guard';
 export { CreateCostItemDto, CreateQuotationDto, CreateAdditionalCostDto } from './quotation.dto';
 type Actor = { id: string; role: string };
 
@@ -125,10 +127,13 @@ export class QuotationsService {
     return this.dataSource.transaction(async manager => {
       const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
       const booking = await manager.findOneByOrFail(Booking, { id: order.bookingId });
-      if (booking.pricingModeSnapshot !== ServicePricingMode.INSPECTION_REQUIRED || order.status !== ServiceOrderStatus.EN_ROUTE) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Official quotation requires inspection service in EN_ROUTE');
+      // A device of a visit is quoted on site even at a fixed price (PO 21/10/2026, G0-1 1B).
+      const fixedInVisit = !!booking.visitGroupId && booking.pricingModeSnapshot === ServicePricingMode.FIXED_PRICE;
+      if ((booking.pricingModeSnapshot !== ServicePricingMode.INSPECTION_REQUIRED && !fixedInVisit) || order.status !== ServiceOrderStatus.EN_ROUTE) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Official quotation requires inspection service in EN_ROUTE');
       if (!await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, result: CheckInResult.VALID })) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Verified arrival required before quotation');
       if (await manager.findOneBy(Quotation, { serviceOrderId: orderId, status: QuotationStatus.APPROVED })) throw new BusinessException(ErrorCodes.ADDITIONAL_COST_IMMUTABLE, 'Approved base quotation is immutable; use additional costs');
       const items = await this.validateItems(manager, dto.items, await this.laborWarranty(manager, order, actor.id));
+      if (fixedInVisit) assertFixedPriceQuote(items, booking);
       await this.partRequestsService.assertQuotationPartQuantities(manager, orderId, actor.id, items);
       const laborTotal = items.filter(i => i.type === CostItemType.LABOR).reduce((v,i) => v+i.quantity*i.unitPrice,0);
       const partsTotal = items.filter(i => i.type === CostItemType.PARTS_EQUIPMENT).reduce((v,i) => v+i.quantity*i.unitPrice,0);
@@ -179,6 +184,8 @@ export class QuotationsService {
         await manager.update(ServiceOrder, order.id, { laborTotal: quote.laborTotal, partsTotal: quote.partsTotal, grandTotal: Number(quote.laborTotal)+Number(quote.partsTotal)+quote.items.reduce((v,i)=>v+Number(i.warrantyFee ?? 0),0) });
       } else {
         await this.closeNoAgreement(manager, order, actor, 'Official quotation rejected; no agreement');
+        // Refused on site: this device of a visit is not repaired and costs nothing.
+        await recordVisitOutcome(manager, await manager.findOneByOrFail(Booking, { id: order.bookingId }), 'quote_declined', 'Khách từ chối báo giá');
       }
       quote.status = target;
       quote.decidedAt = new Date();
