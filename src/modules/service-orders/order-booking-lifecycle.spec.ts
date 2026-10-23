@@ -104,6 +104,7 @@ describe('Rescheduling keeps a technician who is free at the new time', () => {
       createQueryBuilder: vi.fn((entity: unknown) => {
         const qb = {
           select: vi.fn(() => qb), addSelect: vi.fn(() => qb), innerJoin: vi.fn(() => qb), where: vi.fn(() => qb), andWhere: vi.fn(() => qb),
+          getCount: vi.fn(async () => 0),
           getMany: vi.fn(async () => []),
           getRawMany: vi.fn(async () => (state.busy && typeof entity === 'string' ? [{ busyStart: booking.preferredStartAt, busyEnd: booking.preferredEndAt }] : [])),
         };

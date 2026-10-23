@@ -24,6 +24,7 @@ function fixture() {
       const qb = {
         select: vi.fn(() => qb), addSelect: vi.fn(() => qb), innerJoin: vi.fn(() => qb),
         where: vi.fn(() => qb), andWhere: vi.fn(() => qb),
+        getCount: vi.fn(async () => 0),
         getMany: vi.fn(async () => timeOff),
         getRawMany: vi.fn(async () => (typeof entity === 'string' ? held : [])),
       };

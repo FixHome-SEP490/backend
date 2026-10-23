@@ -4,6 +4,17 @@ import { assertCashCustodyAllowsWithdrawal, assertCustodyRuntimeConfiguration, c
 import { technicianEligibility } from '../bookings/technician-eligibility';
 import { Booking } from '../bookings/entities/booking.entity';
 
+// Eligibility first asks whether the technician withdrew from or declined the booking.
+const noWithdrawal = {
+  count: vi.fn().mockResolvedValue(0),
+  createQueryBuilder: vi.fn(() => {
+    const qb: Record<string, unknown> = {};
+    for (const k of ['innerJoin', 'where']) qb[k] = vi.fn(() => qb);
+    qb.getCount = vi.fn(async () => 0);
+    return qb;
+  }),
+};
+
 describe('P1 cash restriction gates', () => {
   afterEach(() => vi.unstubAllEnvs());
   it.each([
@@ -34,7 +45,7 @@ describe('P1 cash restriction gates', () => {
   it('blocks new discovery and Accept for tracking returns without touching cash or withdrawal', async () => {
     vi.stubEnv('P1_CUSTODY_ENABLED', 'false');
     vi.stubEnv('PART_RETURNS_TRACKING_ENABLED', 'true');
-    const db = { query: vi.fn().mockResolvedValue([{ blocked: true }]), findOneBy: vi.fn().mockResolvedValue(null), findOne: vi.fn() };
+    const db = { ...noWithdrawal, query: vi.fn().mockResolvedValue([{ blocked: true }]), findOneBy: vi.fn().mockResolvedValue(null), findOne: vi.fn() };
     for (const options of [undefined, { allowPausedExistingInvitation: true }]) {
       expect(await technicianEligibility(db as unknown as EntityManager, 'tech', {} as Booking, undefined, options)).toMatchObject({ eligible: false, reason: expect.stringContaining('linh kiện') });
     }
@@ -70,7 +81,7 @@ describe('P1 cash restriction gates', () => {
   });
   it('blocks a pending invitation despite its pause bypass and skips custody for keeping assigned work', async () => {
     vi.stubEnv('P1_CUSTODY_ENABLED', 'true');
-    const db = { query: vi.fn().mockResolvedValue([{ blocked: true }]), findOneBy: vi.fn().mockResolvedValue(null) } as unknown as EntityManager;
+    const db = { ...noWithdrawal, query: vi.fn().mockResolvedValue([{ blocked: true }]), findOneBy: vi.fn().mockResolvedValue(null) } as unknown as EntityManager;
     expect(await technicianEligibility(db, 'tech', {} as Booking, undefined, { allowPausedExistingInvitation: true })).toMatchObject({ eligible: false, reason: expect.stringContaining('linh kiện') });
     await technicianEligibility(db, 'tech', {} as Booking, undefined, { keepingExistingOrder: true });
     expect(db.query).toHaveBeenCalledTimes(1);
