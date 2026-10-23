@@ -10,7 +10,9 @@ import { Invoice } from '../service-orders/entities/invoice.entity';
 import { custodyUsageForInvoice, hasPartReturnRestriction } from './part-custody.policy';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { Quotation } from '../quotations/entities/quotation.entity';
-import { PartRequestStatus, PartRequestType, PartSource, PartUsageStatus, Role, ServiceOrderStatus } from '../../shared/enums';
+import { Notification } from '../notifications/entities/notification.entity';
+import { User } from '../users/entities/user.entity';
+import { AccountStatus, PartRequestStatus, PartRequestType, PartSource, PartUsageStatus, Role, ServiceOrderStatus } from '../../shared/enums';
 
 const tech = { id: 'tech', role: Role.TECHNICIAN };
 const managerActor = { id: 'manager', role: Role.SERVICE_MANAGER };
@@ -20,6 +22,8 @@ describe('persistent P1 custody', () => {
   let service: PartCustodyService;
   let rows: PartCustody[];
   let entries: PartCustodyEntry[];
+  let notifications: Partial<Notification>[];
+  let users: Partial<User>[];
   let db: any;
   let request: any;
   let order: any;
@@ -27,6 +31,7 @@ describe('persistent P1 custody', () => {
   beforeEach(() => {
     vi.stubEnv('P1_CUSTODY_ENABLED', 'true');
     rows = []; entries = []; frozen = false;
+    notifications = []; users = [];
     order = { id: 'order', status: ServiceOrderStatus.UNDER_REPAIR, completionRequestedAt: null };
     request = { id: 'request', serviceOrderId: 'order', technicianId: tech.id, requestType: PartRequestType.PRE_REPAIR,
       receivedAt: new Date(), items: [{ id: 'item', partRequestId: 'request', partCatalogId: 'catalog', partSource: PartSource.FIXHOME, quantity: 3, usageStatus: PartUsageStatus.PENDING, partNameSnapshot: 'Part' }] };
@@ -42,13 +47,18 @@ describe('persistent P1 custody', () => {
         if (entity === PartCustodyEntry) return entries.find(row => row.custodyId === options.where.custodyId && row.idempotencyKey === options.where.idempotencyKey) ?? null;
         return { id: tech.id };
       }),
-      find: vi.fn(async (entity, options) => entity === PartCustody ? rows.filter(row => !options?.where?.serviceOrderId || row.serviceOrderId === options.where.serviceOrderId) : entity === PartRequest ? [request] : []),
+      find: vi.fn(async (entity, options) => entity === PartCustody ? rows.filter(row => !options?.where?.serviceOrderId || row.serviceOrderId === options.where.serviceOrderId)
+        : entity === User ? users.filter(user => Object.entries(options.where).every(([key, value]) => user[key] === value))
+        : entity === PartRequest ? [request] : []),
       create: vi.fn((_entity, value) => value),
       save: vi.fn(async (entity, value) => {
         if (entity === PartCustody && !rows.includes(value)) { value.id = 'custody'; rows.push(value); }
         return value;
       }),
-      insert: vi.fn(async (_entity, value) => { entries.push(value); }),
+      insert: vi.fn(async (entity, value) => {
+        if (entity === PartCustodyEntry) entries.push(value);
+        if (entity === Notification) notifications.push(...value);
+      }),
     };
     service = new PartCustodyService({ transaction: async cb => cb(db), manager: db } as unknown as DataSource);
   });
@@ -60,6 +70,85 @@ describe('persistent P1 custody', () => {
     vi.stubEnv('PART_RETURNS_TRACKING_ENABLED', 'true');
     order.createdAt = new Date('2026-02-01T00:00:00Z');
   };
+  const prepareReturn = async () => {
+    tracking(); request.items[0].quantity = 2;
+    users = [
+      { id: 'manager-1', role: Role.SERVICE_MANAGER, isActive: true, status: AccountStatus.ACTIVE },
+      { id: 'manager-2', role: Role.SERVICE_MANAGER, isActive: true, status: AccountStatus.ACTIVE },
+      { id: 'disabled-manager', role: Role.SERVICE_MANAGER, isActive: false, status: AccountStatus.ACTIVE },
+      ...[AccountStatus.LOCKED, AccountStatus.SUSPENDED, AccountStatus.PENDING_VERIFICATION].map(status =>
+        ({ id: status, role: Role.SERVICE_MANAGER, isActive: true, status })),
+      ...[Role.ADMIN, Role.CUSTOMER, Role.TECHNICIAN].map(role =>
+        ({ id: role, role, isActive: true, status: AccountStatus.ACTIVE })),
+    ];
+    await enroll();
+    await service.recordUsage(db, request, request.items[0], order,
+      { usedQty: 1, expectedVersion: 0, idempotencyKey: 'usage-notice-01' }, tech);
+  };
+  it('notifies each authorized active manager once; declaration still needs physical acceptance', async () => {
+    await prepareReturn();
+    expect(notifications).toEqual([]);
+    const declared = await service.command('request', 'item', 'declare_return', body(), tech);
+    expect(declared).toMatchObject({ issuedQty: 2, usedQty: 1, declaredQty: 1, managerAcceptedQty: 0, outstandingQty: 1 });
+    expect(notifications).toHaveLength(2);
+    expect(notifications.map(notice => notice.userId).sort()).toEqual(['manager-1', 'manager-2']);
+    for (const notice of notifications) {
+      expect(notice).toMatchObject({ type: 'PART_RETURN_DECLARED', referenceType: 'PART_REQUEST', referenceId: request.id, isRead: false });
+      expect(notice.message).toContain('1');
+      expect(notice.message).toContain(request.id);
+    }
+    await expect(service.command('request', 'item', 'accept_return', body(2, 2, 'over-receipt'), managerActor))
+      .rejects.toMatchObject({ status: 409 });
+    const accepted = await service.command('request', 'item', 'accept_return', body(1, 2, 'receipt-notice-01'), managerActor);
+    expect(accepted).toMatchObject({ managerAcceptedQty: 1, outstandingQty: 0 });
+    expect(await service.command('request', 'item', 'declare_return', body(), tech)).toEqual(declared);
+    expect(notifications).toHaveLength(2);
+  });
+  it.each([
+    { commandBody: body(0), actor: tech, status: 400 },
+    { commandBody: body(2), actor: tech, status: 409 },
+    { commandBody: body(1, 0), actor: tech, status: 409 },
+    { commandBody: body(), actor: { id: 'other', role: Role.TECHNICIAN }, status: 403 },
+    ...[Role.SERVICE_MANAGER, Role.ADMIN, Role.CUSTOMER].map(role => ({ commandBody: body(), actor: { id: role, role }, status: 403 })),
+  ])('does not notify for rejected declaration %o', async ({ commandBody, actor, status }) => {
+    await prepareReturn();
+    await expect(service.command('request', 'item', 'declare_return', commandBody, actor)).rejects.toMatchObject({ status });
+    expect(notifications).toEqual([]);
+    expect(entries).toHaveLength(1);
+    expect(rows[0].state).toMatchObject({ version: 1, managerAcceptedQty: 0, outstandingQty: 1 });
+  });
+  it('does not duplicate a declaration notice for a conflicting idempotency key', async () => {
+    await prepareReturn();
+    await service.command('request', 'item', 'declare_return', body(), tech);
+    await expect(service.command('request', 'item', 'declare_return', body(2), tech)).rejects.toMatchObject({ status: 409 });
+    expect(notifications).toHaveLength(2);
+  });
+  it('allows declaration when there are no eligible managers', async () => {
+    await prepareReturn(); users = [];
+    expect(await service.command('request', 'item', 'declare_return', body(), tech)).toMatchObject({ declaredQty: 1, outstandingQty: 1 });
+    expect(notifications).toEqual([]);
+  });
+  it('propagates notification insert failure through the custody transaction and can retry', async () => {
+    await prepareReturn();
+    service = new PartCustodyService({ transaction: async cb => {
+      const stateBefore = structuredClone(rows[0].state);
+      const entryCount = entries.length;
+      try { return await cb(db); }
+      catch (error) { rows[0].state = stateBefore; entries.splice(entryCount); notifications.length = 0; throw error; }
+    } } as unknown as DataSource);
+    const insert = db.insert.getMockImplementation();
+    db.insert.mockImplementation(async (entity, value) => {
+      if (entity === Notification) throw new Error('notification insert failed');
+      return insert(entity, value);
+    });
+    await expect(service.command('request', 'item', 'declare_return', body(), tech)).rejects.toThrow('notification insert failed');
+    expect(rows[0].state).toMatchObject({ version: 1, declarations: [], outstandingQty: 1 });
+    expect(entries).toHaveLength(1);
+    expect(notifications).toEqual([]);
+    db.insert.mockImplementation(insert);
+    await service.command('request', 'item', 'declare_return', body(), tech);
+    expect(notifications).toHaveLength(2);
+  });
   it('tracks only new orders handed over after activation with finance P1 OFF', async () => {
     tracking();
     order.createdAt = new Date('2025-12-31T00:00:00Z');

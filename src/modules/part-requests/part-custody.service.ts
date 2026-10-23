@@ -1,10 +1,12 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { DataSource, EntityManager } from 'typeorm';
-import { PartSource, PartUsageStatus, Role, ServiceOrderStatus } from '../../shared/enums';
+import { AccountStatus, PartSource, PartUsageStatus, Role, ServiceOrderStatus } from '../../shared/enums';
+import { Notification } from '../notifications/entities/notification.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
+import { User } from '../users/entities/user.entity';
 import { PartCustody, PartCustodyEntry } from './entities/part-custody.entity';
 import { PartRequest } from './entities/part-request.entity';
 import { PartRequestItem } from './entities/part-request-item.entity';
@@ -114,7 +116,26 @@ export class PartCustodyService {
       const command: PartCustodyCommand = kind === 'report_discrepancy'
         ? { ...body as PartReturnDiscrepancyDto, ...ids, kind }
         : { ...body as PartReturnDto, ...ids, kind };
-      return (await this.execute(manager, itemId, command, actor, order)).response;
+      const result = await this.execute(manager, itemId, command, actor, order);
+      if (command.kind === 'declare_return' && !result.replayed) {
+        // Return routes authorize Service Managers globally, without an assigned manager/area.
+        const recipients = await manager.find(User, {
+          where: { role: Role.SERVICE_MANAGER, isActive: true, status: AccountStatus.ACTIVE },
+          select: { id: true },
+        });
+        // Commit notices with the ledger/idempotency entry. The existing DB trigger publishes
+        // notification:new only after commit; an insert failure must roll back the declaration.
+        if (recipients.length) await manager.insert(Notification, recipients.map(recipient => ({
+          userId: recipient.id,
+          title: 'Linh kiện chờ nhận hoàn trả',
+          message: `Kỹ thuật viên đã khai trả ${command.quantity} linh kiện của yêu cầu ${requestId}. Vui lòng kiểm tra và xác nhận số lượng thực nhận.`,
+          type: 'PART_RETURN_DECLARED',
+          referenceId: requestId,
+          referenceType: 'PART_REQUEST',
+          isRead: false,
+        })));
+      }
+      return result.response;
     });
   }
 
