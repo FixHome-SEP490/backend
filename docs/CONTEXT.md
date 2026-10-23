@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-23 04:05 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
+> Cập nhật lần cuối: 2026-10-23 14:51 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -303,6 +303,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-23 14:51 (UTC+7) | Hgnv11 | dev | Cho kỹ thuật viên sửa số lượng đã dùng của linh kiện cả giảm lẫn tăng cho tới khi hóa đơn được tạo hoặc yêu cầu hoàn tất được gửi (trước đây chỉ được tăng, ghi nhầm không sửa lại được); số mới vẫn không vượt phần chưa được quản lý nhận lại và không làm tổng khai trả vượt phần còn lại
 - 2026-10-23 04:05 (UTC+7) | Hgnv11 | dev | Hoàn tác việc trừ linh kiện kỹ thuật viên đang giữ khi duyệt chi phí phát sinh: mỗi chi phí phát sinh có linh kiện FixHome lại luôn tạo yêu cầu ADDITIONAL riêng, vì ghi dùng và đối soát hóa đơn tính theo từng nguồn duyệt (báo giá, từng chi phí phát sinh)
 - 2026-10-23 02:03 (UTC+7) | foxonworld | foxonworld/feature-visit-group-activity-read-20261023 | Thêm trang VisitGroup theo parent, quyền assignment active cho thợ và cờ lọc con group trước phân trang list cũ
 - 2026-10-21 22:09 (UTC+7) | ToanAltF4 | feat/visit-groups-order-link | Đơn sửa chữa trả visitGroupId (máy thuộc lượt sửa nhiều máy) để web dẫn thanh toán, đổi lịch, huỷ về trang lượt
@@ -342,5 +343,4 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-16 05:06 (UTC+7) | ToanAltF4 | fix/ai-quality-days | Trang chất lượng trợ lý AI: 7 ngày là đúng 7 ngày theo giờ Việt Nam (trước đây ra 8 ngày, ranh giới ngày theo múi giờ DB)
 - 2026-10-16 04:16 (UTC+7) | ToanAltF4 | feat/ai-past-jobs | Gửi pastJobs (đơn đã có thợ nhận của chính khách, 1 năm, tối đa 5) cho AI để trợ lý nhắc lần sửa trước
 - 2026-10-16 03:54 (UTC+7) | ToanAltF4 | feat/ai-notes | Tóm tắt trợ lý AI giữ ghi chú khách đã thử/đã loại (notesVi) và đưa vào lời chào khi thợ nhận đơn
-- 2026-10-16 02:38 (UTC+7) | ToanAltF4 | feat/ai-feedback-quality | Phản hồi đúng/sai của khách về câu trả lời AI và trang chất lượng AI cho admin
 
