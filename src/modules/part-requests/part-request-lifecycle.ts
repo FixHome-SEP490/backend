@@ -67,6 +67,16 @@ export interface ApprovedPartLine {
   quantity: number;
 }
 
+/**
+ * Units of a FixHome part delivered for the quotation (PRE_REPAIR or the linked QUOTATION
+ * request) beyond what the quotation approved: the technician still holds them, and an
+ * approved additional cost may use them instead of a new request (BUG DETECTOR 14). Each
+ * additional cost first uses the units of its own request; only the shortfall comes from here.
+ */
+export function quotationSurplus(approvedBase: number, deliveredBase: number): number {
+  return Math.max(0, deliveredBase - approvedBase);
+}
+
 /** Missing warehouse evidence is not a discount. A resolved return is a legitimate exclusion. */
 export function assertApprovedPartsResolved(lines: ApprovedPartLine[], requests: PartRequest[], quotationId: string | null, custodyUsage: ReadonlyMap<string, number> = new Map()): void {
   const approved = new Map<string, number>();
@@ -97,12 +107,37 @@ export function assertApprovedPartsResolved(lines: ApprovedPartLine[], requests:
       used.set(k, (used.get(k) ?? 0) + quantity);
     }
   }
-  for (const [k, quantity] of approved) if ((resolved.get(k) ?? 0) < quantity) fail();
-  for (const [k, quantity] of used) if (quantity > (approved.get(k) ?? 0)) fail();
+  // An additional cost short of its own supply leans on the quotation's surplus, per part.
+  const surplusNeeded = new Map<string, { resolved: number; used: number }>();
+  for (const [k, quantity] of approved) {
+    const [source, catalogId] = [k.slice(0, k.indexOf(':')), k.slice(k.indexOf(':') + 1)];
+    if (source === 'quotation') continue;
+    const need = surplusNeeded.get(catalogId) ?? { resolved: 0, used: 0 };
+    need.resolved += Math.max(0, quantity - (resolved.get(k) ?? 0));
+    need.used += Math.max(0, quantity - (used.get(k) ?? 0));
+    surplusNeeded.set(catalogId, need);
+  }
+  for (const [k, quantity] of approved) {
+    const [source, catalogId] = [k.slice(0, k.indexOf(':')), k.slice(k.indexOf(':') + 1)];
+    if (source === 'quotation' && (resolved.get(k) ?? 0) < quantity + (surplusNeeded.get(catalogId)?.resolved ?? 0)) fail();
+  }
+  for (const [catalogId, need] of surplusNeeded) {
+    const base = key('quotation', catalogId);
+    if (!approved.has(base) && (resolved.get(base) ?? 0) < need.resolved) fail();
+  }
+  for (const [k, quantity] of used) {
+    const [source, catalogId] = [k.slice(0, k.indexOf(':')), k.slice(k.indexOf(':') + 1)];
+    const allowance = (approved.get(k) ?? 0) + (source === 'quotation' ? surplusNeeded.get(catalogId)?.used ?? 0 : 0);
+    if (quantity > allowance) fail();
+  }
 }
 
-/** Consume each received USED quantity once, within its approved cost source. */
-export function usedPartQuantities(requests: PartRequest[], custodyUsage: ReadonlyMap<string, number> = new Map(), quotationId?: string | null) {
+/**
+ * Consume each received USED quantity once, within its approved cost source. With the
+ * approved lines, an additional cost short of its own used units takes the quotation's
+ * surplus (used beyond the quotation's approval), whatever order the lines are billed in.
+ */
+export function usedPartQuantities(requests: PartRequest[], custodyUsage: ReadonlyMap<string, number> = new Map(), quotationId?: string | null, approvedLines: ApprovedPartLine[] = []) {
   const quantities = new Map<string, number>();
   const key = (source: string, catalogId: string) => `${source}:${catalogId}`;
   for (const request of requests) {
@@ -115,12 +150,36 @@ export function usedPartQuantities(requests: PartRequest[], custodyUsage: Readon
       quantities.set(itemKey, (quantities.get(itemKey) || 0) + (custodyUsage.get(item.id) ?? item.quantity));
     }
   }
+  const surplus = new Map<string, number>();
+  const approvedBase = new Map<string, number>();
+  for (const line of approvedLines) {
+    if (line.source === 'quotation' && line.partSource === PartSource.FIXHOME && line.partCatalogId) {
+      approvedBase.set(line.partCatalogId, (approvedBase.get(line.partCatalogId) ?? 0) + line.quantity);
+    }
+  }
+  if (approvedLines.length) {
+    for (const [itemKey, usedQty] of quantities) {
+      if (!itemKey.startsWith('quotation:')) continue;
+      const catalogId = itemKey.slice('quotation:'.length);
+      surplus.set(catalogId, quotationSurplus(approvedBase.get(catalogId) ?? 0, usedQty));
+    }
+  }
   return (source: string, item: { partSource?: PartSource | null; partCatalogId?: string | null; quantity: number }): number => {
     if (item.partSource !== PartSource.FIXHOME) return item.quantity;
-    const itemKey = key(source, item.partCatalogId || '');
-    const available = quantities.get(itemKey) || 0;
-    const billed = Math.min(item.quantity, available);
-    quantities.set(itemKey, available - billed);
+    const catalogId = item.partCatalogId || '';
+    const itemKey = key(source, catalogId);
+    const baseKey = key('quotation', catalogId);
+    const reserved = surplus.get(catalogId) ?? 0;
+    // The quotation never bills the surplus kept for additional costs.
+    const available = (quantities.get(itemKey) || 0) - (source === 'quotation' ? reserved : 0);
+    let billed = Math.min(item.quantity, Math.max(0, available));
+    quantities.set(itemKey, (quantities.get(itemKey) || 0) - billed);
+    if (source !== 'quotation' && billed < item.quantity && reserved > 0) {
+      const fromSurplus = Math.min(item.quantity - billed, reserved);
+      surplus.set(catalogId, reserved - fromSurplus);
+      quantities.set(baseKey, (quantities.get(baseKey) || 0) - fromSurplus);
+      billed += fromSurplus;
+    }
     return billed;
   };
 }

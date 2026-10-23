@@ -1621,11 +1621,12 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     const heldRequests = await holderPartRequests(manager, orderId, requests);
     assertPartsResolved(heldRequests);
     const custodyUsage = await custodyUsageForInvoice(manager, orderId);
-    assertApprovedPartsResolved([
+    const approvedPartLines = [
       ...(quotation?.items ?? []).map(item => ({ ...item, source: 'quotation' })),
       ...additionalItems.map(item => ({ ...item, source: item.requestId })),
-    ], heldRequests, quotation?.id ?? null, custodyUsage);
-    const billableQuantity = usedPartQuantities(heldRequests, custodyUsage, quotation?.id ?? null);
+    ];
+    assertApprovedPartsResolved(approvedPartLines, heldRequests, quotation?.id ?? null, custodyUsage);
+    const billableQuantity = usedPartQuantities(heldRequests, custodyUsage, quotation?.id ?? null, approvedPartLines);
 
     // Calculate totals
     let laborTotal = 0;

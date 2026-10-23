@@ -92,8 +92,11 @@ export class PartCustodyService {
     const query = this.dataSource.manager.createQueryBuilder(PartCustody, 'c')
       .where("(c.state->>'outstandingQty')::int > 0");
     if (actor.role === Role.TECHNICIAN) query.andWhere('c.technicianId = :technicianId', { technicianId: actor.id });
+    // Returns declared and not yet received come first (BUG DETECTOR 10), so the cap never hides
+    // what the manager has to receive behind parts still held and not declared.
     const rows = await query
-      .orderBy('c.handedOverAt', 'ASC').addOrderBy('c.id', 'ASC').take(100).getMany();
+      .orderBy("(SELECT COALESCE(SUM((d->>'quantity')::int), 0) FROM jsonb_array_elements(COALESCE(c.state->'declarations', '[]'::jsonb)) d) > (c.state->>'managerAcceptedQty')::int", 'DESC')
+      .addOrderBy('c.handedOverAt', 'ASC').addOrderBy('c.id', 'ASC').take(100).getMany();
     return rows.map(row => this.view(row));
   }
 
