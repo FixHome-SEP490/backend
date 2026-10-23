@@ -94,6 +94,13 @@ export async function technicianEligibility(
 ): Promise<{ eligible: boolean; reason?: string }> {
   const keeping = options?.keepingExistingOrder === true;
   const fail = (reason: string) => ({ eligible: false, reason });
+  // A technician who withdrew from this booking's order is not offered it again.
+  if (!keeping && await manager.createQueryBuilder('cancellations', 'c')
+    .innerJoin('service_orders', 'o', 'o.id = c.service_order_id')
+    .where("o.booking_id = :bookingId AND c.actor = 'technician' AND c.actor_user_id = :technicianId", { bookingId: booking.id, technicianId })
+    .getCount()) return fail('Technician withdrew from this booking');
+  // Nor one who declined its invitation.
+  if (!keeping && await manager.count('booking_invitations', { where: { bookingId: booking.id, technicianId, status: 'declined' } })) return fail('Technician declined this booking');
   if (!keeping && await hasPartReturnRestriction(manager, technicianId)) return fail('Cần quản lý xác nhận đã nhận đủ linh kiện FixHome trước khi nhận việc mới.');
   const preload = keeping ? options?.preload : undefined;
   const user = preload ? preload.user : await manager.findOneBy(User, { id: technicianId });
