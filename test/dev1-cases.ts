@@ -206,7 +206,7 @@ export function registerDev1Cases(context: () => Context) {
       expect(await context().db.getRepository('TechnicianAssignment').count({ where: { technicianId: f.tech.user.id, isActive: true } })).toBe(1);
     });
 
-    it('declines without strikes, expires sequential invitations and permits fresh reselection', async () => {
+    it('declines without strikes, expires sequential invitations and permits fresh reselection of whoever did not decline', async () => {
       const f = await fixture(), b = await f.create(), repo = context().db.getRepository('BookingInvitation');
       await post(`/bookings/${b.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.spare.user.id] }).expect(201);
       const first = await repo.findOneByOrFail({ bookingId: b.id, status: 'pending' });
@@ -216,8 +216,10 @@ export function registerDev1Cases(context: () => Context) {
       expect(second.technicianId).toBe(f.spare.user.id);
       await repo.update(second.id, { expiresAt: new Date(Date.now() - 1000) });
       expect(unwrap((await get(`/bookings/${b.id}`, f.owner).expect(200)).body).status).toBe('closed');
-      await post(`/bookings/${b.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.spare.user.id] }).expect(201);
-      expect(await repo.count({ where: { bookingId: b.id } })).toBe(4);
+      // A technician who declined this booking is not offered it again; one whose invitation only expired is.
+      await post(`/bookings/${b.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.spare.user.id] }).expect(409);
+      await post(`/bookings/${b.id}/shortlist`, f.owner, { technicianIds: [f.spare.user.id] }).expect(201);
+      expect(await repo.count({ where: { bookingId: b.id } })).toBe(3);
       expect(await context().db.getRepository('CancellationStrike').count({ where: { userId: f.tech.user.id } })).toBe(0);
     });
 
