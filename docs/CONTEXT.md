@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-23 14:51 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
+> Cập nhật lần cuối: 2026-10-23 19:02 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/tech-parts-bugs
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -303,6 +303,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-23 19:02 (UTC+7) | ToanAltF4 | fix/tech-parts-bugs | Sửa lỗi BUG DETECTOR 10 và 14: hàng chờ hoàn trả của quản lý xếp dòng đã khai trả chờ nhận lên đầu; không nhận linh kiện mua ngoài cho báo giá/chi phí phát sinh mới; khách duyệt chi phí phát sinh thì chỉ tạo yêu cầu kho cho phần thợ chưa giữ (trừ phần đã khai trả); phần linh kiện của báo giá nhận dư được dùng và tính tiền cho chi phí phát sinh thiếu hàng (mỗi nguồn vẫn giữ phần của mình, hoá đơn không phụ thuộc thứ tự)
 - 2026-10-23 14:51 (UTC+7) | Hgnv11 | dev | Cho kỹ thuật viên sửa số lượng đã dùng của linh kiện cả giảm lẫn tăng cho tới khi hóa đơn được tạo hoặc yêu cầu hoàn tất được gửi (trước đây chỉ được tăng, ghi nhầm không sửa lại được); số mới vẫn không vượt phần chưa được quản lý nhận lại và không làm tổng khai trả vượt phần còn lại
 - 2026-10-23 04:05 (UTC+7) | Hgnv11 | dev | Hoàn tác việc trừ linh kiện kỹ thuật viên đang giữ khi duyệt chi phí phát sinh: mỗi chi phí phát sinh có linh kiện FixHome lại luôn tạo yêu cầu ADDITIONAL riêng, vì ghi dùng và đối soát hóa đơn tính theo từng nguồn duyệt (báo giá, từng chi phí phát sinh)
 - 2026-10-23 02:03 (UTC+7) | foxonworld | foxonworld/feature-visit-group-activity-read-20261023 | Thêm trang VisitGroup theo parent, quyền assignment active cho thợ và cờ lọc con group trước phân trang list cũ
@@ -342,5 +343,4 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-16 13:34 (UTC+7) | ToanAltF4 | feat/turn-credentials | Gọi thoại khác mạng: connect:ready gửi thêm TURN riêng (coturn use-auth-secret) với login hết hạn theo người dùng khi đặt WEBRTC_TURN_URLS + WEBRTC_TURN_SECRET; không đặt thì như cũ chỉ STUN
 - 2026-10-16 05:06 (UTC+7) | ToanAltF4 | fix/ai-quality-days | Trang chất lượng trợ lý AI: 7 ngày là đúng 7 ngày theo giờ Việt Nam (trước đây ra 8 ngày, ranh giới ngày theo múi giờ DB)
 - 2026-10-16 04:16 (UTC+7) | ToanAltF4 | feat/ai-past-jobs | Gửi pastJobs (đơn đã có thợ nhận của chính khách, 1 năm, tối đa 5) cho AI để trợ lý nhắc lần sửa trước
-- 2026-10-16 03:54 (UTC+7) | ToanAltF4 | feat/ai-notes | Tóm tắt trợ lý AI giữ ghi chú khách đã thử/đã loại (notesVi) và đưa vào lời chào khi thợ nhận đơn
 

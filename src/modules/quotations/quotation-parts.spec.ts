@@ -16,7 +16,7 @@ import { AdditionalCostRequest } from '../service-orders/entities/additional-cos
 import { ArrivalCheckIn } from '../service-orders/entities/arrival-check-in.entity';
 import { PartUsageStatus, Role } from '../../shared/enums';
 import { createPartCustodySnapshot } from '../part-requests/part-custody.rules';
-import { PartCustodyActivation } from '../part-requests/entities/part-custody.entity';
+import { PartCustody, PartCustodyActivation } from '../part-requests/entities/part-custody.entity';
 
 function setup(preRepair: any[] = []) {
   const order = { id: 'order', bookingId: 'booking', status: 'en_route' };
@@ -43,7 +43,8 @@ function setup(preRepair: any[] = []) {
     findOneByOrFail: vi.fn(async () => ({ id: 'booking', pricingModeSnapshot: 'inspection_required' })),
     count: vi.fn(async () => 0),
     findOneOrFail: vi.fn(async (entity, options) => entity === Quotation ? quote : entity === AdditionalCostRequest ? cost : manager.findOne(entity, options)),
-    find: vi.fn(async (entity, options) => entity === PartRequest ? requests : entity === PartRequestItem ? requests.find(r => r.id === options.where.partRequestId)?.items ?? [] : []),
+    // Approved documents as a status-filtered query returns them (the shortfall check reads them).
+    find: vi.fn(async (entity, options) => entity === PartRequest ? requests : entity === Quotation ? (quote.status === 'approved' ? [quote] : []) : entity === AdditionalCostRequest ? (cost.status === 'approved' ? [cost] : []) : entity === PartRequestItem ? requests.find(r => r.id === options.where.partRequestId)?.items ?? [] : []),
     create: (_entity: any, value: any) => ({ ...value }),
     save: vi.fn(async (entity, value) => {
       if (entity === Quotation) value.id ??= 'quote';
@@ -326,5 +327,49 @@ describe('P013 approval creates only missing depot supply', () => {
     expect(s.requests).toHaveLength(0);
     expect(s.audits).toHaveLength(0);
     expect(s.manager.save).not.toHaveBeenCalled();
+  });
+});
+
+describe('an approved additional cost asks the warehouse only for what the technician lacks (BUG DETECTOR 14)', () => {
+  const held = (quantity: number) => ({ id: 'pre', serviceOrderId: 'order', technicianId: 'tech', requestType: 'pre_repair', status: 'received',
+    items: [{ id: 'pre-item', partSource: 'fixhome', partCatalogId: 'sku', quantity, usageStatus: 'pending' }] });
+  async function approveCost(heldQty: number, costQty: number, declaredBack = 0) {
+    const s = setup([held(heldQty)]);
+    s.quote.status = 'approved';
+    s.quote.items = [{ ...s.quote.items[0], quantity: 1 }];
+    s.order.status = 'under_repair';
+    s.cost.items[0].quantity = costQty;
+    const base = s.manager.find.getMockImplementation()!;
+    s.manager.find.mockImplementation(async (entity: any, options: any) => entity === PartCustody
+      ? (declaredBack ? [{ partRequestItemId: 'pre-item', state: { declarations: [{ quantity: declaredBack }] } }] : [])
+      : base(entity, options));
+    await s.service.decideAdditionalCost('cost', 'APPROVE', { id: 'customer', role: Role.CUSTOMER });
+    return s;
+  }
+
+  it('creates no request when the parts held cover the cost', async () => {
+    const s = await approveCost(2, 1);
+    expect(s.cost.status).toBe('approved');
+    expect(s.requests).toHaveLength(1);
+  });
+
+  it('requests only the shortfall', async () => {
+    const s = await approveCost(2, 2);
+    expect(s.requests[1]).toMatchObject({ requestType: 'additional', additionalCostId: 'cost' });
+    expect(s.requests[1].items).toMatchObject([{ partCatalogId: 'sku', quantity: 1 }]);
+  });
+
+  it('does not count parts the technician declared going back', async () => {
+    const s = await approveCost(2, 1, 1);
+    expect(s.requests[1].items).toMatchObject([{ partCatalogId: 'sku', quantity: 1 }]);
+  });
+});
+
+describe('no more parts bought outside (BUG DETECTOR 14)', () => {
+  it('refuses an external part in a new quotation', async () => {
+    const s = setup();
+    const external = { type: 'parts_equipment', partSource: 'external', description: 'Tụ mua ngoài', quantity: 1, unitPrice: 50000 };
+    await expect(s.service.createQuotation('order', { items: [external] as any }, { id: 'tech', role: Role.TECHNICIAN }))
+      .rejects.toMatchObject({ status: 422, message: expect.stringContaining('mua ngoài') });
   });
 });

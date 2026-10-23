@@ -95,13 +95,8 @@ export class QuotationsService {
           item.warrantyFee = 0;
           item.warrantyTermDays = catalogPart.warrantyDays;
         } else if (item.partSource === PartSource.EXTERNAL) {
-          if (!Number.isInteger(item.unitPrice) || item.unitPrice < 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid part unit price');
-          if (item.partCatalogId) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'External parts cannot reference FixHome catalog');
-          item.partNameSnapshot = item.partNameSnapshot?.trim() || item.description.trim();
-          item.partWarrantyOption = PartWarrantyOption.NO_WARRANTY;
-          item.warrantyFee = 0;
-          item.warrantyTermDays = 0;
-          item.warrantyDays = 0;
+          // Parts bought outside are no longer quoted (BUG DETECTOR 14): FixHome parts or the technician's own.
+          throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Không dùng linh kiện mua ngoài nữa. Chọn linh kiện FixHome hoặc linh kiện thợ tự có.');
         } else {
           if (!Number.isInteger(item.unitPrice) || item.unitPrice < 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid part unit price');
           if (item.partCatalogId) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Technician parts cannot reference FixHome catalog');
