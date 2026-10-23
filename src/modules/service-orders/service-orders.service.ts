@@ -413,7 +413,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   async findMyOrders(
     userId: string,
     role: string,
-    options: { page?: number; limit?: number; status?: ServiceOrderStatus; statuses?: ServiceOrderStatus[]; search?: string; stage?: RepairStage },
+    options: { page?: number; limit?: number; status?: ServiceOrderStatus; statuses?: ServiceOrderStatus[]; search?: string; stage?: RepairStage; excludeVisitGroups?: boolean },
   ): Promise<{ data: (ServiceOrder | HistoricalOrderSummary)[]; total: number }> {
     await this.cancelOverdueOrders();
     const page = options.page || 1;
@@ -437,6 +437,10 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       if (asked.length && !asked.includes(ServiceOrderStatus.CANCELLED)) qb.andWhere('ta.is_active = true');
     } else {
       throw new ForbiddenException('Order list access denied');
+    }
+
+    if (options.excludeVisitGroups) {
+      qb.andWhere('NOT EXISTS (SELECT 1 FROM visit_group_items vgi WHERE vgi.booking_id = o.booking_id)');
     }
 
     filterOrderList(qb, options);
@@ -1458,7 +1462,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   async getRepairHistory(
     userId: string,
     role: string,
-    options: { page?: number; limit?: number; status?: ServiceOrderStatus; search?: string },
+    options: { page?: number; limit?: number; status?: ServiceOrderStatus; search?: string; excludeVisitGroups?: boolean },
   ): Promise<{ data: Record<string, unknown>[]; total: number }> {
     const page = options.page || 1;
     const limit = Math.min(options.limit || 20, 100);
@@ -1479,6 +1483,9 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       ).andWhere('ta.technician_id = :userId', { userId })
         // The last assignment is the technician who held the order at the end.
         .andWhere('ta.assigned_at = (SELECT MAX(x.assigned_at) FROM technician_assignments x WHERE x.service_order_id = o.id)');
+    }
+    if (options.excludeVisitGroups) {
+      qb.andWhere('NOT EXISTS (SELECT 1 FROM visit_group_items vgi WHERE vgi.booking_id = o.booking_id)');
     }
     andWhereTextMatches(qb, ['o.code', 'b.service_name_snapshot'], options.search);
 

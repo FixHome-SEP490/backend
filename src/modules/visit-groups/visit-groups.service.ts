@@ -20,6 +20,7 @@ import { InvitationStatus } from '../../shared/enums';
 import { VisitGroup } from './entities/visit-group.entity';
 import { VisitGroupItem } from './entities/visit-group-item.entity';
 import { CreateVisitGroupDto, VISIT_GROUP_DEVICE_LIMIT, VisitGroupConsultationDto } from './visit-group.dto';
+import { deriveVisitGroupStatus, visitGroupStatusSql, type VisitGroupReadItemStatus, type VisitGroupReadStatus, type VisitGroupTechnicianTab } from './visit-group-read';
 
 type Customer = { id: string; role: string };
 
@@ -191,6 +192,144 @@ export class VisitGroupsService {
         status: byId.get(item.bookingId)?.status ?? null,
       })),
     }));
+  }
+
+  /** Server-paginated customer list: the page and count are always VisitGroup parents. */
+  async myPage(
+    customerId: string,
+    options: { page?: number; pageSize?: number; status?: VisitGroupReadStatus; q?: string },
+  ) {
+    const page = options.page || 1;
+    const pageSize = Math.min(options.pageSize || 20, 100);
+    const qb = this.groupRepo.createQueryBuilder('vg').where('vg.customerId = :customerId', { customerId });
+
+    if (options.status) qb.andWhere(`(${visitGroupStatusSql('vg')}) = :status`, { status: options.status });
+    if (options.q?.trim()) {
+      qb.andWhere(`EXISTS (
+        SELECT 1 FROM visit_group_items vgi
+        JOIN bookings vb ON vb.id = vgi.booking_id
+        LEFT JOIN service_orders vo ON vo.booking_id = vb.id
+        WHERE vgi.group_id = vg.id
+          AND (vgi.device_label ILIKE :groupQuery OR vb.service_name_snapshot ILIKE :groupQuery OR vo.code ILIKE :groupQuery)
+      )`, { groupQuery: `%${options.q.trim()}%` });
+    }
+
+    qb.orderBy('vg.createdAt', 'DESC').addOrderBy('vg.id', 'DESC').skip((page - 1) * pageSize).take(pageSize);
+    const [groups, total] = await qb.getManyAndCount();
+    return this.presentReadPage(groups, total, page, pageSize);
+  }
+
+  /** Only groups whose every child order is still actively assigned to this technician are visible. */
+  async assignedPage(
+    technicianId: string,
+    options: { page?: number; pageSize?: number; tab?: VisitGroupTechnicianTab },
+  ) {
+    const page = options.page || 1;
+    const pageSize = Math.min(options.pageSize || 20, 100);
+    const qb = this.groupRepo.createQueryBuilder('vg')
+      .where(`EXISTS (
+        SELECT 1 FROM visit_group_items vgi
+        JOIN service_orders so ON so.booking_id = vgi.booking_id
+        JOIN technician_assignments ta ON ta.service_order_id = so.id
+        WHERE vgi.group_id = vg.id AND ta.technician_id = :technicianId AND ta.is_active = true
+      )`, { technicianId })
+      .andWhere(`NOT EXISTS (
+        SELECT 1 FROM visit_group_items vgi
+        WHERE vgi.group_id = vg.id AND NOT EXISTS (
+          SELECT 1 FROM service_orders so
+          JOIN technician_assignments ta ON ta.service_order_id = so.id
+          WHERE so.booking_id = vgi.booking_id AND ta.technician_id = :technicianId AND ta.is_active = true
+        )
+      )`, { technicianId });
+
+    const statusSql = visitGroupStatusSql('vg');
+    const tab = options.tab ?? 'all';
+    if (tab === 'in_progress') {
+      qb.andWhere(`(${statusSql}) IN ('accepted', 'en_route', 'under_repair')`);
+    } else if (tab !== 'all') {
+      qb.andWhere(`(${statusSql}) = :tab`, { tab });
+    }
+
+    qb.orderBy('vg.createdAt', 'DESC').addOrderBy('vg.id', 'DESC').skip((page - 1) * pageSize).take(pageSize);
+    const [groups, total] = await qb.getManyAndCount();
+    return this.presentReadPage(groups, total, page, pageSize, technicianId);
+  }
+
+  private async presentReadPage(
+    groups: VisitGroup[],
+    total: number,
+    page: number,
+    pageSize: number,
+    technicianId?: string,
+  ) {
+    if (!groups.length) return { data: [], total, page, pageSize };
+
+    const groupIds = groups.map((group) => group.id);
+    const assignmentJoin = technicianId ? 'AND ta.technician_id = $2' : '';
+    const parameters = technicianId ? [groupIds, technicianId] : [groupIds];
+    const rows = await this.dataSource.query(`
+      SELECT
+        vgi.id AS "itemId",
+        vgi.group_id AS "groupId",
+        vgi.sequence AS "sequence",
+        vgi.booking_id AS "bookingId",
+        vgi.service_id AS "serviceId",
+        vgi.device_label AS "deviceLabel",
+        vgi.outcome AS "outcome",
+        vb.status AS "bookingStatus",
+        vb.service_name_snapshot AS "serviceName",
+        so.id AS "orderId",
+        so.code AS "orderCode",
+        so.status AS "orderStatus",
+        (ta.id IS NOT NULL) AS "hasActiveAssignment"
+      FROM visit_group_items vgi
+      JOIN bookings vb ON vb.id = vgi.booking_id
+      LEFT JOIN service_orders so ON so.booking_id = vb.id
+      LEFT JOIN LATERAL (
+        SELECT ta.id
+        FROM technician_assignments ta
+        WHERE ta.service_order_id = so.id AND ta.is_active = true ${assignmentJoin}
+        LIMIT 1
+      ) ta ON true
+      WHERE vgi.group_id = ANY($1::uuid[])
+      ORDER BY vgi.group_id, vgi.sequence
+    `, parameters) as Array<{
+      itemId: string;
+      groupId: string;
+      sequence: number;
+      bookingId: string;
+      serviceId: string;
+      deviceLabel: string | null;
+      outcome: string | null;
+      bookingStatus: string;
+      serviceName: string | null;
+      orderId: string | null;
+      orderCode: string | null;
+      orderStatus: string | null;
+      hasActiveAssignment: boolean;
+    }>;
+
+    const byGroup = new Map<string, typeof rows>();
+    for (const row of rows) {
+      const list = byGroup.get(row.groupId) ?? [];
+      list.push(row);
+      byGroup.set(row.groupId, list);
+    }
+    const data = groups.map((group) => {
+      const items = byGroup.get(group.id) ?? [];
+      const status = deriveVisitGroupStatus(items as VisitGroupReadItemStatus[]);
+      return {
+        id: group.id,
+        createdAt: group.createdAt,
+        bookingMode: group.bookingMode,
+        slot: group.slot ?? null,
+        scheduledAt: group.preferredStartAt,
+        scheduledEndAt: group.preferredEndAt,
+        status,
+        items: items.map(({ groupId: _groupId, hasActiveAssignment: _active, ...item }) => item),
+      };
+    });
+    return { data, total, page, pageSize };
   }
 
   /**

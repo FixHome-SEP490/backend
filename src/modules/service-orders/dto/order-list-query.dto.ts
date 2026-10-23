@@ -1,4 +1,5 @@
-import { ArrayMaxSize, IsArray, IsEnum, IsIn, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsBoolean, IsEnum, IsIn, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { Transform } from 'class-transformer';
 import { CsvToArray } from '../../../shared/utils/list-search';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { PageSizeQueryDto } from '../../../shared/dto/page-size-query.dto';
@@ -29,6 +30,15 @@ export class OrderListQueryDto extends PageSizeQueryDto {
   @IsString()
   @MaxLength(100)
   search?: string;
+}
+
+/** Customer and technician personal list opt-in; the staff board keeps the legacy result set. */
+export class MyOrderListQueryDto extends OrderListQueryDto {
+  @ApiPropertyOptional({ description: 'Exclude service orders that belong to a multi-device visit', default: false })
+  @IsOptional()
+  @Transform(({ value }) => (value === 'true' ? true : value === 'false' ? false : value))
+  @IsBoolean()
+  excludeVisitGroups?: boolean;
 }
 
 export class OrderBoardQueryDto extends OrderListQueryDto {}
