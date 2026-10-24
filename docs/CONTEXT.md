@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-23 22:36 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-v53-part-return-notify-20261023
+> Cập nhật lần cuối: 2026-10-24 23:44 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/ai-multi-device
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -305,6 +305,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-24 23:44 (UTC+7) | ToanAltF4 | feat/ai-multi-device | AI proxy điền serviceId cho từng thiết bị trong devices[] (AI gợi ý tối đa 3 thiết bị/lượt); POST /visit-groups nhận aiSessionId, tóm tắt hội thoại AI gắn vào thiết bị đầu tiên; spec AI đổi sang mã catalog V3
 - 2026-10-23 22:36 (UTC+7) | foxonworld | foxonworld/fixhome-v53-part-return-notify-20261023 | Khai trả mới ghi PART_RETURN_DECLARED cho quản lý dịch vụ đang hoạt động trong cùng transaction, chống trùng khi replay và giữ bước xác nhận nhận hàng riêng; PostgreSQL/socket/Web runtime NOT VERIFIED.
 - 2026-10-23 22:27 (UTC+7) | ToanAltF4 | fix/db-connection-crash | Sửa sập backend trên AWS 23/10: pool kết nối mỗi instance giới hạn DATABASE_POOL_MAX (mặc định 5, trả kết nối rảnh sau 10 s) vì pooler session Supabase chỉ có 15 cho cả dự án; promise bị reject không ai bắt chỉ ghi log, không tắt process (trước đó mỗi thông báo lỗi làm container chết và khởi động lại)
 - 2026-10-23 19:02 (UTC+7) | ToanAltF4 | fix/tech-parts-bugs | Sửa lỗi BUG DETECTOR 10 và 14: hàng chờ hoàn trả của quản lý xếp dòng đã khai trả chờ nhận lên đầu; không nhận linh kiện mua ngoài cho báo giá/chi phí phát sinh mới; khách duyệt chi phí phát sinh thì chỉ tạo yêu cầu kho cho phần thợ chưa giữ (trừ phần đã khai trả); phần linh kiện của báo giá nhận dư được dùng và tính tiền cho chi phí phát sinh thiếu hàng (mỗi nguồn vẫn giữ phần của mình, hoá đơn không phụ thuộc thứ tự)
@@ -344,5 +345,4 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-16 23:50 (UTC+7) | ToanAltF4 | fix/job-feedback | Danh sách việc của thợ: tab theo trạng thái đang làm (Cần di chuyển, Đang sửa chữa, Hoàn thành) chỉ tính đơn thợ còn phụ trách, đơn đã rút chỉ còn ở Tất cả và Đã huỷ; GET /service-orders/:id/warranties trả thêm itemType và itemDescription của dòng hoá đơn mà bảo hành che
 - 2026-10-16 16:57 (UTC+7) | ToanAltF4 | feat/smart-voice-call | Gọi thoại thông minh: người nhận không mở app thì báo offline ngay; callee báo đang đổ chuông (call:ringing) cho bên gọi; máy bận tách busy/self_busy, người bận nhận call:missed; nghe máy ở một thiết bị thì thiết bị khác thôi reo (answered_elsewhere); cuộc gọi nhỡ (hết giờ, huỷ, bận, offline) thành thông báo CALL_MISSED
 - 2026-10-16 13:56 (UTC+7) | ToanAltF4 | fix/vnpay-return-origin | VNPay trả về đúng web đã bắt đầu thanh toán (local hoặc web triển khai dùng chung backend): link trả về mang ?web=<origin>, chỉ nhận origin nằm trong CORS_ORIGIN, còn lại về FRONTEND_URL; kiểm chữ ký chỉ xét trường vnp_
-- 2026-10-16 13:34 (UTC+7) | ToanAltF4 | feat/turn-credentials | Gọi thoại khác mạng: connect:ready gửi thêm TURN riêng (coturn use-auth-secret) với login hết hạn theo người dùng khi đặt WEBRTC_TURN_URLS + WEBRTC_TURN_SECRET; không đặt thì như cũ chỉ STUN
 

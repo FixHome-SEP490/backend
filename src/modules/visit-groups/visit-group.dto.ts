@@ -83,6 +83,10 @@ export class CreateVisitGroupDto {
   @IsOptional() @Matches(/^[A-Za-z0-9_-]{8,128}$/, { message: 'idempotencyKey must be 8 to 128 letters, digits, - or _' })
   idempotencyKey?: string;
 
+  @ApiPropertyOptional({ maxLength: 128, description: 'Session id returned by the assistant when the visit was suggested there. The first device keeps the summary of that conversation for the technician, as POST /bookings does; an unknown or foreign session is ignored.' })
+  @IsOptional() @IsString() @Matches(/^[A-Za-z0-9_-]{1,128}$/, { message: 'aiSessionId must be the session id returned by the assistant' })
+  aiSessionId?: string;
+
   @ApiProperty({ type: [VisitGroupItemDto], minItems: 1, description: `One entry per physical device. More than ${VISIT_GROUP_DEVICE_LIMIT} is refused with VISIT_GROUP_DEVICE_LIMIT (422); GET /visit-groups/contact gives the hotline.` })
   @IsArray() @ArrayMinSize(1) @ArrayMaxSize(10)
   @ValidateNested({ each: true }) @Type(() => VisitGroupItemDto)

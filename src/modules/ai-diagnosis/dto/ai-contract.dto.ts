@@ -167,6 +167,25 @@ export interface AiRecommendedService {
   serviceCode: string;
   nameVi: string;
   serviceId?: string | null;
+  /** Which appliance it is for, when the reply covers more than one. */
+  deviceType?: string | null;
+}
+
+/**
+ * One appliance of a reply about several (up to three, the visit limit).
+ * Passed through as the AI sent it; only `service.serviceId` is added here.
+ */
+export interface AiDeviceSuggestion {
+  deviceType: string;
+  nameVi: string;
+  imageIndex?: number | null;
+  isPrimary?: boolean;
+  service?: AiRecommendedService | null;
+  variantCode?: string | null;
+  questionsVi?: string[];
+  descriptionVi?: string | null;
+  noteVi?: string | null;
+  [key: string]: unknown;
 }
 
 export interface AiPriceEstimate {
