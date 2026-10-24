@@ -7,7 +7,7 @@ const diagnosis = {
   device: { deviceType: 'air_conditioner', nameVi: 'Máy lạnh' },
   suspectedFaults: [{ faultCode: 'A', nameVi: 'Máy chạy ồn, rung lắc' }, { faultCode: 'B', nameVi: 'Hỏng mô tơ quạt dàn lạnh' }],
   suggestedActionsVi: ['Tắt máy', 'Kiểm tra vật lạ'],
-  recommendedServices: [{ serviceCode: 'SUA_DIEU_HOA', nameVi: 'Sửa điều hòa' }],
+  recommendedServices: [{ serviceCode: 'AC-01', nameVi: 'Sửa điều hòa' }],
   priceEstimate: { min: 100000, max: 1210000, currency: 'VND', requiresAssessment: true },
   messageVi: 'Có thể quạt dàn lạnh bị kẹt.',
 };

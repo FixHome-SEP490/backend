@@ -100,6 +100,9 @@ export class VisitGroupsService {
             deviceAttributes: item.deviceAttributes,
             selectedVariantCode: item.selectedVariantCode,
             photoUploadIds: item.photoUploadIds,
+            // The conversation leads with the appliance it talked through, which
+            // the app puts first; the others carry their own description.
+            ...(index === 0 && dto.aiSessionId ? { aiSessionId: dto.aiSessionId } : {}),
           };
           const child = await this.bookingsService.create(childDto, customer, { manager, visitGroupId: group.id });
           children.push(child);
