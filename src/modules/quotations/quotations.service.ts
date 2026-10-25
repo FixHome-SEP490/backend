@@ -15,6 +15,7 @@ import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { Booking } from '../bookings/entities/booking.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { ArrivalCheckIn } from '../service-orders/entities/arrival-check-in.entity';
+import { Invoice } from '../service-orders/entities/invoice.entity';
 import { OrderStatusHistory } from '../service-orders/entities/order-status-history.entity';
 import { Cancellation } from '../service-orders/entities/cancellation.entity';
 import { ServiceOrderStateMachine } from '../service-orders/service-order-state-machine';
@@ -218,7 +219,7 @@ export class QuotationsService {
   }
 
   private async saveAdditional(manager: EntityManager, order: ServiceOrder, dto: CreateAdditionalCostDto, actor: Actor, supersedesId?: string): Promise<AdditionalCostRequest> {
-    if (order.status !== ServiceOrderStatus.UNDER_REPAIR || order.completionRequestedAt) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Additional cost requires ongoing repair before completion request');
+    if (order.status !== ServiceOrderStatus.UNDER_REPAIR || order.completionRequestedAt || await manager.findOneBy(Invoice, { serviceOrderId: order.id })) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chỉ gửi chi phí phát sinh khi đang sửa chữa và chưa chốt hóa đơn.');
     if (!dto.reason?.trim()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Reason required');
     const items = await this.validateItems(manager, dto.items, await this.laborWarranty(manager, order, actor.id));
     const labor = items.filter(i=>i.type===CostItemType.LABOR).reduce((v,i)=>v+i.quantity*i.unitPrice,0);
@@ -284,7 +285,7 @@ export class QuotationsService {
       if (!['APPROVE','REJECT'].includes(action)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid decision');
       const target = action === 'APPROVE' ? AdditionalCostStatus.APPROVED : AdditionalCostStatus.REJECTED;
       if (cost.status === target) return cost;
-      if (cost.status !== AdditionalCostStatus.PENDING_APPROVAL || cost.expiresAt <= new Date() || order.status !== ServiceOrderStatus.UNDER_REPAIR || order.completionRequestedAt) throw new BusinessException(ErrorCodes.ADDITIONAL_COST_ALREADY_DECIDED, 'Additional cost is no longer pending');
+      if (cost.status !== AdditionalCostStatus.PENDING_APPROVAL || cost.expiresAt <= new Date() || order.status !== ServiceOrderStatus.UNDER_REPAIR || order.completionRequestedAt || await manager.findOneBy(Invoice, { serviceOrderId: order.id })) throw new BusinessException(ErrorCodes.ADDITIONAL_COST_ALREADY_DECIDED, 'Chi phí phát sinh không còn chờ duyệt hoặc đơn đã chốt hóa đơn.');
       if (action === 'APPROVE') {
         this.selectWarranty(cost.items, paidWarrantyItemIds);
         await manager.save(AdditionalCostItem, cost.items);

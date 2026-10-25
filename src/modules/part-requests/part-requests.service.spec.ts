@@ -403,6 +403,25 @@ describe('PartRequestsService', () => {
   });
 
   describe('updateItemUsage', () => {
+    it.each([false, true])('caps total SKU usage when base supply already serves an additional approval (additional first: %s)', async additionalFirst => {
+      const line = (id: string, quantity: number, usageStatus: PartUsageStatus) => ({ id, quantity, partSource: PartSource.FIXHOME, partCatalogId: 'sku', usageStatus });
+      const base: any = { id: 'base', serviceOrderId: 'order-1', technicianId: 'tech-1', requestType: PartRequestType.PRE_REPAIR,
+        status: PartRequestStatus.RECEIVED, items: [line('base-item', 2, additionalFirst ? PartUsageStatus.PENDING : PartUsageStatus.USED)] };
+      const extra: any = { ...base, id: 'extra', requestType: PartRequestType.ADDITIONAL, additionalCostId: 'cost',
+        items: [line('extra-item', 1, additionalFirst ? PartUsageStatus.USED : PartUsageStatus.PENDING)] };
+      const request = additionalFirst ? base : extra;
+      const item = request.items[0];
+      mockMutation(request, item);
+      mockEntityManager.findOne.mockImplementation(async (entity: any) => entity === ServiceOrder ? { id: 'order-1', status: ServiceOrderStatus.UNDER_REPAIR }
+        : entity === PartRequestItem ? item : entity === Quotation ? { id: 'quote', items: [line('qi', 1, PartUsageStatus.PENDING)] } : request);
+      mockEntityManager.find.mockImplementation(async (entity: any) => entity === PartRequest ? [base, extra]
+        : entity === AdditionalCostRequest ? [{ id: 'cost', items: [line('aci', 1, PartUsageStatus.PENDING)] }] : []);
+      await expect(service.updateItemUsage(request.id, item.id, { usageStatus: PartUsageStatus.USED }, { id: 'tech-1', role: Role.TECHNICIAN }))
+        .rejects.toMatchObject({ status: 422 });
+      expect(item.usageStatus).toBe(PartUsageStatus.PENDING);
+      expect(mockEntityManager.save).not.toHaveBeenCalled();
+    });
+
     it.each([
       { approved: 0, otherUsed: 0, quantity: 1, requestType: 'pre_repair' },
       { approved: 1, otherUsed: 1, quantity: 1, requestType: 'quotation' },

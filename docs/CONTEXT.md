@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-25 00:17 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/ai-multi-device
+> Cập nhật lần cuối: 2026-10-26 01:32 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-e2e-e0-quote-contract-20261026
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -93,6 +93,8 @@ Ba điều không đổi giữa các repo:
 Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức của nhóm). Mâu thuẫn giữa code và tài liệu thì ghi vào mục 8 và hỏi PO, không tự quyết.
 
 ## 3. Trạng thái hiện tại
+
+E0 contract báo giá/phát sinh (26/10/2026): giữ báo giá gốc FIXED_PRICE trong VisitGroup chỉ gồm đúng tiền công cố định; INSPECTION_REQUIRED vẫn nhận linh kiện hợp lệ. Phát sinh được tạo/sửa và khách duyệt nhiều lần khi UNDER_REPAIR; khóa khi có `completionRequestedAt` hoặc hóa đơn, kể cả chưa thanh toán. Gửi lại quyết định đã duyệt vẫn không ghi thêm tiền/kho. USED cùng SKU trong một đơn phải nằm trong tổng số lượng đã duyệt của báo giá gốc và các phát sinh, kể cả khi hàng gốc đã phục vụ phát sinh trước khi ghi USED ở yêu cầu ADDITIONAL. Không migration, không tính lại hóa đơn cũ.
 
 Đã chạy được trọn luồng: đăng ký có OTP email, đăng nhập (kể cả Google), hồ sơ và KYC kỹ thuật viên, danh mục dịch vụ và linh kiện, đặt lịch, mời tuần tự, nhận đơn, đi đến, check-in GPS, ảnh trước và sau, báo giá, chi phí phát sinh, yêu cầu linh kiện, hoá đơn, thanh toán VNPay hoặc tiền mặt, ví kỹ thuật viên (nạp, rút qua payOS), ví khách (nạp, trả hoá đơn, rút về ngân hàng qua payOS sau khi admin duyệt CCCD), bảo hành, đánh giá, hỗ trợ và tranh chấp, huỷ đơn và vi phạm, chat và gọi thoại, AI chẩn đoán và chatbot qua `ai-service`.
 
@@ -187,6 +189,8 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 ## 5. Hợp đồng với repo khác
 
 ### Với `web` và `mobile`
+
+- E0 giữ lỗi báo giá fixed-price không hợp lệ là HTTP 422 `error.code=VALIDATION_FAILED`; gửi/sửa phát sinh sau chốt trả 409 `ORDER_INVALID_TRANSITION`, quyết định phát sinh hết hiệu lực trả 409 `ADDITIONAL_COST_ALREADY_DECIDED`. Không dựa vào câu thông báo để quyết định nghiệp vụ. Ở Web dev `c0b043c`, watcher gọi `suggestReceivedStock` trong `TechnicianJobDetailPage.vue` chưa loại FIXED_PRICE nên có thể tự thêm linh kiện vào báo giá gốc trái contract; E1 phải sửa phía Web, backend không nới validation. Regression giả lập xác nhận duyệt 2/dùng 1 chỉ tính 1, khai trả 1 vẫn chờ quản lý thực nhận; không duyệt linh kiện thì dùng 0/khai trả toàn bộ. Thanh toán parent dùng snapshot hóa đơn con thành công, loại máy failed. Web/Mobile/runtime: NOT VERIFIED.
 
 - Khai trả linh kiện: mỗi `declare-return` mới thành công ghi `PART_RETURN_DECLARED`, `referenceType: 'PART_REQUEST'`, `referenceId` là UUID yêu cầu linh kiện, cho từng tài khoản `service_manager` có `isActive=true` và `status=active` (quyền nhận trả hiện áp dụng toàn hệ thống). Notification, ledger và idempotency entry cùng transaction; lỗi ghi notification làm rollback, replay không gửi trùng, không có quản lý hợp lệ thì vẫn lưu khai trả. Nội dung chỉ có số lượng khai trả lần này và mã yêu cầu, không mang thông tin khách hay ghi chú tự nhập. Dùng trigger/listener hiện có để phát `notification:new` sau commit; không phát socket riêng. Khai trả không tự nhận hàng: cấp 2/dùng 1/khai trả 1 vẫn còn nghĩa vụ 1 cho tới khi quản lý xác nhận thực nhận. Web cần map type này tới `/console/part-returns` trước nhánh `PART_REQUEST` chung. PostgreSQL/socket/runtime và liên repo: NOT VERIFIED; không thêm migration, không thay finance.
 - Đặt nhiều thiết bị (PO 21/10/2026, phần 1, tắt mặc định qua `visit_group.enabled`): `GET /visit-groups/contact` trả `{ enabled, deviceLimit: 3, hotline }` (hotline null khi `support.hotline` trống); `POST /visit-groups` `{ addressId, mode, date, slot | preferredStartAt/EndAt, customerNote?, urgency?, idempotencyKey?, items: [{ serviceId, deviceLabel?, description?, deviceAttributes?, selectedVariantCode?, photoUploadIds? }] }` tạo mỗi thiết bị một booking con quantity 1 trong một transaction, chung địa chỉ và cửa sổ đến; quá 3 thiết bị trả 422 `VISIT_GROUP_DEVICE_LIMIT` (hotline lấy từ `/visit-groups/contact`); tắt trả 403 `FEATURE_DISABLED`. `GET /visit-groups/my`, `GET /visit-groups/:id`, `POST /visit-groups/:id/cancel {reason}` (huỷ cả lượt khi chưa có thợ), `POST /visit-groups/consultation { message, devices? }` mở support case `other` không gắn booking. Booking con có `visitGroupId`; shortlist, technician-candidates, đổi lịch và huỷ lẻ một booking con trả 409 ("làm trên cả lượt").
@@ -284,6 +288,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 8. Việc đang dở và rủi ro đã biết
 
+- E0 chỉ kiểm chứng bằng test không DB: lifecycle phát sinh 1/2/3, freeze, giới hạn USED, hóa đơn actual-use và phân bổ thanh toán parent ví/VNPay. PostgreSQL lock/concurrency, Docker, provider thật và Web/Mobile E2E: NOT VERIFIED; không kết nối AWS/Supabase, chạy Nest server, migration hay E2E trong task này. Lead phải tích hợp E1 và restart backend trước runtime QA; không bật thêm cờ custody.
+
 - `PART_RETURN_DECLARED` đã có unit test cho recipient, replay, dữ liệu sai/quyền sai và lỗi insert trong transaction giả lập; rollback/concurrency PostgreSQL, socket và Web/Mobile runtime NOT VERIFIED. Cần phát hành cùng Web map `/console/part-returns`, restart backend rồi owner kiểm tra E2E; task này không ghi DB, không chạy Docker/E2E hoặc deploy. Khi notification insert lỗi, khai trả cũng thất bại để có thể retry nguyên tử; không backfill thông báo cho khai trả cũ.
 - P013 source/tests đã triển khai, chưa ghi DB/env, chưa commit/push. Migration #0044 cần rehearsal PostgreSQL 17 cô lập và review độc lập trước release; chưa chứng minh khóa/rollback/concurrency nhiều instance trên PostgreSQL. Không chạy Docker, shared DB hoặc E2E trong task cấm DB writes. Cần migration theo quy trình release riêng trước restart backend mới, rồi QA Web/Mobile/HTTP/QR/socket; các mục này NOT VERIFIED. Báo giá đã APPROVED và hóa đơn cũ không tự backfill/tính lại; dữ liệu lỗi cần quyết định xử lý riêng. Đã chặn hủy nguồn kho cần thiết sau duyệt; yêu cầu đã hủy từ trước không tự tạo lại.
 
@@ -305,6 +311,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-26 01:32 (UTC+7) | foxonworld | foxonworld/fixhome-e2e-e0-quote-contract-20261026 | E0 khóa phát sinh khi đã có hóa đơn, chặn USED vượt tổng duyệt cùng SKU và ghi contract fixed-price/Web, actual-use, parent payment; runtime chưa kiểm chứng.
 - 2026-10-25 00:17 (UTC+7) | ToanAltF4 | feat/ai-multi-device | Gộp dev (override body-parser/multer) vào nhánh AI nhiều thiết bị
 - 2026-10-24 23:46 (UTC+7) | ToanAltF4 | chore/audit-body-parser-multer | Nâng override body-parser (1.20.9, 2.4.0) và multer (2.5.0) theo advisory DoS 22/10, npm audit --audit-level=high xanh lại
 - 2026-10-24 23:44 (UTC+7) | ToanAltF4 | feat/ai-multi-device | AI proxy điền serviceId cho từng thiết bị trong devices[] (AI gợi ý tối đa 3 thiết bị/lượt); POST /visit-groups nhận aiSessionId, tóm tắt hội thoại AI gắn vào thiết bị đầu tiên; spec AI đổi sang mã catalog V3
@@ -344,5 +351,4 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-18 12:59 (UTC+7) | ToanAltF4 | feat/po-batch-2026-10-18 | Sửa sau rà soát và test thật: video 75 giây trả đúng 422, LISTEN có heartbeat tự ping, kiểm bản chuyển mã theo cách xem, chặn tin chat trùng khi gửi lại chồng, ẩn link xem trong log, quét GPS cả XMP
 - 2026-10-18 12:18 (UTC+7) | ToanAltF4 | feat/po-batch-2026-10-18 | Realtime thật bằng trigger Postgres + LISTEN (migration 038, order/booking/invitation/notification/wallet/location events, resync); video riêng tư: xoá GPS, tối đa 60 giây, Cloudinary chuyển mã H.264 khi cần + poster, link xem 15 phút stream có Range; requestTimeout 15 phút cho mạng yếu
 - 2026-10-18 03:12 (UTC+7) | ToanAltF4 | feat/po-batch-2026-10-18 | Đợt PO 18/10/2026: thợ được mời xem mô tả, tóm tắt AI, ảnh, video, khoảng cách (không địa chỉ, SĐT, ghi chú); video booking và ảnh/video trong chat (migration 037); khoá chat khi đơn hoàn tất, mở lại khi có yêu cầu bảo hành; order:updated realtime; tác vụ nền đưa tiền khách đã trả vào ví thợ, VNPay querydr và IPN đúng định dạng
-- 2026-10-16 23:50 (UTC+7) | ToanAltF4 | fix/job-feedback | Danh sách việc của thợ: tab theo trạng thái đang làm (Cần di chuyển, Đang sửa chữa, Hoàn thành) chỉ tính đơn thợ còn phụ trách, đơn đã rút chỉ còn ở Tất cả và Đã huỷ; GET /service-orders/:id/warranties trả thêm itemType và itemDescription của dòng hoá đơn mà bảo hành che
 
