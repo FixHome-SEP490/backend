@@ -10,6 +10,12 @@ import { Invoice } from '../service-orders/entities/invoice.entity';
 import { custodyUsageForInvoice, hasPartReturnRestriction } from './part-custody.policy';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { Quotation } from '../quotations/entities/quotation.entity';
+import { ServiceOrdersService } from '../service-orders/service-orders.service';
+import { Booking } from '../bookings/entities/booking.entity';
+import { AdditionalCostRequest } from '../service-orders/entities/additional-cost-request.entity';
+import { InvoiceItem } from '../service-orders/entities/invoice-item.entity';
+import { RepairEvidence } from '../service-orders/entities/repair-evidence.entity';
+import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { Notification } from '../notifications/entities/notification.entity';
 import { User } from '../users/entities/user.entity';
 import { AccountStatus, PartRequestStatus, PartRequestType, PartSource, PartUsageStatus, Role, ServiceOrderStatus } from '../../shared/enums';
@@ -208,6 +214,52 @@ describe('persistent P1 custody', () => {
     const accepted = await service.command('request', 'item', 'accept_return',
       body(2, 2, 'accept-partial-01'), managerActor);
     expect(accepted).toMatchObject({ usedQty: 1, managerAcceptedQty: 2, outstandingQty: 0 });
+  });
+  it.each([0, 2])('fixed labor + approved extra %i: bills actual usage, freezes once and keeps declared return distinct from receipt', async approvedQty => {
+    tracking(); request.items[0].quantity = 2; request.status = PartRequestStatus.RECEIVED;
+    order.bookingId = 'booking';
+    await enroll();
+    const quote = { id: 'quote', status: 'approved', items: [{ id: 'labor', type: 'labor', quantity: 1, unitPrice: 449000 }] };
+    const extraItem = { id: 'extra-item', requestId: 'extra', type: 'parts_equipment', partSource: PartSource.FIXHOME,
+      partCatalogId: 'catalog', description: 'Approved extra', quantity: 2, unitPrice: 5000 };
+    const booking = { id: 'booking', pricingModeSnapshot: 'fixed_price', fixedUnitPriceSnapshot: 449000, quantity: 1 };
+    const originalOne = db.findOne.getMockImplementation();
+    db.findOne.mockImplementation(async (entity, options) => entity === Quotation ? quote : entity === Booking ? booking
+      : entity === TechnicianAssignment ? { technicianId: tech.id, isActive: true } : originalOne(entity, options));
+    const originalFind = db.find.getMockImplementation();
+    db.find.mockImplementation(async (entity, options) => entity === AdditionalCostRequest ? (approvedQty ? [{ id: 'extra', shippingFee: 0, items: [extraItem] }] : [])
+      : entity === PartRequestItem ? request.items : originalFind(entity, options));
+    db.findOneBy = (entity, where) => db.findOne(entity, { where });
+    db.findOneByOrFail = db.findOneBy;
+    db.findOneOrFail = db.findOne;
+    db.count = async entity => entity === RepairEvidence ? 1 : 0;
+    db.createQueryBuilder = () => ({ where: () => ({ getMany: async () => [extraItem] }) });
+    db.update = vi.fn(async (entity, _where, changes) => { if (entity === ServiceOrder) Object.assign(order, changes); });
+    const parts = Object.assign(Object.create(PartRequestsService.prototype), {
+      dataSource: { transaction: async cb => cb(db) }, custodyService: service, auditLogService: { logWithManager: vi.fn() },
+    }) as PartRequestsService;
+    if (!approvedQty) await expect(parts.updateItemUsage('request', 'item', { usageStatus: PartUsageStatus.USED, usedQty: 1,
+      expectedVersion: 0, idempotencyKey: 'unapproved-use' }, tech)).rejects.toMatchObject({ status: 422 });
+    await parts.updateItemUsage('request', 'item', { usageStatus: approvedQty ? PartUsageStatus.USED : PartUsageStatus.RETURNED,
+      usedQty: approvedQty ? 1 : 0, expectedVersion: 0, idempotencyKey: 'actual-use' }, tech);
+    const declared = await service.command('request', 'item', 'declare_return', body(approvedQty ? 1 : 2, 1), tech);
+    expect(declared).toMatchObject({ issuedQty: 2, usedQty: approvedQty ? 1 : 0, declaredQty: approvedQty ? 1 : 2,
+      managerAcceptedQty: 0, outstandingQty: approvedQty ? 1 : 2 });
+    const orders = Object.assign(Object.create(ServiceOrdersService.prototype), {
+      dataSource: { transaction: async cb => cb(db) }, configService: { getInt: async (_key, fallback) => fallback },
+      auditLogService: { logWithManager: vi.fn() }, notifyCustomerForOrder: vi.fn(),
+    }) as ServiceOrdersService;
+    await orders.requestCompletion(order.id, {}, tech);
+    const invoice = db.save.mock.calls.find(([entity]) => entity === Invoice)[1];
+    expect(invoice).toMatchObject({ laborTotal: 449000, fixHomePartsTotal: approvedQty ? 5000 : 0,
+      grandTotal: approvedQty ? 454000 : 449000, commissionAmount: 44900, paymentStatus: 'unpaid' });
+    const invoiceLines = db.insert.mock.calls.filter(([entity]) => entity === InvoiceItem).map(([, value]) => value);
+    expect(invoiceLines.map(line => [line.sourceType, line.quantity])).toEqual(approvedQty ? [['FIXED_PRICE', 1], ['ADDITIONAL', 1]] : [['FIXED_PRICE', 1]]);
+    await orders.requestCompletion(order.id, {}, tech);
+    expect(db.save.mock.calls.filter(([entity]) => entity === Invoice)).toHaveLength(1);
+    await expect(parts.updateItemUsage('request', 'item', { usageStatus: PartUsageStatus.RETURNED }, tech)).rejects.toMatchObject({ status: 409 });
+    const accepted = await service.command('request', 'item', 'accept_return', body(approvedQty ? 1 : 2, 2, 'accept-actual'), managerActor);
+    expect(accepted).toMatchObject({ managerAcceptedQty: approvedQty ? 1 : 2, outstandingQty: 0 });
   });
   it('keeps old status-only used/returned calls compatible in tracking-only mode', async () => {
     tracking(); await enroll();

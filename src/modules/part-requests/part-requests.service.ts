@@ -839,7 +839,11 @@ export class PartRequestsService {
     const unsuppliedCosts = [...approved].filter(([key]) => key !== 'quotation')
       .reduce((sum, [key, quantity]) => sum + Math.max(0, quantity - (used.get(key) ?? 0)), 0);
     const allowance = (approved.get(source) ?? 0) + (source === 'quotation' ? unsuppliedCosts : 0);
-    if ((used.get(source) ?? 0) > allowance) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Số lượng sử dụng vượt báo giá đã duyệt. Vui lòng đề xuất chi phí phát sinh.');
+    // Base supply may already consume an additional approval's allowance. Check the
+    // SKU total too, so updating the additional request cannot consume it again.
+    const totalUsed = [...used.values()].reduce((sum, quantity) => sum + quantity, 0);
+    const totalApproved = [...approved.values()].reduce((sum, quantity) => sum + quantity, 0);
+    if ((used.get(source) ?? 0) > allowance || totalUsed > totalApproved) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Số lượng sử dụng vượt báo giá đã duyệt. Vui lòng đề xuất chi phí phát sinh.');
   }
 
   /**
