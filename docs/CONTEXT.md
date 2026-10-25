@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-26 01:32 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-e2e-e0-quote-contract-20261026
+> Cập nhật lần cuối: 2026-10-26 01:49 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-e2e-e0-quote-contract-20261026
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -190,6 +190,8 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ### Với `web` và `mobile`
 
+- E3: mỗi khai tiền mặt nhóm mới hợp lệ ghi đúng một notification cho khách sở hữu lượt, cùng transaction với `VisitGroupPayment` và audit: `type=VISIT_CASH_DECLARED`, `referenceType=VISIT_GROUP`, `referenceId` là group ID. Nội dung cố định, không chứa ghi chú của thợ hay thông tin cá nhân. Dùng trigger/listener `notification:new` hiện có sau commit; lỗi insert notification làm thất bại transaction. Retry khi còn pending cùng thợ, số tiền, phân bổ hóa đơn và ghi chú đã lưu trả cùng declaration, không thay payment/audit/notification; declaration cũ không backfill. Web phải lọc reference đúng lượt, đọc lại GET checkout để hiện `pendingCash`, map notification tới `/app/visits/:id`; không tự xác nhận thanh toán. Không đổi xác nhận tiền mặt, ví/VNPay, migration hoặc dependency. Unit giả lập đã kiểm; PostgreSQL concurrency/trigger/socket và Web/Mobile runtime: NOT VERIFIED. Cần restart backend sau tích hợp trước runtime QA.
+
 - E0 giữ lỗi báo giá fixed-price không hợp lệ là HTTP 422 `error.code=VALIDATION_FAILED`; gửi/sửa phát sinh sau chốt trả 409 `ORDER_INVALID_TRANSITION`, quyết định phát sinh hết hiệu lực trả 409 `ADDITIONAL_COST_ALREADY_DECIDED`. Không dựa vào câu thông báo để quyết định nghiệp vụ. Ở Web dev `c0b043c`, watcher gọi `suggestReceivedStock` trong `TechnicianJobDetailPage.vue` chưa loại FIXED_PRICE nên có thể tự thêm linh kiện vào báo giá gốc trái contract; E1 phải sửa phía Web, backend không nới validation. Regression giả lập xác nhận duyệt 2/dùng 1 chỉ tính 1, khai trả 1 vẫn chờ quản lý thực nhận; không duyệt linh kiện thì dùng 0/khai trả toàn bộ. Thanh toán parent dùng snapshot hóa đơn con thành công, loại máy failed. Web/Mobile/runtime: NOT VERIFIED.
 
 - Khai trả linh kiện: mỗi `declare-return` mới thành công ghi `PART_RETURN_DECLARED`, `referenceType: 'PART_REQUEST'`, `referenceId` là UUID yêu cầu linh kiện, cho từng tài khoản `service_manager` có `isActive=true` và `status=active` (quyền nhận trả hiện áp dụng toàn hệ thống). Notification, ledger và idempotency entry cùng transaction; lỗi ghi notification làm rollback, replay không gửi trùng, không có quản lý hợp lệ thì vẫn lưu khai trả. Nội dung chỉ có số lượng khai trả lần này và mã yêu cầu, không mang thông tin khách hay ghi chú tự nhập. Dùng trigger/listener hiện có để phát `notification:new` sau commit; không phát socket riêng. Khai trả không tự nhận hàng: cấp 2/dùng 1/khai trả 1 vẫn còn nghĩa vụ 1 cho tới khi quản lý xác nhận thực nhận. Web cần map type này tới `/console/part-returns` trước nhánh `PART_REQUEST` chung. PostgreSQL/socket/runtime và liên repo: NOT VERIFIED; không thêm migration, không thay finance.
@@ -311,6 +313,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-26 01:49 (UTC+7) | foxonworld | foxonworld/fixhome-e2e-e0-quote-contract-20261026 | E3 thêm notification khai tiền mặt VisitGroup cùng transaction và chặn trùng pending retry; giữ xác nhận thanh toán, runtime chưa kiểm chứng.
 - 2026-10-26 01:32 (UTC+7) | foxonworld | foxonworld/fixhome-e2e-e0-quote-contract-20261026 | E0 khóa phát sinh khi đã có hóa đơn, chặn USED vượt tổng duyệt cùng SKU và ghi contract fixed-price/Web, actual-use, parent payment; runtime chưa kiểm chứng.
 - 2026-10-25 00:17 (UTC+7) | ToanAltF4 | feat/ai-multi-device | Gộp dev (override body-parser/multer) vào nhánh AI nhiều thiết bị
 - 2026-10-24 23:46 (UTC+7) | ToanAltF4 | chore/audit-body-parser-multer | Nâng override body-parser (1.20.9, 2.4.0) và multer (2.5.0) theo advisory DoS 22/10, npm audit --audit-level=high xanh lại
@@ -350,5 +353,4 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-18 23:37 (UTC+7) | ToanAltF4 | feat/chat-list-order-code | Danh sách hội thoại trả thêm mã đơn (orderCode)
 - 2026-10-18 12:59 (UTC+7) | ToanAltF4 | feat/po-batch-2026-10-18 | Sửa sau rà soát và test thật: video 75 giây trả đúng 422, LISTEN có heartbeat tự ping, kiểm bản chuyển mã theo cách xem, chặn tin chat trùng khi gửi lại chồng, ẩn link xem trong log, quét GPS cả XMP
 - 2026-10-18 12:18 (UTC+7) | ToanAltF4 | feat/po-batch-2026-10-18 | Realtime thật bằng trigger Postgres + LISTEN (migration 038, order/booking/invitation/notification/wallet/location events, resync); video riêng tư: xoá GPS, tối đa 60 giây, Cloudinary chuyển mã H.264 khi cần + poster, link xem 15 phút stream có Range; requestTimeout 15 phút cho mạng yếu
-- 2026-10-18 03:12 (UTC+7) | ToanAltF4 | feat/po-batch-2026-10-18 | Đợt PO 18/10/2026: thợ được mời xem mô tả, tóm tắt AI, ảnh, video, khoảng cách (không địa chỉ, SĐT, ghi chú); video booking và ảnh/video trong chat (migration 037); khoá chat khi đơn hoàn tất, mở lại khi có yêu cầu bảo hành; order:updated realtime; tác vụ nền đưa tiền khách đã trả vào ví thợ, VNPay querydr và IPN đúng định dạng
 
