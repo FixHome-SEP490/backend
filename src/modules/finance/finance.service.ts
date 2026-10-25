@@ -1333,7 +1333,7 @@ export class FinanceService {
       ...costs.flatMap(cost => cost.items.map(item => ({ ...item, source: cost.id }))),
     ];
     assertApprovedPartsResolved(lines, requests, quotation?.id ?? null, custodyUsage);
-    const billable = usedPartQuantities(requests, custodyUsage, quotation?.id ?? null);
+    const billable = usedPartQuantities(requests, custodyUsage, quotation?.id ?? null, lines);
     for (const line of lines) {
       if (!Object.values(CostItemType).includes(line.type) || !Number.isSafeInteger(line.quantity) || line.quantity < 1 ||
           (line.type === CostItemType.PARTS_EQUIPMENT && !Object.values(PartSource).includes(line.partSource!))) fail();

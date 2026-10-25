@@ -18,6 +18,7 @@ import {
   AiFeedbackDto,
   AnalyzeDto,
   AskDto,
+  AiDeviceSuggestion,
   AiRecommendedService,
   AI_MAX_IMAGES,
 } from './dto/ai-contract.dto';
@@ -463,11 +464,14 @@ export class AiDiagnosisService {
   // ---------------------------------------------------------------- private
 
   /**
-   * The AI names services by catalogue code; a booking needs the row id. Both
-   * catalogues were seeded from the same list, so all twenty-one codes the AI
-   * can return do resolve - but an unknown code yields null rather than
+   * The AI names services by catalogue code (AC-01, WM-02...); a booking needs
+   * the row id. An unknown or switched-off code yields null rather than
    * throwing, because a missing id should cost the customer one button, not the
    * whole answer.
+   *
+   * A reply about several appliances (up to three, one visit) also carries
+   * `devices[]`, each with its own `service`; those are resolved the same way,
+   * so the app can book them together as one visit group.
    */
   private async attachServiceIds(
     payload: Record<string, unknown>,
@@ -475,17 +479,28 @@ export class AiDiagnosisService {
     const services = payload.recommendedServices as
       | AiRecommendedService[]
       | undefined;
-    if (!Array.isArray(services) || services.length === 0) {
+    const devices = payload.devices as AiDeviceSuggestion[] | undefined;
+    const hasServices = Array.isArray(services) && services.length > 0;
+    const hasDevices = Array.isArray(devices) && devices.some((device) => device?.service);
+    if (!hasServices && !hasDevices) {
       return payload;
     }
 
     const byCode = await this.loadServiceCodes();
+    const withId = (service: AiRecommendedService) => ({
+      ...service,
+      serviceId: byCode.get(service.serviceCode) ?? null,
+    });
     return {
       ...payload,
-      recommendedServices: services.map((service) => ({
-        ...service,
-        serviceId: byCode.get(service.serviceCode) ?? null,
-      })),
+      ...(hasServices ? { recommendedServices: services.map(withId) } : {}),
+      ...(hasDevices
+        ? {
+            devices: devices.map((device) =>
+              device?.service ? { ...device, service: withId(device.service) } : device,
+            ),
+          }
+        : {}),
     };
   }
 

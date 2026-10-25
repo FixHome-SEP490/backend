@@ -222,16 +222,16 @@ describe('Part custody domain rules', () => {
     },
   );
 
-  it('rejects usage changes after invoice freeze and does not support reversal or disposition commands', () => {
+  it('rejects usage changes after invoice freeze, lets an unfrozen count be corrected down, and does not support disposition commands', () => {
     const frozen = snapshot({ usedQty: 2, invoiceFrozen: true });
     expect(() => applyCustodyCommand(frozen, command({
       kind: 'record_usage', usedQty: 3, expectedVersion: 0, idempotencyKey: 'frozen-usage-01',
     }), technician, now)).toThrowError(expect.objectContaining({ code: 'INVOICE_FROZEN' }));
 
     const unfrozen = snapshot({ usedQty: 2 });
-    expect(() => applyCustodyCommand(unfrozen, command({
+    expect(applyCustodyCommand(unfrozen, command({
       kind: 'record_usage', usedQty: 1, expectedVersion: 0, idempotencyKey: 'reverse-usage-01',
-    }), technician, now)).toThrowError(expect.objectContaining({ code: 'INVALID_QUANTITY' }));
+    }), technician, now).next.usedQty).toBe(1);
     expect(() => applyCustodyCommand(unfrozen, command({
       kind: 'approve_disposition', quantity: 1, expectedVersion: 0, idempotencyKey: 'disposition-001',
     }), manager, now)).toThrowError(PartCustodyRuleError);

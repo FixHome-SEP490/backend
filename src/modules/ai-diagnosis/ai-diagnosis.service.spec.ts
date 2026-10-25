@@ -27,7 +27,7 @@ const REAL_REPLY = {
     },
   ],
   recommendedServices: [
-    { serviceCode: 'SUA_MAY_GIAT', nameVi: 'Sửa máy giặt rung lắc / không vắt' },
+    { serviceCode: 'WM-01', nameVi: 'Sửa máy giặt' },
   ],
   suggestedActionsVi: ['Giảm tải mỗi mẻ giặt cho tới khi sửa'],
   priceEstimate: { min: 100000, max: null, currency: 'VND', requiresAssessment: true },
@@ -62,8 +62,8 @@ describe('AiDiagnosisService', () => {
       find: vi
         .fn()
         .mockResolvedValue([
-          { id: 'service-uuid-1', code: 'SUA_MAY_GIAT' },
-          { id: 'service-uuid-2', code: 'KIEM_TRA_CHAN_DOAN_THIET_BI' },
+          { id: 'service-uuid-1', code: 'WM-01' },
+          { id: 'service-uuid-2', code: 'FR-01' },
         ]),
     };
     const config = { get: vi.fn().mockReturnValue('http://ai.test:8000') };
@@ -132,8 +132,8 @@ describe('AiDiagnosisService', () => {
 
       expect(result.recommendedServices).toEqual([
         {
-          serviceCode: 'SUA_MAY_GIAT',
-          nameVi: 'Sửa máy giặt rung lắc / không vắt',
+          serviceCode: 'WM-01',
+          nameVi: 'Sửa máy giặt',
           serviceId: 'service-uuid-1',
         },
       ]);
@@ -152,6 +152,36 @@ describe('AiDiagnosisService', () => {
       const result = await service.analyze({ description: 'không vắt' });
 
       expect((result.recommendedServices as any[])[0].serviceId).toBeNull();
+    });
+
+    it('resolves the service of every appliance in a reply about several', async () => {
+      http.post.mockReturnValue(
+        of({
+          data: {
+            ...structuredClone(REAL_REPLY),
+            recommendedServices: [
+              { serviceCode: 'WM-01', nameVi: 'Sửa máy giặt', deviceType: 'washing_machine' },
+              { serviceCode: 'FR-01', nameVi: 'Sửa tủ lạnh', deviceType: 'refrigerator' },
+            ],
+            devices: [
+              { deviceType: 'washing_machine', nameVi: 'Máy giặt', isPrimary: true, imageIndex: 0,
+                service: { serviceCode: 'WM-01', nameVi: 'Sửa máy giặt', deviceType: 'washing_machine' } },
+              { deviceType: 'refrigerator', nameVi: 'Tủ lạnh', imageIndex: 1, descriptionVi: 'không lạnh',
+                service: { serviceCode: 'FR-01', nameVi: 'Sửa tủ lạnh', deviceType: 'refrigerator' } },
+              { deviceType: 'microwave_oven', nameVi: 'Lò vi sóng', service: null, noteVi: 'chưa mở' },
+            ],
+          },
+        }),
+      );
+
+      const result = await service.analyze({ description: 'không vắt' });
+      const devices = result.devices as any[];
+
+      expect((result.recommendedServices as any[]).map((s) => s.serviceId)).toEqual(['service-uuid-1', 'service-uuid-2']);
+      expect(devices.map((d) => d.service?.serviceId ?? null)).toEqual(['service-uuid-1', 'service-uuid-2', null]);
+      // Everything else about each appliance is passed through as sent.
+      expect(devices[1]).toMatchObject({ imageIndex: 1, descriptionVi: 'không lạnh' });
+      expect(devices[2]).toMatchObject({ service: null, noteVi: 'chưa mở' });
     });
 
     it('reads the catalogue once and then serves it from cache', async () => {

@@ -376,8 +376,9 @@ export function applyCustodyCommand(
       fail('ORDER_CLOSED', 'Used quantity cannot change after order closure');
     }
     if (snapshot.invoiceFrozen) fail('INVOICE_FROZEN', 'Used quantity is frozen with the invoice');
-    if (command.usedQty < snapshot.usedQty || command.usedQty > snapshot.issuedQty - managerAcceptedQty) {
-      fail('INVALID_QUANTITY', 'Used quantity cannot reverse or exceed unresolved custody');
+    // Until the invoice is frozen (checked above) a wrong count may be corrected down as well as up.
+    if (command.usedQty > snapshot.issuedQty - managerAcceptedQty) {
+      fail('INVALID_QUANTITY', 'Used quantity cannot exceed unresolved custody');
     }
     const initialZeroDecision = command.usedQty === 0 && snapshot.usedQty === 0 && !snapshot.events.some(e => e.type === 'USAGE_RECORDED');
     if (command.usedQty === snapshot.usedQty && !initialZeroDecision) fail('NO_CHANGE', 'Used quantity is unchanged');

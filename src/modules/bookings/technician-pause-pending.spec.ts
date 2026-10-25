@@ -32,6 +32,7 @@ function scenario() {
       const qb = {
         select: vi.fn(() => qb), addSelect: vi.fn(() => qb),
         innerJoin: vi.fn(() => qb), where: vi.fn(() => qb), andWhere: vi.fn(() => qb),
+        getCount: vi.fn(async () => 0),
         getMany: vi.fn(async () => hasTimeOff && typeof entity !== 'string'
           ? [{ startAt: booking.preferredStartAt!, endAt: booking.preferredEndAt! }]
           : []),

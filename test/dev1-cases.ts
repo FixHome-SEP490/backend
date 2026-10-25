@@ -206,7 +206,7 @@ export function registerDev1Cases(context: () => Context) {
       expect(await context().db.getRepository('TechnicianAssignment').count({ where: { technicianId: f.tech.user.id, isActive: true } })).toBe(1);
     });
 
-    it('declines without strikes, expires sequential invitations and permits fresh reselection', async () => {
+    it('declines without strikes, expires sequential invitations and permits fresh reselection of whoever did not decline', async () => {
       const f = await fixture(), b = await f.create(), repo = context().db.getRepository('BookingInvitation');
       await post(`/bookings/${b.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.spare.user.id] }).expect(201);
       const first = await repo.findOneByOrFail({ bookingId: b.id, status: 'pending' });
@@ -216,8 +216,10 @@ export function registerDev1Cases(context: () => Context) {
       expect(second.technicianId).toBe(f.spare.user.id);
       await repo.update(second.id, { expiresAt: new Date(Date.now() - 1000) });
       expect(unwrap((await get(`/bookings/${b.id}`, f.owner).expect(200)).body).status).toBe('closed');
-      await post(`/bookings/${b.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.spare.user.id] }).expect(201);
-      expect(await repo.count({ where: { bookingId: b.id } })).toBe(4);
+      // A technician who declined this booking is not offered it again; one whose invitation only expired is.
+      await post(`/bookings/${b.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.spare.user.id] }).expect(409);
+      await post(`/bookings/${b.id}/shortlist`, f.owner, { technicianIds: [f.spare.user.id] }).expect(201);
+      expect(await repo.count({ where: { bookingId: b.id } })).toBe(3);
       expect(await context().db.getRepository('CancellationStrike').count({ where: { userId: f.tech.user.id } })).toBe(0);
     });
 
@@ -369,6 +371,44 @@ export function registerDev1Cases(context: () => Context) {
         const consult = unwrap((await post('/visit-groups/consultation', f.owner, { message: 'Nhà có 5 máy lạnh', devices: ['Máy 1', 'Máy 2'] }).expect(201)).body);
         const [supportCase] = await db.query('SELECT case_type, customer_id, booking_id FROM support_cases WHERE id = $1', [consult.id]);
         expect(supportCase).toMatchObject({ case_type: 'other', customer_id: f.owner.user.id, booking_id: null });
+      } finally {
+        await setGroups(false);
+      }
+    });
+
+    it('keeps the assistant summary on the first device of a visit suggested in chat, and ignores a stranger\'s session', async () => {
+      const f = await fixture(), db = context().db;
+      const { BusinessConfigService } = runtimeRequire('./dist/modules/system-config/business-config.service.js');
+      const setGroups = async (on: boolean) => {
+        await db.query(`UPDATE "system_configs" SET "value" = $1 WHERE "key" = 'visit_group.enabled'`, [String(on)]);
+        context().app.get(BusinessConfigService).invalidateCache();
+      };
+      const summary = {
+        deviceName: 'Máy giặt', customerText: 'máy giặt không vắt, tủ lạnh không lạnh', suspectedFaults: ['Mòn bạc đạn lồng giặt'],
+        suggestedActions: [], conclusion: null, priceMin: 249000, priceMax: null, requiresAssessment: true,
+        recommendedServiceName: 'Sửa máy giặt', photoCount: 2, turnCount: 1,
+      };
+      const mine = `visit-ai-${randomUUID().slice(0, 8)}`, theirs = `visit-ai-${randomUUID().slice(0, 8)}`;
+      await db.query('INSERT INTO ai_chat_sessions (session_id, customer_id, summary) VALUES ($1, $2, $3), ($4, $5, $3)',
+        [mine, f.owner.user.id, JSON.stringify(summary), theirs, f.outsider.user.id]);
+      const day = new Date(Date.now() + 7 * 3600000 + 4 * 86400000).toISOString().slice(0, 10);
+      const items = [{ serviceId: f.service.id, description: 'không vắt', deviceLabel: 'Máy giặt' }, { serviceId: f.service.id, description: 'không lạnh', deviceLabel: 'Tủ lạnh' }];
+      try {
+        await setGroups(true);
+        const badId = await post('/visit-groups', f.owner, { addressId: f.address.id, mode: 'scheduled', date: day, slot: 'morning', aiSessionId: 'not a session id', items });
+        expect(badId.status, JSON.stringify(badId.body)).toBe(400);
+
+        const group = unwrap((await post('/visit-groups', f.owner, { addressId: f.address.id, mode: 'scheduled', date: day, slot: 'morning', aiSessionId: mine, items }).expect(201)).body);
+        const rows = await db.query('SELECT b.ai_summary, b.description FROM visit_group_items i JOIN bookings b ON b.id = i.booking_id WHERE i.group_id = $1 ORDER BY i.sequence', [group.id]);
+        expect(rows[0].ai_summary).toMatchObject({ deviceName: 'Máy giặt', recommendedServiceName: 'Sửa máy giặt' });
+        expect(rows[0].ai_summary.turnCount).toBeUndefined();
+        expect(rows[1].ai_summary).toBeNull();
+        expect(rows.map((row: any) => row.description)).toEqual(['không vắt', 'không lạnh']);
+
+        // Somebody else's conversation is not copied onto this customer's booking.
+        const other = unwrap((await post('/visit-groups', f.owner, { addressId: f.address.id, mode: 'scheduled', date: day, slot: 'evening', aiSessionId: theirs, items }).expect(201)).body);
+        const [first] = await db.query('SELECT b.ai_summary FROM visit_group_items i JOIN bookings b ON b.id = i.booking_id WHERE i.group_id = $1 AND i.sequence = 1', [other.id]);
+        expect(first.ai_summary).toBeNull();
       } finally {
         await setGroups(false);
       }

@@ -5,6 +5,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { configureApplication } from './setup-app';
 import { VN_TIME_ZONE } from './shared/utils/vn-time';
+import { installProcessSafety } from './process-safety';
 
 /** The longest a single request may take to arrive in full. */
 const UPLOAD_REQUEST_TIMEOUT_MS = 15 * 60_000;
@@ -13,6 +14,8 @@ const UPLOAD_REQUEST_TIMEOUT_MS = 15 * 60_000;
 // left on local time (log timestamps, third-party code) in Vietnam time too,
 // since container images default to UTC.
 if (!process.env.TZ) process.env.TZ = VN_TIME_ZONE;
+
+installProcessSafety();
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);

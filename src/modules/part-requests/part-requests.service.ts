@@ -23,6 +23,7 @@ import { AuditLogService } from '../audit-log/audit-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PartRequest } from './entities/part-request.entity';
 import { PartRequestItem } from './entities/part-request-item.entity';
+import { PartCustody } from './entities/part-custody.entity';
 import { FixHomePart } from '../parts-catalog/entities/fixhome-part.entity';
 import { User } from '../users/entities/user.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
@@ -310,6 +311,35 @@ export class PartRequestsService {
     return request;
   }
 
+  /**
+   * FixHome parts the technician holds (or has on the way) for this order that no approval has
+   * claimed yet (BUG DETECTOR 14): every live line not returned, less what the technician has
+   * declared going back, less what the approved quotation and approved additional costs use.
+   * Caller holds the order lock. The additional cost being approved is not approved yet here.
+   */
+  private async unclaimedFixHomeStock(manager: EntityManager, orderId: string, technicianId: string): Promise<Map<string, number>> {
+    const live = [PartRequestStatus.REQUESTED, PartRequestStatus.READY, PartRequestStatus.DELIVERING, PartRequestStatus.RECEIVED];
+    const stock = new Map<string, number>();
+    const add = (id: string, quantity: number) => stock.set(id, (stock.get(id) ?? 0) + quantity);
+    const custody = await manager.find(PartCustody, { where: { serviceOrderId: orderId, technicianId } });
+    const goingBack = new Map(custody.map(row => [row.partRequestItemId, (row.state?.declarations ?? []).reduce((sum, d) => sum + d.quantity, 0)]));
+    const requests = await manager.find(PartRequest, { where: { serviceOrderId: orderId, technicianId }, relations: ['items'] });
+    for (const request of requests) {
+      if (!live.includes(request.status)) continue;
+      for (const item of request.items) {
+        if (item.partSource === PartSource.FIXHOME && item.partCatalogId && item.usageStatus !== PartUsageStatus.RETURNED) {
+          add(item.partCatalogId, item.quantity - (goingBack.get(item.id) ?? 0));
+        }
+      }
+    }
+    const quotes = await manager.find(Quotation, { where: { serviceOrderId: orderId, technicianId, status: QuotationStatus.APPROVED }, relations: ['items'] });
+    const costs = await manager.find(AdditionalCostRequest, { where: { serviceOrderId: orderId, technicianId, status: AdditionalCostStatus.APPROVED }, relations: ['items'] });
+    for (const item of [...quotes.flatMap(q => q.items), ...costs.flatMap(c => c.items)]) {
+      if (item.type === CostItemType.PARTS_EQUIPMENT && item.partSource === PartSource.FIXHOME && item.partCatalogId) add(item.partCatalogId, -item.quantity);
+    }
+    return stock;
+  }
+
   /** Flow 2: called when the customer approves an additional cost with FixHome parts. */
   async createAdditionalRequestFromApprovedCost(
     manager: EntityManager,
@@ -328,9 +358,19 @@ export class PartRequestsService {
     }>,
   ): Promise<PartRequest | null> {
     // Only FixHome parts generate depot parts requests
-    const fixHomeItems = items.filter(
+    const wanted = items.filter(
       (i) => i.partSource === PartSource.FIXHOME,
     );
+    if (wanted.length === 0) return null;
+    // Parts the technician already holds are used first; only the shortfall comes from the warehouse.
+    // Usage and invoicing let those held units serve this cost (quotation surplus, see lifecycle).
+    const unclaimed = await this.unclaimedFixHomeStock(manager, orderId, technicianId);
+    const fixHomeItems = wanted.flatMap((item) => {
+      const id = item.partCatalogId;
+      const take = id ? Math.min(Math.max(0, unclaimed.get(id) ?? 0), item.quantity) : 0;
+      if (id && take > 0) unclaimed.set(id, (unclaimed.get(id) ?? 0) - take);
+      return item.quantity - take > 0 ? [{ ...item, quantity: item.quantity - take }] : [];
+    });
     if (fixHomeItems.length === 0) return null;
 
     if (!await manager.findOneBy(TechnicianAssignment, { serviceOrderId: orderId, technicianId, isActive: true })) {
@@ -762,33 +802,44 @@ export class PartRequestsService {
     });
   }
 
-  /** The order lock serializes USED changes across all requests sharing an approval. */
+  /**
+   * The order lock serializes USED changes across all requests sharing an approval.
+   *
+   * Each approval keeps its own quantity: an additional cost's request is used within that
+   * cost. Units delivered for the quotation may be used beyond the quotation for an approved
+   * additional cost that its own request does not cover (BUG DETECTOR 14): the technician
+   * already holds them, so the additional cost does not need new ones from the warehouse.
+   */
   private async assertUsageApproved(manager: EntityManager, request: PartRequest, item: PartRequestItem, usedQty: number): Promise<void> {
     if (request.requestType === PartRequestType.ADDITIONAL && !request.additionalCostId) {
       throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Yêu cầu linh kiện chưa liên kết chi phí đã duyệt.');
     }
-    const approval = request.requestType === PartRequestType.ADDITIONAL
-      ? await manager.findOne(AdditionalCostRequest, { where: { id: request.additionalCostId!, serviceOrderId: request.serviceOrderId, technicianId: request.technicianId, status: AdditionalCostStatus.APPROVED }, relations: ['items'] })
-      : await manager.findOne(Quotation, { where: { serviceOrderId: request.serviceOrderId, technicianId: request.technicianId, status: QuotationStatus.APPROVED }, relations: ['items'] });
-    const source = partRequestCostSource(request, request.requestType === PartRequestType.ADDITIONAL ? undefined : approval?.id);
-    if (!approval || !source || !item.partCatalogId || !Number.isSafeInteger(usedQty) || usedQty < 1 || usedQty > item.quantity || !Array.isArray(approval.items)) {
+    const quote = await manager.findOne(Quotation, { where: { serviceOrderId: request.serviceOrderId, technicianId: request.technicianId, status: QuotationStatus.APPROVED }, relations: ['items'] });
+    const costs = await manager.find(AdditionalCostRequest, { where: { serviceOrderId: request.serviceOrderId, technicianId: request.technicianId, status: AdditionalCostStatus.APPROVED }, relations: ['items'] });
+    const ownCostApproved = request.requestType !== PartRequestType.ADDITIONAL || costs.some(cost => cost.id === request.additionalCostId);
+    const source = partRequestCostSource(request, quote?.id);
+    if ((!quote && !costs.length) || !ownCostApproved || !source || !item.partCatalogId || !Number.isSafeInteger(usedQty) || usedQty < 1 || usedQty > item.quantity) {
       throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Chỉ được dùng linh kiện đúng báo giá đã duyệt.');
     }
-    const approvedQty = approval.items.filter(i => i.partSource === PartSource.FIXHOME && i.partCatalogId === item.partCatalogId)
-      .reduce((sum, i) => sum + i.quantity, 0);
+    const forPart = (lines: Array<{ partSource?: PartSource | null; partCatalogId?: string | null; quantity: number }> | undefined) =>
+      (lines ?? []).filter(i => i.partSource === PartSource.FIXHOME && i.partCatalogId === item.partCatalogId).reduce((sum, i) => sum + i.quantity, 0);
+    const approved = new Map<string, number>([['quotation', forPart(quote?.items)], ...costs.map(cost => [cost.id, forPart(cost.items)] as [string, number])]);
     const requests = await manager.find(PartRequest, { where: { serviceOrderId: request.serviceOrderId, technicianId: request.technicianId }, relations: ['items'] });
     const custodyUsage = await custodyUsageForInvoice(manager, request.serviceOrderId);
-    let totalUsed = usedQty;
+    const used = new Map<string, number>([[source, usedQty]]);
     for (const other of requests) {
-      if (other.technicianId !== request.technicianId || ![PartRequestStatus.RECEIVED, PartRequestStatus.COMPLETED].includes(other.status) ||
-          partRequestCostSource(other, request.requestType === PartRequestType.ADDITIONAL ? undefined : approval.id) !== source) continue;
+      const otherSource = partRequestCostSource(other, quote?.id);
+      if (other.technicianId !== request.technicianId || ![PartRequestStatus.RECEIVED, PartRequestStatus.COMPLETED].includes(other.status) || !otherSource) continue;
       for (const line of other.items) {
         if (line.id !== item.id && line.partSource === PartSource.FIXHOME && line.partCatalogId === item.partCatalogId && line.usageStatus === PartUsageStatus.USED) {
-          totalUsed += custodyUsage.get(line.id) ?? line.quantity;
+          used.set(otherSource, (used.get(otherSource) ?? 0) + (custodyUsage.get(line.id) ?? line.quantity));
         }
       }
     }
-    if (totalUsed > approvedQty) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Số lượng sử dụng vượt báo giá đã duyệt. Vui lòng đề xuất chi phí phát sinh.');
+    const unsuppliedCosts = [...approved].filter(([key]) => key !== 'quotation')
+      .reduce((sum, [key, quantity]) => sum + Math.max(0, quantity - (used.get(key) ?? 0)), 0);
+    const allowance = (approved.get(source) ?? 0) + (source === 'quotation' ? unsuppliedCosts : 0);
+    if ((used.get(source) ?? 0) > allowance) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Số lượng sử dụng vượt báo giá đã duyệt. Vui lòng đề xuất chi phí phát sinh.');
   }
 
   /**
