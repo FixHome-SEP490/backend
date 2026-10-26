@@ -274,4 +274,18 @@ describe('PartsCatalogService', () => {
       service.update('part-uuid-1', { warrantyDays: 3651 } as any, actor),
     ).rejects.toThrow(BadRequestException);
   });
+
+  it('publicPrices lists active parts with a SKU at their selling price, cached five minutes', async () => {
+    partRepository.find = vi.fn().mockResolvedValue([
+      createMockPart({ sku: 'AC002', name: 'Block máy nén Mono 12.000 BTU', sellingPrice: '2000000.00' as any }),
+      createMockPart({ sku: null, name: 'Không có mã' }),
+    ]);
+    const items = await service.publicPrices(1_000);
+    expect(items).toEqual([{ sku: 'AC002', name: 'Block máy nén Mono 12.000 BTU', price: 2000000 }]);
+    expect(partRepository.find).toHaveBeenCalledWith(expect.objectContaining({ where: { isActive: true } }));
+    await service.publicPrices(1_000 + 60_000);
+    expect(partRepository.find).toHaveBeenCalledTimes(1);
+    await service.publicPrices(1_000 + 6 * 60_000);
+    expect(partRepository.find).toHaveBeenCalledTimes(2);
+  });
 });

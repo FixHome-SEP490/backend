@@ -19,6 +19,14 @@ import { AuditLogService } from '../audit-log/audit-log.service';
 import { User } from '../users/entities/user.entity';
 
 const RESOURCE_TYPE = 'fixhome_part';
+const PUBLIC_PRICES_TTL_MS = 5 * 60 * 1000;
+
+export interface PublicPartPrice {
+  sku: string;
+  name: string;
+  /** Selling price in VND. */
+  price: number;
+}
 const POSTGRES_UNIQUE_VIOLATION = '23505';
 
 @Injectable()
@@ -28,6 +36,28 @@ export class PartsCatalogService {
     private readonly partRepository: Repository<FixHomePart>,
     private readonly auditLogService: AuditLogService,
   ) {}
+
+  private pricesCache: { at: number; items: PublicPartPrice[] } | null = null;
+
+  /**
+   * Selling price of every active part that has a SKU, for the AI Service's
+   * price estimate (PO 26/10/2026: the top of the range is the service price
+   * plus the parts a fault usually needs, at the price technicians are charged
+   * here). No stock, no cost, no warranty text. Cached for five minutes.
+   */
+  async publicPrices(now = Date.now()): Promise<PublicPartPrice[]> {
+    if (this.pricesCache && now - this.pricesCache.at < PUBLIC_PRICES_TTL_MS) return this.pricesCache.items;
+    const rows = await this.partRepository.find({
+      where: { isActive: true },
+      select: { sku: true, name: true, sellingPrice: true },
+      order: { sku: 'ASC' },
+    });
+    const items = rows
+      .filter((row) => !!row.sku)
+      .map((row) => ({ sku: row.sku as string, name: row.name, price: Math.round(Number(row.sellingPrice)) }));
+    this.pricesCache = { at: now, items };
+    return items;
+  }
 
   /** Normal catalog path: active parts only, ignores incoming isActive filter. */
   async findCatalog(

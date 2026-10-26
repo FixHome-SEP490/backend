@@ -1778,6 +1778,26 @@ export function registerDev1Cases(context: () => Context) {
       }
     });
 
+    it('gives the AI Service every active part price without a login, and nothing else about parts', async () => {
+      const [part] = await context().db.query(
+        `INSERT INTO fixhome_parts (sku, name, selling_price, is_active) VALUES ($1, 'Linh kiện thử giá', 123456, true) RETURNING id`,
+        [`E2E-${randomUUID().slice(0, 8)}`],
+      );
+      const [hidden] = await context().db.query(
+        `INSERT INTO fixhome_parts (sku, name, selling_price, is_active) VALUES ($1, 'Linh kiện đã tắt', 99, false) RETURNING id`,
+        [`E2E-${randomUUID().slice(0, 8)}`],
+      );
+      try {
+        const body = unwrap((await request(context().app.getHttpServer()).get('/api/v1/parts/prices').expect(200)).body);
+        const mine = body.items.find((p: any) => p.name === 'Linh kiện thử giá');
+        expect(mine).toEqual({ sku: expect.stringMatching(/^E2E-/), name: 'Linh kiện thử giá', price: 123456 });
+        expect(body.items.some((p: any) => p.name === 'Linh kiện đã tắt')).toBe(false);
+        expect(body.items.every((p: any) => Object.keys(p).sort().join() === 'name,price,sku')).toBe(true);
+      } finally {
+        await context().db.query('DELETE FROM fixhome_parts WHERE id = ANY($1)', [[part.id, hidden.id]]);
+      }
+    });
+
     it('keeps a "sai rồi" the assistant noticed in the conversation, with what was turned down', async () => {
       const { AiDiagnosisService } = runtimeRequire('./dist/modules/ai-diagnosis/ai-diagnosis.service.js');
       const { of } = runtimeRequire('rxjs');
