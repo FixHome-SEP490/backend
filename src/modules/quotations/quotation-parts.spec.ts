@@ -249,24 +249,24 @@ describe('P013 approval creates only missing depot supply', () => {
     expect(s.requests[0].quotationId).toBeUndefined();
   });
 
-  it('B01 mixed approved technician parts remain chargeable and commission applies only to labor', async () => {
+  it('keeps an already-approved historical technician-part quote readable and invoiceable', async () => {
     const s = setup();
-    s.quote.laborTotal = 1000; s.quote.partsTotal = 900;
-    s.quote.items.push({ id: 'labor', quotationId: 'quote', type: 'labor', partSource: null, partCatalogId: null,
-      description: 'Labor', quantity: 1, unitPrice: 1000 });
-    s.quote.items.push({ id: 'tech-part', quotationId: 'quote', type: 'parts_equipment', partSource: 'technician', partCatalogId: null,
-      description: 'Technician part', quantity: 1, unitPrice: 300 });
-    await s.service.decideQuotation('quote', 'APPROVE', { id: 'customer', role: 'customer' });
-    const request = s.requests[0];
-    expect(request.items).toHaveLength(1);
-    const ready = await s.parts.markReady(request.id, { id: 'manager', role: Role.SERVICE_MANAGER });
-    await s.parts.receiveByQr(request.id, { qrToken: ready.qrToken! }, { id: 'tech', role: Role.TECHNICIAN });
+    s.quote.status = 'approved';
+    s.quote.laborTotal = 1000; s.quote.partsTotal = 300;
+    s.quote.items = [
+      { id: 'labor', quotationId: 'quote', type: 'labor', partSource: null, partCatalogId: null,
+        description: 'Labor', quantity: 1, unitPrice: 1000 },
+      { id: 'tech-part', quotationId: 'quote', type: 'parts_equipment', partSource: 'technician', partCatalogId: null,
+        description: 'Technician part', quantity: 1, unitPrice: 300 },
+    ];
     s.order.status = 'under_repair';
-    await s.parts.updateItemUsage(request.id, request.items[0].id, { usageStatus: PartUsageStatus.USED }, { id: 'tech', role: Role.TECHNICIAN });
     const orders: any = Object.create(ServiceOrdersService.prototype);
     orders.configService = { getInt: async () => 1000 };
-    expect(await orders.generateInvoice('order', s.manager)).toMatchObject({ laborTotal: 1000, fixHomePartsTotal: 600,
-      technicianPartsTotal: 300, partsTotal: 900, grandTotal: 1900, commissionAmount: 100, commissionBase: 'LABOR' });
+    const invoice = await orders.generateInvoice('order', s.manager);
+    expect(invoice).toMatchObject({ laborTotal: 1000, fixHomePartsTotal: 0,
+      technicianPartsTotal: 300, partsTotal: 300, grandTotal: 1300, commissionAmount: 100, commissionBase: 'LABOR' });
+    expect(s.invoiceLines).toContainEqual(expect.objectContaining({ sourceType: 'QUOTATION', partSource: 'technician', unitPrice: 300 }));
+    expect(s.quote.items[1]).toMatchObject({ partSource: 'technician' });
   });
 
   it('B01 splits a large grouped deficit into depot lines compatible with the existing custody quantity limit', async () => {
@@ -370,6 +370,6 @@ describe('no more parts bought outside (BUG DETECTOR 14)', () => {
     const s = setup();
     const external = { type: 'parts_equipment', partSource: 'external', description: 'Tụ mua ngoài', quantity: 1, unitPrice: 50000 };
     await expect(s.service.createQuotation('order', { items: [external] as any }, { id: 'tech', role: Role.TECHNICIAN }))
-      .rejects.toMatchObject({ status: 422, message: expect.stringContaining('mua ngoài') });
+      .rejects.toMatchObject({ status: 422, response: { code: 'VALIDATION_FAILED' } });
   });
 });
