@@ -50,6 +50,12 @@ describe('voucher transport contracts', () => {
     quota: 100,
   });
 
+  it('accepts legacy demo customer UUID-v0 for Admin grants but rejects malformed IDs', async () => {
+    const { GrantPersonalVoucherDto } = await import('./dto/voucher.dto');
+    const grantId = randomUUID();
+    expect(await validate({ customerId: '00000000-0000-0000-0000-000000000002', grantId }, GrantPersonalVoucherDto)).toBeInstanceOf(GrantPersonalVoucherDto);
+    await expect(validate({ customerId: 'not-an-uuid', grantId }, GrantPersonalVoucherDto)).rejects.toThrow();
+  });
   it('accepts typed fixed and percent campaign configuration', async () => {
     expect(
       await validate(validCampaign(), CreateVoucherCampaignDto),

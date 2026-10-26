@@ -160,6 +160,28 @@ describe('standalone voucher lifecycle (no database concurrency claim)', () => {
     };
     return { campaign, claim, dto, reservation };
   }
+  it('accepts seeded Admin and Customer UUID-v0 identities without weakening role isolation', async () => {
+    const adminV0 = { id: '00000000-0000-0000-0000-000000000001', role: Role.ADMIN };
+    const customerV0 = { id: '00000000-0000-0000-0000-000000000002', role: Role.CUSTOMER };
+    const offer = await service.createCampaign(adminV0, policy());
+    expect((await service.listCampaigns(adminV0)).map(row => row.id)).toContain(offer.id);
+    expect((await service.browseGeneral(customerV0)).map(row => row.id)).toContain(offer.id);
+    const owned = await service.claim(customerV0, offer.code);
+    expect((await service.wallet(customerV0)).map(row => row.id)).toContain(owned.id);
+    expect(store.rows(VoucherClaim)[0].customerId).toBe(customerV0.id);
+    await expect(service.listCampaigns(customerV0)).rejects.toThrow();
+    await expect(service.wallet(adminV0)).rejects.toThrow();
+    await expect(service.listCampaigns({ id: 'invalid', role: Role.ADMIN })).rejects.toThrow();
+  });
+  it('lets an Admin grant a PERSONAL voucher to an existing seeded UUID-v0 customer', async () => {
+    const adminV0 = { id: '00000000-0000-0000-0000-000000000001', role: Role.ADMIN };
+    const customerV0 = { id: '00000000-0000-0000-0000-000000000002', role: Role.CUSTOMER };
+    const campaign = await service.createCampaign(adminV0, policy(VoucherKind.PERSONAL));
+    store.rows(User).push({ id: customerV0.id, role: Role.CUSTOMER, status: AccountStatus.ACTIVE, isActive: true });
+    const granted = await service.grantPersonal(adminV0, campaign.id, { customerId: customerV0.id, grantId: randomUUID() });
+    expect(granted.campaignId).toBe(campaign.id);
+    expect((await service.wallet(customerV0)).map(row => row.id)).toContain(granted.id);
+  });
   it('lists only claimable GENERAL campaigns for the signed-in customer', async () => {
     const open = await service.createCampaign(admin, policy());
     const claimed = await service.createCampaign(admin, { ...policy(), code: 'CLAIMED' });
