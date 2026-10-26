@@ -7,7 +7,16 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom, timeout } from 'rxjs';
 import { AiDiagnosis } from './entities/ai-diagnosis.entity';
 import { AiChatSession } from './entities/ai-chat-session.entity';
-import { AiTurnInput, addFeedback, emptySummary, historyFromSummary, mergeTurn, vnDaysWindowStart } from './ai-chat-summary';
+import {
+  AiTurnInput,
+  addDisagreement,
+  addFeedback,
+  disagreementFrom,
+  emptySummary,
+  historyFromSummary,
+  mergeTurn,
+  vnDaysWindowStart,
+} from './ai-chat-summary';
 import { AI_PAST_JOBS_LIMITS, AiPastJob, pastJobsFromBookings } from './ai-past-jobs';
 import { Service } from '../services/entities/service.entity';
 import { Booking } from '../bookings/entities/booking.entity';
@@ -319,7 +328,10 @@ export class AiDiagnosisService {
     );
     const recentWrong = await this.sessionRepo.query(
       `SELECT s.session_id AS "sessionId", f->>'at' AS "at", f->>'note' AS "note", f->>'reply' AS "reply",
-              left(s.summary->>'customerText', 400) AS "customerText", s.summary->>'deviceName' AS "deviceName"
+              left(s.summary->>'customerText', 400) AS "customerText", s.summary->>'deviceName' AS "deviceName",
+              coalesce(f->>'source', 'button') AS "source", f->>'kind' AS "kind", f->>'said' AS "said",
+              coalesce(f->'rejected', '[]'::jsonb) AS "rejected",
+              coalesce(s.summary->'suspectedFaults', '[]'::jsonb) AS "settledOn"
          FROM ai_chat_sessions s, jsonb_array_elements(coalesce(s.summary->'feedback', '[]'::jsonb)) f
         WHERE f->>'verdict' = 'wrong' AND s.created_at >= $1
         ORDER BY f->>'at' DESC LIMIT 20`,
@@ -373,7 +385,9 @@ export class AiDiagnosisService {
           base = previous.summary;
         }
       }
-      const summary = mergeTurn(base ?? emptySummary(), input, reply);
+      let summary = mergeTurn(base ?? emptySummary(), input, reply);
+      const disagreement = disagreementFrom(reply);
+      if (disagreement) summary = addDisagreement(summary, disagreement, base?.conclusion);
       if (existing) {
         await this.sessionRepo.update(existing.id, { summary, customerId: existing.customerId ?? customerId });
       } else {
