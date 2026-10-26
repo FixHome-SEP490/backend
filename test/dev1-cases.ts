@@ -1233,16 +1233,28 @@ export function registerDev1Cases(context: () => Context) {
       denied(await get('/bookings?sort=random', manager));
     });
 
-    it.each([false, true])('keeps technician part warranty opt-in and outside labor commission: selected=%s', async selected => {
+    it.each(['technician', 'external'])('rejects new %s parts at initial quote and additional costs', async partSource => {
+      const f = await fixture('inspection_required'), { order } = await accept(f), path = `/service-orders/${order.id}`;
+      await arrived(order.id, f.tech);
+      const labor = { type: 'labor', description: 'Repair labor', quantity: 1, unitPrice: 100000, warrantyDays: 30 };
+      const disallowedPart = { type: 'parts_equipment', description: 'Unsupported part source', quantity: 1, unitPrice: 200000, partSource };
+      await post(path + '/quotations', f.tech, { items: [labor, disallowedPart] }).expect(422);
+      const quote = unwrap((await post(path + '/quotations', f.tech, { items: [labor] }).expect(201)).body);
+      await post(`/quotations/${quote.id}/decision`, f.owner, { action: 'APPROVE' }).expect(200);
+      await post(path + '/start-repair', f.tech).expect(200);
+      await post(path + '/additional-costs', f.tech, { reason: 'Disallowed parts', items: [disallowedPart] }).expect(422);
+    });
+
+    it.each([false, true])('settles approved labor and handles disputed cash: agreed=%s', async selected => {
       const f = await fixture('inspection_required'), { order } = await accept(f), path = `/service-orders/${order.id}`;
       await arrived(order.id, f.tech);
       const items = [
         { type: 'labor', description: 'Repair labor', quantity: 1, unitPrice: 100000, warrantyDays: 30 },
-        { type: 'parts_equipment', description: 'Technician part', quantity: 1, unitPrice: 200000, partSource: 'technician', partWarrantyOption: 'paid_warranty', warrantyFee: 50000, warrantyTermDays: 90 },
+
       ];
       const quote = unwrap((await post(path + '/quotations', f.tech, { items }).expect(201)).body);
-      const part = quote.items.find((item: any) => item.partSource === 'technician');
-      await post(`/quotations/${quote.id}/decision`, f.owner, { action: 'APPROVE', paidWarrantyItemIds: selected ? [part.id] : [] }).expect(200);
+
+      await post(`/quotations/${quote.id}/decision`, f.owner, { action: 'APPROVE' }).expect(200);
       await post(path + '/start-repair', f.tech).expect(200);
       const expired = unwrap((await post(path + '/additional-costs', f.tech, { reason: 'Optional work', items: [items[0]] }).expect(201)).body);
       await context().db.getRepository('AdditionalCostRequest').update(expired.id, { expiresAt: new Date(Date.now() - 1) });
@@ -1252,9 +1264,9 @@ export function registerDev1Cases(context: () => Context) {
       await evidence(order.id, f.tech, 'after').expect(201);
       await post(path + '/request-completion', f.tech).expect(200);
       const invoice = unwrap((await get(path + '/invoice', f.owner).expect(200)).body);
-      expect(Number(invoice.grandTotal)).toBe(selected ? 350000 : 300000);
+      expect(Number(invoice.grandTotal)).toBe(100000);
       expect(Number(invoice.commissionAmount)).toBe(10000);
-      expect(Number(invoice.technicianPartWarrantyFeeTotal)).toBe(selected ? 50000 : 0);
+      expect(Number(invoice.technicianPartWarrantyFeeTotal)).toBe(0);
       await post(path + '/cash-settlement/declare', f.tech, { declaredAmount: Number(invoice.grandTotal) }).expect(200);
       const cashResponse = await post(path + '/cash-settlement/confirm', f.owner, { agreed: true, confirmedAmount: selected ? Number(invoice.grandTotal) : 1 });
       expect(cashResponse.status, JSON.stringify(cashResponse.body)).toBe(selected ? 200 : 409);
@@ -1264,11 +1276,11 @@ export function registerDev1Cases(context: () => Context) {
       expect(unwrap((await get(path, f.owner).expect(200)).body).status).toBe(selected ? 'completed' : 'under_repair');
       if (selected) {
         const warranties = unwrap((await get(path + '/warranties', f.owner).expect(200)).body);
-        expect(warranties).toHaveLength(2);
+        expect(warranties).toHaveLength(1);
         // Each coverage names the invoice line it covers, so the customer knows what to claim.
         expect(warranties.map((w: any) => [w.itemType, w.itemDescription, w.warrantyDaysSnapshot]).sort()).toEqual([
           ['labor', 'Repair labor', 30],
-          ['parts_equipment', 'Technician part', 90],
+
         ]);
       } else {
         expect(await context().db.getRepository('CommissionDue').count({ where: { serviceOrderId: order.id } })).toBe(0);
