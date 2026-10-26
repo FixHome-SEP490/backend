@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-26 18:49 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/ai-pushback-feedback
+> Cập nhật lần cuối: 2026-10-26 21:40 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/public-part-prices
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -226,6 +226,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - Route phía client: `POST /ai/diagnoses`, `POST /ai/chat/ask`, `GET /ai/chat/acknowledgements`, `GET /ai/health`, `GET /ai/diagnoses/:id`.
 - Giới hạn khớp schema của `ai-service`: mô tả 2000 ký tự, câu hỏi 1000, `sessionId` và gợi ý 64, tối đa 3 ảnh. Hai route ảnh nhận body tới 40 MB.
 - AI lỗi thì trả HTTP 200 với `aiAvailable: false` và câu trả lời dự phòng; không bao giờ chặn đặt lịch.
+- Giá linh kiện công khai cho AI (PO 26/10/2026 khuya): `GET /api/v1/parts/prices` không cần đăng nhập, trả `{ items: [{ sku, name, price }] }` của mọi linh kiện đang bán có SKU trong `fixhome_parts` (giá bán, VND), nhớ 5 phút (`PartPricesController`, `PartsCatalogService.publicPrices`). ai-service đọc nó để tính giá trần ước tính = giá dịch vụ + linh kiện. Không lộ tồn kho, giá vốn, bảo hành.
 - Khách nói trợ lý sai (PO 26/10/2026, web bỏ nút "Đúng ý / Chưa đúng"): khi câu trả lời của AI Service có `customerDisagreed`, `recordTurn` tự thêm một mục `verdict: wrong`, `source: chat`, `kind` (fault/device/photo), `rejected` (tên bị bác), `said` (lời khách trước đó bị đọc sai), `note` = lời khách lượt này, `reply` = kết luận trước lượt này (`addDisagreement` trong `ai-chat-summary.ts`). `GET /admin/ai-quality` `recentWrong` có thêm `source` (`chat` hoặc `button` cho mục cũ), `kind`, `said`, `rejected`, `settledOn` (lỗi cuộc trò chuyện chốt lại). `POST /ai/feedback` vẫn giữ cho client cũ.
 - Phản hồi của khách về câu trả lời AI: `POST /ai/feedback` `{ sessionId, verdict: wrong|right, note?, reply? }` (10 lần/phút), lưu vào `ai_chat_sessions.summary.feedback` (tối đa 20 mục, không chép sang tóm tắt của booking); 404 nếu phiên không do backend ghi hoặc thuộc khách khác. Admin xem `GET /admin/ai-quality?days=1..90` (khung ngày theo giờ Việt Nam: từ 0 giờ của n-1 ngày trước tới hiện tại, `perDay` đúng n dòng, hôm nay cuối): số cuộc trò chuyện, số lượt, số cuộc bị báo sai/đúng, số đơn đặt từ trợ lý và tỉ lệ, theo ngày, 20 câu trả lời bị báo sai gần nhất kèm lời khách. Không thêm bảng, không migration.
 - Ghi chú hội thoại của AI: `notesVi` trong phản hồi ai-service (khách đã thử gì, đã loại lỗi nào, đang nghi gì, có dấu hiệu nguy hiểm) được ghi đè mỗi lượt vào `ai_chat_sessions.summary.notes` (tối đa 6 dòng), chép sang tóm tắt của booking, và lời chào khi thợ nhận đơn thêm dòng "Anh/chị đã cho biết: …" để khách không phải kể lại. Phiên cũ không có `notes` vẫn đọc được.
@@ -320,6 +321,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-26 21:40 (UTC+7) | ToanAltF4 | feat/public-part-prices | GET /parts/prices công khai cho AI tính giá ước tính
 - 2026-10-26 18:49 (UTC+7) | ToanAltF4 | feat/ai-pushback-feedback | Tự ghi lần khách nói trợ lý sai từ customerDisagreed của AI Service; ai-quality trả thêm source, kind, said, rejected, settledOn
 - 2026-10-26 14:30 (UTC+7) | foxonworld | foxonworld/fixhome-t2-integration-20261026 | Ghi T2 R-BE/Voucher, GENERAL browse, admin grant và cấu hình bù tự động; migration chưa chạy, cổng tiền còn khóa.
 - 2026-10-26 01:49 (UTC+7) | foxonworld | foxonworld/fixhome-e2e-e0-quote-contract-20261026 | E3 thêm notification khai tiền mặt VisitGroup cùng transaction và chặn trùng pending retry; giữ xác nhận thanh toán, runtime chưa kiểm chứng.
@@ -359,5 +361,4 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-19 00:50 (UTC+7) | foxonworld | feature/catalog-v2-owner-approved | Chặn thuộc tính mâu thuẫn tier legacy, xác thực input preview và máy giặt WM-03; rollback #0037/#0038 khóa an toàn; E2E sandbox vẫn timeout.
 - 2026-10-19 00:48 (UTC+7) | foxonworld | foxonworld/fixhome-p1-parts-return-20261018 | Ghi code P1 Phase B cô lập, migration inactive, API/guard/ledger mặc định OFF và gate concurrency/cutover còn chặn.
 - 2026-10-19 00:11 (UTC+7) | foxonworld | foxonworld/fixhome-p1-parts-return-20261018 | Ghi rõ quyết định P1 custody và giới hạn Phase A domain chưa đăng ký runtime/API/DB/finance.
-- 2026-10-18 23:37 (UTC+7) | ToanAltF4 | feat/chat-list-order-code | Danh sách hội thoại trả thêm mã đơn (orderCode)
 
