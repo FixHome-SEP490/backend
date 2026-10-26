@@ -1765,6 +1765,49 @@ export function registerDev1Cases(context: () => Context) {
         spy.mockRestore();
       }
     });
+
+    it('keeps a "sai rồi" the assistant noticed in the conversation, with what was turned down', async () => {
+      const { AiDiagnosisService } = runtimeRequire('./dist/modules/ai-diagnosis/ai-diagnosis.service.js');
+      const { of } = runtimeRequire('rxjs');
+      const http = (context().app.get(AiDiagnosisService) as any).httpService;
+      const sessionId = `ai-${randomUUID()}`;
+      const first = { sessionId, status: 'ok', suspectedFaults: [{ faultCode: 'AC_LOW_REFRIGERANT', nameVi: 'Thiếu gas, xì gas' }], messageVi: 'Dạ khả năng cao là thiếu gas ạ.', recommendedServices: [] };
+      const second = {
+        sessionId,
+        status: 'ok',
+        suspectedFaults: [{ faultCode: 'AC_DRAIN_BLOCKED', nameVi: 'Nghẹt đường thoát nước ngưng' }],
+        messageVi: 'Dạ, vậy em loại khả năng thiếu gas ra ạ.',
+        recommendedServices: [],
+        customerDisagreed: { kind: 'fault', rejected: ['AC_LOW_REFRIGERANT'], rejectedVi: ['Thiếu gas, xì gas'], saidVi: 'máy lạnh không mát', correctionVi: 'sai rồi, máy vẫn mát nhưng chảy nước' },
+      };
+      const replies = [first, second];
+      const spy = vi.spyOn(http, 'post').mockImplementation((() => of({ data: replies.shift() })) as any);
+      const post = (path: string, session: Session, body: object) => request(context().app.getHttpServer()).post(`/api/v1${path}`).set('Authorization', `Bearer ${session.accessToken}`).send(body);
+      try {
+        const owner = await context().register();
+        const admin = await context().register();
+        await post('/ai/diagnoses', owner, { description: 'máy lạnh không mát' }).expect(200);
+        await post('/ai/diagnoses', owner, { description: 'sai rồi, máy vẫn mát nhưng chảy nước', sessionId }).expect(200);
+        const [row] = await context().db.query('SELECT summary FROM ai_chat_sessions WHERE session_id = $1', [sessionId]);
+        expect(row.summary.feedback).toEqual([
+          expect.objectContaining({
+            verdict: 'wrong',
+            source: 'chat',
+            kind: 'fault',
+            rejected: ['Thiếu gas, xì gas'],
+            said: 'máy lạnh không mát',
+            note: 'sai rồi, máy vẫn mát nhưng chảy nước',
+            reply: 'Dạ khả năng cao là thiếu gas ạ.',
+          }),
+        ]);
+        await context().db.query('UPDATE users SET role = $1 WHERE id = $2', ['admin', admin.user.id]);
+        const quality = unwrap((await request(context().app.getHttpServer()).get('/api/v1/admin/ai-quality?days=1').set('Authorization', `Bearer ${admin.accessToken}`).expect(200)).body);
+        const wrong = quality.recentWrong.find((r: any) => r.sessionId === sessionId);
+        expect(wrong).toMatchObject({ source: 'chat', kind: 'fault', said: 'máy lạnh không mát', rejected: ['Thiếu gas, xì gas'], settledOn: ['Nghẹt đường thoát nước ngưng'] });
+      } finally {
+        spy.mockRestore();
+      }
+    });
   });
 
   describe('AI assistant keeps the conversation across a lost AI session', () => {
