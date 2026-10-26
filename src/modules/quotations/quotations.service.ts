@@ -82,37 +82,21 @@ export class QuotationsService {
         }
       } else {
         if (!Object.values(PartSource).includes(item.partSource!)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Part source required');
-        if (item.partSource === PartSource.FIXHOME) {
-          if (!item.partCatalogId) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'FixHome parts require a valid partCatalogId');
-          const part = await manager.findOne(FixHomePart, { where: { id: item.partCatalogId, isActive: true } });
-          const catalogPart = part ? { price: Number(part.sellingPrice), name: part.name, warrantyDays: part.warrantyDays ?? 0 } : null;
-          if (!catalogPart) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Part not found in FixHome catalog');
-          if (!Number.isSafeInteger(catalogPart.price)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Billable catalog price must be whole VND');
-          item.unitPrice = Number(catalogPart.price);
-          item.partNameSnapshot = catalogPart.name;
-          item.description = catalogPart.name;
-          item.warrantyDays = catalogPart.warrantyDays;
-          item.partWarrantyOption = PartWarrantyOption.INCLUDED;
-          item.warrantyFee = 0;
-          item.warrantyTermDays = catalogPart.warrantyDays;
-        } else if (item.partSource === PartSource.EXTERNAL) {
-          // Parts bought outside are no longer quoted (BUG DETECTOR 14): FixHome parts or the technician's own.
-          throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Không dùng linh kiện mua ngoài nữa. Chọn linh kiện FixHome hoặc linh kiện thợ tự có.');
-        } else {
-          if (!Number.isInteger(item.unitPrice) || item.unitPrice < 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid part unit price');
-          if (item.partCatalogId) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Technician parts cannot reference FixHome catalog');
-          item.partNameSnapshot = item.partNameSnapshot?.trim() || item.description.trim();
-          item.partWarrantyOption ??= PartWarrantyOption.NO_WARRANTY;
-          if (item.partWarrantyOption === PartWarrantyOption.PAID_WARRANTY) {
-            if (!item.warrantyTermDays || item.warrantyTermDays <= 0) {
-              throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Paid warranty requires a term');
-            }
-            item.warrantyFee = item.warrantyFee && item.warrantyFee > 0 ? item.warrantyFee : 0;
-          } else if (item.partWarrantyOption !== PartWarrantyOption.NO_WARRANTY || item.warrantyFee || item.warrantyTermDays || item.warrantyDays) {
-            throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Technician parts have no included warranty');
-          }
-          item.warrantyDays = 0;
+        if (item.partSource !== PartSource.FIXHOME) {
+          throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Only FixHome catalog parts can be quoted');
         }
+        if (!item.partCatalogId) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'FixHome parts require a valid partCatalogId');
+        const part = await manager.findOne(FixHomePart, { where: { id: item.partCatalogId, isActive: true } });
+        const catalogPart = part ? { price: Number(part.sellingPrice), name: part.name, warrantyDays: part.warrantyDays ?? 0 } : null;
+        if (!catalogPart) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Part not found in FixHome catalog');
+        if (!Number.isSafeInteger(catalogPart.price)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Billable catalog price must be whole VND');
+        item.unitPrice = Number(catalogPart.price);
+        item.partNameSnapshot = catalogPart.name;
+        item.description = catalogPart.name;
+        item.warrantyDays = catalogPart.warrantyDays;
+        item.partWarrantyOption = PartWarrantyOption.INCLUDED;
+        item.warrantyFee = 0;
+        item.warrantyTermDays = catalogPart.warrantyDays;
       }
       validated.push(item);
     }

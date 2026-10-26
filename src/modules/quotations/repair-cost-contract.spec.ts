@@ -16,6 +16,7 @@ const tech = { id: 'tech', role: Role.TECHNICIAN };
 const customer = { id: 'customer', role: Role.CUSTOMER };
 const labor = (unitPrice = 449000) => ({ type: CostItemType.LABOR, description: 'Tiền công', quantity: 1, unitPrice });
 const part = () => ({ type: CostItemType.PARTS_EQUIPMENT, description: 'Linh kiện', quantity: 2, unitPrice: 1, partSource: PartSource.FIXHOME, partCatalogId: 'sku' });
+const technicianPart = () => ({ type: CostItemType.PARTS_EQUIPMENT, description: 'Linh kiện kỹ thuật viên', quantity: 1, unitPrice: 50000, partSource: PartSource.TECHNICIAN });
 const supplement = () => ({ reason: 'Thay linh kiện sau khảo sát', items: [labor(10000), part()] });
 
 // Persistence is in memory; the real service performs validation, access and lifecycle decisions.
@@ -66,6 +67,50 @@ function setup() {
 }
 
 describe('E0 repair monetary contract', () => {
+  it('rejects technician-owned parts in a new base quotation', async () => {
+    const s = setup(); s.order.status = ServiceOrderStatus.EN_ROUTE;
+    s.booking.pricingModeSnapshot = ServicePricingMode.INSPECTION_REQUIRED;
+
+    await expect(s.service.createQuotation('order', { items: [labor(100000), technicianPart()] as any }, tech))
+      .rejects.toMatchObject({ status: 422, response: { code: 'VALIDATION_FAILED' } });
+    expect(s.manager.save).not.toHaveBeenCalled();
+    expect(s.quotes).toHaveLength(0);
+  });
+
+  it('rejects technician-owned parts in a new supplemental cost', async () => {
+    const s = setup();
+
+    await expect(s.service.createAdditionalCost('order', { reason: 'Cần linh kiện', items: [labor(10000), technicianPart()] } as any, tech))
+      .rejects.toMatchObject({ status: 422, response: { code: 'VALIDATION_FAILED' } });
+    expect(s.manager.save).not.toHaveBeenCalled();
+    expect(s.costs).toHaveLength(0);
+  });
+
+  it('rejects technician-owned parts when revising a supplemental cost', async () => {
+    const s = setup();
+    const pending = await s.service.createAdditionalCost('order', supplement(), tech);
+    const savedBeforeRevision = s.manager.save.mock.calls.length;
+    const updatedBeforeRevision = s.manager.update.mock.calls.length;
+
+    await expect(s.service.reviseAdditionalCost(pending.id, { reason: 'Sửa phát sinh', items: [labor(10000), technicianPart()] } as any, tech))
+      .rejects.toMatchObject({ status: 422, response: { code: 'VALIDATION_FAILED' } });
+    expect(pending.status).toBe('pending_approval');
+    expect(s.costs).toHaveLength(1);
+    expect(s.manager.save).toHaveBeenCalledTimes(savedBeforeRevision);
+    expect(s.manager.update).toHaveBeenCalledTimes(updatedBeforeRevision);
+  });
+
+  it('rejects parts with no source in a new base quotation', async () => {
+    const s = setup(); s.order.status = ServiceOrderStatus.EN_ROUTE;
+    s.booking.pricingModeSnapshot = ServicePricingMode.INSPECTION_REQUIRED;
+    const sourceOmitted = { type: CostItemType.PARTS_EQUIPMENT, description: 'Linh kiện thiếu nguồn', quantity: 1, unitPrice: 50000 };
+
+    await expect(s.service.createQuotation('order', { items: [labor(100000), sourceOmitted] as any }, tech))
+      .rejects.toMatchObject({ status: 422, response: { code: 'VALIDATION_FAILED' } });
+    expect(s.manager.save).not.toHaveBeenCalled();
+    expect(s.quotes).toHaveLength(0);
+  });
+
   it('keeps fixed base labor-only with a machine-readable validation error and no writes', async () => {
     const s = setup(); s.order.status = ServiceOrderStatus.EN_ROUTE;
     await expect(s.service.createQuotation('order', { items: [labor(), part()] }, tech)).rejects.toMatchObject({
