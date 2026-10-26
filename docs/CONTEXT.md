@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-26 01:49 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-e2e-e0-quote-contract-20261026
+> Cập nhật lần cuối: 2026-10-26 14:30 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-t2-integration-20261026
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -93,6 +93,8 @@ Ba điều không đổi giữa các repo:
 Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức của nhóm). Mâu thuẫn giữa code và tài liệu thì ghi vào mục 8 và hỏi PO, không tự quyết.
 
 ## 3. Trạng thái hiện tại
+
+T2 source integration (26/10/2026): đã thêm luồng R-BE báo sửa không được và đặt lại theo sự cố, migration `RepairFailureRebook1790000000053`; thêm Voucher GENERAL/PERSONAL với migration `VoucherCore1792994400000` và đăng ký `VouchersModule`. Admin tạo/tạm dừng campaign, chọn duy nhất một PERSONAL active bằng `autoCompensation=true`, và cấp PERSONAL thủ công bằng `grantId` riêng; khách xem GENERAL còn thời hạn chưa claim, claim và xem ví. Sau khi sự cố R-BE commit, backend xác minh receipt rồi cấp tự động đúng một claim/group hoặc solo; sweep audit receipt thử lại khi cấp lỗi. Thiếu cấu hình ghi warning, không phát voucher giả. Voucher APPLY/settle/release còn fail closed, không sửa tiền hay thanh toán. Cả hai migration chưa chạy shared DEV; Web/Mobile, Docker và runtime: NOT VERIFIED. Chi tiết ở `src/modules/vouchers/INTEGRATION.md`.
 
 E0 contract báo giá/phát sinh (26/10/2026): giữ báo giá gốc FIXED_PRICE trong VisitGroup chỉ gồm đúng tiền công cố định; INSPECTION_REQUIRED vẫn nhận linh kiện hợp lệ. Phát sinh được tạo/sửa và khách duyệt nhiều lần khi UNDER_REPAIR; khóa khi có `completionRequestedAt` hoặc hóa đơn, kể cả chưa thanh toán. Gửi lại quyết định đã duyệt vẫn không ghi thêm tiền/kho. USED cùng SKU trong một đơn phải nằm trong tổng số lượng đã duyệt của báo giá gốc và các phát sinh, kể cả khi hàng gốc đã phục vụ phát sinh trước khi ghi USED ở yêu cầu ADDITIONAL. Không migration, không tính lại hóa đơn cũ.
 
@@ -189,6 +191,8 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 ## 5. Hợp đồng với repo khác
 
 ### Với `web` và `mobile`
+
+- T2 Voucher: `GET /api/v1/vouchers/general` chỉ CUSTOMER trả tối đa 100 GENERAL active trong cửa sổ giờ DB và chưa claim của chính khách, item `{id,code,name,startsAt,endsAt,policy}`; `POST /api/v1/vouchers/claim {code}` và `GET /api/v1/vouchers/wallet` đã có. Admin tạo PERSONAL campaign với `autoCompensation?: boolean` (mặc định false), chỉ một active được true; `GET /campaigns` trả field này để Console hiện checkbox/cảnh báo thiếu cấu hình. `POST /api/v1/vouchers/campaigns/:id/grants {customerId,grantId}` chỉ ADMIN để cấp PERSONAL thủ công cho khách active; `grantId` UUID là idempotency, không phải mã sự cố. Không trả owner/source/counter cho khách. APPLY/release có route nhưng adapter checkout/payment còn trả lỗi, client không được hứa giảm tiền. Hai màn Web browse/claim và Admin grant/config: NOT VERIFIED; đồng bộ context các repo consumer trong PR của chúng.
 
 - E3: mỗi khai tiền mặt nhóm mới hợp lệ ghi đúng một notification cho khách sở hữu lượt, cùng transaction với `VisitGroupPayment` và audit: `type=VISIT_CASH_DECLARED`, `referenceType=VISIT_GROUP`, `referenceId` là group ID. Nội dung cố định, không chứa ghi chú của thợ hay thông tin cá nhân. Dùng trigger/listener `notification:new` hiện có sau commit; lỗi insert notification làm thất bại transaction. Retry khi còn pending cùng thợ, số tiền, phân bổ hóa đơn và ghi chú đã lưu trả cùng declaration, không thay payment/audit/notification; declaration cũ không backfill. Web phải lọc reference đúng lượt, đọc lại GET checkout để hiện `pendingCash`, map notification tới `/app/visits/:id`; không tự xác nhận thanh toán. Không đổi xác nhận tiền mặt, ví/VNPay, migration hoặc dependency. Unit giả lập đã kiểm; PostgreSQL concurrency/trigger/socket và Web/Mobile runtime: NOT VERIFIED. Cần restart backend sau tích hợp trước runtime QA.
 
@@ -290,6 +294,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 8. Việc đang dở và rủi ro đã biết
 
+- T2: Lead cần review mọi migration pending trước `npm run migration:run` trên shared DEV, restart backend và kiểm `/health`; chưa chạy migration, Docker hoặc Web/Mobile E2E trong worktree này. Voucher discount, settlement, refund, commission và PlatformDue chưa có chính sách owner nên không nối tiền. Cấp PERSONAL tự động dùng campaign Admin chọn và audit receipt để retry; PostgreSQL concurrency, nhiều instance và màn Admin cảnh báo cấu hình: NOT VERIFIED. R-BE giữ linh kiện đã nhận ở nghĩa vụ custody sau khi sửa thất bại, khai trả của thợ chưa là biên nhận vật lý; cần review phần custody trước release.
+
 - E0 chỉ kiểm chứng bằng test không DB: lifecycle phát sinh 1/2/3, freeze, giới hạn USED, hóa đơn actual-use và phân bổ thanh toán parent ví/VNPay. PostgreSQL lock/concurrency, Docker, provider thật và Web/Mobile E2E: NOT VERIFIED; không kết nối AWS/Supabase, chạy Nest server, migration hay E2E trong task này. Lead phải tích hợp E1 và restart backend trước runtime QA; không bật thêm cờ custody.
 
 - `PART_RETURN_DECLARED` đã có unit test cho recipient, replay, dữ liệu sai/quyền sai và lỗi insert trong transaction giả lập; rollback/concurrency PostgreSQL, socket và Web/Mobile runtime NOT VERIFIED. Cần phát hành cùng Web map `/console/part-returns`, restart backend rồi owner kiểm tra E2E; task này không ghi DB, không chạy Docker/E2E hoặc deploy. Khi notification insert lỗi, khai trả cũng thất bại để có thể retry nguyên tử; không backfill thông báo cho khai trả cũ.
@@ -313,6 +319,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-10-26 14:30 (UTC+7) | foxonworld | foxonworld/fixhome-t2-integration-20261026 | Ghi T2 R-BE/Voucher, GENERAL browse, admin grant và cấu hình bù tự động; migration chưa chạy, cổng tiền còn khóa.
 - 2026-10-26 01:49 (UTC+7) | foxonworld | foxonworld/fixhome-e2e-e0-quote-contract-20261026 | E3 thêm notification khai tiền mặt VisitGroup cùng transaction và chặn trùng pending retry; giữ xác nhận thanh toán, runtime chưa kiểm chứng.
 - 2026-10-26 01:32 (UTC+7) | foxonworld | foxonworld/fixhome-e2e-e0-quote-contract-20261026 | E0 khóa phát sinh khi đã có hóa đơn, chặn USED vượt tổng duyệt cùng SKU và ghi contract fixed-price/Web, actual-use, parent payment; runtime chưa kiểm chứng.
 - 2026-10-25 00:17 (UTC+7) | ToanAltF4 | feat/ai-multi-device | Gộp dev (override body-parser/multer) vào nhánh AI nhiều thiết bị
@@ -352,5 +359,4 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-19 00:11 (UTC+7) | foxonworld | foxonworld/fixhome-p1-parts-return-20261018 | Ghi rõ quyết định P1 custody và giới hạn Phase A domain chưa đăng ký runtime/API/DB/finance.
 - 2026-10-18 23:37 (UTC+7) | ToanAltF4 | feat/chat-list-order-code | Danh sách hội thoại trả thêm mã đơn (orderCode)
 - 2026-10-18 12:59 (UTC+7) | ToanAltF4 | feat/po-batch-2026-10-18 | Sửa sau rà soát và test thật: video 75 giây trả đúng 422, LISTEN có heartbeat tự ping, kiểm bản chuyển mã theo cách xem, chặn tin chat trùng khi gửi lại chồng, ẩn link xem trong log, quét GPS cả XMP
-- 2026-10-18 12:18 (UTC+7) | ToanAltF4 | feat/po-batch-2026-10-18 | Realtime thật bằng trigger Postgres + LISTEN (migration 038, order/booking/invitation/notification/wallet/location events, resync); video riêng tư: xoá GPS, tối đa 60 giây, Cloudinary chuyển mã H.264 khi cần + poster, link xem 15 phút stream có Range; requestTimeout 15 phút cho mạng yếu
 

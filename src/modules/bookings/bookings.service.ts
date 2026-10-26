@@ -1,5 +1,6 @@
 // src/modules/bookings/bookings.service.ts
 import { andWhereTextMatches } from '../../shared/utils/list-search';
+import { createHash } from 'crypto';
 import { firstEligible } from './first-eligible';
 import { displayRating } from '../technicians/technician-earnings';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -9,7 +10,7 @@ import {
   Logger,
   NotFoundException, Optional, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, EntityManager, In, SelectQueryBuilder } from 'typeorm';
+import { Repository, DataSource, EntityManager, In, Like, SelectQueryBuilder } from 'typeorm';
 import { isUUID } from 'class-validator';
 import { Booking } from './entities/booking.entity';
 import { BookingMedia } from './entities/booking-media.entity';
@@ -24,7 +25,7 @@ import {
   type CustomerActivityCounts,
   type RequestStage,
 } from '../../shared/utils/customer-activity-stage';
-import { BookingStatus, Role, ServicePricingMode, UrgencyLevel } from '../../shared/enums';
+import { BookingStatus, Role, ServicePricingMode, SupportCaseType, UrgencyLevel } from '../../shared/enums';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { TechnicianSkill } from '../technicians/entities/technician-skill.entity';
@@ -39,6 +40,8 @@ import { loadEligibilityPreload, technicianEligibility } from './technician-elig
 import { groupSiblings, refuseLoneGroupedBookingAction } from './visit-group-guard';
 import { VisitGroup } from '../visit-groups/entities/visit-group.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
+import { OrderStatusHistory } from '../service-orders/entities/order-status-history.entity';
+import { SupportCase } from '../support-cases/entities/support-case.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { BookingInvitation } from './entities/booking-invitation.entity';
 import { InvitationStatus, ServiceOrderStatus } from '../../shared/enums';
@@ -59,6 +62,14 @@ import {
   validateCatalogV2DeviceAttributesForBooking,
 } from '../../database/catalog-v2/catalog-v2-device-attributes';
 import { catalogV2SelectedVariantCode, isCatalogV2Service, resolveCatalogV2Pricing } from '../../database/catalog-v2/catalog-v2-pricing-binding';
+import { buildRepairFailureDraft } from './repair-failure-draft';
+import type { RepairFailureDraftDto } from './dto/repair-failure-draft.dto';
+import { REPAIR_FAILURE_ACTION } from '../service-orders/repair-failure-incident';
+import { AuditLog } from '../audit-log/entities/audit-log.entity';
+import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity';
+import { RepairFailureRebook, RepairFailureRebookSource } from './entities/repair-failure-rebook.entity';
+import { RepairFailureRebookDto } from './dto/repair-failure-rebook.dto';
+import type { CreateVisitGroupDto } from '../visit-groups/visit-group.dto';
 
 export interface TechnicianCandidate {
   technicianId: string;
@@ -960,6 +971,101 @@ export class BookingsService {
     });
   }
 
+  /** An owned failed repair is the only source accepted by the final confirmation. */
+  async repairFailureDraft(bookingId: string, customer: { id: string; role: string }): Promise<RepairFailureDraftDto> {
+    return buildRepairFailureDraft(this.dataSource.manager, bookingId, customer);
+  }
+
+  async confirmRepairFailureRebook(
+    anchorId: string,
+    dto: RepairFailureRebookDto,
+    customer: { id: string; role: string },
+    createGroup: (dto: CreateVisitGroupDto, customer: { id: string; role: string }, manager: EntityManager) => Promise<{ id: string; items: Array<{ booking: { id: string } | null }> }>,
+  ) {
+    if (customer.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
+    if (!dto || !/^[A-Za-z0-9_-]{8,128}$/.test(dto.idempotencyKey ?? '') || !isUUID(dto.addressId)
+      || !/^\d{4}-\d{2}-\d{2}$/.test(dto.date ?? '') || !Object.prototype.hasOwnProperty.call(BOOKING_SLOTS, dto.slot)
+      || !Array.isArray(dto.items) || dto.items.length < 1 || dto.items.length > 3
+      || dto.items.some(item => !isUUID(item?.sourceBookingId) || !isUUID(item?.sourceIncidentId))
+      || new Set(dto.items.map(item => item.sourceBookingId)).size !== dto.items.length) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Yêu cầu đặt lại không hợp lệ.');
+    }
+    const normalized = { ...dto, items: [...dto.items].sort((a, b) => a.sourceBookingId.localeCompare(b.sourceBookingId)) };
+    const stable = (value: unknown): unknown => Array.isArray(value) ? value.map(stable)
+      : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, stable(child)])) : value;
+    const fingerprint = createHash('sha256').update(JSON.stringify(stable(normalized))).digest('hex');
+    return this.dataSource.transaction(async manager => {
+      // The original lead is the lock for the whole source visit. Its lock is
+      // acquired first, matching the VisitGroup mutation order.
+      const anchor = await manager.findOneBy(Booking, { id: anchorId, customerId: customer.id });
+      if (!anchor) throw new ForbiddenException('Failed repair not found or access denied');
+      const originalItems = anchor.visitGroupId
+        ? await manager.find(VisitGroupItem, { where: { groupId: anchor.visitGroupId }, order: { sequence: 'ASC' } }) : [];
+      if (anchor.visitGroupId && (!originalItems.length || !originalItems.some(item => item.bookingId === anchorId))) {
+        throw new ForbiddenException('Failed repair not found or access denied');
+      }
+      const leadId = originalItems[0]?.bookingId ?? anchorId;
+      const lockedLead = await manager.findOne(Booking, { where: { id: leadId, customerId: customer.id }, lock: { mode: 'pessimistic_write' } });
+      if (!lockedLead) throw new ForbiddenException('Failed repair not found or access denied');
+      const scopeKind = anchor.visitGroupId ? 'visit_group' : 'booking';
+      const scopeId = anchor.visitGroupId ?? anchorId;
+      const existing = await manager.findOneBy(RepairFailureRebook, { customerId: customer.id, scopeKind, scopeId, idempotencyKey: dto.idempotencyKey });
+      if (existing) {
+        if (existing.requestFingerprint !== fingerprint) throw new BusinessException(ErrorCodes.CONFLICT, 'Khóa xác nhận đã dùng với nội dung khác.');
+        const sources = await manager.find(RepairFailureRebookSource, { where: { rebookId: existing.id } });
+        if (sources.length !== existing.sourceCount || !sources.some(source => source.sourceBookingId === anchorId)) {
+          throw new BusinessException(ErrorCodes.CONFLICT, 'Biên nhận đặt lại không đầy đủ.');
+        }
+        const items = sources.sort((a, b) => a.sourceBookingId.localeCompare(b.sourceBookingId)).map(source => ({
+          sourceBookingId: source.sourceBookingId, sourceIncidentId: source.sourceIncidentId, bookingId: source.targetBookingId,
+        }));
+        return { targetKind: existing.targetVisitGroupId ? 'visit_group' as const : 'booking' as const,
+          bookingId: existing.targetVisitGroupId ? null : items[0].bookingId, visitGroupId: existing.targetVisitGroupId, items };
+      }
+      const draft = await buildRepairFailureDraft(manager, anchorId, customer);
+      const expected = new Map(draft.items.map(item => [item.sourceBookingId, item]));
+      if (expected.size !== dto.items.length || dto.items.some(item => expected.get(item.sourceBookingId)?.sourceIncidentId !== item.sourceIncidentId)) {
+        throw new ForbiddenException('Failed repair sources do not match this incident');
+      }
+      // This also prevents a different key or an overlapping group submission.
+      const consumed = await manager.find(RepairFailureRebookSource, { where: { sourceBookingId: In(dto.items.map(item => item.sourceBookingId)) } });
+      if (consumed.length) throw new BusinessException(ErrorCodes.CONFLICT, 'Thiết bị đã được đặt lại.');
+      const targetItems = draft.items.map(source => {
+        const edit = dto.items.find(item => item.sourceBookingId === source.sourceBookingId)!;
+        return { serviceId: source.serviceId, deviceLabel: source.deviceLabel ?? undefined,
+          selectedVariantCode: edit.selectedVariantCode === undefined ? source.selectedVariantCode : edit.selectedVariantCode,
+          description: edit.description === undefined ? source.description : edit.description,
+          deviceAttributes: edit.deviceAttributes === undefined ? source.deviceAttributes : edit.deviceAttributes,
+          photoUploadIds: edit.photoUploadIds };
+      });
+      let targetVisitGroupId: string | null = null;
+      let targetBookingIds: string[];
+      if (targetItems.length === 1) {
+        const child = await this.create({ ...targetItems[0], addressId: dto.addressId, mode: 'scheduled', date: dto.date,
+          slot: dto.slot, customerNote: dto.customerNote ?? draft.customerNote ?? undefined, quantity: 1 }, customer, { manager, visitGroupId: null });
+        targetBookingIds = [child.id];
+      } else {
+        const group = await createGroup({ addressId: dto.addressId, mode: 'scheduled', date: dto.date, slot: dto.slot,
+          customerNote: dto.customerNote ?? draft.customerNote ?? undefined, items: targetItems }, customer, manager);
+        targetVisitGroupId = group.id;
+        targetBookingIds = group.items.map(item => item.booking?.id).filter((id): id is string => !!id);
+        if (targetBookingIds.length !== targetItems.length) throw new BusinessException(ErrorCodes.CONFLICT, 'Nhóm đặt lại thiếu thiết bị.');
+      }
+      const header = await manager.save(RepairFailureRebook, manager.create(RepairFailureRebook, {
+        customerId: customer.id, scopeKind, scopeId, idempotencyKey: dto.idempotencyKey,
+        requestFingerprint: fingerprint, sourceCount: draft.items.length, targetVisitGroupId,
+      }));
+      const items = draft.items.map((source, index) => ({ sourceBookingId: source.sourceBookingId,
+        sourceIncidentId: source.sourceIncidentId, bookingId: targetBookingIds[index] }))
+        .sort((a, b) => a.sourceBookingId.localeCompare(b.sourceBookingId));
+      for (const item of items) await manager.insert(RepairFailureRebookSource, {
+        rebookId: header.id, sourceBookingId: item.sourceBookingId, sourceIncidentId: item.sourceIncidentId, targetBookingId: item.bookingId,
+      });
+      return { targetKind: targetVisitGroupId ? 'visit_group' as const : 'booking' as const,
+        bookingId: targetVisitGroupId ? null : targetBookingIds[0], visitGroupId: targetVisitGroupId, items };
+    });
+  }
+
   /** The technician who held (or finished) the booking's order, if any. */
   private async previousTechnicianId(manager: EntityManager, bookingId: string): Promise<string | null> {
     const order = await manager.findOneBy(ServiceOrder, { bookingId });
@@ -977,6 +1083,26 @@ export class BookingsService {
     const old = await this.bookingRepo.findOneBy({ id: oldBookingId, customerId: customer.id });
     if (!old) throw new ForbiddenException('Booking not found');
     const order = await this.dataSource.manager.findOneBy(ServiceOrder, { bookingId: old.id });
+    // The transition history and incident survive loss of the audit receipt.
+    // Require both so ordinary cancellations retain their legacy rebook flow.
+    const failureTransition = order?.status === ServiceOrderStatus.CANCELLED && old.status === BookingStatus.CANCELLED
+      ? await this.dataSource.manager.findOneBy(OrderStatusHistory, {
+        serviceOrderId: order.id, fromStatus: ServiceOrderStatus.UNDER_REPAIR,
+        toStatus: ServiceOrderStatus.CANCELLED, actorRole: Role.TECHNICIAN, reason: Like('Không sửa được:%'),
+      }) : null;
+    const failureIncident = failureTransition?.actorUserId
+      ? await this.dataSource.manager.findOneBy(SupportCase, {
+        serviceOrderId: order.id, bookingId: old.id, customerId: customer.id,
+        technicianId: failureTransition.actorUserId, createdByUserId: failureTransition.actorUserId,
+        caseType: SupportCaseType.MID_JOB_INTERRUPTION,
+        reason: `Không sửa được thiết bị đơn #${order.code}`,
+      }) : null;
+    // Even an incomplete legacy receipt must not fall back to instant creation
+    // and automatic invitation of the technician who reported the failure.
+    if (failureIncident || (order && await this.dataSource.manager.findOneBy(AuditLog, { action: REPAIR_FAILURE_ACTION, resourceType: 'service_order', resourceId: order.id })) ||
+        (old.visitGroupId && await this.dataSource.manager.findOneBy(VisitGroupItem, { bookingId: old.id, groupId: old.visitGroupId, outcome: 'failed' }))) {
+      throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Báo cáo không sửa được cần đặt lại qua bản nháp riêng.', { draftPath: `/api/v1/bookings/${old.id}/repair-failure-draft` });
+    }
     const finished = old.status === BookingStatus.CANCELLED
       || (order && [ServiceOrderStatus.COMPLETED, ServiceOrderStatus.CANCELLED].includes(order.status));
     if (!finished) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chỉ đặt lại từ đơn đã hoàn thành hoặc đã huỷ');

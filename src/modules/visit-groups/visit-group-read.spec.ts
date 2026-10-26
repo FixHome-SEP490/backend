@@ -96,7 +96,7 @@ describe('VisitGroupsService parent paging', () => {
     expect(h.calls.findIndex(({ method }) => method === 'skip')).toBeLessThan(h.calls.findIndex(({ method }) => method === 'take'));
   });
 
-  it('returns no group for a released or reassigned technician and requires every child assignment to remain active', async () => {
+  it('returns no group for a released or reassigned technician and exempts failed terminal children from active assignment', async () => {
     const h = harness([], 0);
 
     const result = await h.service.assignedPage('tech-former', { page: 1, pageSize: 20, tab: 'all' });
@@ -106,6 +106,7 @@ describe('VisitGroupsService parent paging', () => {
     const activeAssignmentSql = parentFilters.map(([sql]) => String(sql)).join('\n');
     expect(activeAssignmentSql).toContain('ta.technician_id = :technicianId');
     expect(activeAssignmentSql).toContain('ta.is_active = true');
+    expect(activeAssignmentSql).toContain("vgi.outcome IS DISTINCT FROM 'failed'");
     expect(activeAssignmentSql).toContain('NOT EXISTS');
     expect(h.calls.some(({ args }) => JSON.stringify(args).includes('tech-former'))).toBe(true);
     expect(h.dataSource.query).not.toHaveBeenCalled();

@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { ArrayMaxSize, IsArray, IsIn, IsOptional, IsString, Matches, MaxLength, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayUnique, IsArray, IsIn, IsOptional, IsString, Matches, MaxLength, ValidateNested } from 'class-validator';
 import { UUID_REGEX } from '../../bookings/booking.dto';
 
 /**
@@ -37,4 +37,8 @@ export class RepairFailedDto {
   @ApiPropertyOptional({ type: [RepairFailedPartDto], maxItems: 20, description: 'Every part received for this order, fitted or going back' })
   @IsOptional() @IsArray() @ArrayMaxSize(20) @ValidateNested({ each: true }) @Type(() => RepairFailedPartDto)
   parts?: RepairFailedPartDto[];
+
+  @ApiPropertyOptional({ type: [String], maxItems: 3, description: 'IDs of private ADDITIONAL photos uploaded by this technician to this order before reporting failure; never URLs' })
+  @IsOptional() @IsArray() @ArrayMaxSize(3) @ArrayUnique() @Matches(UUID_REGEX, { each: true })
+  photoEvidenceIds?: string[];
 }
