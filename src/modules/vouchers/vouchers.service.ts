@@ -18,6 +18,7 @@ import { User } from '../users/entities/user.entity';
 import { startBackgroundJob } from '../../common/background-job';
 import { REPAIR_FAILURE_ACTION } from '../service-orders/repair-failure-incident';
 import { VoucherEvidence } from './voucher.ports';
+import { isFixHomeUserId } from './voucher-user-id';
 import {
   APPLY_TTL_MS,
   CheckoutFacts,
@@ -194,7 +195,7 @@ export class VouchersService implements OnModuleInit, OnModuleDestroy {
     dto: GrantPersonalVoucherDto,
   ): Promise<CustomerVoucherClaimDto> {
     this.role(actor, Role.ADMIN);
-    if (!dto || !isUUID(dto.customerId, '4') || !isUUID(dto.grantId, '4'))
+    if (!dto || !isFixHomeUserId(dto.customerId) || !isUUID(dto.grantId, '4'))
       throw new BadRequestException('Mã cấp ưu đãi không hợp lệ.');
     return this.transaction(async (manager) => {
       const campaign = await this.lockCampaign(manager, campaignId);
@@ -308,7 +309,7 @@ export class VouchersService implements OnModuleInit, OnModuleDestroy {
         source.reason !== 'REPAIR_FAILED' ||
         !['VISIT_GROUP', 'SOLO'].includes(source.sourceKind) ||
         !isUUID(source.sourceId, '4') ||
-        !isUUID(source.customerId, '4')
+        !isFixHomeUserId(source.customerId)
       ) {
         throw new ForbiddenException(
           'Lượt sửa chữa chưa đủ điều kiện nhận ưu đãi.',
@@ -646,7 +647,7 @@ export class VouchersService implements OnModuleInit, OnModuleDestroy {
       this.unavailable();
   }
   private role(actor: VoucherActor, role: Role): void {
-    if (!actor || actor.role !== role || !isUUID(actor.id, '4'))
+    if (!actor || actor.role !== role || !isFixHomeUserId(actor.id))
       throw new ForbiddenException(
         'Bạn không có quyền thực hiện thao tác này.',
       );

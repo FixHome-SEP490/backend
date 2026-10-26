@@ -69,7 +69,8 @@ export class ApplyVoucherDto {
   @ApiProperty() @IsUUID('4') attemptId: string;
 }
 export class GrantPersonalVoucherDto {
-  @ApiProperty() @IsUUID('4') customerId: string;
+  // v0 is reserved for existing demo customers; newly generated IDs are v4.
+  @ApiProperty() @Matches(/^(?:[0-9a-f]{8}-[0-9a-f]{4}-0[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i) customerId: string;
   /** Stable idempotency identity supplied by the administrator's client. */
   @ApiProperty() @IsUUID('4') grantId: string;
 }
