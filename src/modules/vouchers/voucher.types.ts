@@ -14,6 +14,7 @@ export enum ReservationState {
   RELEASED = 'RELEASED',
   EXPIRED = 'EXPIRED',
   REDEEMED = 'REDEEMED',
+  REFUNDED = 'REFUNDED',
 }
 export interface VoucherActor {
   id: string;

@@ -15,6 +15,10 @@ import { EntityManager, In, Repository } from 'typeorm';
 import { Booking } from '../bookings/entities/booking.entity';
 import { CashSettlement } from '../service-orders/entities/cash-settlement.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
+import { assertNoFundedVoucherRefund } from '../vouchers/voucher-refund-guard';
+import { commitVerifiedVoucherSupportRefund } from '../vouchers/voucher-refund-commit';
+import { VoucherPaymentLink } from '../vouchers/entities/voucher-funding.entity';
+import { WalletService } from '../wallet/wallet.service';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { AuditLogService } from '../audit-log/audit-log.service';
@@ -494,6 +498,9 @@ export class SupportCasesService {
       10,
       SUPPORT_CASE_MAX_RESOLUTION_REASON_LENGTH,
     );
+    if (dto.grossRefundVnd !== undefined && resolutionCode !== 'refund_to_wallet') {
+      throw new BadRequestException('Gross refund basis is only valid for a wallet refund.');
+    }
     const evidenceRefs =
       dto.evidenceRefs === undefined
         ? undefined
@@ -542,6 +549,7 @@ export class SupportCasesService {
           // A refund into the wallet is FixHome's to bear unless the manager says otherwise (PO 09/10/2026).
           liableParty: dto.liableParty ?? supportCase.liableParty ?? (resolutionCode === 'refund_to_wallet' ? 'platform' : null),
           amount: dto.amount ?? supportCase.amount ?? null,
+          voucherGrossRefundVnd: dto.grossRefundVnd ?? supportCase.voucherGrossRefundVnd ?? null,
         };
 
         const updateResult = await repository.update(
@@ -564,7 +572,7 @@ export class SupportCasesService {
           reason,
         );
         if (resolutionCode === 'refund_to_wallet') {
-          refunded = await this.refundToWallet(manager, supportCase, finalStatus, dto.amount);
+          refunded = await this.refundToWallet(manager, supportCase, finalStatus, dto.amount, dto.grossRefundVnd);
         }
 
         await this.auditLogService.logWithManagerStrict(manager, {
@@ -619,6 +627,7 @@ export class SupportCasesService {
     supportCase: SupportCase,
     finalStatus: SupportCaseStatus,
     amount: number | undefined,
+    grossRefundVnd?: number,
   ): Promise<{ customerId: string; amount: number; orderCode: string }> {
     if (!this.customerWalletService) {
       throw new ConflictException('Ví khách chưa sẵn sàng, chưa hoàn tiền được');
@@ -629,11 +638,67 @@ export class SupportCasesService {
     if (!(REFUND_CASE_TYPES as readonly SupportCaseType[]).includes(supportCase.caseType)) {
       throw new BadRequestException('Chỉ hoàn tiền vào ví khi khiếu nại về linh kiện hỏng hoặc bảo hành');
     }
-    if (!Number.isSafeInteger(amount) || (amount as number) <= 0) {
+    if (!Number.isSafeInteger(amount) || (amount as number) < 0) {
       throw new BadRequestException('Nhập số tiền hoàn lớn hơn 0');
     }
     if (!supportCase.customerId || !supportCase.serviceOrderId) {
       throw new BadRequestException('Khiếu nại không gắn với đơn của khách nên không hoàn tiền được');
+    }
+    // Funded invoice: look up without acquiring an invoice write lock, so the
+    // company campaign/reservation lock can be acquired first by the F3 helper.
+    const invoiceReference = await manager.findOne(Invoice, {
+      where: { serviceOrderId: supportCase.serviceOrderId },
+    });
+    if (!invoiceReference) {
+      throw new BadRequestException('No invoice for this refund.');
+    }
+    // Missing funding table cannot be probed inside a transaction: 42P01
+    // poisons the transaction even if caught. Check catalog first.
+    const fundingTable = await manager.query(`SELECT to_regclass('public.voucher_payment_links') AS rel`);
+    const hasFundingTable = fundingTable?.[0]?.rel !== null;
+    let funded: { id: string }[] = [];
+    try {
+      if (hasFundingTable) funded = await manager.query(
+        'SELECT id FROM public.voucher_payment_links WHERE allocation_snapshot @> $1::jsonb LIMIT 2',
+        [JSON.stringify([{ invoiceId: invoiceReference.id }])],
+      );
+    } catch (error) {
+      const sqlState = (error as { driverError?: { code?: string }; code?: string })?.driverError?.code
+        ?? (error as { code?: string })?.code;
+      if (sqlState !== '42P01') {
+        throw new ConflictException('Voucher refund ledger is unavailable.');
+      }
+    }
+    if (!Array.isArray(funded) || funded.length > 1) {
+      throw new ConflictException('Voucher refund source is ambiguous.');
+    }
+    if (funded.length === 1) {
+      // A manager must approve the original gross portion; amount stays the
+      // customer NET. Both are validated against the frozen per-invoice ledger.
+      if (!Number.isSafeInteger(grossRefundVnd) || (grossRefundVnd as number) <= 0) {
+        throw new BadRequestException('Funded refund needs approved grossRefundVnd.');
+      }
+      let wallet: WalletService | undefined;
+      try {
+        wallet = this.moduleRef.get(WalletService, { strict: false });
+      } catch {
+        // Cash-funded reversals fail closed when the technician wallet is not available.
+      }
+      const result = await commitVerifiedVoucherSupportRefund(
+        manager, supportCase.id, this.customerWalletService, wallet,
+      );
+      const order = await manager.findOne(ServiceOrder, { where: { id: supportCase.serviceOrderId } });
+      return {
+        customerId: supportCase.customerId,
+        amount: result.customerRefundVnd,
+        orderCode: order?.code ?? '',
+      };
+    }
+    if (grossRefundVnd !== undefined) {
+      throw new BadRequestException('Gross funded refund cannot be used for an ordinary invoice.');
+    }
+    if ((amount as number) <= 0) {
+      throw new BadRequestException('An ordinary wallet refund must be positive.');
     }
     const invoice = await manager.findOne(Invoice, {
       where: { serviceOrderId: supportCase.serviceOrderId },
@@ -642,6 +707,7 @@ export class SupportCasesService {
     if (!invoice || invoice.paymentStatus !== PaymentStatus.PAID) {
       throw new BadRequestException('Đơn chưa thanh toán nên không có tiền để hoàn');
     }
+    await assertNoFundedVoucherRefund(manager, invoice.id);
     const paid = Number(invoice.grandTotal);
     const already = await this.customerWalletService.refundedForOrder(manager, supportCase.serviceOrderId);
     if (already + (amount as number) > paid) {
@@ -824,6 +890,7 @@ export class SupportCasesService {
       holdCompletion: supportCase.holdCompletion ?? false,
       liableParty: supportCase.liableParty ?? null,
       amount: supportCase.amount ?? null,
+      voucherGrossRefundVnd: supportCase.voucherGrossRefundVnd ?? null,
       createdAt: supportCase.createdAt,
       updatedAt: supportCase.updatedAt,
     };
@@ -922,6 +989,12 @@ export class SupportCasesService {
       throw new NotFoundException(
         'Cash settlement or invoice is not available for manager resolution',
       );
+    }
+    // The legacy manager path settles original gross without funding proof.
+    // A funded dispute needs its own reconciled NET collection and subsidy;
+    // never turn it into an ordinary gross cash confirmation here.
+    if (await manager.findOne(VoucherPaymentLink, { where: { cashSettlementId: settlement.id } })) {
+      throw new ConflictException('Tiền mặt có ưu đãi cần được đối soát theo số tiền thực thu.');
     }
     if (settlement.status === CashSettlementStatus.CONFIRMED) {
       throw new ConflictException('Cash settlement is already confirmed');

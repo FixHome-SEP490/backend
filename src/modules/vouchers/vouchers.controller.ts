@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -7,6 +8,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -95,6 +97,21 @@ export class VouchersController {
   @ApiOkResponse({ type: CustomerVoucherClaimDto, isArray: true })
   wallet(@CurrentUser() actor: VoucherActor) {
     return this.vouchers.wallet(actor);
+  }
+
+  @Get('checkout-preview/:claimId/:scopeId')
+  @Roles(Role.CUSTOMER)
+  @ApiOperation({ summary: 'Xem trước giá ưu đãi từ hóa đơn đã chốt; chưa cho phép thanh toán bằng ưu đãi' })
+  checkoutPreview(
+    @CurrentUser() actor: VoucherActor,
+    @Param('claimId', new ParseUUIDPipe({ version: '4' })) claimId: string,
+    @Param('scopeId', new ParseUUIDPipe({ version: '4' })) scopeId: string,
+    @Query() query: Record<string, unknown>,
+  ) {
+    if (Object.keys(query).length > 0) {
+      throw new BadRequestException('Không gửi số tiền hoặc tham số vào bản xem trước ưu đãi.');
+    }
+    return this.vouchers.checkoutPreview(actor, claimId, scopeId);
   }
 
   @Post('claim')

@@ -18,6 +18,9 @@ import { User } from '../users/entities/user.entity';
 import { startBackgroundJob } from '../../common/background-job';
 import { REPAIR_FAILURE_ACTION } from '../service-orders/repair-failure-incident';
 import { VoucherEvidence } from './voucher.ports';
+import { loadVoucherPreviewInvoices } from './voucher-checkout-preview';
+import { calculateVoucherFundedPrice } from './voucher-funded-price';
+import { assertVoucherFundingSchemaReady } from './voucher-funding-readiness';
 import { isFixHomeUserId } from './voucher-user-id';
 import {
   APPLY_TTL_MS,
@@ -43,6 +46,7 @@ import {
   VoucherClaim,
   VoucherReservation,
 } from './entities/voucher.entity';
+import { VoucherFundingEntry, VoucherPaymentLink } from './entities/voucher-funding.entity';
 
 @Injectable()
 export class VouchersService implements OnModuleInit, OnModuleDestroy {
@@ -414,6 +418,50 @@ export class VouchersService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  /** Read-only pricing preview. It is deliberately not a reservable payment quote. */
+  async checkoutPreview(actor: VoucherActor, claimId: string, scopeId: string) {
+    this.role(actor, Role.CUSTOMER);
+    this.uuid(claimId);
+    this.uuid(scopeId);
+    let paymentAvailable = false;
+    try {
+      await assertVoucherFundingSchemaReady(this.dataSource);
+      paymentAvailable = true;
+    } catch {
+      // A read-only preview remains useful before the additive migration is applied.
+    }
+    return this.transaction(async manager => {
+      const claim = await manager.findOneBy(VoucherClaim, { id: claimId, customerId: actor.id });
+      if (!claim || claim.redeemedAt) this.unavailable();
+      const campaign = await manager.findOneBy(VoucherCampaign, { id: claim.campaignId });
+      if (!campaign) this.unavailable();
+      this.available(campaign, await this.now(manager));
+      const facts = await loadVoucherPreviewInvoices(manager, actor.id, scopeId);
+      const policy = claim.policySnapshot;
+      if (!facts.services.length || facts.services.some(service =>
+        (policy.serviceIds.length > 0 && !policy.serviceIds.includes(service.serviceId)) ||
+        (policy.categoryIds.length > 0 && !policy.categoryIds.includes(service.categoryId)))) {
+        this.conflict();
+      }
+      const price = calculateVoucherFundedPrice({ policy, invoices: facts.invoices });
+      if (price.invoiceSnapshots.length !== facts.invoices.length ||
+          price.reasonCodes.some(code => ['INVALID_INVOICE_EXCLUDED', 'MALFORMED_LINE_EXCLUDED', 'FOREIGN_LINE_EXCLUDED'].includes(code))) {
+        this.conflict();
+      }
+      return {
+        scopeId, claimId,
+        previewOnly: true as const,
+        paymentAvailable,
+        reason: paymentAvailable ? null : 'VOUCHER_FUNDING_NOT_READY' as const,
+        originalGrossVnd: price.originalGrossVnd,
+        eligibleBaseVnd: price.eligibleBaseVnd,
+        fixHomeDiscountSubsidyVnd: price.fixHomeDiscountSubsidyVnd,
+        customerDueVnd: price.customerDueVnd,
+        reasonCodes: price.reasonCodes,
+      };
+    });
+  }
+
   async release(
     actor: VoucherActor,
     reservationId: string,
@@ -432,7 +480,7 @@ export class VouchersService implements OnModuleInit, OnModuleDestroy {
       });
       if (!reservation) this.unavailable();
       if (
-        [ReservationState.RELEASED, ReservationState.EXPIRED].includes(
+        [ReservationState.RELEASED, ReservationState.EXPIRED, ReservationState.REFUNDED].includes(
           reservation.state,
         )
       )
@@ -455,10 +503,11 @@ export class VouchersService implements OnModuleInit, OnModuleDestroy {
   }
 
   /** Internal settlement-only adapter. Input is an ID, never a caller-supplied verdict.
-   * No payment initiation/pending/late-callback policy is implemented by this module. */
-  async redeemSettled(settlementId: string): Promise<VoucherReservation> {
+   * Production evidence locks campaign before reservation and verifies signed late-provider proof. */
+  async redeemSettled(settlementId: string, existingManager?: EntityManager): Promise<VoucherReservation> {
     this.uuid(settlementId);
-    return this.transaction(async (manager) => {
+    if (existingManager && !existingManager.queryRunner?.isTransactionActive) this.conflict();
+    const work = async (manager: EntityManager) => {
       const proof = await this.evidence.settlement(manager, settlementId);
       if (
         !proof ||
@@ -488,14 +537,38 @@ export class VouchersService implements OnModuleInit, OnModuleDestroy {
         return reservation;
       }
       const now = await this.now(manager);
-      // Fail closed at the exact deadline, even for a delayed otherwise-successful callback.
+      let fundedSettledAt = proof.settledAt;
+      if (+now >= +reservation.expiresAt) {
+        const link = await manager.findOne(VoucherPaymentLink, { where: { reservationId: reservation.id } });
+        const entries = link ? await manager.find(VoucherFundingEntry, { where: { linkId: link.id } }) : [];
+        const pending = entries.filter(entry => entry.kind === 'PROVIDER_PENDING');
+        const paid = entries.filter(entry => entry.kind === 'PROVIDER_PAID');
+        if (!link || link.rail !== 'VNPAY' ||
+            link.attemptId !== reservation.attemptId ||
+            link.customerId !== reservation.customerId || link.scopeId !== reservation.scopeId ||
+            (link.paymentId ?? link.visitGroupPaymentId) !== settlementId ||
+            !Number.isSafeInteger(link.customerDueVnd) || link.customerDueVnd <= 0 ||
+            !(link.providerInitiatedAt instanceof Date) ||
+            +link.providerInitiatedAt < +reservation.reservedAt ||
+            +link.providerInitiatedAt >= +reservation.expiresAt ||
+            pending.length !== 1 || pending[0].amountVnd !== 0 ||
+            pending[0].evidenceSha256 !== link.allocationSha256 ||
+            paid.length !== 1 || paid[0].amountVnd !== 0 ||
+            !paid[0].evidenceSha256 || !paid[0].providerReference ||
+            !(paid[0].providerPaidAt instanceof Date) ||
+            +paid[0].providerPaidAt < +link.providerInitiatedAt ||
+            +paid[0].providerPaidAt >= +reservation.expiresAt ||
+            +paid[0].providerPaidAt > +proof.settledAt ||
+            entries.some(entry => entry.kind === 'PROVIDER_FAILED' || entry.kind === 'QUARANTINED'))
+          this.conflict();
+        fundedSettledAt = paid[0].providerPaidAt;
+      }
       if (
         reservation.state !== ReservationState.RESERVED ||
-        +now >= +reservation.expiresAt ||
         !(proof.settledAt instanceof Date) ||
         !Number.isFinite(+proof.settledAt) ||
         +proof.settledAt < +reservation.reservedAt ||
-        +proof.settledAt >= +reservation.expiresAt ||
+        (+now < +reservation.expiresAt && +proof.settledAt >= +reservation.expiresAt) ||
         +proof.settledAt > +now ||
         campaign.redeemed >= campaign.quota
       )
@@ -506,7 +579,7 @@ export class VouchersService implements OnModuleInit, OnModuleDestroy {
       if (!claim || claim.redeemedAt) this.conflict();
       reservation.state = ReservationState.REDEEMED;
       reservation.settlementId = settlementId;
-      claim.redeemedAt = proof.settledAt;
+      claim.redeemedAt = fundedSettledAt;
       campaign.redeemed += 1;
       await manager.save(VoucherClaim, claim);
       await manager.save(VoucherCampaign, campaign);
@@ -515,7 +588,8 @@ export class VouchersService implements OnModuleInit, OnModuleDestroy {
         settlementId,
       });
       return reservation;
-    });
+    };
+    return existingManager ? work(existingManager) : this.transaction(work);
   }
 
   /** Internal sweep entry point; not a background job until registration is approved. */
@@ -535,8 +609,12 @@ export class VouchersService implements OnModuleInit, OnModuleDestroy {
       where: { campaignId, state: ReservationState.RESERVED },
     });
     let expired = 0;
-    for (const reservation of reservations) {
+    for (const row of reservations) {
+      const reservation = await manager.findOne(VoucherReservation, {
+        where: { id: row.id }, lock: { mode: 'pessimistic_write' },
+      });
       if (
+        reservation && reservation.state === ReservationState.RESERVED &&
         +reservation.expiresAt <= +now &&
         (await this.evidence.canRelease(manager, reservation.id)) === true
       ) {

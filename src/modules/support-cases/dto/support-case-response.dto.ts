@@ -173,6 +173,9 @@ export class SupportCaseSummaryDto {
   @ApiPropertyOptional({ nullable: true })
   amount: number | null;
 
+  @ApiPropertyOptional({ nullable: true, description: "Manager-approved original gross basis for funded voucher refund" })
+  voucherGrossRefundVnd: number | null;
+
   @ApiProperty({ format: 'date-time' })
   createdAt: Date;
 

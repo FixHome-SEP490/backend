@@ -20,6 +20,7 @@ import { CashSettlementConfirmationDto, CashSettlementDeclarationDto, InitiatePa
 import { Payment } from './entities/payment.entity';
 import { PlatformDue } from './entities/platform-due.entity';
 import { FinanceService } from './finance.service';
+import { VoucherPaymentLink } from '../vouchers/entities/voucher-funding.entity';
 import { formatVnpayDate } from './vnpay/vnpay.util';
 
 const actor = (id: string, role: Role) => ({ id, role });
@@ -55,6 +56,7 @@ const makeFinanceService = (options: {
   const assignmentRepository = { findOne: vi.fn().mockResolvedValue(assignment) };
   const cashSettlementRepository = {
     findOne: vi.fn().mockResolvedValue(settlement),
+    findOneBy: vi.fn().mockResolvedValue(settlement),
   };
   const commissionDueRepository = { find: vi.fn(), findOne: vi.fn() };
   const platformDueRepository = { findAndCount: vi.fn() };
@@ -78,6 +80,7 @@ const makeFinanceService = (options: {
     [CommissionDue, commissionDueRepository],
     [Payment, paymentRepository],
     [PlatformDue, platformDueRepository],
+    [VoucherPaymentLink, { findOne: vi.fn().mockResolvedValue(null) }],
   ]);
 
   const manager = {
@@ -90,6 +93,7 @@ const makeFinanceService = (options: {
     }),
   };
   const dataSource = {
+    getRepository: vi.fn((entity: unknown) => repositories.get(entity)),
     transaction: vi.fn(async (callback: (value: typeof manager) => unknown) =>
       callback(manager),
     ),

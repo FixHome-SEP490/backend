@@ -98,4 +98,9 @@ export class SupportCase extends BaseEntity {
 
   @Column({ name: 'amount', type: 'bigint', nullable: true, transformer: { to: (v?: number | null) => v, from: (v?: string | null) => (v == null ? null : Number(v)) } })
   amount: number | null;
+
+  /** Verified original-gross basis, distinct from amount (customer NET). */
+  @Column({ name: 'voucher_gross_refund_vnd', type: 'bigint', nullable: true,
+    transformer: { to: (v?: number | null) => v, from: (v?: string | null) => (v == null ? null : Number(v)) } })
+  voucherGrossRefundVnd: number | null;
 }
