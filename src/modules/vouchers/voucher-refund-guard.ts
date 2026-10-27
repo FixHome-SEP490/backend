@@ -11,6 +11,10 @@ export async function assertNoFundedVoucherRefund(
   manager: EntityManager,
   invoiceId: string,
 ): Promise<void> {
+  // A missing relation raises 42P01 and aborts the surrounding refund transaction,
+  // even if caught. Check the catalog first; do not try the missing SELECT.
+  const relation = await manager.query(`SELECT to_regclass('public.voucher_payment_links') AS rel`);
+  if (relation?.[0]?.rel === null) return;
   let rows: { id: string }[];
   try {
     rows = await manager.query(`

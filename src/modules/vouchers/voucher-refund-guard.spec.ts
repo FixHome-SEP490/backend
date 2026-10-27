@@ -10,13 +10,12 @@ describe('legacy refund boundary for funded invoices', () => {
       [JSON.stringify([{ invoiceId: 'invoice-1' }])]);
   });
 
-  it('allows legacy invoices and a pre-migration deployment, but fails on unknown DB errors', async () => {
+  it('allows a pre-F4 deployment using a catalog check, without causing 42P01 inside the refund transaction', async () => {
     const manager = { query: vi.fn().mockResolvedValue([]) } as unknown as EntityManager;
     await expect(assertNoFundedVoucherRefund(manager, 'invoice-1')).resolves.toBeUndefined();
-    vi.mocked(manager.query).mockRejectedValueOnce({ driverError: { code: '42P01' } });
+    vi.mocked(manager.query).mockResolvedValueOnce([{ rel: null }]);
     await expect(assertNoFundedVoucherRefund(manager, 'invoice-1')).resolves.toBeUndefined();
-    vi.mocked(manager.query).mockRejectedValueOnce({ code: '42P01' });
-    await expect(assertNoFundedVoucherRefund(manager, 'invoice-1')).resolves.toBeUndefined();
+    expect(vi.mocked(manager.query).mock.lastCall?.[0]).toContain('to_regclass');
     vi.mocked(manager.query).mockRejectedValueOnce({ driverError: { code: '42501' } });
     await expect(assertNoFundedVoucherRefund(manager, 'invoice-1')).rejects.toThrow();
   });

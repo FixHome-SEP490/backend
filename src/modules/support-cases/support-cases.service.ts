@@ -652,9 +652,13 @@ export class SupportCasesService {
     if (!invoiceReference) {
       throw new BadRequestException('No invoice for this refund.');
     }
+    // Missing funding table cannot be probed inside a transaction: 42P01
+    // poisons the transaction even if caught. Check catalog first.
+    const fundingTable = await manager.query(`SELECT to_regclass('public.voucher_payment_links') AS rel`);
+    const hasFundingTable = fundingTable?.[0]?.rel !== null;
     let funded: { id: string }[] = [];
     try {
-      funded = await manager.query(
+      if (hasFundingTable) funded = await manager.query(
         'SELECT id FROM public.voucher_payment_links WHERE allocation_snapshot @> $1::jsonb LIMIT 2',
         [JSON.stringify([{ invoiceId: invoiceReference.id }])],
       );
