@@ -102,6 +102,20 @@ export class FinanceService {
     await assertVoucherFundingSchemaReady(this.dataSource);
   }
 
+  /** Legacy payment routes also run before the additive F4 schema exists.
+   * Missing ONLY the new funding table means there cannot be a funded link.
+   * Do not hide any other database failure or weaken funded route readiness. */
+  private async findOptionalVoucherPaymentLink(where: { paymentId?: string; cashSettlementId?: string; visitGroupPaymentId?: string }): Promise<VoucherPaymentLink | null> {
+    try {
+      return await this.dataSource.getRepository(VoucherPaymentLink).findOne({ where });
+    } catch (error) {
+      const db = error as { driverError?: { code?: string; message?: string }; code?: string; message?: string };
+      const code = db.driverError?.code ?? db.code;
+      const message = db.driverError?.message ?? db.message ?? '';
+      if (code === '42P01' && /relation ["']?[^"'\s]*voucher_payment_links["']? does not exist/i.test(message)) return null;
+      throw error;
+    }
+  }
   /** Caller holds the scope's invoice locks, shared with Apply/checkout. */
   private async assertLegacyCollectionAllowed(manager: EntityManager, scopeId: string): Promise<void> {
     const held = await manager.findOne(VoucherReservation, {
@@ -683,7 +697,7 @@ export class FinanceService {
       // Not an invoice payment: perhaps one for a whole visit of several devices.
       return this.handleVisitVnpayIpn(query);
     }
-    const fundedLink = await this.dataSource.getRepository(VoucherPaymentLink).findOne({ where: { paymentId: payment.id } });
+    const fundedLink = await this.findOptionalVoucherPaymentLink({ paymentId: payment.id });
     if (fundedLink) return this.handleVoucherVnpayIpn(fundedLink.reservationId, query);
     if (payment.status !== PaymentAttemptStatus.PENDING) {
       return { RspCode: '02', Message: 'Order already confirmed' };
@@ -891,7 +905,7 @@ export class FinanceService {
     );
     const data = response.data as Record<string, string>;
     if (data?.vnp_ResponseCode === '00' && data?.vnp_TransactionStatus === '00') {
-      const fundedLink = await this.dataSource.getRepository(VoucherPaymentLink).findOne({ where: { paymentId: payment.id } });
+      const fundedLink = await this.findOptionalVoucherPaymentLink({ paymentId: payment.id });
       if (fundedLink) {
         // Querydr can close a funded payment only with the same signed PayDate proof as an IPN.
         await this.handleVnpayIpn(data);
@@ -1333,7 +1347,7 @@ export class FinanceService {
 
     const fundedCash = await this.dataSource.getRepository(CashSettlement).findOneBy({ serviceOrderId: orderId });
     if (fundedCash) {
-      const link = await this.dataSource.getRepository(VoucherPaymentLink).findOne({ where: { cashSettlementId: fundedCash.id } });
+      const link = await this.findOptionalVoucherPaymentLink({ cashSettlementId: fundedCash.id });
       if (link) return this.confirmVoucherCash(orderId, dto, actor, link.reservationId);
     }
 
@@ -2593,7 +2607,7 @@ export class FinanceService {
     const fundedPayment = await this.dataSource.getRepository(VisitGroupPayment).findOne({ where: {
       visitGroupId: groupId, rail: 'cash' }, order: { createdAt: 'DESC' } });
     if (fundedPayment) {
-      const link = await this.dataSource.getRepository(VoucherPaymentLink).findOne({ where: { visitGroupPaymentId: fundedPayment.id } });
+      const link = await this.findOptionalVoucherPaymentLink({ visitGroupPaymentId: fundedPayment.id });
       if (link) return this.confirmVoucherVisitCash(groupId, dto, actor, link.reservationId);
     }
     const result = await this.dataSource.transaction(async (manager) => {
@@ -2649,7 +2663,7 @@ export class FinanceService {
   private async handleVisitVnpayIpn(query: Record<string, string>): Promise<{ RspCode: string; Message: string }> {
     const payment = await this.dataSource.getRepository(VisitGroupPayment).findOneBy({ idempotencyKey: query.vnp_TxnRef, rail: 'vnpay' });
     if (!payment) return { RspCode: '01', Message: 'Order not found' };
-    const fundedLink = await this.dataSource.getRepository(VoucherPaymentLink).findOne({ where: { visitGroupPaymentId: payment.id } });
+    const fundedLink = await this.findOptionalVoucherPaymentLink({ visitGroupPaymentId: payment.id });
     if (fundedLink) return this.handleVoucherVnpayIpn(fundedLink.reservationId, query);
     if (payment.status !== 'pending') return { RspCode: '02', Message: 'Order already confirmed' };
     const vnpAmount = Number(query.vnp_Amount) / 100;
@@ -2734,7 +2748,7 @@ export class FinanceService {
     const response = await firstValueFrom(this.httpService.post(queryDrUrl, body).pipe(timeout(8000)));
     const data = response.data as Record<string, string>;
     if (data?.vnp_ResponseCode === '00' && data?.vnp_TransactionStatus === '00' && Number(data.vnp_Amount) / 100 === Number(payment.amount)) {
-      const fundedLink = await this.dataSource.getRepository(VoucherPaymentLink).findOne({ where: { visitGroupPaymentId: payment.id } });
+      const fundedLink = await this.findOptionalVoucherPaymentLink({ visitGroupPaymentId: payment.id });
       if (fundedLink) {
         await this.handleVnpayIpn(data);
         return;
