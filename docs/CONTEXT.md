@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-27 21:04 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-t21-f3-wallet-only-20261027
+> Cập nhật lần cuối: 2026-10-27 22:11 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/parts-gas-electrical
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -230,6 +230,7 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 - Route phía client: `POST /ai/diagnoses`, `POST /ai/chat/ask`, `GET /ai/chat/acknowledgements`, `GET /ai/health`, `GET /ai/diagnoses/:id`.
 - Giới hạn khớp schema của `ai-service`: mô tả 2000 ký tự, câu hỏi 1000, `sessionId` và gợi ý 64, tối đa 3 ảnh. Hai route ảnh nhận body tới 40 MB.
 - AI lỗi thì trả HTTP 200 với `aiAvailable: false` và câu trả lời dự phòng; không bao giờ chặn đặt lịch.
+- Linh kiện bổ sung 27/10/2026 (PO): `npm run seed:parts-2026-10-27` (`--dry-run` để thử) chỉ thêm vào `fixhome_parts` 52 mã: 36 mã điện, đèn có trong bảng V3 (ổ cắm, công tắc, aptomat, bóng, driver LED; giá bán = giá thấp nhất khoảng V3 như 835 mã cũ) và 16 mã phổ biến theo giá thị trường 10/2026 cho dịch vụ đang mở: nạp gas máy lạnh và tủ lạnh (vật tư, không phải dịch vụ, theo quyết định 19/10), thanh magie bình nóng lạnh, motor và than hoạt tính máy hút mùi, giá treo tivi, dây và bát sen. Nguồn giá ghi trong `description`. Dữ liệu `src/database/seeds/data/parts-catalog-2026-10-27.json`, hàm `applyPartsAdditions20261027` (chạy lại không đổi gì, không sửa mã có sẵn).
 - Giá linh kiện công khai cho AI (PO 26/10/2026 khuya): `GET /api/v1/parts/prices` không cần đăng nhập, trả `{ items: [{ sku, name, price }] }` của mọi linh kiện đang bán có SKU trong `fixhome_parts` (giá bán, VND), nhớ 5 phút (`PartPricesController`, `PartsCatalogService.publicPrices`). ai-service đọc nó để tính giá trần ước tính = giá dịch vụ + linh kiện. Không lộ tồn kho, giá vốn, bảo hành.
 - Khách nói trợ lý sai (PO 26/10/2026, web bỏ nút "Đúng ý / Chưa đúng"): khi câu trả lời của AI Service có `customerDisagreed`, `recordTurn` tự thêm một mục `verdict: wrong`, `source: chat`, `kind` (fault/device/photo), `rejected` (tên bị bác), `said` (lời khách trước đó bị đọc sai), `note` = lời khách lượt này, `reply` = kết luận trước lượt này (`addDisagreement` trong `ai-chat-summary.ts`). `GET /admin/ai-quality` `recentWrong` có thêm `source` (`chat` hoặc `button` cho mục cũ), `kind`, `said`, `rejected`, `settledOn` (lỗi cuộc trò chuyện chốt lại). `POST /ai/feedback` vẫn giữ cho client cũ.
 - Phản hồi của khách về câu trả lời AI: `POST /ai/feedback` `{ sessionId, verdict: wrong|right, note?, reply? }` (10 lần/phút), lưu vào `ai_chat_sessions.summary.feedback` (tối đa 20 mục, không chép sang tóm tắt của booking); 404 nếu phiên không do backend ghi hoặc thuộc khách khác. Admin xem `GET /admin/ai-quality?days=1..90` (khung ngày theo giờ Việt Nam: từ 0 giờ của n-1 ngày trước tới hiện tại, `perDay` đúng n dòng, hôm nay cuối): số cuộc trò chuyện, số lượt, số cuộc bị báo sai/đúng, số đơn đặt từ trợ lý và tỉ lệ, theo ngày, 20 câu trả lời bị báo sai gần nhất kèm lời khách. Không thêm bảng, không migration.
@@ -329,6 +330,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
+- 2026-10-27 22:11 (UTC+7) | ToanAltF4 | feat/parts-gas-electrical | Thêm 52 linh kiện: 36 mã điện/đèn V3 và 16 mã phổ biến theo giá thị trường (nạp gas, magie, hút mùi, giá treo tivi, sen)
+
 - 2026-10-27 21:04 (UTC+7) | foxonworld | foxonworld/fixhome-t21-f3-wallet-only-20261027 | Implement owner-approved F3 wallet-only refund independent of settled original rail; keep provider/cash payment evidence, gross-net ledger, cash subsidy reversal, full quota recovery and refund duplication guard.
 
 - 2026-10-27 18:20 (UTC+7) | foxonworld | foxonworld/fixhome-t21-final-merge-post-toan-20261027 | Cập nhật T2.1 funded rails có guard động, CASH tech lookup, giới hạn refund F3 và F4 chưa apply; runtime chưa kiểm chứng.
@@ -369,4 +372,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-19 18:45 (UTC+7) | foxonworld | foxonworld/fixhome-p012-integration-20261019 | Thêm priceSummary public catalog bằng một query batch, kiểm tier owner duyệt và tách ước tính inspection khỏi giá sàn; không đổi admin/Booking/DB.
 - 2026-10-19 03:27 (UTC+7) | foxonworld | foxonworld/fixhome-p012-integration-20261019 | Thêm public pricing API và Booking snapshot tier ACTIVE bất biến qua #0040; xác minh PG/HTTP cô lập, ghi rõ E2E còn lỗi và giữ preview/P1 OFF.
 - 2026-10-19 01:59 (UTC+7) | foxonworld | foxonworld/fixhome-p012-integration-20261019 | Tích hợp P0/P1 staging, giữ Booking media/privacy của dev, xác minh migration và harness PostgreSQL cô lập, không activation.
-- 2026-10-19 00:50 (UTC+7) | foxonworld | feature/catalog-v2-owner-approved | Chặn thuộc tính mâu thuẫn tier legacy, xác thực input preview và máy giặt WM-03; rollback #0037/#0038 khóa an toàn; E2E sandbox vẫn timeout.
