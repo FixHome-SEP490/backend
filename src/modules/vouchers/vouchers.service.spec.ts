@@ -36,7 +36,9 @@ function fixtureStore() {
     Object.entries(where).every(([key, value]) =>
       value instanceof FindOperator && value.type === 'in'
         ? value.value.includes(row[key])
-        : row[key] === value,
+        : value instanceof FindOperator && value.type === 'jsonContains'
+          ? Object.entries(value.value).every(([field, entry]) => row[key]?.[field] === entry)
+          : row[key] === value,
     );
   const manager = {
     async findOne(type: unknown, options: { where: Record<string, any> }) {
@@ -134,8 +136,114 @@ describe('standalone voucher lifecycle (no database concurrency claim)', () => {
     service = new VouchersService(store.dataSource, evidence);
   });
   afterEach(() => vi.useRealTimers());
+  const command = (version = 1) => ({ version, commandId: randomUUID() });
+  it('creates a true unpublished draft with configurable quota and no customer visibility', async () => {
+    const draft = await service.createCampaign(admin, { ...policy(), quota: 7 });
+    expect(draft).toMatchObject({ status: 'DRAFT', active: false, publishedAt: null, version: 1, quota: 7, redeemed: 0 });
+    expect(await service.browseGeneral(customer)).toEqual([]);
+    await expect(service.claim(customer, draft.code)).rejects.toMatchObject({ status: 404 });
+    await expect(service.setCampaignActive(admin, draft.id, true)).rejects.toMatchObject({ status: 409 });
+  });
+  it('deduplicates draft creation by command ID and rejects changed or cross-campaign reuse', async () => {
+    const dto = { ...policy(), commandId: randomUUID() };
+    const draft = await service.createCampaign(admin, dto);
+    expect((await service.createCampaign(admin, dto)).id).toBe(draft.id);
+    expect((await service.createCampaign(admin, { ...dto, commandId: dto.commandId.toUpperCase() })).id).toBe(draft.id);
+    expect(store.rows(VoucherCampaign)).toHaveLength(1);
+    expect(store.rows(VoucherAudit)).toHaveLength(1);
+    await expect(service.createCampaign(admin, { ...dto, quota: 8 })).rejects.toMatchObject({ status: 409 });
+    await expect(service.createCampaign(admin, { ...dto, code: 'OTHER' })).rejects.toMatchObject({ status: 409 });
+  });
+  it('edits only a true draft, versions it, and deduplicates an identical command', async () => {
+    const draft = await service.createCampaign(admin, policy());
+    const dto = { ...policy(), quota: 7, name: 'Draft revised', ...command() };
+    const edited = await service.updateCampaign(admin, draft.id, dto);
+    expect(edited).toMatchObject({ name: 'Draft revised', quota: 7, version: 2, status: 'DRAFT' });
+    await service.updateCampaign(admin, draft.id, dto);
+    expect(store.rows(VoucherAudit).filter(row => row.action === 'EDIT_CAMPAIGN')).toHaveLength(1);
+    await expect(service.updateCampaign(admin, draft.id, { ...dto, quota: 8 })).rejects.toMatchObject({ status: 409 });
+    await expect(service.updateCampaign(admin, draft.id, { ...dto, commandId: randomUUID() })).rejects.toMatchObject({ status: 409 });
+  });
+  it('publishes once, freezes unused published terms forever and rejects stale edits', async () => {
+    const draft = await service.createCampaign(admin, policy());
+    const publish = { status: 'PUBLISHED' as const, ...command() };
+    const published = await service.transitionCampaign(admin, draft.id, publish);
+    expect(published).toMatchObject({ status: 'PUBLISHED', active: true, version: 2 });
+    expect(published.publishedAt).toBeInstanceOf(Date);
+    await service.transitionCampaign(admin, draft.id, publish);
+    expect(store.rows(VoucherAudit).filter(row => row.action === 'CAMPAIGN_LIFECYCLE')).toHaveLength(1);
+    await expect(service.updateCampaign(admin, draft.id, { ...policy(), ...command(2) })).rejects.toMatchObject({ status: 409 });
+    await service.transitionCampaign(admin, draft.id, { status: 'PAUSED', ...command(2) });
+    await expect(service.updateCampaign(admin, draft.id, { ...policy(), ...command(3) })).rejects.toMatchObject({ status: 409 });
+    await service.transitionCampaign(admin, draft.id, { status: 'PUBLISHED', ...command(3) });
+    await service.transitionCampaign(admin, draft.id, { status: 'ARCHIVED', ...command(4) });
+    await expect(service.setCampaignActive(admin, draft.id, true)).rejects.toMatchObject({ status: 409 });
+    await expect(service.transitionCampaign(admin, draft.id, { status: 'PUBLISHED', ...command(5) })).rejects.toMatchObject({ status: 409 });
+    await expect(service.claim(customer, draft.code)).rejects.toMatchObject({ status: 404 });
+    expect(store.rows(VoucherClaim)).toHaveLength(0);
+  });
+  it.each([true, false])('never treats an existing active=%s campaign without draft provenance as editable', async active => {
+    const legacy = { id: randomUUID(), active, ...policy(), policy: {}, redeemed: 0 };
+    store.rows(VoucherCampaign).push(legacy);
+    await expect(service.updateCampaign(admin, legacy.id, { ...policy(), ...command() })).rejects.toMatchObject({ status: 409 });
+  });
+  it.each([
+    { entity: VoucherClaim, label: 'claim' },
+    { entity: VoucherReservation, label: 'booking reservation' },
+  ])('rejects draft edits/publication with $label history', async ({ entity }) => {
+    const draft = await service.createCampaign(admin, policy());
+    store.rows(entity).push({ id: randomUUID(), campaignId: draft.id, state: ReservationState.RELEASED });
+    await expect(service.updateCampaign(admin, draft.id, { ...policy(), ...command() })).rejects.toMatchObject({ status: 409 });
+    await expect(service.transitionCampaign(admin, draft.id, { status: 'PUBLISHED', ...command() })).rejects.toMatchObject({ status: 409 });
+  });
+  it('rejects publication after a competing edit and keeps audit atomic on failure', async () => {
+    const draft = await service.createCampaign(admin, policy());
+    await service.updateCampaign(admin, draft.id, { ...policy(), ...command() });
+    await expect(service.transitionCampaign(admin, draft.id, { status: 'PUBLISHED', ...command() })).rejects.toMatchObject({ status: 409 });
+    expect(store.rows(VoucherCampaign)[0].status).toBe('DRAFT');
+    expect(store.rows(VoucherAudit)).toHaveLength(2);
+  });
+  it('protects lifecycle commands and read detail from non-admin actors', async () => {
+    const draft = await service.createCampaign(admin, policy());
+    await expect(service.updateCampaign(customer, draft.id, { ...policy(), ...command() })).rejects.toMatchObject({ status: 403 });
+    await expect(service.transitionCampaign(customer, draft.id, { status: 'PUBLISHED', ...command() })).rejects.toMatchObject({ status: 403 });
+    await expect(service.getCampaign(customer, draft.id)).rejects.toMatchObject({ status: 403 });
+    expect((await service.getCampaign(admin, draft.id)).id).toBe(draft.id);
+  });
+  it('allows more than 100 saved codes while quota counts only successfully settled redemptions', async () => {
+    const draft = await service.createCampaign(admin, policy());
+    const published = await service.transitionCampaign(admin, draft.id, { status: 'PUBLISHED', ...command() });
+    for (let n = 0; n < 101; n++) await service.claim({ id: randomUUID(), role: Role.CUSTOMER }, published.code);
+    expect(store.rows(VoucherClaim)).toHaveLength(101);
+    expect(store.rows(VoucherCampaign)[0].redeemed).toBe(0);
+    expect(store.rows(VoucherReservation)).toHaveLength(0);
+  });
+  it('archives without cancelling existing holds and still reconciles their verified paid settlement once', async () => {
+    const { campaign, reservation } = await reserve();
+    await service.transitionCampaign(admin, campaign.id, { status: 'ARCHIVED', ...command(2) });
+    await expect(service.claim(stranger, campaign.code)).rejects.toMatchObject({ status: 404 });
+    await service.redeemSettled(settlement.settlementId);
+    await service.redeemSettled(settlement.settlementId);
+    expect(store.rows(VoucherCampaign)[0]).toMatchObject({ status: 'ARCHIVED', active: false, redeemed: 1, version: 3 });
+    expect(store.rows(VoucherReservation).find(row => row.id === reservation.id)?.state).toBe(ReservationState.REDEEMED);
+  });
+  it('rolls back draft edits when the audit cannot be persisted', async () => {
+    const draft = await service.createCampaign(admin, policy());
+    const save = store.manager.save.bind(store.manager);
+    vi.spyOn(store.manager, 'save').mockImplementation(async (entity: any, value: any) => {
+      if (entity === VoucherAudit) throw new Error('Synthetic audit failure');
+      return save(entity, value);
+    });
+    await expect(service.updateCampaign(admin, draft.id, { ...policy(), quota: 7, ...command() })).rejects.toThrow('Synthetic audit failure');
+    expect(store.rows(VoucherCampaign)[0]).toMatchObject({ quota: 100, version: 1, status: 'DRAFT' });
+    expect(store.rows(VoucherAudit)).toHaveLength(1);
+  });
+  async function createPublished(actor: { id: string; role: Role }, dto: CreateVoucherCampaignDto) {
+    const draft = await service.createCampaign(actor, dto);
+    return service.transitionCampaign(actor, draft.id, { status: 'PUBLISHED', ...command() });
+  }
   async function setup(kind = VoucherKind.GENERAL) {
-    const campaign = await service.createCampaign(admin, policy(kind));
+    const campaign = await createPublished(admin, policy(kind));
     const claim =
       kind === VoucherKind.GENERAL
         ? await service.claim(customer, campaign.code)
@@ -164,7 +272,7 @@ describe('standalone voucher lifecycle (no database concurrency claim)', () => {
   it('accepts seeded Admin and Customer UUID-v0 identities without weakening role isolation', async () => {
     const adminV0 = { id: '00000000-0000-0000-0000-000000000001', role: Role.ADMIN };
     const customerV0 = { id: '00000000-0000-0000-0000-000000000002', role: Role.CUSTOMER };
-    const offer = await service.createCampaign(adminV0, policy());
+    const offer = await createPublished(adminV0, policy());
     expect((await service.listCampaigns(adminV0)).map(row => row.id)).toContain(offer.id);
     expect((await service.browseGeneral(customerV0)).map(row => row.id)).toContain(offer.id);
     const owned = await service.claim(customerV0, offer.code);
@@ -177,20 +285,20 @@ describe('standalone voucher lifecycle (no database concurrency claim)', () => {
   it('lets an Admin grant a PERSONAL voucher to an existing seeded UUID-v0 customer', async () => {
     const adminV0 = { id: '00000000-0000-0000-0000-000000000001', role: Role.ADMIN };
     const customerV0 = { id: '00000000-0000-0000-0000-000000000002', role: Role.CUSTOMER };
-    const campaign = await service.createCampaign(adminV0, policy(VoucherKind.PERSONAL));
+    const campaign = await createPublished(adminV0, policy(VoucherKind.PERSONAL));
     store.rows(User).push({ id: customerV0.id, role: Role.CUSTOMER, status: AccountStatus.ACTIVE, isActive: true });
     const granted = await service.grantPersonal(adminV0, campaign.id, { customerId: customerV0.id, grantId: randomUUID() });
     expect(granted.campaignId).toBe(campaign.id);
     expect((await service.wallet(customerV0)).map(row => row.id)).toContain(granted.id);
   });
   it('lists only claimable GENERAL campaigns for the signed-in customer', async () => {
-    const open = await service.createCampaign(admin, policy());
-    const claimed = await service.createCampaign(admin, { ...policy(), code: 'CLAIMED' });
+    const open = await createPublished(admin, policy());
+    const claimed = await createPublished(admin, { ...policy(), code: 'CLAIMED' });
     await service.claim(customer, claimed.code);
-    await service.createCampaign(admin, { ...policy(VoucherKind.PERSONAL), code: 'PRIVATE' });
-    const paused = await service.createCampaign(admin, { ...policy(), code: 'PAUSED' });
+    await createPublished(admin, { ...policy(VoucherKind.PERSONAL), code: 'PRIVATE' });
+    const paused = await createPublished(admin, { ...policy(), code: 'PAUSED' });
     await service.setCampaignActive(admin, paused.id, false);
-    await service.createCampaign(admin, { ...policy(), code: 'ENDED', endsAt: '2026-10-26T02:00:00Z' });
+    await createPublished(admin, { ...policy(), code: 'ENDED', endsAt: '2026-10-26T02:00:00Z' });
     expect(await service.browseGeneral(customer)).toEqual([expect.objectContaining({ id: open.id, code: open.code })]);
     expect((await service.browseGeneral(customer))[0]).not.toHaveProperty('quota');
     expect((await service.browseGeneral(customer))[0]).not.toHaveProperty('sourceKey');
@@ -198,7 +306,7 @@ describe('standalone voucher lifecycle (no database concurrency claim)', () => {
     await expect(service.browseGeneral(admin)).rejects.toThrow();
   });
   it('grants PERSONAL to a real customer once per admin grant ID without incident evidence', async () => {
-    const campaign = await service.createCampaign(admin, policy(VoucherKind.PERSONAL));
+    const campaign = await createPublished(admin, policy(VoucherKind.PERSONAL));
     store.rows(User).push({ id: customer.id, role: Role.CUSTOMER, status: AccountStatus.ACTIVE, isActive: true });
     const grantId = randomUUID();
     const first = await service.grantPersonal(admin, campaign.id, { customerId: customer.id, grantId });
@@ -210,23 +318,23 @@ describe('standalone voucher lifecycle (no database concurrency claim)', () => {
     expect(first).not.toHaveProperty('customerId');
     await expect(service.grantPersonal(admin, campaign.id, { customerId: stranger.id, grantId })).rejects.toThrow();
     await expect(service.grantPersonal(customer, campaign.id, { customerId: customer.id, grantId: randomUUID() })).rejects.toThrow();
-    const other = await service.createCampaign(admin, { ...policy(VoucherKind.PERSONAL), code: 'OTHER' });
+    const other = await createPublished(admin, { ...policy(VoucherKind.PERSONAL), code: 'OTHER' });
     await expect(service.grantPersonal(admin, other.id, { customerId: customer.id, grantId })).rejects.toThrow();
     await expect(service.grantPersonal(admin, campaign.id, { customerId: stranger.id, grantId: randomUUID() })).rejects.toThrow();
   });
   it('issues automatically only from the configured PERSONAL campaign and deduplicates a failed scope', async () => {
     await expect(service.issueAutoCompensation(randomUUID())).rejects.toThrow();
-    const configured = await service.createCampaign(admin, { ...policy(VoucherKind.PERSONAL), autoCompensation: true });
+    const configured = await createPublished(admin, { ...policy(VoucherKind.PERSONAL), autoCompensation: true });
     expect(configured.autoCompensation).toBe(true);
     const first = await service.issueAutoCompensation(randomUUID());
     expect((await service.issueAutoCompensation(randomUUID())).id).toBe(first.id);
-    await expect(service.createCampaign(admin, { ...policy(VoucherKind.PERSONAL), code: 'SECOND', autoCompensation: true })).rejects.toThrow();
+    await expect(createPublished(admin, { ...policy(VoucherKind.PERSONAL), code: 'SECOND', autoCompensation: true })).rejects.toThrow();
     await service.setCampaignActive(admin, configured.id, false);
     await expect(service.issueAutoCompensation(randomUUID())).rejects.toThrow();
     expect(store.rows(VoucherClaim)).toHaveLength(1);
   });
   it('retries persisted failed incidents from the audit receipt sweep', async () => {
-    await service.createCampaign(admin, { ...policy(VoucherKind.PERSONAL), autoCompensation: true });
+    await createPublished(admin, { ...policy(VoucherKind.PERSONAL), autoCompensation: true });
     const incidentId = randomUUID();
     (store.dataSource as any).manager = store.manager;
     (store.dataSource as any).query = async () => [{ incidentId }];
@@ -316,7 +424,7 @@ describe('standalone voucher lifecycle (no database concurrency claim)', () => {
     expect(store.rows(VoucherReservation)[0].state).toBe(ReservationState.RESERVED);
   });
   it('redeems the 100th late provider-paid hold once and still rejects the 101st', async () => {
-    const campaign = await service.createCampaign(admin, policy());
+    const campaign = await createPublished(admin, policy());
     for (let index = 0; index < 99; index++) {
       const actor = { id: randomUUID(), role: Role.CUSTOMER };
       facts = { ...facts, customerId: actor.id, scopeId: randomUUID() };
@@ -492,7 +600,7 @@ describe('standalone voucher lifecycle (no database concurrency claim)', () => {
     ).rejects.toThrow();
   });
   it('supports solo failure but rejects ineligible cancellation and forged source', async () => {
-    const campaign = await service.createCampaign(
+    const campaign = await createPublished(
       admin,
       policy(VoucherKind.PERSONAL),
     );
@@ -512,7 +620,7 @@ describe('standalone voucher lifecycle (no database concurrency claim)', () => {
   it('rejects forged checkout owner, unfinished invoice, pending payment, minimum and category mismatch', async () => {
     const dto = policy();
     dto.categoryIds = [randomUUID()];
-    const campaign = await service.createCampaign(admin, dto),
+    const campaign = await createPublished(admin, dto),
       claim = await service.claim(customer, campaign.code);
     const apply = () =>
       service.apply(customer, {
@@ -535,15 +643,15 @@ describe('standalone voucher lifecycle (no database concurrency claim)', () => {
     await expect(apply()).rejects.toThrow();
   });
   it('validates campaign policy in service and enforces Admin/Customer roles', async () => {
-    await expect(service.createCampaign(customer, policy())).rejects.toThrow();
+    await expect(createPublished(customer, policy())).rejects.toThrow();
     await expect(
-      service.createCampaign(admin, { ...policy(), value: 101 }),
+      createPublished(admin, { ...policy(), value: 101 }),
     ).rejects.toThrow();
     await expect(
-      service.createCampaign(admin, { ...policy(), endsAt: policy().startsAt }),
+      createPublished(admin, { ...policy(), endsAt: policy().startsAt }),
     ).rejects.toThrow();
     await expect(
-      service.createCampaign(admin, { ...policy(), quota: 0 }),
+      createPublished(admin, { ...policy(), quota: 0 }),
     ).rejects.toThrow();
     await expect(service.claim(admin, 'TEST100')).rejects.toThrow();
   });
@@ -597,7 +705,7 @@ describe('standalone voucher lifecycle (no database concurrency claim)', () => {
     expect(claim.campaignKind).toBe(VoucherKind.PERSONAL);
   });
   it('normalizes verified source UUID casing before persisting the canonical source tuple', async () => {
-    const campaign = await service.createCampaign(
+    const campaign = await createPublished(
       admin,
       policy(VoucherKind.PERSONAL),
     );
@@ -614,7 +722,7 @@ describe('standalone voucher lifecycle (no database concurrency claim)', () => {
     expect(issued.customerId).toBe(customer.id);
   });
   it('handles internal failed incident events through authoritative evidence without trusting event source data', async () => {
-    const campaign = await service.createCampaign(
+    const campaign = await createPublished(
       admin,
       policy(VoucherKind.PERSONAL),
     );
@@ -636,7 +744,7 @@ describe('standalone voucher lifecycle (no database concurrency claim)', () => {
       }),
     ).rejects.toThrow();
     await expect(
-      service.createCampaign(
+      createPublished(
         { id: randomUUID(), role: Role.SERVICE_MANAGER },
         policy(),
       ),
@@ -749,7 +857,7 @@ describe('standalone voucher lifecycle (no database concurrency claim)', () => {
       value: 20000,
       categoryIds: [facts.items[0].categoryId],
     };
-    const campaign = await service.createCampaign(admin, input);
+    const campaign = await createPublished(admin, input);
     const claim = await service.claim(customer, campaign.code);
     input.categoryIds.length = 0;
     campaign.policy.value = 99999;
@@ -774,7 +882,7 @@ describe('standalone voucher lifecycle (no database concurrency claim)', () => {
   });
   it('does not reissue a failed visit under another campaign', async () => {
     await setup(VoucherKind.PERSONAL);
-    const other = await service.createCampaign(admin, {
+    const other = await createPublished(admin, {
       ...policy(VoucherKind.PERSONAL),
       code: 'OTHER',
     });
@@ -785,7 +893,7 @@ describe('standalone voucher lifecycle (no database concurrency claim)', () => {
   });
   it('prevents GENERAL reuse after settlement and a second voucher on a live checkout', async () => {
     const { claim, dto } = await reserve();
-    const other = await service.createCampaign(admin, {
+    const other = await createPublished(admin, {
       ...policy(),
       code: 'OTHER',
     });
@@ -808,7 +916,7 @@ describe('standalone voucher lifecycle (no database concurrency claim)', () => {
     expect(store.rows(VoucherCampaign)[0].redeemed).toBe(1);
   });
   it('fails closed for service scope mismatch and malformed checkout facts', async () => {
-    const campaign = await service.createCampaign(admin, {
+    const campaign = await createPublished(admin, {
       ...policy(),
       serviceIds: [randomUUID()],
     });

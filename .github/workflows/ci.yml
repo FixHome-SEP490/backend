@@ -46,6 +46,10 @@ jobs:
         run: npm test
       - name: Build
         run: npm run build
+      - name: Isolated voucher lifecycle PostgreSQL gate
+        run: npx vitest run src/modules/vouchers/voucher-campaign.postgres.spec.ts
+        env:
+          VOUCHER_CAMPAIGN_ISOLATED_PG: '1'
       - name: Integration tests
         run: npm run test:e2e
         env:

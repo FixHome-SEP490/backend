@@ -11,8 +11,9 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
+import { createHash } from 'node:crypto';
 import { isUUID, validateSync } from 'class-validator';
-import { DataSource, EntityManager, In } from 'typeorm';
+import { DataSource, EntityManager, In, JsonContains } from 'typeorm';
 import { AccountStatus, Role } from '../../shared/enums';
 import { User } from '../users/entities/user.entity';
 import { startBackgroundJob } from '../../common/background-job';
@@ -29,9 +30,10 @@ import {
   VoucherActor,
   VoucherDiscount,
   VoucherKind,
+  VoucherCampaignState,
   RepairFailureVoucherEvent,
 } from './voucher.types';
-import { ApplyVoucherDto, CreateVoucherCampaignDto, GrantPersonalVoucherDto } from './dto/voucher.dto';
+import { ApplyVoucherDto, CreateVoucherCampaignDto, GrantPersonalVoucherDto, UpdateVoucherCampaignDto, VoucherCampaignLifecycleDto, VoucherCampaignTermsDto } from './dto/voucher.dto';
 import {
   CustomerVoucherClaimDto,
   CustomerGeneralVoucherDto,
@@ -68,7 +70,43 @@ export class VouchersService implements OnModuleInit, OnModuleDestroy {
     dto: CreateVoucherCampaignDto,
   ): Promise<VoucherCampaign> {
     this.role(actor, Role.ADMIN);
-    const input = plainToInstance(CreateVoucherCampaignDto, dto);
+    this.validateCommand(CreateVoucherCampaignDto, dto);
+    const { commandId: inputCommandId, ...terms } = dto;
+    const commandId = inputCommandId?.toLowerCase();
+    const input = this.campaignInput(terms);
+    const fingerprint = this.commandFingerprint('CREATE_CAMPAIGN', this.campaignTerms(input));
+    return this.transaction(async (manager) => {
+      if (commandId) {
+        const receipt = await manager.findOne(VoucherAudit, { where: { snapshot: JsonContains({ commandId }) } });
+        if (receipt) {
+          if (receipt.actorId !== actor.id || receipt.snapshot.fingerprint !== fingerprint) this.campaignConflict();
+          return this.lockCampaign(manager, receipt.resourceId);
+        }
+      }
+      const campaign = await manager.save(
+        VoucherCampaign,
+        manager.create(VoucherCampaign, {
+          ...this.campaignTerms(input),
+          status: VoucherCampaignState.DRAFT,
+          publishedAt: null,
+          version: 1,
+          active: false,
+          redeemed: 0,
+        }),
+      );
+      await this.audit(manager, actor.id, 'CREATE_CAMPAIGN', campaign.id, {
+        policy: campaign.policy,
+        quota: campaign.quota,
+        status: campaign.status,
+        version: campaign.version,
+        ...(commandId ? { commandId, fingerprint } : {}),
+      });
+      return campaign;
+    });
+  }
+
+  private campaignInput(dto: VoucherCampaignTermsDto): VoucherCampaignTermsDto {
+    const input = plainToInstance(VoucherCampaignTermsDto, dto);
     if (
       validateSync(input, { whitelist: true, forbidNonWhitelisted: true })
         .length ||
@@ -81,38 +119,123 @@ export class VouchersService implements OnModuleInit, OnModuleDestroy {
         'Thông tin chương trình ưu đãi không hợp lệ.',
       );
     }
-    return this.transaction(async (manager) => {
-      if (input.autoCompensation && await manager.findOne(VoucherCampaign, { where: { autoCompensation: true, active: true } }))
-        this.conflict();
-      const campaign = await manager.save(
-        VoucherCampaign,
-        manager.create(VoucherCampaign, {
-          code: input.code,
-          name: input.name.trim(),
-          kind: input.kind,
-          startsAt: new Date(input.startsAt),
-          endsAt: new Date(input.endsAt),
-          active: true,
-          autoCompensation: input.autoCompensation === true,
-          quota: input.quota,
-          redeemed: 0,
-          policy: {
-            discount: input.discount,
-            value: input.value,
-            capVnd: input.capVnd ?? null,
-            minimumVnd: input.minimumVnd,
-            categoryIds: [...input.categoryIds],
-            serviceIds: [...input.serviceIds],
-            components: ['LABOR', 'PARTS'],
-          },
-        }),
-      );
-      await this.audit(manager, actor.id, 'CREATE_CAMPAIGN', campaign.id, {
-        policy: campaign.policy,
-        quota: campaign.quota,
+    return input;
+  }
+
+  private campaignTerms(input: VoucherCampaignTermsDto): Partial<VoucherCampaign> {
+    return {
+      code: input.code,
+      name: input.name.trim(),
+      kind: input.kind,
+      startsAt: new Date(input.startsAt),
+      endsAt: new Date(input.endsAt),
+      autoCompensation: input.autoCompensation === true,
+      quota: input.quota,
+      policy: {
+        discount: input.discount,
+        value: input.value,
+        capVnd: input.capVnd ?? null,
+        minimumVnd: input.minimumVnd,
+        categoryIds: [...input.categoryIds],
+        serviceIds: [...input.serviceIds],
+        components: ['LABOR', 'PARTS'],
+      },
+    };
+  }
+
+  async getCampaign(actor: VoucherActor, campaignId: string): Promise<VoucherCampaign> {
+    this.role(actor, Role.ADMIN);
+    return this.transaction(manager => this.lockCampaign(manager, campaignId));
+  }
+
+  async updateCampaign(actor: VoucherActor, campaignId: string, dto: UpdateVoucherCampaignDto): Promise<VoucherCampaign> {
+    this.role(actor, Role.ADMIN);
+    this.validateCommand(UpdateVoucherCampaignDto, dto);
+    const { version, commandId: inputCommandId, ...terms } = dto;
+    const commandId = inputCommandId.toLowerCase();
+    const input = this.campaignInput(terms);
+    const fingerprint = this.commandFingerprint('EDIT_CAMPAIGN', { version, ...this.campaignTerms(input) });
+    return this.transaction(async manager => {
+      const campaign = await this.lockCampaign(manager, campaignId);
+      if (await this.campaignReplay(manager, campaign.id, commandId, fingerprint, actor.id)) return campaign;
+      if (campaign.version !== version) this.campaignConflict();
+      await this.assertDraft(manager, campaign);
+      const before = { ...this.campaignTermsFromEntity(campaign), version: campaign.version };
+      Object.assign(campaign, this.campaignTerms(input));
+      campaign.version++;
+      await manager.save(VoucherCampaign, campaign);
+      await this.audit(manager, actor.id, 'EDIT_CAMPAIGN', campaign.id, {
+        commandId, fingerprint, before, after: { ...this.campaignTermsFromEntity(campaign), version: campaign.version },
       });
       return campaign;
     });
+  }
+
+  async transitionCampaign(actor: VoucherActor, campaignId: string, dto: VoucherCampaignLifecycleDto): Promise<VoucherCampaign> {
+    this.role(actor, Role.ADMIN);
+    this.validateCommand(VoucherCampaignLifecycleDto, dto);
+    const commandId = dto.commandId.toLowerCase();
+    const fingerprint = this.commandFingerprint('CAMPAIGN_LIFECYCLE', { version: dto.version, status: dto.status });
+    return this.transaction(async manager => {
+      const campaign = await this.lockCampaign(manager, campaignId);
+      if (await this.campaignReplay(manager, campaign.id, commandId, fingerprint, actor.id)) return campaign;
+      if (campaign.version !== dto.version) this.campaignConflict();
+      await this.changeCampaignState(manager, campaign, dto.status);
+      await this.audit(manager, actor.id, 'CAMPAIGN_LIFECYCLE', campaign.id, {
+        commandId, fingerprint, status: campaign.status, version: campaign.version,
+      });
+      return campaign;
+    });
+  }
+
+  private validateCommand<T extends object>(type: new () => T, dto: T): void {
+    if (!dto || validateSync(plainToInstance(type, dto), { whitelist: true, forbidNonWhitelisted: true }).length)
+      throw new BadRequestException('Thông tin cập nhật chương trình không hợp lệ.');
+  }
+
+  private commandFingerprint(action: string, input: object): string {
+    return createHash('sha256').update(JSON.stringify({ action, input })).digest('hex');
+  }
+
+  private campaignTermsFromEntity(campaign: VoucherCampaign) {
+    return { code: campaign.code, name: campaign.name, kind: campaign.kind, policy: campaign.policy,
+      startsAt: campaign.startsAt, endsAt: campaign.endsAt, quota: campaign.quota, autoCompensation: campaign.autoCompensation };
+  }
+
+  private async campaignReplay(manager: EntityManager, id: string, commandId: string, fingerprint: string, actorId: string): Promise<boolean> {
+    const audit = await manager.findOne(VoucherAudit, { where: { snapshot: JsonContains({ commandId }) } });
+    if (!audit) return false;
+    if (audit.resourceId !== id || audit.snapshot.fingerprint !== fingerprint || audit.actorId !== actorId) this.campaignConflict();
+    return true;
+  }
+
+  private async assertDraft(manager: EntityManager, campaign: VoucherCampaign): Promise<void> {
+    if (campaign.status !== VoucherCampaignState.DRAFT || campaign.publishedAt !== null || campaign.active || campaign.redeemed !== 0 ||
+        await manager.count(VoucherClaim, { where: { campaignId: campaign.id } }) ||
+        await manager.count(VoucherReservation, { where: { campaignId: campaign.id } })) this.campaignConflict();
+  }
+
+  private async changeCampaignState(manager: EntityManager, campaign: VoucherCampaign, target: 'PUBLISHED' | 'PAUSED' | 'ARCHIVED'): Promise<void> {
+    const old = campaign.status;
+    const allowed = old === VoucherCampaignState.DRAFT ? ['PUBLISHED', 'ARCHIVED'] :
+      old === VoucherCampaignState.PUBLISHED ? ['PAUSED', 'ARCHIVED'] :
+      old === VoucherCampaignState.PAUSED ? ['PUBLISHED', 'ARCHIVED'] : [];
+    if (!allowed.includes(target)) this.campaignConflict();
+    if (old === VoucherCampaignState.DRAFT) {
+      await this.assertDraft(manager, campaign);
+      if (target === 'PUBLISHED') campaign.publishedAt = await this.now(manager);
+    }
+    if (target === 'PUBLISHED' && campaign.autoCompensation && await manager.findOne(VoucherCampaign, {
+      where: { autoCompensation: true, active: true },
+    })) this.campaignConflict();
+    campaign.status = target as VoucherCampaignState;
+    campaign.active = target === 'PUBLISHED';
+    campaign.version++;
+    await manager.save(VoucherCampaign, campaign);
+  }
+
+  private campaignConflict(): never {
+    throw new ConflictException('Chương trình đã thay đổi hoặc không cho phép thao tác này. Vui lòng tải lại.');
   }
 
   async setCampaignActive(
@@ -125,15 +248,15 @@ export class VouchersService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException('Trạng thái không hợp lệ.');
     return this.transaction(async (manager) => {
       const campaign = await this.lockCampaign(manager, campaignId);
+      if (![VoucherCampaignState.PUBLISHED, VoucherCampaignState.PAUSED].includes(campaign.status)) this.campaignConflict();
       if (campaign.active !== active) {
-        campaign.active = active;
-        await manager.save(VoucherCampaign, campaign);
+        await this.changeCampaignState(manager, campaign, active ? 'PUBLISHED' : 'PAUSED');
         await this.audit(
           manager,
           actor.id,
           'SET_CAMPAIGN_ACTIVE',
           campaign.id,
-          { active },
+          { active, status: campaign.status, version: campaign.version },
         );
       }
       return campaign;
