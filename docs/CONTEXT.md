@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-27 18:20 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-t21-final-merge-post-toan-20261027
+> Cập nhật lần cuối: 2026-10-27 21:04 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-t21-f3-wallet-only-20261027
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -176,6 +176,8 @@ Phase A được giữ và bổ sung validation phân biệt command, audit quy�
 
 **Technician partial parts + stable UI (20/10/2026):** New FixHome PART custody tracking-only workflow now accepts partial usedQty for newly enrolled QR-received rows (e.g., issued 3, used 1, return due 2). A new invoice consumes that ledger quantity without changing older invoices, historic unenrolled parts, P1_CUSTODY_ENABLED, wallet/payment/commission rules; authorization, quote approval, version/idempotency, non-reversal, declaration and manager acceptance remain guarded. Old clients sending whole-line status cannot overwrite a prior recorded partial decision.
 
+- F3 refund-policy after 2026-10-27 owner decision: verified paid Voucher Wallet/VNPay/Cash/Zero customer refunds credit only FixHome wallet; never initiate refund to VNPay or hand back physical cash. Refund gross/net and FixHome subsidy reconciliation remain.
+
 ## 4. Kiến trúc và thư mục chính
 
 Kiểu modular monolith: mỗi module `controller → service → TypeORM repository/entity`, DTO dùng `class-validator`, `ValidationPipe` toàn cục bật `whitelist` và `forbidNonWhitelisted`.
@@ -298,7 +300,10 @@ Migration P0 `CatalogV2VariantAndAlias1790000000037`, `BookingDeviceAttributes17
 
 Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có thể reset, không cần chuyển nguyên 1.068 skill links. Việc mở M1/M2 cần ít nhất một kỹ thuật viên thử đủ năng lực mỗi dịch vụ được phép; không activate DB dùng chung. `P1_CUSTODY_ENABLED=false` mặc định. Harness cô lập được lưu ở workspace cá nhân, không đưa vào source phát hành; harness kiểm chứng bổ sung `scripts/p012-pricing-isolated.cjs` tự tạo/gỡ đúng container PostgreSQL 16 riêng, không đọc `.env`, kiểm upgrade #0040 và fresh chain 65 migration, rollback an toàn, HTTP/JWT public preview + Booking, 28 tier fixed, 32 fallback, 32 skill giả lập và matching/accept thật. Giữ nguyên 792 SKU giả lập, P1 OFF, GATE/LATER inactive. Hợp đồng custody và gate tiền vẫn theo `docs/P1-CUSTODY-MIGRATION-PLAN.md`.
 
+- F3 wallet-only source amendment still requires CI review/merge before DEV. Original settled-payment proof and transaction idempotency remain hard gates; real authenticated E2E belongs to owner.
+
 ## 8. Việc đang dở và rủi ro đã biết
+- Owner approved WALLET_ONLY_F3: do not implement refund back to VNPay or physical cash; after actual payment confirmed, customer NET refund goes into FixHome wallet regardless of initial rail.
 
 - T2.1: Lead kiểm ledger/pending migrations, apply riêng F4 `VoucherFundingLedger1792994400001` đúng một lần theo quy trình release; không chạy lại hai migration cũ owner báo đã apply. Chưa ghi DB, deploy hay chạy Docker trong lượt writer; guard động không thay thế migration. Owner miễn isolated PostgreSQL tests và chọn manual E2E sau deploy: DDL execution, triggers/locks/concurrency nhiều instance, provider/JWT thật, Web/Mobile/runtime: NOT VERIFIED. Lead restart Backend, kiểm `/health`, phối hợp consumer CASH lookup/context và owner E2E; funded querydr chưa có verifier được chứng minh, VNPAY/CASH refund vẫn chặn khi thiếu original-rail proof. R-BE giữ nghĩa vụ custody của hàng đã nhận; khai trả chưa là biên nhận vật lý, cần review trước release. Không dùng waiver để bỏ qua auth, đối soát hay invariant tiền.
 
@@ -324,6 +329,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
+- 2026-10-27 21:04 (UTC+7) | foxonworld | foxonworld/fixhome-t21-f3-wallet-only-20261027 | Implement owner-approved F3 wallet-only refund independent of settled original rail; keep provider/cash payment evidence, gross-net ledger, cash subsidy reversal, full quota recovery and refund duplication guard.
 
 - 2026-10-27 18:20 (UTC+7) | foxonworld | foxonworld/fixhome-t21-final-merge-post-toan-20261027 | Cập nhật T2.1 funded rails có guard động, CASH tech lookup, giới hạn refund F3 và F4 chưa apply; runtime chưa kiểm chứng.
 - 2026-10-26 21:40 (UTC+7) | ToanAltF4 | feat/public-part-prices | GET /parts/prices công khai cho AI tính giá ước tính
@@ -364,4 +370,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-19 03:27 (UTC+7) | foxonworld | foxonworld/fixhome-p012-integration-20261019 | Thêm public pricing API và Booking snapshot tier ACTIVE bất biến qua #0040; xác minh PG/HTTP cô lập, ghi rõ E2E còn lỗi và giữ preview/P1 OFF.
 - 2026-10-19 01:59 (UTC+7) | foxonworld | foxonworld/fixhome-p012-integration-20261019 | Tích hợp P0/P1 staging, giữ Booking media/privacy của dev, xác minh migration và harness PostgreSQL cô lập, không activation.
 - 2026-10-19 00:50 (UTC+7) | foxonworld | feature/catalog-v2-owner-approved | Chặn thuộc tính mâu thuẫn tier legacy, xác thực input preview và máy giặt WM-03; rollback #0037/#0038 khóa an toàn; E2E sandbox vẫn timeout.
-- 2026-10-19 00:48 (UTC+7) | foxonworld | foxonworld/fixhome-p1-parts-return-20261018 | Ghi code P1 Phase B cô lập, migration inactive, API/guard/ledger mặc định OFF và gate concurrency/cutover còn chặn.

@@ -96,10 +96,11 @@ export async function commitVerifiedVoucherSupportRefund(
       link.customerId !== source.customerId || link.scopeId !== reservation.scopeId ||
       !Array.isArray(link.allocationSnapshot) ||
       voucherAllocationDigest(link.allocationSnapshot) !== link.allocationSha256) inconsistent();
-  // SupportCase resolves into a customer-wallet refund. For a VNPay or cash
-  // original rail, wallet credit alone is not proof the original rail was
-  // refunded; keep those refund paths closed until reconciled provider/cash proof.
-  if (['VNPAY', 'CASH'].includes(link.rail)) inconsistent();
+  // Approved F3: refund only to the FixHome customer wallet regardless of the
+  // original payment method. Do NOT reverse VNPay or pay out cash. Require
+  // validated original settlement evidence (signed VNPay payment or customer-
+  // confirmed cash) via loadVoucherSettlementFacts before any wallet credit.
+  if (!(['WALLET', 'VNPAY', 'CASH', 'ZERO'] as string[]).includes(link.rail)) inconsistent();
   const allocation = link.allocationSnapshot.find(row => row.invoiceId === invoice.id);
   if (!allocation || link.allocationSnapshot.filter(row => row.invoiceId === invoice.id).length !== 1 ||
       vnd(invoice.grandTotal) !== vnd(allocation.originalGrossVnd) ||
