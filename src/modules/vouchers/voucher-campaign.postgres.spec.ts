@@ -78,18 +78,29 @@ describe.skipIf(process.env.VOUCHER_CAMPAIGN_ISOLATED_PG !== '1')('campaign life
     const binding = identity['5432/tcp'];
     expect(binding).toHaveLength(1);
     expect(binding[0].HostIp).toBe('127.0.0.1');
-    for (let n = 0; n < 60; n++) {
-      const ready = spawnSync('docker', ['exec', container, 'pg_isready', '-U', 'postgres'], { windowsHide: true, stdio: 'ignore' });
-      if (ready.status === 0) break;
-      await new Promise(resolve => setTimeout(resolve, 500));
-    }
     db = new DataSource({ type: 'postgres', host: '127.0.0.1', port: Number(binding[0].HostPort),
       username: 'postgres', password, database: 'voucher_campaign_qa', ssl: false,
       entities: VOUCHER_ENTITIES, synchronize: false,
       migrations: [VoucherCore1792994400000, VoucherFundingLedger1792994400001],
       migrationsTransactionMode: 'each', extra: { max: 8 } });
-    await db.initialize();
-    expect((await db.query('SELECT current_database() AS name'))[0].name).toBe('voucher_campaign_qa');
+    // pg_isready inside the container can succeed during Postgres initdb's
+    // temporary server; that server exits before the final externally bound
+    // server starts. Verify actual TCP + SQL through the mapped loopback port.
+    let lastConnectError: unknown;
+    for (let n = 0; n < 60; n++) {
+      try {
+        if (!db.isInitialized) await db.initialize();
+        const [row] = await db.query('SELECT current_database() AS name');
+        if (row.name !== 'voucher_campaign_qa') throw new Error('Wrong isolated database');
+        lastConnectError = null;
+        break;
+      } catch (error) {
+        lastConnectError = error;
+        if (db.isInitialized) await db.destroy().catch(() => undefined);
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
+    if (lastConnectError || !db.isInitialized) throw new Error('Disposable PostgreSQL never became ready for SQL over localhost TCP');
     await db.query(`
       CREATE TABLE public.users(id uuid PRIMARY KEY);
       CREATE TABLE public.payments(id uuid PRIMARY KEY);
