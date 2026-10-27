@@ -11,6 +11,7 @@ import {
   VoucherClaim,
   VoucherReservation,
 } from './entities/voucher.entity';
+import { VoucherFundingEntry, VoucherPaymentLink } from './entities/voucher-funding.entity';
 import {
   APPLY_TTL_MS,
   CheckoutFacts,
@@ -302,6 +303,112 @@ describe('standalone voucher lifecycle (no database concurrency claim)', () => {
       service.redeemSettled(settlement.settlementId),
     ).rejects.toThrow();
   });
+  it('retains the 100th pending provider slot after expiry and rejects a 101st reservation', async () => {
+    const { campaign } = await reserve();
+    campaign.redeemed = 99;
+    releasable = false;
+    vi.advanceTimersByTime(APPLY_TTL_MS);
+    await service.expireCampaign(campaign.id);
+    const claim = await service.claim(stranger, campaign.code);
+    facts = { ...facts, customerId: stranger.id, scopeId: randomUUID() };
+    await expect(service.apply(stranger, { claimId: claim.id, scopeId: facts.scopeId,
+      attemptId: randomUUID() })).rejects.toThrow();
+    expect(store.rows(VoucherReservation)[0].state).toBe(ReservationState.RESERVED);
+  });
+  it('redeems the 100th late provider-paid hold once and still rejects the 101st', async () => {
+    const campaign = await service.createCampaign(admin, policy());
+    for (let index = 0; index < 99; index++) {
+      const actor = { id: randomUUID(), role: Role.CUSTOMER };
+      facts = { ...facts, customerId: actor.id, scopeId: randomUUID() };
+      const claim = await service.claim(actor, campaign.code);
+      const held = await service.apply(actor, { claimId: claim.id, scopeId: facts.scopeId,
+        attemptId: randomUUID() });
+      settlement = { settlementId: randomUUID(), reservationId: held.id,
+        customerId: actor.id, scopeId: facts.scopeId, snapshotId: facts.snapshotId,
+        status: 'SETTLED', settledAt: new Date() };
+      await service.redeemSettled(settlement.settlementId);
+    }
+    expect(store.rows(VoucherCampaign)[0].redeemed).toBe(99);
+    const actor100 = { id: randomUUID(), role: Role.CUSTOMER };
+    facts = { ...facts, customerId: actor100.id, scopeId: randomUUID() };
+    const claim100 = await service.claim(actor100, campaign.code);
+    const held100 = await service.apply(actor100, { claimId: claim100.id,
+      scopeId: facts.scopeId, attemptId: randomUUID() });
+    const row100 = store.rows(VoucherReservation).find(row => row.id === held100.id);
+    const paymentId = randomUUID();
+    const linkId = randomUUID();
+    store.rows(VoucherPaymentLink).push({ id: linkId, reservationId: held100.id,
+      attemptId: row100.attemptId, rail: 'VNPAY', paymentId,
+      visitGroupPaymentId: null, customerId: actor100.id, scopeId: facts.scopeId,
+      customerDueVnd: 100, allocationSha256: 'a'.repeat(64),
+      providerInitiatedAt: new Date(+row100.reservedAt + 1000) });
+    store.rows(VoucherFundingEntry).push(
+      { linkId, kind: 'PROVIDER_PENDING', amountVnd: 0, evidenceSha256: 'a'.repeat(64) },
+      { linkId, kind: 'PROVIDER_PAID', amountVnd: 0,
+        evidenceSha256: 'b'.repeat(64), providerReference: 'VN-100',
+        providerPaidAt: new Date(+row100.expiresAt - 1000) },
+    );
+    releasable = false;
+    vi.advanceTimersByTime(APPLY_TTL_MS + 1000);
+    const actor101 = { id: randomUUID(), role: Role.CUSTOMER };
+    facts = { ...facts, customerId: actor101.id, scopeId: randomUUID() };
+    const claim101 = await service.claim(actor101, campaign.code);
+    const attempt101 = { claimId: claim101.id, scopeId: facts.scopeId, attemptId: randomUUID() };
+    await expect(service.apply(actor101, attempt101)).rejects.toThrow();
+    settlement = { settlementId: paymentId, reservationId: held100.id,
+      customerId: actor100.id, scopeId: row100.scopeId,
+      snapshotId: row100.checkoutSnapshot.snapshotId,
+      status: 'SETTLED', settledAt: new Date() };
+    await service.redeemSettled(paymentId);
+    await service.redeemSettled(paymentId);
+    expect(store.rows(VoucherCampaign)[0].redeemed).toBe(100);
+    await expect(service.apply(actor101, attempt101)).rejects.toThrow();
+  });
+  it('redeems a late signed-provider success only from its immutable paid link', async () => {
+    const { reservation } = await reserve();
+    const paidAt = new Date(+reservation.expiresAt - 1000);
+    const link = { id: randomUUID(), reservationId: reservation.id, attemptId: randomUUID(),
+      rail: 'VNPAY', paymentId: settlement.settlementId, visitGroupPaymentId: null,
+      providerTxnRef: 'provider-attempt', customerId: customer.id, scopeId: facts.scopeId,
+      customerDueVnd: 100, allocationSha256: 'a'.repeat(64),
+      providerInitiatedAt: new Date(+reservation.reservedAt + 1000) };
+    link.attemptId = store.rows(VoucherReservation)[0].attemptId;
+    store.rows(VoucherPaymentLink).push(link);
+    store.rows(VoucherFundingEntry).push(
+      { linkId: link.id, kind: 'PROVIDER_PENDING', amountVnd: 0, evidenceSha256: link.allocationSha256 },
+      { linkId: link.id, kind: 'PROVIDER_PAID', amountVnd: 0, evidenceSha256: 'b'.repeat(64),
+        providerReference: 'VN-123', providerPaidAt: paidAt },
+    );
+    vi.advanceTimersByTime(APPLY_TTL_MS + 1000);
+    settlement.settledAt = new Date();
+    await service.redeemSettled(settlement.settlementId);
+    expect(store.rows(VoucherClaim)[0].redeemedAt).toEqual(paidAt);
+    expect(store.rows(VoucherCampaign)[0].redeemed).toBe(1);
+    await service.redeemSettled(settlement.settlementId);
+    expect(store.rows(VoucherCampaign)[0].redeemed).toBe(1);
+  });
+  it('refuses late success without paid proof, with quarantine, or for another payment', async () => {
+    const { reservation } = await reserve();
+    const link = { id: randomUUID(), reservationId: reservation.id,
+      attemptId: store.rows(VoucherReservation)[0].attemptId, rail: 'VNPAY',
+      paymentId: randomUUID() as string, visitGroupPaymentId: null, customerId: customer.id,
+      scopeId: facts.scopeId, customerDueVnd: 100, allocationSha256: 'a'.repeat(64),
+      providerInitiatedAt: new Date(+reservation.reservedAt + 1000) };
+    store.rows(VoucherPaymentLink).push(link);
+    store.rows(VoucherFundingEntry).push({ linkId: link.id, kind: 'PROVIDER_PENDING',
+      amountVnd: 0, evidenceSha256: link.allocationSha256 });
+    vi.advanceTimersByTime(APPLY_TTL_MS + 1000);
+    settlement.settledAt = new Date();
+    await expect(service.redeemSettled(settlement.settlementId)).rejects.toThrow();
+    link.paymentId = settlement.settlementId;
+    await expect(service.redeemSettled(settlement.settlementId)).rejects.toThrow();
+    store.rows(VoucherFundingEntry).push({ linkId: link.id, kind: 'PROVIDER_PAID',
+      amountVnd: 0, evidenceSha256: 'b'.repeat(64), providerReference: 'VN-123',
+      providerPaidAt: new Date(+reservation.expiresAt - 1000) });
+    store.rows(VoucherFundingEntry).push({ linkId: link.id, kind: 'QUARANTINED',
+      amountVnd: 0, evidenceSha256: 'c'.repeat(64) });
+    await expect(service.redeemSettled(settlement.settlementId)).rejects.toThrow();
+  });
   it('only verified settlement consumes quota once, including callback replay', async () => {
     const { reservation } = await reserve();
     await service.redeemSettled(settlement.settlementId);
@@ -317,6 +424,15 @@ describe('standalone voucher lifecycle (no database concurrency claim)', () => {
       store.rows(VoucherAudit).filter((x) => x.action === 'REDEEM'),
     ).toHaveLength(1);
     await expect(service.release(customer, reservation.id)).rejects.toThrow();
+  });
+  it('redeems with the caller transaction so funding journal and quota can commit atomically', async () => {
+    await reserve();
+    (store.manager as EntityManager & { queryRunner: { isTransactionActive: boolean } }).queryRunner =
+      { isTransactionActive: true } as never;
+    const outer = vi.spyOn(store.dataSource, 'transaction');
+    await service.redeemSettled(settlement.settlementId, store.manager);
+    expect(outer).not.toHaveBeenCalled();
+    expect(store.rows(VoucherCampaign)[0].redeemed).toBe(1);
   });
   it.each(['customerId', 'scopeId', 'snapshotId', 'reservationId'] as const)(
     'rejects mismatched settlement %s',

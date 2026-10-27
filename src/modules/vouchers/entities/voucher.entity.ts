@@ -1,5 +1,6 @@
 import { Column, Entity, Index } from 'typeorm';
 import { BaseEntity } from '../../../database/base.entity';
+import { VoucherFundingEntry, VoucherPaymentLink } from './voucher-funding.entity';
 import {
   CheckoutFacts,
   ReservationState,
@@ -100,4 +101,6 @@ export const VOUCHER_ENTITIES = [
   VoucherClaim,
   VoucherReservation,
   VoucherAudit,
+  VoucherPaymentLink,
+  VoucherFundingEntry,
 ];

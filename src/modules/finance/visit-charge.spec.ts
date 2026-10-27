@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 import { describe, expect, it, vi } from 'vitest';
-import { loadVisitCharge, sameAllocations } from './visit-charge';
+import { loadVisitCharge, sameAllocations, allocateFundedVisitCharge } from './visit-charge';
 
 // PO 21/10/2026: a visit is paid once, after every device has its result, for the devices repaired only.
 function manager(rows: { items: object[]; bookings: object[]; orders: object[]; invoices: object[] }) {
@@ -50,4 +50,41 @@ describe('sameAllocations', () => {
     expect(sameAllocations(a, [a[0]])).toBe(false);
     expect(sameAllocations(a, [a[0], { ...a[1], amount: 201 }])).toBe(false);
   });
+});
+
+describe('funded visit charge allocation', () => {
+  const charge = {
+    devices: [], waiting: 0, ready: true, paid: false, total: 300000,
+    allocations: [
+      { invoiceId: 'i1', serviceOrderId: 'o1', amount: 100000 },
+      { invoiceId: 'i2', serviceOrderId: 'o2', amount: 200000 },
+    ],
+  };
+  const funding = {
+    total: { originalGrossVnd: 300000, customerDueVnd: 240000 },
+    invoices: [
+      { invoiceId: 'i1', originalGrossVnd: 100000, customerDueVnd: 80000 },
+      { invoiceId: 'i2', originalGrossVnd: 200000, customerDueVnd: 160000 },
+    ],
+  };
+  it('produces a net payment split without changing frozen gross allocations', () => {
+    expect(allocateFundedVisitCharge(charge, funding as never)).toEqual({
+      originalGross: 300000, customerDue: 240000,
+      allocations: [
+        { invoiceId: 'i1', serviceOrderId: 'o1', amount: 80000 },
+        { invoiceId: 'i2', serviceOrderId: 'o2', amount: 160000 },
+      ],
+    });
+    expect(charge.allocations.map(item => item.amount)).toEqual([100000, 200000]);
+  });
+  it.each(['wrong gross', 'missing child', 'duplicate child', 'wrong due'])(
+    'rejects %s before a payment record can be created', variant => {
+      const quote = structuredClone(funding);
+      if (variant === 'wrong gross') quote.invoices[0].originalGrossVnd += 1;
+      if (variant === 'missing child') quote.invoices.pop();
+      if (variant === 'duplicate child') quote.invoices[1].invoiceId = 'i1';
+      if (variant === 'wrong due') quote.total.customerDueVnd += 1;
+      expect(() => allocateFundedVisitCharge(charge, quote as never)).toThrow();
+    },
+  );
 });

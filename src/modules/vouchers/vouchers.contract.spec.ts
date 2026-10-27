@@ -5,7 +5,7 @@ import { Reflector } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import { ThrottlerModule } from '@nestjs/throttler';
 import request from 'supertest';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { Role } from '../../shared/enums';
 import { VouchersController } from './vouchers.controller';
@@ -115,6 +115,7 @@ describe('voucher transport contracts', () => {
     // Test-only authentication supplies synthetic principals; JWT verification and DB are NOT tested.
     let role: Role | undefined = Role.CUSTOMER;
     let actorId = randomUUID();
+    const preview = vi.fn(async () => ({ previewOnly: true, paymentAvailable: false }));
     const builder = Test.createTestingModule({
       imports: [ThrottlerModule.forRoot([{ ttl: 60000, limit: 5 }])],
       controllers: [VouchersController],
@@ -128,6 +129,7 @@ describe('voucher transport contracts', () => {
             grantPersonal: async () => ({ id: randomUUID() }),
             claim: async () => ({ id: randomUUID() }),
             apply: async () => ({ id: randomUUID(), state: 'RESERVED' }),
+            checkoutPreview: preview,
             listCampaigns: async () => [],
             release: async () => ({}),
           },
@@ -155,6 +157,14 @@ describe('voucher transport contracts', () => {
         (await request(http).get('/vouchers/wallet')).body[0].customerId,
       ).toBe(actorId);
       await request(http).get('/vouchers/campaigns').expect(403);
+      const previewClaim = randomUUID();
+      const previewScope = randomUUID();
+      await request(http).get(`/vouchers/checkout-preview/${previewClaim}/${previewScope}`).expect(200, { previewOnly: true, paymentAvailable: false });
+      expect(preview).toHaveBeenCalledWith({ id: actorId, role: Role.CUSTOMER }, previewClaim, previewScope);
+      expect(preview.mock.calls[0]).toHaveLength(3);
+      await request(http).get(`/vouchers/checkout-preview/${previewClaim}/${previewScope}?amount=1&discount=999999`).expect(400);
+      await request(http).post(`/vouchers/checkout-preview/${previewClaim}/${previewScope}`).send({ amount: 1, discount: 999999 }).expect(404);
+      await request(http).get('/vouchers/checkout-preview/forged/forged').expect(400);
       expect((await request(http).get('/vouchers/general').expect(200)).body[0].code).toBe('GENERAL');
       await request(http).post(`/vouchers/campaigns/${randomUUID()}/grants`).send({ customerId: randomUUID(), grantId: randomUUID() }).expect(403);
       await request(http)
@@ -180,6 +190,7 @@ describe('voucher transport contracts', () => {
       await request(http).post('/vouchers/apply').send(apply).expect(429);
       role = Role.ADMIN;
       await request(http).get('/vouchers/campaigns').expect(200);
+      await request(http).get(`/vouchers/checkout-preview/${randomUUID()}/${randomUUID()}`).expect(403);
       await request(http).get('/vouchers/general').expect(403);
       await request(http).post(`/vouchers/campaigns/${randomUUID()}/grants`).send({ customerId: randomUUID(), grantId: randomUUID() }).expect(201);
       await request(http).post(`/vouchers/campaigns/${randomUUID()}/grants`).send({ customerId: 'bad', grantId: randomUUID() }).expect(400);

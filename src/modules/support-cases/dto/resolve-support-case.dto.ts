@@ -89,4 +89,12 @@ export class ResolveSupportCaseDto {
   @Min(0)
   @Max(2_000_000_000)
   amount?: number;
+
+  /** Funded vouchers only: approved original-gross portion; amount is customer NET. */
+  @ApiPropertyOptional({ description: 'Funded refund original gross basis (VND); amount stays customer NET' })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(2_000_000_000)
+  grossRefundVnd?: number;
 }

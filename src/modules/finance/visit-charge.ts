@@ -5,6 +5,7 @@ import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
 import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity';
 import type { VisitPaymentAllocation } from '../visit-groups/entities/visit-group-payment.entity';
+import type { VoucherFundingAllocation } from '../vouchers/voucher-funding-allocation';
 
 /** Where one device of a visit stands for the visit's single payment. */
 export type VisitDeviceState = 'succeeded' | 'failed' | 'quote_declined' | 'cancelled' | 'open';
@@ -94,4 +95,32 @@ export async function loadVisitCharge(manager: EntityManager, groupId: string, l
 export function sameAllocations(frozen: VisitPaymentAllocation[], now: VisitPaymentAllocation[]): boolean {
   const key = (list: VisitPaymentAllocation[]) => list.map((a) => `${a.invoiceId}:${Number(a.amount)}`).sort().join('|');
   return frozen.length === now.length && key(frozen) === key(now);
+}
+
+/** The payment split for a funded visit; never mutates the original invoice charge. */
+export function allocateFundedVisitCharge(
+  charge: VisitCharge,
+  funding: Pick<VoucherFundingAllocation, 'invoices' | 'total'>,
+): { originalGross: number; customerDue: number; allocations: VisitPaymentAllocation[] } {
+  const invalid = (): never => { throw new RangeError('Voucher visit allocation is inconsistent.'); };
+  if (!charge.ready || charge.waiting !== 0 || charge.paid ||
+      !Array.isArray(funding.invoices) || funding.invoices.length !== charge.allocations.length ||
+      !Number.isSafeInteger(charge.total) || charge.total <= 0 ||
+      funding.total.originalGrossVnd !== charge.total ||
+      !Number.isSafeInteger(funding.total.customerDueVnd) || funding.total.customerDueVnd < 0) invalid();
+  const byInvoice = new Map(charge.allocations.map(item => [item.invoiceId, item]));
+  if (byInvoice.size !== charge.allocations.length) invalid();
+  const seen = new Set<string>();
+  const allocations = funding.invoices.map(invoice => {
+    const original = byInvoice.get(invoice.invoiceId);
+    if (!original || seen.has(invoice.invoiceId) ||
+        original.amount !== invoice.originalGrossVnd ||
+        !Number.isSafeInteger(invoice.customerDueVnd) || invoice.customerDueVnd < 0 ||
+        invoice.customerDueVnd > original.amount) invalid();
+    seen.add(invoice.invoiceId);
+    return { invoiceId: original.invoiceId, serviceOrderId: original.serviceOrderId,
+      amount: invoice.customerDueVnd };
+  });
+  if (allocations.reduce((sum, item) => sum + item.amount, 0) !== funding.total.customerDueVnd) invalid();
+  return { originalGross: charge.total, customerDue: funding.total.customerDueVnd, allocations };
 }
