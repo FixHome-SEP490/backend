@@ -93,6 +93,8 @@ describe('WEB-ACCEPT isolated real HTTP/JWT/PostgreSQL (three synthetic actors)'
     // the already-deployed voucher baseline. Exclude F4 from this unrelated fixture only.
     db.migrations.splice(0, db.migrations.length, ...db.migrations.filter(m => m.name !== 'VoucherFundingLedger1792994400001'));
     await db.runMigrations();
+    // Private-schema legacy fixture only: F4 is forward-only in public DEV.
+    await db.query('ALTER TABLE support_cases ADD COLUMN IF NOT EXISTS voucher_gross_refund_vnd bigint NULL');
     const { seedRbac } = runtimeRequire('./dist/database/seeds/seed-rbac.js');
     await seedRbac(db);
     const { AppModule } = runtimeRequire('./dist/app.module.js');
