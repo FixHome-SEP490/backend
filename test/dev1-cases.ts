@@ -1233,16 +1233,28 @@ export function registerDev1Cases(context: () => Context) {
       denied(await get('/bookings?sort=random', manager));
     });
 
-    it.each([false, true])('keeps technician part warranty opt-in and outside labor commission: selected=%s', async selected => {
+    it.each(['technician', 'external'])('rejects new %s parts at initial quote and additional costs', async partSource => {
+      const f = await fixture('inspection_required'), { order } = await accept(f), path = `/service-orders/${order.id}`;
+      await arrived(order.id, f.tech);
+      const labor = { type: 'labor', description: 'Repair labor', quantity: 1, unitPrice: 100000, warrantyDays: 30 };
+      const disallowedPart = { type: 'parts_equipment', description: 'Unsupported part source', quantity: 1, unitPrice: 200000, partSource };
+      await post(path + '/quotations', f.tech, { items: [labor, disallowedPart] }).expect(422);
+      const quote = unwrap((await post(path + '/quotations', f.tech, { items: [labor] }).expect(201)).body);
+      await post(`/quotations/${quote.id}/decision`, f.owner, { action: 'APPROVE' }).expect(200);
+      await post(path + '/start-repair', f.tech).expect(200);
+      await post(path + '/additional-costs', f.tech, { reason: 'Disallowed parts', items: [disallowedPart] }).expect(422);
+    });
+
+    it.each([false, true])('settles approved labor and handles disputed cash: agreed=%s', async selected => {
       const f = await fixture('inspection_required'), { order } = await accept(f), path = `/service-orders/${order.id}`;
       await arrived(order.id, f.tech);
       const items = [
         { type: 'labor', description: 'Repair labor', quantity: 1, unitPrice: 100000, warrantyDays: 30 },
-        { type: 'parts_equipment', description: 'Technician part', quantity: 1, unitPrice: 200000, partSource: 'technician', partWarrantyOption: 'paid_warranty', warrantyFee: 50000, warrantyTermDays: 90 },
+
       ];
       const quote = unwrap((await post(path + '/quotations', f.tech, { items }).expect(201)).body);
-      const part = quote.items.find((item: any) => item.partSource === 'technician');
-      await post(`/quotations/${quote.id}/decision`, f.owner, { action: 'APPROVE', paidWarrantyItemIds: selected ? [part.id] : [] }).expect(200);
+
+      await post(`/quotations/${quote.id}/decision`, f.owner, { action: 'APPROVE' }).expect(200);
       await post(path + '/start-repair', f.tech).expect(200);
       const expired = unwrap((await post(path + '/additional-costs', f.tech, { reason: 'Optional work', items: [items[0]] }).expect(201)).body);
       await context().db.getRepository('AdditionalCostRequest').update(expired.id, { expiresAt: new Date(Date.now() - 1) });
@@ -1252,9 +1264,9 @@ export function registerDev1Cases(context: () => Context) {
       await evidence(order.id, f.tech, 'after').expect(201);
       await post(path + '/request-completion', f.tech).expect(200);
       const invoice = unwrap((await get(path + '/invoice', f.owner).expect(200)).body);
-      expect(Number(invoice.grandTotal)).toBe(selected ? 350000 : 300000);
+      expect(Number(invoice.grandTotal)).toBe(100000);
       expect(Number(invoice.commissionAmount)).toBe(10000);
-      expect(Number(invoice.technicianPartWarrantyFeeTotal)).toBe(selected ? 50000 : 0);
+      expect(Number(invoice.technicianPartWarrantyFeeTotal)).toBe(0);
       await post(path + '/cash-settlement/declare', f.tech, { declaredAmount: Number(invoice.grandTotal) }).expect(200);
       const cashResponse = await post(path + '/cash-settlement/confirm', f.owner, { agreed: true, confirmedAmount: selected ? Number(invoice.grandTotal) : 1 });
       expect(cashResponse.status, JSON.stringify(cashResponse.body)).toBe(selected ? 200 : 409);
@@ -1264,11 +1276,11 @@ export function registerDev1Cases(context: () => Context) {
       expect(unwrap((await get(path, f.owner).expect(200)).body).status).toBe(selected ? 'completed' : 'under_repair');
       if (selected) {
         const warranties = unwrap((await get(path + '/warranties', f.owner).expect(200)).body);
-        expect(warranties).toHaveLength(2);
+        expect(warranties).toHaveLength(1);
         // Each coverage names the invoice line it covers, so the customer knows what to claim.
         expect(warranties.map((w: any) => [w.itemType, w.itemDescription, w.warrantyDaysSnapshot]).sort()).toEqual([
           ['labor', 'Repair labor', 30],
-          ['parts_equipment', 'Technician part', 90],
+
         ]);
       } else {
         expect(await context().db.getRepository('CommissionDue').count({ where: { serviceOrderId: order.id } })).toBe(0);
@@ -1761,6 +1773,69 @@ export function registerDev1Cases(context: () => Context) {
         expect(week.perDay.at(-1).sessions).toBeGreaterThanOrEqual(1);
         const [row] = await context().db.query('SELECT summary FROM ai_chat_sessions WHERE session_id = $1', [sessionId]);
         expect(row.summary.feedback).toHaveLength(1);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('gives the AI Service every active part price without a login, and nothing else about parts', async () => {
+      const [part] = await context().db.query(
+        `INSERT INTO fixhome_parts (sku, name, selling_price, is_active) VALUES ($1, 'Linh kiện thử giá', 123456, true) RETURNING id`,
+        [`E2E-${randomUUID().slice(0, 8)}`],
+      );
+      const [hidden] = await context().db.query(
+        `INSERT INTO fixhome_parts (sku, name, selling_price, is_active) VALUES ($1, 'Linh kiện đã tắt', 99, false) RETURNING id`,
+        [`E2E-${randomUUID().slice(0, 8)}`],
+      );
+      try {
+        const body = unwrap((await request(context().app.getHttpServer()).get('/api/v1/parts/prices').expect(200)).body);
+        const mine = body.items.find((p: any) => p.name === 'Linh kiện thử giá');
+        expect(mine).toEqual({ sku: expect.stringMatching(/^E2E-/), name: 'Linh kiện thử giá', price: 123456 });
+        expect(body.items.some((p: any) => p.name === 'Linh kiện đã tắt')).toBe(false);
+        expect(body.items.every((p: any) => Object.keys(p).sort().join() === 'name,price,sku')).toBe(true);
+      } finally {
+        await context().db.query('DELETE FROM fixhome_parts WHERE id = ANY($1)', [[part.id, hidden.id]]);
+      }
+    });
+
+    it('keeps a "sai rồi" the assistant noticed in the conversation, with what was turned down', async () => {
+      const { AiDiagnosisService } = runtimeRequire('./dist/modules/ai-diagnosis/ai-diagnosis.service.js');
+      const { of } = runtimeRequire('rxjs');
+      const http = (context().app.get(AiDiagnosisService) as any).httpService;
+      const sessionId = `ai-${randomUUID()}`;
+      const first = { sessionId, status: 'ok', suspectedFaults: [{ faultCode: 'AC_LOW_REFRIGERANT', nameVi: 'Thiếu gas, xì gas' }], messageVi: 'Dạ khả năng cao là thiếu gas ạ.', recommendedServices: [] };
+      const second = {
+        sessionId,
+        status: 'ok',
+        suspectedFaults: [{ faultCode: 'AC_DRAIN_BLOCKED', nameVi: 'Nghẹt đường thoát nước ngưng' }],
+        messageVi: 'Dạ, vậy em loại khả năng thiếu gas ra ạ.',
+        recommendedServices: [],
+        customerDisagreed: { kind: 'fault', rejected: ['AC_LOW_REFRIGERANT'], rejectedVi: ['Thiếu gas, xì gas'], saidVi: 'máy lạnh không mát', correctionVi: 'sai rồi, máy vẫn mát nhưng chảy nước' },
+      };
+      const replies = [first, second];
+      const spy = vi.spyOn(http, 'post').mockImplementation((() => of({ data: replies.shift() })) as any);
+      const post = (path: string, session: Session, body: object) => request(context().app.getHttpServer()).post(`/api/v1${path}`).set('Authorization', `Bearer ${session.accessToken}`).send(body);
+      try {
+        const owner = await context().register();
+        const admin = await context().register();
+        await post('/ai/diagnoses', owner, { description: 'máy lạnh không mát' }).expect(200);
+        await post('/ai/diagnoses', owner, { description: 'sai rồi, máy vẫn mát nhưng chảy nước', sessionId }).expect(200);
+        const [row] = await context().db.query('SELECT summary FROM ai_chat_sessions WHERE session_id = $1', [sessionId]);
+        expect(row.summary.feedback).toEqual([
+          expect.objectContaining({
+            verdict: 'wrong',
+            source: 'chat',
+            kind: 'fault',
+            rejected: ['Thiếu gas, xì gas'],
+            said: 'máy lạnh không mát',
+            note: 'sai rồi, máy vẫn mát nhưng chảy nước',
+            reply: 'Dạ khả năng cao là thiếu gas ạ.',
+          }),
+        ]);
+        await context().db.query('UPDATE users SET role = $1 WHERE id = $2', ['admin', admin.user.id]);
+        const quality = unwrap((await request(context().app.getHttpServer()).get('/api/v1/admin/ai-quality?days=1').set('Authorization', `Bearer ${admin.accessToken}`).expect(200)).body);
+        const wrong = quality.recentWrong.find((r: any) => r.sessionId === sessionId);
+        expect(wrong).toMatchObject({ source: 'chat', kind: 'fault', said: 'máy lạnh không mát', rejected: ['Thiếu gas, xì gas'], settledOn: ['Nghẹt đường thoát nước ngưng'] });
       } finally {
         spy.mockRestore();
       }

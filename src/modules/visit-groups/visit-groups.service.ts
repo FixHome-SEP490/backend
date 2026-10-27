@@ -1,6 +1,6 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import { BookingStatus, Role, SupportCaseType } from '../../shared/enums';
@@ -53,7 +53,7 @@ export class VisitGroupsService {
     return { enabled: await this.isEnabled(), deviceLimit: VISIT_GROUP_DEVICE_LIMIT, hotline: await this.hotline() };
   }
 
-  async create(dto: CreateVisitGroupDto, customer: Customer) {
+  async create(dto: CreateVisitGroupDto, customer: Customer, externalManager?: EntityManager) {
     if (customer.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
     await this.assertEnabled();
     if (dto.items.length > VISIT_GROUP_DEVICE_LIMIT) {
@@ -64,14 +64,14 @@ export class VisitGroupsService {
         { limit: VISIT_GROUP_DEVICE_LIMIT, hotline: await this.hotline() },
       );
     }
-    if (dto.idempotencyKey) {
+    if (dto.idempotencyKey && !externalManager) {
       const earlier = await this.groupRepo.findOneBy({ customerId: customer.id, idempotencyKey: dto.idempotencyKey });
       if (earlier) return this.detail(earlier.id, customer);
     }
 
     let groupId: string;
     try {
-      groupId = await this.dataSource.transaction(async (manager) => {
+      const createInManager = async (manager: EntityManager) => {
         const group = await manager.save(manager.create(VisitGroup, {
           customerId: customer.id,
           addressId: dto.addressId,
@@ -141,24 +141,25 @@ export class VisitGroupsService {
           after: { devices: children.length, bookingIds: children.map((child) => child.id) },
         });
         return group.id;
-      });
+      };
+      groupId = externalManager ? await createInManager(externalManager) : await this.dataSource.transaction(createInManager);
     } catch (err) {
       // Two submissions with the same key raced: the loser returns the winner's group.
-      if (dto.idempotencyKey && (err as { code?: string })?.code === '23505') {
+      if (!externalManager && dto.idempotencyKey && (err as { code?: string })?.code === '23505') {
         const winner = await this.groupRepo.findOneBy({ customerId: customer.id, idempotencyKey: dto.idempotencyKey });
         if (winner) return this.detail(winner.id, customer);
       }
       throw err;
     }
-    return this.detail(groupId, customer);
+    return this.detail(groupId, customer, externalManager);
   }
 
-  async detail(groupId: string, customer: { id: string }) {
-    const group = await this.groupRepo.findOneBy({ id: groupId, customerId: customer.id });
+  async detail(groupId: string, customer: { id: string }, manager?: EntityManager) {
+    const group = await (manager ? manager.findOneBy(VisitGroup, { id: groupId, customerId: customer.id }) : this.groupRepo.findOneBy({ id: groupId, customerId: customer.id }));
     if (!group) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Visit group not found');
-    const items = await this.itemRepo.find({ where: { groupId }, order: { sequence: 'ASC' } });
+    const items = await (manager ? manager.find(VisitGroupItem, { where: { groupId }, order: { sequence: 'ASC' } }) : this.itemRepo.find({ where: { groupId }, order: { sequence: 'ASC' } }));
     const bookings = items.length
-      ? await this.dataSource.getRepository(Booking).find({ where: { id: In(items.map((item) => item.bookingId)) }, relations: ['media'] })
+      ? await (manager ?? this.dataSource).getRepository(Booking).find({ where: { id: In(items.map((item) => item.bookingId)) }, relations: ['media'] })
       : [];
     const byId = new Map(bookings.map((booking) => [booking.id, booking]));
     return {
@@ -222,7 +223,7 @@ export class VisitGroupsService {
     return this.presentReadPage(groups, total, page, pageSize);
   }
 
-  /** Only groups whose every child order is still actively assigned to this technician are visible. */
+  /** Active children require this technician; a failed terminal child has no active assignment. */
   async assignedPage(
     technicianId: string,
     options: { page?: number; pageSize?: number; tab?: VisitGroupTechnicianTab },
@@ -238,7 +239,7 @@ export class VisitGroupsService {
       )`, { technicianId })
       .andWhere(`NOT EXISTS (
         SELECT 1 FROM visit_group_items vgi
-        WHERE vgi.group_id = vg.id AND NOT EXISTS (
+        WHERE vgi.group_id = vg.id AND vgi.outcome IS DISTINCT FROM 'failed' AND NOT EXISTS (
           SELECT 1 FROM service_orders so
           JOIN technician_assignments ta ON ta.service_order_id = so.id
           WHERE so.booking_id = vgi.booking_id AND ta.technician_id = :technicianId AND ta.is_active = true

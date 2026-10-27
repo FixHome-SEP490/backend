@@ -57,6 +57,7 @@ import { buildPaymentUrl, buildQueryDrRequest, verifySignature, withWebOrigin } 
 import { loadVisitCharge, sameAllocations, type VisitCharge } from './visit-charge';
 import { VisitGroup } from '../visit-groups/entities/visit-group.entity';
 import { VisitGroupPayment } from '../visit-groups/entities/visit-group-payment.entity';
+import { Notification } from '../notifications/entities/notification.entity';
 import { SettlementService } from '../wallet/settlement.service';
 import { WalletService } from '../wallet/wallet.service';
 import { AuditLog } from '../audit-log/entities/audit-log.entity';
@@ -1785,19 +1786,41 @@ export class FinanceService {
   async declareVisitCash(groupId: string, dto: CashSettlementDeclarationDto, actor: FinanceActor) {
     if (actor.role !== Role.TECHNICIAN) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Only the assigned technician can declare cash received');
     return this.dataSource.transaction(async (manager) => {
-      await this.visitAccess(manager, groupId, actor, true);
+      const group = await this.visitAccess(manager, groupId, actor, true);
       await lockCustodyTechnician(manager, actor.id);
       const charge = await this.readyVisitCharge(manager, groupId);
       if (this.requireWholeVnd(dto.declaredAmount, 'Declared amount') !== charge.total) {
         throw new BusinessException(ErrorCodes.CASH_SETTLEMENT_MISMATCH, `Tiền mặt của cả lượt là ${charge.total.toLocaleString('vi-VN')}đ, vui lòng kiểm lại số tiền đã nhận.`);
       }
+      const notes = dto.technicianNotes?.slice(0, 255) ?? null;
+      const pending = await manager.findOne(VisitGroupPayment, {
+        where: { visitGroupId: groupId, rail: 'cash', status: 'pending_confirmation' },
+        order: { createdAt: 'DESC' },
+      });
+      // The group lock serializes retries. Reuse the same declaration rather than
+      // replacing it and sending the customer another notification.
+      if (pending && pending.requestedByUserId === actor.id && Number(pending.amount) === charge.total
+          && pending.providerReference === notes && sameAllocations(pending.allocations, charge.allocations)) {
+        return { id: pending.id, status: pending.status, amount: Number(pending.amount) };
+      }
       await manager.update(VisitGroupPayment, { visitGroupId: groupId, rail: 'cash', status: 'pending_confirmation' }, { status: 'cancelled', failureCode: 'REDECLARED' });
       const payment = await manager.save(VisitGroupPayment, manager.create(VisitGroupPayment, {
         visitGroupId: groupId, rail: 'cash', status: 'pending_confirmation', amount: charge.total, allocations: charge.allocations,
         idempotencyKey: `CASH:${groupId}:${randomUUID()}`, requestedByUserId: actor.id, requestedAt: new Date(),
-        providerReference: dto.technicianNotes?.slice(0, 255) ?? null,
+        providerReference: notes,
       }));
       await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'VISIT_CASH_DECLARED', resourceType: 'visit_group_payment', resourceId: payment.id, after: { amount: charge.total } });
+      // The existing notification trigger publishes to this customer's socket
+      // only after commit. Notification failure must roll back the declaration.
+      await manager.insert(Notification, {
+        userId: group.customerId,
+        title: 'Xác nhận tiền mặt cho lượt sửa',
+        message: 'Kỹ thuật viên đã báo nhận tiền mặt cho cả lượt sửa. Vui lòng kiểm tra số tiền và xác nhận.',
+        type: 'VISIT_CASH_DECLARED',
+        referenceType: 'VISIT_GROUP',
+        referenceId: groupId,
+        isRead: false,
+      });
       return { id: payment.id, status: payment.status, amount: Number(payment.amount) };
     });
   }

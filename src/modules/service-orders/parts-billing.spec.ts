@@ -192,4 +192,14 @@ describe('Additional quote warehouse requests gate requestCompletion', () => {
     await expect(f.service.requestCompletion('order', {}, { id: 'tech', role: Role.TECHNICIAN })).rejects.toThrow('AFTER evidence required');
     expect(f.generateInvoice).not.toHaveBeenCalled();
   });
+
+  it('blocks completion while any unexpired extra awaits approval, before freezing an invoice', async () => {
+    const f = setup(PartRequestStatus.RECEIVED, PartUsageStatus.RETURNED);
+    f.manager.count.mockImplementation(async (entity, { where }) => entity === RepairEvidence && where.type === EvidenceType.AFTER ? 1
+      : entity === AdditionalCostRequest ? 1 : 0);
+    await expect(f.service.requestCompletion('order', {}, { id: 'tech', role: Role.TECHNICIAN }))
+      .rejects.toMatchObject({ status: 409, response: { code: 'ORDER_INVALID_TRANSITION' } });
+    expect(f.generateInvoice).not.toHaveBeenCalled();
+    expect(f.manager.update.mock.calls.some(([entity]) => entity === ServiceOrder)).toBe(false);
+  });
 });

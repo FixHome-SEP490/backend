@@ -4,6 +4,7 @@ import { closeOrderPartRequests, assertPartsResolved, assertApprovedPartsResolve
 import { custodyUsageForInvoice, p1CustodyEnabled } from '../part-requests/part-custody.policy';
 import { Payment } from '../finance/entities/payment.entity';
 import { PartRequest } from '../part-requests/entities/part-request.entity';
+import { PartCustody } from '../part-requests/entities/part-custody.entity';
 import { Injectable, Logger, ForbiddenException, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ReputationService } from '../reputation/reputation.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -58,8 +59,10 @@ import {
   PaymentAttemptStatus,
   CashSettlementStatus,
   PartRequestStatus,
+  PartUsageStatus,
   SupportCaseStatus,
   SupportCaseType,
+  AccountStatus,
 } from '../../shared/enums';
 import { orderStageSql, type RepairStage } from '../../shared/utils/customer-activity-stage';
 import { BusinessConfigService } from '../system-config/business-config.service';
@@ -82,9 +85,13 @@ import { authorizeOrder } from './order-access';
 import { groupSiblings, mirrorGroupStatus, recordVisitOutcome, refuseLoneGroupedBookingAction } from '../bookings/visit-group-guard';
 import { REPAIR_FAILURE_REASONS, type RepairFailedDto } from './dto/repair-failed.dto';
 import { SupportCase } from '../support-cases/entities/support-case.entity';
+import { AuditLog } from '../audit-log/entities/audit-log.entity';
+import { Notification } from '../notifications/entities/notification.entity';
+import { repairFailureIncident, repairFailureRequest, REPAIR_FAILURE_ACTION } from './repair-failure-incident';
 import { VisitGroup } from '../visit-groups/entities/visit-group.entity';
 import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity';
 import { isCompletionHeld } from '../support-cases/completion-hold';
+import { VouchersService } from '../vouchers/vouchers.service';
 import { historicalOrderSummary, type HistoricalOrderSummary } from './historical-order-summary';
 import { repairHistoryStatuses } from './repair-history-filter';
 import { checkOverrunRelease, OVERRUN_RELEASE_WINDOW_DEFAULT_MINUTES, OVERRUN_RELEASE_WINDOW_KEY, type OverrunReleaseCheck } from './overrun-release';
@@ -189,6 +196,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly settlementService?: SettlementService,
     @Optional() private readonly notificationsService?: NotificationsService,
     @Optional() private readonly reputationService?: ReputationService,
+    @Optional() private readonly vouchersService?: VouchersService,
   ) {}
 
   private async notifyCustomerForOrder(orderId: string, title: string, message: string, type: string): Promise<void> {
@@ -939,29 +947,86 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
    * requests for the manager; only what nobody picked up is released.
    */
   async reportRepairFailed(orderId: string, dto: RepairFailedDto, actor: { id: string; role: string }): Promise<ServiceOrder> {
-    const reference = await authorizeOrder(this.dataSource.manager, orderId, actor, 'technician');
-    let notice: { customerId: string; code: string } | null = null;
+    if (actor.role !== Role.TECHNICIAN) throw new ForbiddenException('Technician role required');
+    const request = repairFailureRequest(dto);
+    const reference = await this.dataSource.manager.findOneBy(ServiceOrder, { id: orderId });
+    if (!reference) throw new ForbiddenException('Order not found or access denied');
+    let incidentId: string | null = null;
     const result = await this.dataSource.transaction(async manager => {
+      // Authenticate before either pessimistic lock. A cancelled replay has no
+      // active assignment, so only its linked owned incident grants access.
+      const assigned = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: orderId, technicianId: actor.id, isActive: true });
+      if (!assigned) {
+        const replay = await repairFailureIncident(manager, reference);
+        if (replay?.incident.technicianId !== actor.id) throw new ForbiddenException('Order not found or access denied');
+      }
       const booking = await manager.findOneOrFail(Booking, { where: { id: reference.bookingId }, lock: { mode: 'pessimistic_write' } });
+      // Replays authenticate against the strictly linked incident because the
+      // successful command closes the assignment. Never reopen that assignment.
+      const locked = await manager.findOne(ServiceOrder, { where: { id: orderId }, lock: { mode: 'pessimistic_write' } });
+      const prior = locked && await repairFailureIncident(manager, locked);
+      if (prior) {
+        if (prior.incident.technicianId !== actor.id) throw new ForbiddenException('Order not found or access denied');
+        if (JSON.stringify(prior.request) !== JSON.stringify(request)) throw new BusinessException(ErrorCodes.CONFLICT, 'Báo cáo đã được ghi nhận với nội dung khác.');
+        incidentId = prior.incident.id;
+        return locked;
+      }
       const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
-      if (!booking.visitGroupId) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chỉ dùng cho thiết bị trong lượt sửa nhiều máy.');
       if (order.status !== ServiceOrderStatus.UNDER_REPAIR || order.completionRequestedAt) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chỉ báo không sửa được khi đang sửa thiết bị đã duyệt.');
+      if (await manager.findOneBy(Invoice, { serviceOrderId: orderId }) ||
+          await manager.findOneBy(Quotation, { serviceOrderId: orderId, status: QuotationStatus.SENT }) ||
+          ((booking.visitGroupId || booking.pricingModeSnapshot !== ServicePricingMode.FIXED_PRICE) &&
+            !await manager.findOneBy(Quotation, { serviceOrderId: orderId, technicianId: actor.id, status: QuotationStatus.APPROVED }))) {
+        throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Đơn cần có báo giá đã duyệt và chưa chốt hóa đơn.');
+      }
+      const photoIds = request.photoEvidenceIds;
+      const photos = photoIds.length ? await manager.find(RepairEvidence, { where: { id: In(photoIds), serviceOrderId: orderId, uploaderId: actor.id, type: EvidenceType.ADDITIONAL } }) : [];
+      const privatePrefix = `cloudinary://evidence/fixhome/evidence/${orderId}/${actor.id}/`;
+      if (photos.length !== photoIds.length || photos.some(photo =>
+        !['image/jpeg', 'image/png', 'image/webp'].includes(photo.mimeType) ||
+        !photo.mediaUrl?.startsWith(privatePrefix) || !/^[a-zA-Z0-9-]+$/.test(photo.mediaUrl.slice(privatePrefix.length)))) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Ảnh phải là ảnh riêng tư do bạn tải lên cho đơn này.');
+      }
       const received = await manager.find(PartRequest, { where: { serviceOrderId: orderId, technicianId: actor.id, status: PartRequestStatus.RECEIVED }, relations: ['items'] });
-      const declared = new Map((dto.parts ?? []).map(part => [part.partRequestId, part.outcome]));
+      const declared = new Map(request.parts.map(part => [part.partRequestId, part.outcome]));
       if (received.some(part => !declared.has(part.id)) || [...declared.keys()].some(id => !received.some(part => part.id === id))) {
         throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Chọn Đã lắp hoặc Trả lại kho cho từng linh kiện đã nhận.');
       }
+      // After cancellation the usage command is intentionally closed. An
+      // installed claim therefore must already be a complete recorded usage;
+      // a return claim must leave every issued unit owing physical return.
+      for (const part of received) {
+        const installed = declared.get(part.id) === 'installed';
+        if (installed && !part.items?.length) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Ghi nhận linh kiện đã dùng trước khi báo không sửa được.');
+        for (const item of part.items ?? []) {
+          const custody = await manager.findOneBy(PartCustody, { partRequestItemId: item.id });
+          if ((installed && (item.usageStatus !== PartUsageStatus.USED || (custody && custody.state.usedQty !== item.quantity))) ||
+              (!installed && (item.usageStatus === PartUsageStatus.USED || (custody && custody.state.usedQty !== 0)))) {
+            throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Kết quả linh kiện không khớp số lượng đã dùng; hãy ghi nhận trước khi đóng đơn.');
+          }
+        }
+      }
       const label = REPAIR_FAILURE_REASONS[dto.reason];
       const reason = [label, dto.note?.trim()].filter(Boolean).join('. ');
-      await this.commitTransition(manager, order, ServiceOrderStatus.CANCELLED, actor, `Không sửa được: ${reason}`);
-      await releaseOutgoingTechnicianPartRequests(manager, orderId, actor.id);
+      await this.commitTransition(manager, order, ServiceOrderStatus.CANCELLED, actor, `Không sửa được: ${reason}`, 'repair_failure');
+      // Release every unreceived request on this failed order, including one
+      // an earlier technician left open. RECEIVED requests retain custody.
+      await manager.update(PartRequest, {
+        serviceOrderId: orderId,
+        status: In([PartRequestStatus.REQUESTED, PartRequestStatus.READY, PartRequestStatus.DELIVERING]),
+      }, { status: PartRequestStatus.CANCELLED, cancelledAt: new Date(), qrToken: null });
+      await manager.update(AdditionalCostRequest, { serviceOrderId: orderId, status: AdditionalCostStatus.PENDING_APPROVAL }, { status: AdditionalCostStatus.CANCELLED, decidedAt: new Date() });
+      // A failed child is terminal: close its detailed technician access while
+      // leaving the sibling orders and assignments untouched.
+      await manager.update(TechnicianAssignment, { serviceOrderId: orderId, isActive: true }, { isActive: false, unassignedAt: new Date(), unassignReason: 'Không sửa được' });
+      await manager.update(ServiceOrder, orderId, { laborTotal: 0, partsTotal: 0, grandTotal: 0 });
       await manager.update(Booking, booking.id, { status: BookingStatus.CANCELLED });
       await recordVisitOutcome(manager, booking, 'failed', reason);
       const partLines = received.map(part => {
-        const names = (part.items ?? []).map(item => `${item.partNameSnapshot ?? 'Linh kiện'} x${item.quantity}`).join(', ') || 'Linh kiện';
-        return `- ${names}: ${declared.get(part.id) === 'installed' ? 'Đã lắp' : 'Trả lại kho'}`;
+        const names = ((part.items ?? []).map(item => `${item.partNameSnapshot ?? 'Linh kiện'} x${item.quantity}`).join(', ') || 'Linh kiện').slice(0, 100);
+        return `- ${names}: ${declared.get(part.id) === 'installed' ? 'Khai đã lắp' : 'Khai trả kho, chưa xác nhận nhận hàng'}`;
       });
-      await manager.save(SupportCase, manager.create(SupportCase, {
+      const incident = await manager.save(SupportCase, manager.create(SupportCase, {
         caseType: SupportCaseType.MID_JOB_INTERRUPTION,
         status: SupportCaseStatus.OPEN,
         bookingId: booking.id,
@@ -971,23 +1036,34 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         createdByUserId: actor.id,
         reason: `Không sửa được thiết bị đơn #${order.code}`,
         description: [reason, partLines.length ? 'Linh kiện đã nhận:' : 'Không có linh kiện đã nhận.', ...partLines].join('\n'),
-        evidenceRefs: [],
+        evidenceRefs: photoIds,
         isUrgent: false,
       }));
-      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'VISIT_DEVICE_REPAIR_FAILED', resourceType: 'service_order', resourceId: orderId, after: { reason: dto.reason, note: dto.note ?? null, parts: dto.parts ?? [], visitGroupId: booking.visitGroupId } });
-      if (booking.customerId) notice = { customerId: booking.customerId, code: order.code };
+      incidentId = incident.id;
+      // This receipt is workflow authority: insert strictly, unlike the legacy
+      // best-effort audit logger. The locked order serializes competing reports.
+      await manager.insert(AuditLog, {
+        actorUserId: actor.id, actorRole: actor.role, action: REPAIR_FAILURE_ACTION,
+        resourceType: 'service_order', resourceId: orderId,
+        after: { version: 1, incidentId: incident.id, request, visitGroupId: booking.visitGroupId ?? null,
+          parts: received.map(part => ({ partRequestId: part.id, declaration: declared.get(part.id),
+            items: (part.items ?? []).map(item => ({ id: item.id, quantity: item.quantity, usageStatus: item.usageStatus })) })),
+        },
+      });
+      const staff = await manager.find(User, { where: { role: In([Role.ADMIN, Role.SERVICE_MANAGER]), status: AccountStatus.ACTIVE, isActive: true }, select: { id: true } });
+      // Durable REST notices join the incident transaction. Existing DB change
+      // notifications handle realtime; no external delivery guarantee is claimed.
+      await manager.insert(Notification, [
+        { userId: booking.customerId, title: 'Thiết bị không sửa được', message: `Thiết bị của đơn #${order.code} không sửa được và không tính tiền sửa. FixHome đã ghi nhận để hỗ trợ bạn.`, type: REPAIR_FAILURE_ACTION, referenceId: orderId, referenceType: 'SERVICE_ORDER' },
+        ...staff.map(user => ({ userId: user.id, title: 'Cần xử lý thiết bị không sửa được', message: `Đơn #${order.code} có báo cáo không sửa được. Vui lòng xem hồ sơ hỗ trợ và kiểm tra nghĩa vụ linh kiện.`, type: REPAIR_FAILURE_ACTION, referenceId: incident.id, referenceType: 'SUPPORT_CASE' })),
+      ]);
       return manager.findOneByOrFail(ServiceOrder, { id: orderId });
     });
-    const told = notice as { customerId: string; code: string } | null;
-    if (told && this.notificationsService) {
-      await this.notificationsService.createNotification({
-        userId: told.customerId,
-        title: 'Một thiết bị không sửa được',
-        message: `Kỹ thuật viên không sửa được thiết bị của đơn #${told.code}. Thiết bị này không tính tiền sửa; FixHome sẽ liên hệ nếu cần.`,
-        type: 'VISIT_DEVICE_REPAIR_FAILED',
-        referenceId: result.id,
-        referenceType: 'SERVICE_ORDER',
-      }).catch(() => undefined);
+    // The audit receipt is durable before this best-effort dispatch. A failed
+    // dispatch must never undo the repair report; the voucher sweep retries it.
+    if (incidentId && this.vouchersService) {
+      try { await this.vouchersService.issueAutoCompensation(incidentId); }
+      catch (error) { this.logger?.warn(`Repair compensation pending: ${error instanceof Error ? error.message : String(error)}`); }
     }
     return result;
   }
@@ -1535,15 +1611,18 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private async commitTransition(manager: EntityManager, order: ServiceOrder, next: ServiceOrderStatus, actor: { id: string | null; role: string }, reason: string): Promise<void> {
+  private async commitTransition(manager: EntityManager, order: ServiceOrder, next: ServiceOrderStatus, actor: { id: string | null; role: string }, reason: string, cause?: 'repair_failure'): Promise<void> {
     if (!ServiceOrderStateMachine.canTransition(order.status, next)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Illegal order transition');
     const previous = order.status;
     const now = new Date();
     await manager.update(ServiceOrder, order.id, { status: next, ...(next === ServiceOrderStatus.UNDER_REPAIR ? { startedAt: now } : {}), ...(next === ServiceOrderStatus.COMPLETED ? { completedAt: now } : {}), ...(next === ServiceOrderStatus.CANCELLED ? { cancelledAt: now } : {}) });
     await manager.insert(OrderStatusHistory, { serviceOrderId: order.id, fromStatus: previous, toStatus: next, actorUserId: actor.id, actorRole: actor.role, reason });
     await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'ORDER_TRANSITION', resourceType: 'service_order', resourceId: order.id, before: { status: previous }, after: { status: next, reason } });
-    if ([ServiceOrderStatus.CANCELLED, ServiceOrderStatus.COMPLETED].includes(next)) await closeOrderPartRequests(manager, order.id, next === ServiceOrderStatus.CANCELLED);
-    if (next === ServiceOrderStatus.CANCELLED) {
+    // A failed repair ends the work, not physical custody. The caller releases
+    // unreceived outgoing requests separately; every received request stays open
+    // for the warehouse, including stock held by a previous technician.
+    if (cause !== 'repair_failure' && [ServiceOrderStatus.CANCELLED, ServiceOrderStatus.COMPLETED].includes(next)) await closeOrderPartRequests(manager, order.id, next === ServiceOrderStatus.CANCELLED);
+    if (next === ServiceOrderStatus.CANCELLED && cause !== 'repair_failure') {
       // #27: nothing is paid on a cancelled order; open attempts on its invoice are closed.
       await manager.createQueryBuilder().update(Payment)
         .set({ status: PaymentAttemptStatus.CANCELLED, failureCode: 'ORDER_CANCELLED' })

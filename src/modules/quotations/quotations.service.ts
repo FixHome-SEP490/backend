@@ -15,6 +15,7 @@ import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { Booking } from '../bookings/entities/booking.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { ArrivalCheckIn } from '../service-orders/entities/arrival-check-in.entity';
+import { Invoice } from '../service-orders/entities/invoice.entity';
 import { OrderStatusHistory } from '../service-orders/entities/order-status-history.entity';
 import { Cancellation } from '../service-orders/entities/cancellation.entity';
 import { ServiceOrderStateMachine } from '../service-orders/service-order-state-machine';
@@ -81,37 +82,21 @@ export class QuotationsService {
         }
       } else {
         if (!Object.values(PartSource).includes(item.partSource!)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Part source required');
-        if (item.partSource === PartSource.FIXHOME) {
-          if (!item.partCatalogId) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'FixHome parts require a valid partCatalogId');
-          const part = await manager.findOne(FixHomePart, { where: { id: item.partCatalogId, isActive: true } });
-          const catalogPart = part ? { price: Number(part.sellingPrice), name: part.name, warrantyDays: part.warrantyDays ?? 0 } : null;
-          if (!catalogPart) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Part not found in FixHome catalog');
-          if (!Number.isSafeInteger(catalogPart.price)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Billable catalog price must be whole VND');
-          item.unitPrice = Number(catalogPart.price);
-          item.partNameSnapshot = catalogPart.name;
-          item.description = catalogPart.name;
-          item.warrantyDays = catalogPart.warrantyDays;
-          item.partWarrantyOption = PartWarrantyOption.INCLUDED;
-          item.warrantyFee = 0;
-          item.warrantyTermDays = catalogPart.warrantyDays;
-        } else if (item.partSource === PartSource.EXTERNAL) {
-          // Parts bought outside are no longer quoted (BUG DETECTOR 14): FixHome parts or the technician's own.
-          throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Không dùng linh kiện mua ngoài nữa. Chọn linh kiện FixHome hoặc linh kiện thợ tự có.');
-        } else {
-          if (!Number.isInteger(item.unitPrice) || item.unitPrice < 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid part unit price');
-          if (item.partCatalogId) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Technician parts cannot reference FixHome catalog');
-          item.partNameSnapshot = item.partNameSnapshot?.trim() || item.description.trim();
-          item.partWarrantyOption ??= PartWarrantyOption.NO_WARRANTY;
-          if (item.partWarrantyOption === PartWarrantyOption.PAID_WARRANTY) {
-            if (!item.warrantyTermDays || item.warrantyTermDays <= 0) {
-              throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Paid warranty requires a term');
-            }
-            item.warrantyFee = item.warrantyFee && item.warrantyFee > 0 ? item.warrantyFee : 0;
-          } else if (item.partWarrantyOption !== PartWarrantyOption.NO_WARRANTY || item.warrantyFee || item.warrantyTermDays || item.warrantyDays) {
-            throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Technician parts have no included warranty');
-          }
-          item.warrantyDays = 0;
+        if (item.partSource !== PartSource.FIXHOME) {
+          throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Only FixHome catalog parts can be quoted');
         }
+        if (!item.partCatalogId) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'FixHome parts require a valid partCatalogId');
+        const part = await manager.findOne(FixHomePart, { where: { id: item.partCatalogId, isActive: true } });
+        const catalogPart = part ? { price: Number(part.sellingPrice), name: part.name, warrantyDays: part.warrantyDays ?? 0 } : null;
+        if (!catalogPart) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Part not found in FixHome catalog');
+        if (!Number.isSafeInteger(catalogPart.price)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Billable catalog price must be whole VND');
+        item.unitPrice = Number(catalogPart.price);
+        item.partNameSnapshot = catalogPart.name;
+        item.description = catalogPart.name;
+        item.warrantyDays = catalogPart.warrantyDays;
+        item.partWarrantyOption = PartWarrantyOption.INCLUDED;
+        item.warrantyFee = 0;
+        item.warrantyTermDays = catalogPart.warrantyDays;
       }
       validated.push(item);
     }
@@ -218,7 +203,7 @@ export class QuotationsService {
   }
 
   private async saveAdditional(manager: EntityManager, order: ServiceOrder, dto: CreateAdditionalCostDto, actor: Actor, supersedesId?: string): Promise<AdditionalCostRequest> {
-    if (order.status !== ServiceOrderStatus.UNDER_REPAIR || order.completionRequestedAt) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Additional cost requires ongoing repair before completion request');
+    if (order.status !== ServiceOrderStatus.UNDER_REPAIR || order.completionRequestedAt || await manager.findOneBy(Invoice, { serviceOrderId: order.id })) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chỉ gửi chi phí phát sinh khi đang sửa chữa và chưa chốt hóa đơn.');
     if (!dto.reason?.trim()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Reason required');
     const items = await this.validateItems(manager, dto.items, await this.laborWarranty(manager, order, actor.id));
     const labor = items.filter(i=>i.type===CostItemType.LABOR).reduce((v,i)=>v+i.quantity*i.unitPrice,0);
@@ -284,7 +269,7 @@ export class QuotationsService {
       if (!['APPROVE','REJECT'].includes(action)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid decision');
       const target = action === 'APPROVE' ? AdditionalCostStatus.APPROVED : AdditionalCostStatus.REJECTED;
       if (cost.status === target) return cost;
-      if (cost.status !== AdditionalCostStatus.PENDING_APPROVAL || cost.expiresAt <= new Date() || order.status !== ServiceOrderStatus.UNDER_REPAIR || order.completionRequestedAt) throw new BusinessException(ErrorCodes.ADDITIONAL_COST_ALREADY_DECIDED, 'Additional cost is no longer pending');
+      if (cost.status !== AdditionalCostStatus.PENDING_APPROVAL || cost.expiresAt <= new Date() || order.status !== ServiceOrderStatus.UNDER_REPAIR || order.completionRequestedAt || await manager.findOneBy(Invoice, { serviceOrderId: order.id })) throw new BusinessException(ErrorCodes.ADDITIONAL_COST_ALREADY_DECIDED, 'Chi phí phát sinh không còn chờ duyệt hoặc đơn đã chốt hóa đơn.');
       if (action === 'APPROVE') {
         this.selectWarranty(cost.items, paidWarrantyItemIds);
         await manager.save(AdditionalCostItem, cost.items);

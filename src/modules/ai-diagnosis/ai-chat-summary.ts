@@ -42,6 +42,69 @@ export interface AiFeedbackEntry {
   reply: string | null;
   /** Which turn of the conversation it came after. */
   turn: number;
+  /**
+   * "chat" when the assistant noticed it in the conversation ("sai rồi", "không
+   * phải bệnh đó", "ảnh 2 là tủ lạnh"); absent for the old button verdicts.
+   */
+  source?: 'chat';
+  /** fault, device or photo: what the customer turned down. */
+  kind?: string | null;
+  /** What was turned down, by name. */
+  rejected?: string[];
+  /** What the customer had said before, the words that were read wrong. */
+  said?: string | null;
+}
+
+/**
+ * PO 26/10/2026: no "Đúng ý / Chưa đúng" buttons. A customer who disagrees says
+ * so, and the AI Service returns it on that reply as `customerDisagreed`.
+ */
+export interface AiDisagreement {
+  kind: string | null;
+  rejectedVi: string[];
+  saidVi: string | null;
+  correctionVi: string | null;
+}
+
+export function disagreementFrom(reply: Record<string, unknown>): AiDisagreement | null {
+  const raw = reply.customerDisagreed as Record<string, unknown> | null | undefined;
+  if (!raw || typeof raw !== 'object') return null;
+  const rejected = Array.isArray(raw.rejectedVi) ? raw.rejectedVi : [];
+  return {
+    kind: clean(raw.kind, 20),
+    rejectedVi: rejected
+      .map((name) => clean(name, AI_SUMMARY_LIMITS.item))
+      .filter((name): name is string => !!name)
+      .slice(0, AI_SUMMARY_LIMITS.items),
+    saidVi: clean(raw.saidVi, AI_FEEDBACK_LIMITS.reply),
+    correctionVi: clean(raw.correctionVi, AI_FEEDBACK_LIMITS.note),
+  };
+}
+
+/**
+ * Keep the disagreement as a "wrong" verdict on the summary after the turn was
+ * merged. `rejectedAnswer` is the conclusion before this turn: the answer the
+ * customer was replying to, which mergeTurn has just replaced.
+ */
+export function addDisagreement(
+  merged: AiChatSummaryState,
+  disagreement: AiDisagreement,
+  rejectedAnswer: string | null | undefined,
+  now = new Date(),
+): AiChatSummaryState {
+  const entry: AiFeedbackEntry = {
+    at: now.toISOString(),
+    verdict: 'wrong',
+    note: disagreement.correctionVi,
+    reply: clean(rejectedAnswer, AI_FEEDBACK_LIMITS.reply),
+    turn: Math.max(0, merged.turnCount - 1),
+    source: 'chat',
+    kind: disagreement.kind,
+    rejected: disagreement.rejectedVi,
+    said: disagreement.saidVi,
+  };
+  const feedback = [...(merged.feedback ?? []), entry].slice(-AI_FEEDBACK_LIMITS.entries);
+  return { ...merged, feedback };
 }
 
 /** Kept per session; the oldest go first. */

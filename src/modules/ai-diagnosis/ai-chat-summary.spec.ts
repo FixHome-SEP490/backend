@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AI_FEEDBACK_LIMITS, AI_HISTORY_LIMITS, AI_SUMMARY_LIMITS, addFeedback, emptySummary, hasAdvice, historyFromSummary, mergeTurn, toBookingSummary, vnDaysWindowStart } from './ai-chat-summary';
+import { AI_FEEDBACK_LIMITS, AI_HISTORY_LIMITS, AI_SUMMARY_LIMITS, addDisagreement, addFeedback, disagreementFrom, emptySummary, hasAdvice, historyFromSummary, mergeTurn, toBookingSummary, vnDaysWindowStart } from './ai-chat-summary';
 
 const diagnosis = {
   status: 'ok',
@@ -110,6 +110,37 @@ describe('historyFromSummary', () => {
     expect(turns).toHaveLength(AI_HISTORY_LIMITS.turns);
     expect(turns[turns.length - 1]).toBe('lượt 29');
     expect(historyFromSummary({ customerText: 'x'.repeat(3000) })[0]).toHaveLength(AI_HISTORY_LIMITS.chars);
+  });
+});
+
+describe('a disagreement the assistant noticed', () => {
+  const reply = {
+    customerDisagreed: { kind: 'fault', rejected: ['AC_LOW_REFRIGERANT'], rejectedVi: ['Thiếu gas, xì gas', '', 7], saidVi: ' máy lạnh không mát ', correctionVi: 'sai rồi' },
+  };
+
+  it('is read from the reply, and nothing is read from a reply without one', () => {
+    expect(disagreementFrom(reply)).toEqual({ kind: 'fault', rejectedVi: ['Thiếu gas, xì gas'], saidVi: 'máy lạnh không mát', correctionVi: 'sai rồi' });
+    expect(disagreementFrom(diagnosis)).toBeNull();
+    expect(disagreementFrom({ customerDisagreed: 'sai' })).toBeNull();
+  });
+
+  it('is kept as a wrong verdict about the answer before this turn', () => {
+    const merged = { ...emptySummary(), turnCount: 2, conclusion: 'Dạ, vậy em loại khả năng thiếu gas ra ạ.' };
+    const next = addDisagreement(merged, disagreementFrom(reply)!, 'Dạ khả năng cao là thiếu gas ạ.', new Date('2026-10-26T00:00:00Z'));
+    expect(next.feedback).toEqual([
+      {
+        at: '2026-10-26T00:00:00.000Z',
+        verdict: 'wrong',
+        note: 'sai rồi',
+        reply: 'Dạ khả năng cao là thiếu gas ạ.',
+        turn: 1,
+        source: 'chat',
+        kind: 'fault',
+        rejected: ['Thiếu gas, xì gas'],
+        said: 'máy lạnh không mát',
+      },
+    ]);
+    expect(toBookingSummary(next)).not.toHaveProperty('feedback');
   });
 });
 

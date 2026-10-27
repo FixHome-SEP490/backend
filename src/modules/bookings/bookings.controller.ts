@@ -14,7 +14,11 @@ import {
   HttpCode,
   HttpStatus,
   Res,
+  Optional,
 } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
+import { VisitGroupsService } from '../visit-groups/visit-groups.service';
+import { RepairFailureRebookDto } from './dto/repair-failure-rebook.dto';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiOkResponse } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 import { sendVideoStream } from '../../shared/cloudinary';
@@ -37,6 +41,7 @@ export class BookingsController {
     private readonly bookingsService: BookingsService,
     private readonly invitationsService: InvitationsService,
     private readonly privateMediaContentService: BookingPrivateMediaContentService,
+    @Optional() private readonly moduleRef?: ModuleRef,
   ) {}
 
   @Post()
@@ -256,6 +261,37 @@ export class BookingsController {
   @ApiBearerAuth()
   async cancelBooking(@Param('id', ParseUUIDPipe) id: string, @Body() body: ReasonDto, @Req() req: { user: { id: string } }) {
     return { data: toBookingResponse(await this.bookingsService.cancelBooking(id, body.reason, req.user)) };
+  }
+
+  @Get(':id/repair-failure-draft')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('booking:read_own')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Customer: read an owned failed-repair draft', description: 'Includes only failed children with verified incidents. One failed child creates a standalone booking; two or three create one new visit group. Original photos are read references, never upload claim IDs.' })
+  async repairFailureDraft(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    return { data: await this.bookingsService.repairFailureDraft(id, req.user) };
+  }
+
+  @Post(':id/repair-failure-rebook')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('booking:create')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Customer: confirm a fresh booking for verified failed repair children' })
+  async confirmRepairFailureRebook(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: RepairFailureRebookDto,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    const groupService = this.moduleRef?.get(VisitGroupsService, { strict: false });
+    return { data: await this.bookingsService.confirmRepairFailureRebook(id, body, req.user,
+      (groupDto, actor, manager) => {
+        if (!groupService) throw new Error('VisitGroupsService unavailable');
+        return groupService.create(groupDto, actor, manager);
+      }) };
   }
 
   @Post(':id/rebook')
