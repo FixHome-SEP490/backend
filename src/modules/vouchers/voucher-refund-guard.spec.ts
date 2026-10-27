@@ -15,6 +15,8 @@ describe('legacy refund boundary for funded invoices', () => {
     await expect(assertNoFundedVoucherRefund(manager, 'invoice-1')).resolves.toBeUndefined();
     vi.mocked(manager.query).mockRejectedValueOnce({ driverError: { code: '42P01' } });
     await expect(assertNoFundedVoucherRefund(manager, 'invoice-1')).resolves.toBeUndefined();
+    vi.mocked(manager.query).mockRejectedValueOnce({ code: '42P01' });
+    await expect(assertNoFundedVoucherRefund(manager, 'invoice-1')).resolves.toBeUndefined();
     vi.mocked(manager.query).mockRejectedValueOnce({ driverError: { code: '42501' } });
     await expect(assertNoFundedVoucherRefund(manager, 'invoice-1')).rejects.toThrow();
   });

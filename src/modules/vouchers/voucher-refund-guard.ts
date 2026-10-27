@@ -18,7 +18,8 @@ export async function assertNoFundedVoucherRefund(
       WHERE allocation_snapshot @> $1::jsonb LIMIT 1
     `, [JSON.stringify([{ invoiceId }])]);
   } catch (error) {
-    if ((error as { driverError?: { code?: string } })?.driverError?.code === '42P01') return;
+    const dbError = error as { driverError?: { code?: string }; code?: string };
+    if ((dbError.driverError?.code ?? dbError.code) === '42P01') return;
     throw new ConflictException('Chưa kiểm chứng được nguồn hoàn tiền ưu đãi.');
   }
   if (!Array.isArray(rows) || rows.length > 0) {
