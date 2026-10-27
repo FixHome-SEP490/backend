@@ -1778,6 +1778,28 @@ export function registerDev1Cases(context: () => Context) {
       }
     });
 
+    it('adds the 27/10 parts (electrical, lighting, gas refills...) once, on the real schema', async () => {
+      const { applyPartsAdditions20261027, partsAdditions20261027 } = runtimeRequire('./dist/database/catalog-v2/parts-additions-2026-10-27.js');
+      const items = partsAdditions20261027() as { sku: string; sellingPrice: number }[];
+      const skus = items.map((p) => p.sku);
+      const before = await context().db.query('SELECT sku FROM fixhome_parts WHERE sku = ANY($1)', [skus]);
+      try {
+        const first = await applyPartsAdditions20261027(context().db);
+        expect(first.inserted.length + first.skipped.length).toBe(items.length);
+        const rows = await context().db.query(
+          'SELECT sku, selling_price::float AS price, is_active FROM fixhome_parts WHERE sku = ANY($1)', [skus],
+        );
+        expect(rows).toHaveLength(items.length);
+        expect(rows.find((r: any) => r.sku === 'ACG001')).toMatchObject({ price: 250000, is_active: true });
+        expect(rows.find((r: any) => r.sku === 'OUT001')).toMatchObject({ price: 25000, is_active: true });
+        const second = await applyPartsAdditions20261027(context().db);
+        expect(second.inserted).toEqual([]);
+      } finally {
+        const added = skus.filter((sku) => !before.some((r: any) => r.sku === sku));
+        await context().db.query('DELETE FROM fixhome_parts WHERE sku = ANY($1)', [added]);
+      }
+    });
+
     it('gives the AI Service every active part price without a login, and nothing else about parts', async () => {
       const [part] = await context().db.query(
         `INSERT INTO fixhome_parts (sku, name, selling_price, is_active) VALUES ($1, 'Linh kiện thử giá', 123456, true) RETURNING id`,
