@@ -18,6 +18,11 @@ export class VoucherCampaignLifecycle1793116800000 implements MigrationInterface
         SET status = CASE WHEN active THEN 'PUBLISHED' ELSE 'PAUSED' END,
             published_at = created_at;
 
+      -- Core's deferred voucher_campaign_usage constraint trigger queued by the
+      -- backfill must be checked before the next ALTER TABLE. PostgreSQL rejects
+      -- DDL on a relation with pending trigger events in this transaction.
+      SET CONSTRAINTS ALL IMMEDIATE;
+
       ALTER TABLE public.voucher_campaigns
         ALTER COLUMN status SET NOT NULL,
         ALTER COLUMN status SET DEFAULT 'DRAFT',

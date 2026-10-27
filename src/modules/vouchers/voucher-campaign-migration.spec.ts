@@ -10,6 +10,7 @@ describe('campaign additive migration DDL contract (not PostgreSQL proof)', () =
     const ddl = query.mock.calls.map(([sql]) => sql).join('\n');
     expect(ddl).toContain("CASE WHEN active THEN 'PUBLISHED' ELSE 'PAUSED' END");
     expect(ddl).toContain('published_at = created_at');
+    expect(ddl).toContain('SET CONSTRAINTS ALL IMMEDIATE;');
     expect(ddl).toContain('CREATE FUNCTION public.voucher_campaign_guard_write()');
     expect(ddl).toContain('EXECUTE FUNCTION public.voucher_campaign_guard_write()');
     expect(ddl).toContain("OLD.status = 'DRAFT' AND NEW.status = 'DRAFT'");
