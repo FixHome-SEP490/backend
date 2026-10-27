@@ -4,6 +4,12 @@ export enum VoucherKind {
   GENERAL = 'GENERAL',
   PERSONAL = 'PERSONAL',
 }
+export enum VoucherCampaignState {
+  DRAFT = 'DRAFT',
+  PUBLISHED = 'PUBLISHED',
+  PAUSED = 'PAUSED',
+  ARCHIVED = 'ARCHIVED',
+}
 export type VoucherSourceKind = 'VISIT_GROUP' | 'SOLO' | 'ADMIN_GRANT';
 export enum VoucherDiscount {
   PERCENT = 'PERCENT',

@@ -46,6 +46,10 @@ jobs:
         run: npm test
       - name: Build
         run: npm run build
+      - name: Isolated voucher lifecycle PostgreSQL gate
+        run: npx vitest run src/modules/vouchers/voucher-campaign.postgres.spec.ts
+        env:
+          VOUCHER_CAMPAIGN_ISOLATED_PG: '1'
       - name: Integration tests
         run: npm run test:e2e
         env:
@@ -88,7 +92,13 @@ jobs:
               echo "Blocked: existing backend uses P1 finance custody"
               exit 1
             fi
-            docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml up -d --build backend
+            # Prepare a new image while the previous DEV backend keeps serving.
+            # Fail closed unless the exact ONE expected voucher migration and
+            # database app-role safety preflight pass in the disposable one-off.
+            # On failure, DO NOT restart the working Backend container.
+            docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml build backend
+            docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml run --rm --no-deps -e VOUCHER_LIFECYCLE_DEV_RELEASE=1 backend node dist/database/voucher-lifecycle-dev-gate.js
+            docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml up -d --no-build backend
             active="$(docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml ps -q backend)"
             test -n "$active"
             runtime_flags="$(docker inspect "$active" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^(PART_RETURNS_TRACKING_ENABLED|P1_CUSTODY_ENABLED)=')"

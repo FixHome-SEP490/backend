@@ -174,7 +174,12 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     await db.initialize();
     // This legacy E2E fixture uses a private schema; funding F4 targets public and requires
     // the already-deployed voucher baseline. Exclude F4 from this unrelated fixture only.
-    db.migrations.splice(0, db.migrations.length, ...db.migrations.filter(m => m.name !== 'VoucherFundingLedger1792994400001'));
+    // Private-schema legacy E2E cannot run the public-schema voucher finance
+    // lifecycle chain. Those migrations are verified by dedicated isolated
+    // PostgreSQL tests; exclude them ONLY from this synthetic fixture.
+    db.migrations.splice(0, db.migrations.length, ...db.migrations.filter(m =>
+      !['VoucherFundingLedger1792994400001', 'VoucherCampaignLifecycle1793116800000'].includes(m.name)
+    ));
     expect(await db.runMigrations()).toHaveLength(db.migrations.length);
     // Prove revert/reapply before exercising the migrated schema.
     await db.undoLastMigration();

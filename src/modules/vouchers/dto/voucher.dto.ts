@@ -7,6 +7,7 @@ import {
   IsDateString,
   IsEnum,
   IsInt,
+  IsIn,
   IsString,
   IsUUID,
   Matches,
@@ -18,7 +19,7 @@ import {
 } from 'class-validator';
 import { VoucherDiscount, VoucherKind } from '../voucher.types';
 
-export class CreateVoucherCampaignDto {
+export class VoucherCampaignTermsDto {
   @ApiProperty() @Matches(/^[A-Z0-9_-]{3,40}$/) code: string;
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(120) name: string;
   @ApiProperty({ enum: VoucherKind }) @IsEnum(VoucherKind) kind: VoucherKind;
@@ -59,6 +60,25 @@ export class CreateVoucherCampaignDto {
 }
 export class VoucherCampaignStatusDto {
   @ApiProperty() @IsBoolean() active: boolean;
+}
+export class CreateVoucherCampaignDto extends VoucherCampaignTermsDto {
+  @ApiPropertyOptional({ description: 'UUID v4 ổn định khi gửi lại yêu cầu tạo' })
+  @ValidateIf((_, value) => value !== undefined)
+  @IsUUID('4') commandId?: string;
+}
+export class VoucherCampaignCommandDto {
+  @ApiProperty() @IsInt() @Min(1) @Max(2147483646) version: number;
+  @ApiProperty() @IsUUID('4') commandId: string;
+}
+// Full replacement of draft conditions; omitted fields are not silently retained.
+export class UpdateVoucherCampaignDto extends VoucherCampaignTermsDto {
+  @ApiProperty() @IsInt() @Min(1) @Max(2147483646) version: number;
+  @ApiProperty() @IsUUID('4') commandId: string;
+}
+export class VoucherCampaignLifecycleDto extends VoucherCampaignCommandDto {
+  @ApiProperty({ enum: ['PUBLISHED', 'PAUSED', 'ARCHIVED'] })
+  @IsIn(['PUBLISHED', 'PAUSED', 'ARCHIVED'])
+  status: 'PUBLISHED' | 'PAUSED' | 'ARCHIVED';
 }
 export class ClaimVoucherDto {
   @ApiProperty() @Matches(/^[A-Z0-9_-]{3,40}$/) code: string;
