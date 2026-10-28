@@ -23,6 +23,7 @@ import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { Notification } from '../notifications/entities/notification.entity';
 import { User } from '../users/entities/user.entity';
 import {
   CreateSupportCaseDto,
@@ -60,6 +61,7 @@ import {
   MAX_PAGE_SIZE,
 } from '../../shared/constants';
 import {
+  AccountStatus,
   CashSettlementStatus,
   PaymentStatus,
   Role,
@@ -156,6 +158,54 @@ export class SupportCasesService {
     });
 
     return repository.save(supportCase);
+  }
+
+  /** The order lock serializes this hold with technician completion. */
+  async requestStopOrReplace(orderId: string, reasonInput: string, actor: SupportCaseActor): Promise<SupportCase> {
+    if (actor.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
+    const reason = this.requireBoundedText(reasonInput, 'reason', 10, SUPPORT_CASE_MAX_REASON_LENGTH);
+    return this.supportCaseRepository.manager.transaction(async (manager: EntityManager) => {
+      const reference = await manager.findOne(ServiceOrder, { where: { id: orderId } });
+      if (!reference) throw new ForbiddenException('Order not found or access denied');
+      const booking = await manager.findOne(Booking, {
+        where: { id: reference.bookingId, customerId: actor.id }, lock: { mode: 'pessimistic_write' },
+      });
+      if (!booking) throw new ForbiddenException('Order not found or access denied');
+      const order = await manager.findOne(ServiceOrder, { where: { id: orderId }, lock: { mode: 'pessimistic_write' } });
+      if (!order || order.bookingId !== booking.id) throw new ForbiddenException('Order not found or access denied');
+      const existing = await manager.findOne(SupportCase, {
+        where: { serviceOrderId: orderId, requestIntent: 'stop_or_replace', status: In([SupportCaseStatus.OPEN, SupportCaseStatus.IN_REVIEW]) },
+      });
+      if (existing) return existing;
+      if (order.status !== ServiceOrderStatus.UNDER_REPAIR || order.completionRequestedAt) {
+        throw new ConflictException('Đơn không còn ở giai đoạn có thể yêu cầu dừng sửa.');
+      }
+      const assignment = await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: orderId, isActive: true } });
+      if (!assignment) throw new ConflictException('Đơn không có kỹ thuật viên đang phụ trách.');
+      const supportCase = await manager.save(SupportCase, manager.create(SupportCase, {
+        caseType: SupportCaseType.MID_JOB_INTERRUPTION,
+        status: SupportCaseStatus.OPEN, bookingId: booking.id, serviceOrderId: orderId,
+        customerId: actor.id, technicianId: assignment.technicianId, createdByUserId: actor.id,
+        reason, description: null, requestIntent: 'stop_or_replace', holdCompletion: true,
+        workflowVersion: 0, isUrgent: true, respondBy: respondByFor(order.status, true),
+      }));
+      await this.auditLogService.logWithManagerStrict(manager, {
+        actorUserId: actor.id, actorRole: actor.role, action: 'CUSTOMER_STOP_REPLACE_REQUEST',
+        resourceType: 'support_case', resourceId: supportCase.id,
+        after: { serviceOrderId: orderId, requestIntent: 'stop_or_replace', holdCompletion: true },
+      });
+      const managers = await manager.find(User, {
+        where: { role: Role.SERVICE_MANAGER, status: AccountStatus.ACTIVE, isActive: true }, select: { id: true },
+      });
+      if (managers.length) {
+        await manager.insert(Notification, managers.map(user => ({
+          userId: user.id, title: 'Khách yêu cầu dừng sửa hoặc đổi thợ',
+          message: `Đơn #${order.code} cần quản lý xem xét.`, type: 'CUSTOMER_STOP_REPLACE_REQUEST',
+          referenceId: supportCase.id, referenceType: 'SUPPORT_CASE',
+        })));
+      }
+      return supportCase;
+    });
   }
 
   /**
@@ -393,6 +443,10 @@ export class SupportCasesService {
       id: supportCase.id,
       caseType: supportCase.caseType,
       status: supportCase.status,
+      requestIntent: supportCase.requestIntent ?? null,
+      ...(supportCase.requestIntent === 'stop_or_replace'
+        ? { resolutionCode: supportCase.resolutionCode ?? null } : {}),
+      holdCompletion: supportCase.holdCompletion ?? false,
       bookingId: supportCase.bookingId,
       serviceOrderId: supportCase.serviceOrderId,
       reason: writtenByOther
@@ -524,6 +578,10 @@ export class SupportCasesService {
         ) {
           throw new ConflictException('Support case is already terminal');
         }
+        if ((supportCase.requestIntent === 'stop_or_replace' || supportCase.caseType === SupportCaseType.TECHNICIAN_REPLACEMENT)
+          && ['worker_reassigned', 'order_cancelled_no_fee'].includes(resolutionCode)) {
+          throw new ConflictException('Dùng lệnh resolve-interruption để cập nhật đơn và hồ sơ hỗ trợ cùng lúc.');
+        }
 
         const isCashCase =
           supportCase.caseType === SupportCaseType.CASH_MISMATCH ||
@@ -546,6 +604,7 @@ export class SupportCasesService {
           evidenceRefs: evidenceRefs ?? supportCase.evidenceRefs ?? null,
           resolvedAt: new Date(),
           holdCompletion: false,
+          workflowVersion: supportCase.workflowVersion + 1,
           // A refund into the wallet is FixHome's to bear unless the manager says otherwise (PO 09/10/2026).
           liableParty: dto.liableParty ?? supportCase.liableParty ?? (resolutionCode === 'refund_to_wallet' ? 'platform' : null),
           amount: dto.amount ?? supportCase.amount ?? null,
@@ -734,7 +793,7 @@ export class SupportCasesService {
     this.requireManager(actor);
     const updated = await this.supportCaseRepository.update(
       { id, status: SupportCaseStatus.OPEN },
-      { status: SupportCaseStatus.IN_REVIEW, assignedManagerId: actor.id },
+      { status: SupportCaseStatus.IN_REVIEW, assignedManagerId: actor.id, workflowVersion: () => '"workflow_version" + 1' },
     );
     if (updated.affected !== 1) {
       await this.findById(id); // 404 when missing
@@ -766,7 +825,11 @@ export class SupportCasesService {
     ) {
       throw new ConflictException('Support case is already terminal');
     }
-    await this.supportCaseRepository.update({ id }, { holdCompletion: hold });
+    const updated = await this.supportCaseRepository.update(
+      { id, status: In([SupportCaseStatus.OPEN, SupportCaseStatus.IN_REVIEW]) },
+      { holdCompletion: hold, workflowVersion: () => '"workflow_version" + 1' },
+    );
+    if (updated.affected !== 1) throw new ConflictException('Support case is already terminal');
     await this.auditLogService.log({
       actorUserId: actor.id,
       actorRole: actor.role,
@@ -888,6 +951,8 @@ export class SupportCasesService {
       isUrgent: supportCase.isUrgent ?? false,
       respondBy: supportCase.respondBy ?? null,
       holdCompletion: supportCase.holdCompletion ?? false,
+      requestIntent: supportCase.requestIntent ?? null,
+      workflowVersion: supportCase.workflowVersion ?? 0,
       liableParty: supportCase.liableParty ?? null,
       amount: supportCase.amount ?? null,
       voucherGrossRefundVnd: supportCase.voucherGrossRefundVnd ?? null,

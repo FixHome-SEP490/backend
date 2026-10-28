@@ -3,6 +3,7 @@ import {
   Controller,
   ParseUUIDPipe,
   Post,
+  Get,
   Param,
   Body,
   UseGuards,
@@ -13,9 +14,13 @@ import {
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionGuard } from '../../common/guards/permission.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators';
+import { Role } from '../../shared/enums';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { TechnicianAssignmentService } from './technician-assignment.service';
 import { AssignByOrderDto, AssignByTechnicianDto, AssignByBookingDto } from './assignment.dto';
+import { ResolveInterruptionDto } from './resolve-interruption.dto';
 
 @ApiTags('Technician Assignment')
 @Controller()
@@ -23,6 +28,28 @@ export class TechnicianAssignmentController {
   constructor(
     private readonly technicianAssignmentService: TechnicianAssignmentService,
   ) {}
+
+  @Get('support/cases/:id/replacement-options')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionGuard)
+  @Roles(Role.SERVICE_MANAGER)
+  @RequirePermission('support:resolve')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Service Manager: current authoritative replacement and close options' })
+  async replacementOptions(@Param('id', ParseUUIDPipe) id: string, @Req() req: { user: { id: string; role: string } }) {
+    return { data: await this.technicianAssignmentService.replacementOptions(id, req.user) };
+  }
+
+  @Post('support/cases/:id/resolve-interruption')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionGuard)
+  @Roles(Role.SERVICE_MANAGER)
+  @RequirePermission('support:resolve')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Service Manager: one idempotent interruption decision and order mutation' })
+  async resolveInterruption(@Param('id', ParseUUIDPipe) id: string, @Body() body: ResolveInterruptionDto,
+    @Req() req: { user: { id: string; role: string } }) {
+    return { data: await this.technicianAssignmentService.resolveInterruption(id, body, req.user) };
+  }
 
   @Post('technicians/:id/assign')
   @UseGuards(JwtAuthGuard, PermissionGuard)

@@ -97,7 +97,7 @@ jobs:
             # database app-role safety preflight pass in the disposable one-off.
             # On failure, DO NOT restart the working Backend container.
             docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml build backend
-            docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml run --rm --no-deps -e VOUCHER_LIFECYCLE_DEV_RELEASE=1 backend node dist/database/voucher-lifecycle-dev-gate.js
+            docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml run --rm --no-deps -e INTERRUPTION_WORKFLOW_DEV_RELEASE=1 backend node dist/database/interruption-workflow-dev-gate.js
             docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml up -d --no-build backend
             active="$(docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml ps -q backend)"
             test -n "$active"

@@ -93,6 +93,18 @@ export class SupportCase extends BaseEntity {
   @Column({ name: 'hold_completion', type: 'boolean', default: false })
   holdCompletion: boolean;
 
+  @Column({ name: 'request_intent', type: 'varchar', length: 32, nullable: true })
+  requestIntent: 'stop_or_replace' | null;
+
+  @Column({ name: 'workflow_version', type: 'integer', default: 0 })
+  workflowVersion: number;
+
+  @Column({ name: 'interruption_command_id', type: 'uuid', nullable: true })
+  interruptionCommandId: string | null;
+
+  @Column({ name: 'interruption_fingerprint', type: 'char', length: 64, nullable: true })
+  interruptionFingerprint: string | null;
+
   @Column({ name: 'liable_party', type: 'varchar', length: 16, nullable: true })
   liableParty: string | null;
 

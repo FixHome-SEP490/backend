@@ -70,6 +70,9 @@ import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity
 import { RepairFailureRebook, RepairFailureRebookSource } from './entities/repair-failure-rebook.entity';
 import { RepairFailureRebookDto } from './dto/repair-failure-rebook.dto';
 import type { CreateVisitGroupDto } from '../visit-groups/visit-group.dto';
+import { buildInterruptionDraft } from './interruption-draft';
+import { InterruptionRebook, InterruptionRebookSource } from './entities/interruption-rebook.entity';
+import { InterruptionRebookDto } from './dto/interruption-rebook.dto';
 
 export interface TechnicianCandidate {
   technicianId: string;
@@ -976,6 +979,97 @@ export class BookingsService {
     return buildRepairFailureDraft(this.dataSource.manager, bookingId, customer);
   }
 
+  async interruptionDraft(bookingId: string, customer: { id: string; role: string }) {
+    return buildInterruptionDraft(this.dataSource.manager, bookingId, customer);
+  }
+
+  async confirmInterruptionRebook(
+    anchorId: string, dto: InterruptionRebookDto, customer: { id: string; role: string },
+    createGroup: (dto: CreateVisitGroupDto, customer: { id: string; role: string }, manager: EntityManager) => Promise<{ id: string; items: Array<{ booking: { id: string } | null }> }>,
+  ) {
+    if (customer.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
+    if (!dto || !/^[A-Za-z0-9_-]{8,128}$/.test(dto.idempotencyKey ?? '') || !isUUID(dto.addressId)
+      || !/^\d{4}-\d{2}-\d{2}$/.test(dto.date ?? '') || !Object.prototype.hasOwnProperty.call(BOOKING_SLOTS, dto.slot)
+      || !Array.isArray(dto.items) || dto.items.length < 1 || dto.items.length > 3
+      || dto.items.some(item => !isUUID(item?.sourceBookingId) || !isUUID(item?.sourceCaseId))
+      || new Set(dto.items.map(item => item.sourceBookingId)).size !== dto.items.length) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Yêu cầu đặt lại không hợp lệ.');
+    }
+    const normalized = { ...dto, items: [...dto.items].sort((a, b) => a.sourceBookingId.localeCompare(b.sourceBookingId)) };
+    const stable = (value: unknown): unknown => Array.isArray(value) ? value.map(stable)
+      : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, stable(child)])) : value;
+    const fingerprint = createHash('sha256').update(JSON.stringify(stable(normalized))).digest('hex');
+    return this.dataSource.transaction(async manager => {
+      const anchor = await manager.findOneBy(Booking, { id: anchorId, customerId: customer.id });
+      if (!anchor) throw new ForbiddenException('Interrupted order not found or access denied');
+      const originalItems = anchor.visitGroupId
+        ? await manager.find(VisitGroupItem, { where: { groupId: anchor.visitGroupId }, order: { sequence: 'ASC' } }) : [];
+      if (anchor.visitGroupId && (!originalItems.length || !originalItems.some(item => item.bookingId === anchorId && item.outcome === 'interrupted'))) {
+        throw new ForbiddenException('Interrupted order not found or access denied');
+      }
+      const leadId = originalItems[0]?.bookingId ?? anchorId;
+      const lead = await manager.findOne(Booking, { where: { id: leadId, customerId: customer.id }, lock: { mode: 'pessimistic_write' } });
+      if (!lead) throw new ForbiddenException('Interrupted order not found or access denied');
+      const scopeKind = anchor.visitGroupId ? 'visit_group' : 'booking';
+      const scopeId = anchor.visitGroupId ?? anchorId;
+      const existing = await manager.findOneBy(InterruptionRebook, { customerId: customer.id, scopeKind, scopeId, idempotencyKey: dto.idempotencyKey });
+      if (existing) {
+        if (existing.requestFingerprint !== fingerprint) throw new BusinessException(ErrorCodes.CONFLICT, 'Khóa xác nhận đã dùng với nội dung khác.');
+        const sources = await manager.find(InterruptionRebookSource, { where: { rebookId: existing.id } });
+        if (sources.length !== existing.sourceCount || !sources.some(source => source.sourceBookingId === anchorId)) {
+          throw new BusinessException(ErrorCodes.CONFLICT, 'Biên nhận đặt lại không đầy đủ.');
+        }
+        const items = sources.sort((a, b) => a.sourceBookingId.localeCompare(b.sourceBookingId)).map(source => ({
+          sourceBookingId: source.sourceBookingId, sourceCaseId: source.sourceCaseId, bookingId: source.targetBookingId,
+        }));
+        return { targetKind: existing.targetVisitGroupId ? 'visit_group' as const : 'booking' as const,
+          bookingId: existing.targetVisitGroupId ? null : items[0].bookingId, visitGroupId: existing.targetVisitGroupId, items };
+      }
+      const draft = await buildInterruptionDraft(manager, anchorId, customer);
+      const expected = new Map(draft.items.map(item => [item.sourceBookingId, item]));
+      if (expected.size !== dto.items.length || dto.items.some(item => expected.get(item.sourceBookingId)?.sourceCaseId !== item.sourceCaseId)) {
+        throw new ForbiddenException('Interrupted order sources do not match');
+      }
+      const consumed = await manager.find(InterruptionRebookSource, { where: { sourceBookingId: In(dto.items.map(item => item.sourceBookingId)) } });
+      if (consumed.length) throw new BusinessException(ErrorCodes.CONFLICT, 'Thiết bị đã được đặt lại.');
+      const targetItems = draft.items.map(source => {
+        const edit = dto.items.find(item => item.sourceBookingId === source.sourceBookingId)!;
+        return { serviceId: source.serviceId, deviceLabel: source.deviceLabel ?? undefined,
+          selectedVariantCode: edit.selectedVariantCode === undefined ? source.selectedVariantCode : edit.selectedVariantCode,
+          description: edit.description === undefined ? source.description : edit.description,
+          deviceAttributes: edit.deviceAttributes === undefined ? source.deviceAttributes : edit.deviceAttributes,
+          photoUploadIds: edit.photoUploadIds };
+      });
+      let targetVisitGroupId: string | null = null;
+      let targetBookingIds: string[];
+      if (targetItems.length === 1) {
+        const child = await this.create({ ...targetItems[0], addressId: dto.addressId, mode: 'scheduled', date: dto.date,
+          slot: dto.slot, customerNote: dto.customerNote ?? draft.customerNote ?? undefined, quantity: 1 }, customer, { manager, visitGroupId: null });
+        targetBookingIds = [child.id];
+      } else {
+        const group = await createGroup({ addressId: dto.addressId, mode: 'scheduled', date: dto.date, slot: dto.slot,
+          customerNote: dto.customerNote ?? draft.customerNote ?? undefined, items: targetItems }, customer, manager);
+        targetVisitGroupId = group.id;
+        targetBookingIds = group.items.map(item => item.booking?.id).filter((id): id is string => !!id);
+        if (targetBookingIds.length !== targetItems.length) throw new BusinessException(ErrorCodes.CONFLICT, 'Nhóm đặt lại thiếu thiết bị.');
+      }
+      const receipt = await manager.save(InterruptionRebook, manager.create(InterruptionRebook, {
+        customerId: customer.id, scopeKind, scopeId, idempotencyKey: dto.idempotencyKey,
+        requestFingerprint: fingerprint, sourceCount: draft.items.length, targetVisitGroupId,
+      }));
+      const items = draft.items.map((source, index) => ({ sourceBookingId: source.sourceBookingId,
+        sourceCaseId: source.sourceCaseId, bookingId: targetBookingIds[index], previousTechnicianId: source.previousTechnicianId }))
+        .sort((a, b) => a.sourceBookingId.localeCompare(b.sourceBookingId));
+      for (const item of items) await manager.insert(InterruptionRebookSource, {
+        rebookId: receipt.id, sourceBookingId: item.sourceBookingId, sourceCaseId: item.sourceCaseId,
+        targetBookingId: item.bookingId, previousTechnicianId: item.previousTechnicianId,
+      });
+      return { targetKind: targetVisitGroupId ? 'visit_group' as const : 'booking' as const,
+        bookingId: targetVisitGroupId ? null : targetBookingIds[0], visitGroupId: targetVisitGroupId,
+        items: items.map(({ previousTechnicianId: _previousTechnicianId, ...item }) => item) };
+    });
+  }
+
   async confirmRepairFailureRebook(
     anchorId: string,
     dto: RepairFailureRebookDto,
@@ -1083,6 +1177,14 @@ export class BookingsService {
     const old = await this.bookingRepo.findOneBy({ id: oldBookingId, customerId: customer.id });
     if (!old) throw new ForbiddenException('Booking not found');
     const order = await this.dataSource.manager.findOneBy(ServiceOrder, { bookingId: old.id });
+    if (order && (await this.dataSource.manager.findOneBy(SupportCase, {
+      serviceOrderId: order.id, customerId: customer.id, resolutionCode: 'interrupted_for_rebook',
+    }) || (old.visitGroupId && await this.dataSource.manager.findOneBy(VisitGroupItem, {
+      groupId: old.visitGroupId, bookingId: old.id, outcome: 'interrupted',
+    })))) {
+      throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Đơn dừng sửa cần đặt lại qua bản nháp riêng.',
+        { draftPath: `/api/v1/bookings/${old.id}/interruption-draft` });
+    }
     // The transition history and incident survive loss of the audit receipt.
     // Require both so ordinary cancellations retain their legacy rebook flow.
     const failureTransition = order?.status === ServiceOrderStatus.CANCELLED && old.status === BookingStatus.CANCELLED

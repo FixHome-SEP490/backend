@@ -17,6 +17,7 @@ import { Wallet } from '../wallet/entities/wallet.entity';
 import { SystemConfig } from '../system-config/entities/system-config.entity';
 import { hasPartReturnRestriction } from '../part-requests/part-custody.policy';
 import { groupServiceIds } from './visit-group-guard';
+import { InterruptionRebookSource } from './entities/interruption-rebook.entity';
 
 type HeldOrderRow = { orderId: string; status: string; slot: string | null; mode: string | null; busyStart: Date | string | null; busyEnd: Date | string | null };
 
@@ -101,6 +102,9 @@ export async function technicianEligibility(
     .getCount()) return fail('Technician withdrew from this booking');
   // Nor one who declined its invitation.
   if (!keeping && await manager.count('booking_invitations', { where: { bookingId: booking.id, technicianId, status: 'declined' } })) return fail('Technician declined this booking');
+  if (!keeping && await manager.count(InterruptionRebookSource, { where: { targetBookingId: booking.id, previousTechnicianId: technicianId } })) {
+    return fail('Previous technician is excluded from this interrupted booking');
+  }
   if (!keeping && await hasPartReturnRestriction(manager, technicianId)) return fail('Cần quản lý xác nhận đã nhận đủ linh kiện FixHome trước khi nhận việc mới.');
   const preload = keeping ? options?.preload : undefined;
   const user = preload ? preload.user : await manager.findOneBy(User, { id: technicianId });

@@ -167,6 +167,12 @@ export class SupportCaseSummaryDto {
   @ApiProperty()
   holdCompletion: boolean;
 
+  @ApiPropertyOptional({ enum: ['stop_or_replace'], nullable: true })
+  requestIntent: 'stop_or_replace' | null;
+
+  @ApiProperty()
+  workflowVersion: number;
+
   @ApiPropertyOptional({ nullable: true })
   liableParty: string | null;
 
