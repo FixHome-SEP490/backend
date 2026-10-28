@@ -45,8 +45,23 @@ export class InterruptionWorkflow1793203200000 implements MigrationInterface {
     // Supabase public is Data API exposed; private rebooking receipts remain Backend-only.
     await queryRunner.query(`ALTER TABLE "interruption_rebooks" ENABLE ROW LEVEL SECURITY`);
     await queryRunner.query(`ALTER TABLE "interruption_rebook_sources" ENABLE ROW LEVEL SECURITY`);
-    await queryRunner.query(`REVOKE ALL ON "interruption_rebooks" FROM anon, authenticated, service_role`);
-    await queryRunner.query(`REVOKE ALL ON "interruption_rebook_sources" FROM anon, authenticated, service_role`);
+    // Plain PostgreSQL CI has no Supabase API roles; production Supabase does.
+    // Do not create roles or weaken RLS merely to make a migration pass.
+    await queryRunner.query(`
+      DO $revoke$
+      BEGIN
+        IF EXISTS (SELECT FROM pg_roles WHERE rolname='anon') THEN
+          REVOKE ALL ON "interruption_rebooks", "interruption_rebook_sources" FROM anon;
+        END IF;
+        IF EXISTS (SELECT FROM pg_roles WHERE rolname='authenticated') THEN
+          REVOKE ALL ON "interruption_rebooks", "interruption_rebook_sources" FROM authenticated;
+        END IF;
+        IF EXISTS (SELECT FROM pg_roles WHERE rolname='service_role') THEN
+          REVOKE ALL ON "interruption_rebooks", "interruption_rebook_sources" FROM service_role;
+        END IF;
+      END
+      $revoke$;
+    `);
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {

@@ -14,7 +14,8 @@ describe('InterruptionWorkflow migration SQL structure (no PostgreSQL execution)
     expect(sql).toContain('CREATE UNIQUE INDEX "uq_support_interruption_command"');
     expect(sql).toContain('ALTER TABLE "interruption_rebooks" ENABLE ROW LEVEL SECURITY');
     expect(sql).toContain('ALTER TABLE "interruption_rebook_sources" ENABLE ROW LEVEL SECURITY');
-    expect(sql).toContain('REVOKE ALL ON "interruption_rebooks" FROM anon, authenticated, service_role');
+    expect(sql).toContain('REVOKE ALL ON "interruption_rebooks", "interruption_rebook_sources" FROM anon');
+    expect(sql).toContain("IF EXISTS (SELECT FROM pg_roles WHERE rolname='authenticated')");
     expect(sql).toMatch(/"chk_visit_group_items_outcome" CHECK \([\s\S]*'interrupted'/);
     expect(sql).toContain('"source_case_id" uuid NOT NULL REFERENCES "support_cases"("id")');
     expect(sql).toContain('"target_booking_id" uuid NOT NULL REFERENCES "bookings"("id")');
