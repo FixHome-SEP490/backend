@@ -91,11 +91,11 @@ describe('WEB-ACCEPT isolated real HTTP/JWT/PostgreSQL (three synthetic actors)'
     await db.initialize();
     // This legacy E2E fixture uses a private schema; funding F4 targets public and requires
     // the already-deployed voucher baseline. Exclude F4 from this unrelated fixture only.
-    // The disposable private-schema fixture does not model the public voucher
-    // Core/F4 lifecycle cutover. Test those migrations separately in the
-    // Docker-isolated voucher PostgreSQL release suite.
+    // The private-schema fixture does not model public finance cutovers;
+    // dedicated isolated PostgreSQL suites verify their DDL.
     db.migrations.splice(0, db.migrations.length, ...db.migrations.filter(m =>
-      !['VoucherFundingLedger1792994400001', 'VoucherCampaignLifecycle1793116800000'].includes(m.name)
+      !['VoucherFundingLedger1792994400001', 'VoucherCampaignLifecycle1793116800000',
+        'CashPaymentIntents1793293200000', 'TechnicianResponsibility1793293200001'].includes(m.name)
     ));
     await db.runMigrations();
     // Private-schema legacy fixture only: F4 is forward-only in public DEV.

@@ -41,7 +41,8 @@ export class CashIntentController {
   @RequirePermission('order:read_related')
   async get(@Param('scopeKind', new ParseEnumPipe(CashIntentScopeKind)) scopeKind: CashIntentScopeKind,
     @Param('scopeId', ParseUUIDPipe) scopeId: string, @Req() req: CashRequest) {
-    return { data: this.view(await this.finance.getCashIntent(scopeKind, scopeId, req.user)) };
+    const intent = await this.finance.getCashIntent(scopeKind, scopeId, req.user);
+    return { data: this.view(intent), meta: { cashFirstEnabled: this.finance.isCashFirstEnabled() } };
   }
 
   @Post(':scopeKind/:scopeId')

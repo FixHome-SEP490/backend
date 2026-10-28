@@ -99,6 +99,23 @@ export class FinanceService {
     return this.config?.get<string>('CASH_FIRST_ENABLED') === 'true';
   }
 
+  isCashFirstEnabled(): boolean {
+    return this.cashFirstEnabled();
+  }
+
+  private legacyCashCompatibilityEnabled(): boolean {
+    return this.config?.get<string>('CASH_LEGACY_COMPAT_ENABLED') === 'true';
+  }
+
+  /** Called only after the same invoice/VisitGroup locks used by new intent creation. */
+  private async assertLegacyCashCompatibility(manager: EntityManager, scopeKind: CashIntentScope, scopeId: string): Promise<void> {
+    if (!this.cashFirstEnabled()) return;
+    if (!this.legacyCashCompatibilityEnabled()) {
+      throw new BusinessException(ErrorCodes.CONFLICT, 'Vui lòng chờ khách chọn tiền mặt trước khi xác nhận đã nhận.');
+    }
+    await this.assertNoActiveCashIntent(manager, scopeKind, scopeId);
+  }
+
   async assertFundedCollectionReady(): Promise<void> {
     if (!this.vouchersService || !this.walletService ||
         !this.customerWalletService || !this.settlementService) {
@@ -1344,6 +1361,7 @@ export class FinanceService {
           ![ServiceOrderStatus.UNDER_REPAIR, ServiceOrderStatus.COMPLETED].includes(order.status)) {
         throw new BusinessException(ErrorCodes.CONFLICT, 'Hóa đơn đã thay đổi.');
       }
+      await this.assertLegacyCashCompatibility(manager, 'SOLO', orderId);
       await lockCustodyTechnician(manager, actor.id);
       const existing = await manager.findOne(CashSettlement, { where: { serviceOrderId: orderId }, lock: { mode: 'pessimistic_write' } });
       if (existing) {
@@ -1377,6 +1395,7 @@ export class FinanceService {
       await this.visitAccess(manager, groupId, actor, true);
       await lockCustodyTechnician(manager, actor.id);
       const funded = allocateFundedVisitCharge(await this.readyVisitCharge(manager, groupId), quote);
+      await this.assertLegacyCashCompatibility(manager, 'VISIT_GROUP', groupId);
       if (this.requireWholeVnd(dto.declaredAmount, 'Declared amount') !== funded.customerDue) {
         throw new BusinessException(ErrorCodes.CASH_SETTLEMENT_MISMATCH, 'Số tiền mặt không khớp với số tiền khách cần trả.');
       }
@@ -1415,7 +1434,7 @@ export class FinanceService {
     actor: FinanceActor,
     voucherReservationId?: string,
   ): Promise<ReturnType<typeof toCashSettlementResponse>> {
-    if (this.cashFirstEnabled()) {
+    if (this.cashFirstEnabled() && !this.legacyCashCompatibilityEnabled()) {
       throw new BusinessException(ErrorCodes.CONFLICT, 'Vui lòng chờ khách chọn tiền mặt trước khi xác nhận đã nhận.');
     }
     if (actor.role !== Role.TECHNICIAN) {
@@ -1465,6 +1484,7 @@ export class FinanceService {
       if (invoice.paymentStatus === PaymentStatus.PAID) {
         throw new BusinessException(ErrorCodes.CONFLICT, 'Invoice is already paid');
       }
+      await this.assertLegacyCashCompatibility(manager, 'SOLO', orderId);
 
       if (this.requireWholeVnd(invoice.grandTotal, 'Invoice amount') <= 0) {
         throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hóa đơn 0 ₫ cần được khách hàng xác nhận miễn phí.');
@@ -1642,7 +1662,7 @@ export class FinanceService {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Only the customer can confirm cash payment');
     }
     if (this.cashFirstEnabled() && await this.dataSource.getRepository(CashPaymentIntent).exists({
-      where: { scopeKind: 'SOLO', scopeId: orderId },
+      where: { scopeKind: 'SOLO', scopeId: orderId, status: In(['pending', 'received']) },
     })) {
       throw new BusinessException(ErrorCodes.CONFLICT, 'Yêu cầu tiền mặt mới không cần khách xác nhận lần nữa.');
     }
@@ -1730,7 +1750,7 @@ export class FinanceService {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Only the customer can confirm cash payment');
     }
     if (this.cashFirstEnabled() && await this.dataSource.getRepository(CashPaymentIntent).exists({
-      where: { scopeKind: 'VISIT_GROUP', scopeId: groupId },
+      where: { scopeKind: 'VISIT_GROUP', scopeId: groupId, status: In(['pending', 'received']) },
     })) {
       throw new BusinessException(ErrorCodes.CONFLICT, 'Yêu cầu tiền mặt mới không cần khách xác nhận lần nữa.');
     }
@@ -1750,7 +1770,7 @@ export class FinanceService {
     }
 
     if (this.cashFirstEnabled() && await this.dataSource.getRepository(CashPaymentIntent).exists({
-      where: { scopeKind: 'SOLO', scopeId: orderId },
+      where: { scopeKind: 'SOLO', scopeId: orderId, status: In(['pending', 'received']) },
     })) {
       throw new BusinessException(ErrorCodes.CONFLICT, 'Yêu cầu tiền mặt mới không cần khách xác nhận lần nữa.');
     }
@@ -2970,7 +2990,7 @@ export class FinanceService {
 
   /** The technician reports the cash of the whole visit, once; the customer then confirms it. */
   async declareVisitCash(groupId: string, dto: CashSettlementDeclarationDto, actor: FinanceActor, voucherReservationId?: string) {
-    if (this.cashFirstEnabled()) {
+    if (this.cashFirstEnabled() && !this.legacyCashCompatibilityEnabled()) {
       throw new BusinessException(ErrorCodes.CONFLICT, 'Vui lòng chờ khách chọn tiền mặt trước khi xác nhận đã nhận.');
     }
     if (actor.role !== Role.TECHNICIAN) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Only the assigned technician can declare cash received');
@@ -2979,6 +2999,7 @@ export class FinanceService {
       const group = await this.visitAccess(manager, groupId, actor, true);
       await lockCustodyTechnician(manager, actor.id);
       const charge = await this.readyVisitCharge(manager, groupId);
+      await this.assertLegacyCashCompatibility(manager, 'VISIT_GROUP', groupId);
       await this.assertLegacyCollectionAllowed(manager, groupId);
       if (this.requireWholeVnd(dto.declaredAmount, 'Declared amount') !== charge.total) {
         throw new BusinessException(ErrorCodes.CASH_SETTLEMENT_MISMATCH, `Tiền mặt của cả lượt là ${charge.total.toLocaleString('vi-VN')}đ, vui lòng kiểm lại số tiền đã nhận.`);
@@ -3024,7 +3045,7 @@ export class FinanceService {
   async confirmVisitCash(groupId: string, dto: CashSettlementConfirmationDto, actor: FinanceActor) {
     if (actor.role !== Role.CUSTOMER) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Only the visit customer can confirm cash payment');
     if (this.cashFirstEnabled() && await this.dataSource.getRepository(CashPaymentIntent).exists({
-      where: { scopeKind: 'VISIT_GROUP', scopeId: groupId },
+      where: { scopeKind: 'VISIT_GROUP', scopeId: groupId, status: In(['pending', 'received']) },
     })) {
       throw new BusinessException(ErrorCodes.CONFLICT, 'Yêu cầu tiền mặt mới không cần khách xác nhận lần nữa.');
     }
