@@ -188,6 +188,19 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     // The old private-schema suite omits F4; include its nullable SupportCase field
     // only as a fixture compatibility column, never as a substitute for funding DDL.
     await db.query('ALTER TABLE support_cases ADD COLUMN IF NOT EXISTS voucher_gross_refund_vnd bigint NULL');
+    // Private-schema legacy E2E skips the public cash/reputation migration chain.
+    // Give the current TypeORM entities nullable compatibility columns ONLY inside
+    // this disposable fixture; actual DDL/RLS/indexes run in cash-reputation.postgres.spec.ts.
+    await db.query(`ALTER TABLE support_cases
+      ADD COLUMN IF NOT EXISTS reason_class varchar(32),
+      ADD COLUMN IF NOT EXISTS reason_code varchar(48),
+      ADD COLUMN IF NOT EXISTS responsibility varchar(32),
+      ADD COLUMN IF NOT EXISTS responsibility_command_id uuid,
+      ADD COLUMN IF NOT EXISTS responsibility_actor_id uuid,
+      ADD COLUMN IF NOT EXISTS responsibility_reason varchar(2000),
+      ADD COLUMN IF NOT EXISTS responsibility_evidence_refs jsonb,
+      ADD COLUMN IF NOT EXISTS responsibility_decided_at timestamptz`);
+    await db.query('ALTER TABLE reputation_events ADD COLUMN IF NOT EXISTS support_case_id uuid');
     // This private legacy E2E fixture intentionally excludes F4 funding migrations.
     // The old technician-replacement path now checks payment links fail-closed;
     // provide an EMPTY synthetic table only inside this disposable test schema.

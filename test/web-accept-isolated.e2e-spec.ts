@@ -100,6 +100,19 @@ describe('WEB-ACCEPT isolated real HTTP/JWT/PostgreSQL (three synthetic actors)'
     await db.runMigrations();
     // Private-schema legacy fixture only: F4 is forward-only in public DEV.
     await db.query('ALTER TABLE support_cases ADD COLUMN IF NOT EXISTS voucher_gross_refund_vnd bigint NULL');
+    // Private-schema legacy E2E skips the public cash/reputation migration chain.
+    // Give the current TypeORM entities nullable compatibility columns ONLY inside
+    // this disposable fixture; actual DDL/RLS/indexes run in cash-reputation.postgres.spec.ts.
+    await db.query(`ALTER TABLE support_cases
+      ADD COLUMN IF NOT EXISTS reason_class varchar(32),
+      ADD COLUMN IF NOT EXISTS reason_code varchar(48),
+      ADD COLUMN IF NOT EXISTS responsibility varchar(32),
+      ADD COLUMN IF NOT EXISTS responsibility_command_id uuid,
+      ADD COLUMN IF NOT EXISTS responsibility_actor_id uuid,
+      ADD COLUMN IF NOT EXISTS responsibility_reason varchar(2000),
+      ADD COLUMN IF NOT EXISTS responsibility_evidence_refs jsonb,
+      ADD COLUMN IF NOT EXISTS responsibility_decided_at timestamptz`);
+    await db.query('ALTER TABLE reputation_events ADD COLUMN IF NOT EXISTS support_case_id uuid');
     const { seedRbac } = runtimeRequire('./dist/database/seeds/seed-rbac.js');
     await seedRbac(db);
     const { AppModule } = runtimeRequire('./dist/app.module.js');
