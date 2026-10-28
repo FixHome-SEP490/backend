@@ -192,7 +192,27 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     // The old technician-replacement path now checks payment links fail-closed;
     // provide an EMPTY synthetic table only inside this disposable test schema.
     // The actual F4 schema and ledger are tested by the isolated funding gate.
-    await db.query('CREATE TABLE IF NOT EXISTS voucher_payment_links (id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), scope_id uuid NOT NULL)');
+    await db.query(`CREATE TABLE IF NOT EXISTS voucher_payment_links (
+      id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+      created_at timestamptz NOT NULL DEFAULT now(),
+      reservation_id uuid,
+      attempt_id uuid,
+      customer_id uuid,
+      scope_id uuid NOT NULL,
+      scope_kind varchar(16),
+      rail varchar(8),
+      payment_id uuid,
+      cash_settlement_id uuid,
+      visit_group_payment_id uuid,
+      provider_txn_ref varchar(128),
+      provider_initiated_at timestamptz,
+      original_gross_vnd bigint,
+      eligible_base_vnd bigint,
+      subsidy_vnd bigint,
+      customer_due_vnd bigint,
+      allocation_snapshot jsonb,
+      allocation_sha256 char(64)
+    )`);
     const { seedRbac } = runtimeRequire('./dist/database/seeds/seed-rbac.js');
     await seedRbac(db);
     const { AppModule } = runtimeRequire('./dist/app.module.js');
