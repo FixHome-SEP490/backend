@@ -42,6 +42,11 @@ export class InterruptionWorkflow1793203200000 implements MigrationInterface {
     await queryRunner.query(`CREATE UNIQUE INDEX "uq_interruption_rebook_source" ON "interruption_rebook_sources" ("source_booking_id")`);
     await queryRunner.query(`CREATE UNIQUE INDEX "uq_interruption_rebook_case" ON "interruption_rebook_sources" ("source_case_id")`);
     await queryRunner.query(`CREATE UNIQUE INDEX "uq_interruption_rebook_target" ON "interruption_rebook_sources" ("target_booking_id")`);
+    // Supabase public is Data API exposed; private rebooking receipts remain Backend-only.
+    await queryRunner.query(`ALTER TABLE "interruption_rebooks" ENABLE ROW LEVEL SECURITY`);
+    await queryRunner.query(`ALTER TABLE "interruption_rebook_sources" ENABLE ROW LEVEL SECURITY`);
+    await queryRunner.query(`REVOKE ALL ON "interruption_rebooks" FROM anon, authenticated, service_role`);
+    await queryRunner.query(`REVOKE ALL ON "interruption_rebook_sources" FROM anon, authenticated, service_role`);
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
