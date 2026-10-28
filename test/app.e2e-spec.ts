@@ -188,6 +188,11 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     // The old private-schema suite omits F4; include its nullable SupportCase field
     // only as a fixture compatibility column, never as a substitute for funding DDL.
     await db.query('ALTER TABLE support_cases ADD COLUMN IF NOT EXISTS voucher_gross_refund_vnd bigint NULL');
+    // This private legacy E2E fixture intentionally excludes F4 funding migrations.
+    // The old technician-replacement path now checks payment links fail-closed;
+    // provide an EMPTY synthetic table only inside this disposable test schema.
+    // The actual F4 schema and ledger are tested by the isolated funding gate.
+    await db.query('CREATE TABLE IF NOT EXISTS voucher_payment_links (id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), scope_id uuid NOT NULL)');
     const { seedRbac } = runtimeRequire('./dist/database/seeds/seed-rbac.js');
     await seedRbac(db);
     const { AppModule } = runtimeRequire('./dist/app.module.js');
