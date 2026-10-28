@@ -9,6 +9,7 @@ import { Invoice } from '../service-orders/entities/invoice.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { SupportCasesController } from './support-cases.controller';
+import { CustomerStopRequestController } from './customer-stop-request.controller';
 import { SupportCasesService } from './support-cases.service';
 import { SupportCase } from './entities';
 
@@ -26,7 +27,7 @@ import { SupportCase } from './entities';
       TechnicianAssignment,
     ]),
   ],
-  controllers: [SupportCasesController],
+  controllers: [SupportCasesController, CustomerStopRequestController],
   providers: [SupportCasesService],
   exports: [SupportCasesService],
 })

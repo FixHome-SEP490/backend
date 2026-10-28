@@ -27,6 +27,20 @@ describe('loadVisitCharge', () => {
     expect(charge).toMatchObject({ ready: true, paid: false, waiting: 0, total: 250000, allocations: [{ invoiceId: 'i1', serviceOrderId: 'o1', amount: 250000 }] });
   });
 
+  it('keeps all successful sibling invoices when one device is manager interrupted', async () => {
+    const charge = await loadVisitCharge(manager({
+      items: [item(1), item(2, 'interrupted'), item(3)],
+      bookings: [booking(1), booking(2, 'cancelled'), booking(3)],
+      orders: [order(1), order(2, { status: 'cancelled', completionRequestedAt: null }), order(3)],
+      invoices: [invoice(1, 200000), invoice(3, 300000)],
+    }) as never, 'g');
+    expect(charge.devices.map(device => [device.state, device.amount])).toEqual([
+      ['succeeded', 200000], ['cancelled', 0], ['succeeded', 300000],
+    ]);
+    expect(charge).toMatchObject({ ready: true, waiting: 0, total: 500000 });
+    expect(charge.allocations.map(allocation => allocation.invoiceId)).toEqual(['i1', 'i3']);
+  });
+
   it('waits while a device has no result yet', async () => {
     const charge = await loadVisitCharge(manager({
       items: [item(1), item(2)], bookings: [booking(1), booking(2)],

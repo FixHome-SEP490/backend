@@ -100,7 +100,7 @@ describe('manager takes and holds a case', () => {
 
     expect(supportRepository.update).toHaveBeenCalledWith(
       { id: 'case-1', status: SupportCaseStatus.OPEN },
-      { status: SupportCaseStatus.IN_REVIEW, assignedManagerId: 'sm-1' },
+      expect.objectContaining({ status: SupportCaseStatus.IN_REVIEW, assignedManagerId: 'sm-1', workflowVersion: expect.any(Function) }),
     );
     expect(auditLogService.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'SUPPORT_CASE_REVIEW_STARTED' }));
   });
@@ -121,7 +121,10 @@ describe('manager takes and holds a case', () => {
   it('holds and releases completion only for an unresolved case linked to an order', async () => {
     const ok = makeService();
     await ok.service.setHold('case-1', true, SM);
-    expect(ok.supportRepository.update).toHaveBeenCalledWith({ id: 'case-1' }, { holdCompletion: true });
+    expect(ok.supportRepository.update).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'case-1' }),
+      expect.objectContaining({ holdCompletion: true, workflowVersion: expect.any(Function) }),
+    );
     expect(ok.auditLogService.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'SUPPORT_CASE_HOLD_COMPLETION' }));
 
     await ok.service.setHold('case-1', false, SM);

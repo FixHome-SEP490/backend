@@ -11,6 +11,11 @@ export class ServiceOrderStateMachine {
     return status === ServiceOrderStatus.EN_ROUTE;
   }
 
+  /** Verified manager exception: the old worker's work is not inherited. */
+  static canResetAfterManagerInterruption(status: ServiceOrderStatus): boolean {
+    return status === ServiceOrderStatus.EN_ROUTE || status === ServiceOrderStatus.UNDER_REPAIR;
+  }
+
   /**
    * Base lifecycle state transitions allowed by the system:
    * ACCEPTED -> EN_ROUTE, CANCELLED

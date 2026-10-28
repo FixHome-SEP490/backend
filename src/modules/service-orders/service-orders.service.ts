@@ -797,9 +797,9 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     const reference = await authorizeOrder(this.dataSource.manager, orderId, actor);
     return this.dataSource.transaction(async manager => {
       const booking = await manager.findOneOrFail(Booking, { where: { id: reference.bookingId }, lock: { mode: 'pessimistic_write' } });
-      // One device of a visit is not cancelled or dropped alone by the customer or the
-      // technician (PO 21/10/2026); staff may still handle one order as an exception.
-      if (actor.role === Role.CUSTOMER || actor.role === Role.TECHNICIAN) refuseLoneGroupedBookingAction(booking);
+      // A one-child VisitGroup exception must use the audited SupportCase command.
+      // The normal endpoint cannot safely distinguish money/custody exposure.
+      refuseLoneGroupedBookingAction(booking);
       return this.cancelLocked(manager, booking, orderId, body, actor);
     });
   }
@@ -854,6 +854,10 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     const secondary = visit?.primary === false;
     const order = await authorizeOrder(manager, orderId, actor, actor.role === Role.TECHNICIAN ? 'technician' : 'read', true);
     if (order.status === ServiceOrderStatus.CANCELLED) return order;
+    if (order.status === ServiceOrderStatus.UNDER_REPAIR &&
+        [Role.SERVICE_MANAGER, Role.ADMIN].includes(actor.role as Role)) {
+      throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Dùng resolve-interruption để đóng đơn đang sửa và hồ sơ hỗ trợ cùng lúc.');
+    }
     const arrived = await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, result: CheckInResult.VALID });
     // A technician has arrived only with their own check-in: after a replacement the earlier
     // technician's check-in stays on the order but says nothing about the new one.
