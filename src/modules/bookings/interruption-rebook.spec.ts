@@ -54,4 +54,12 @@ describe('manager interruption booking draft', () => {
     const draft = await h.service.interruptionDraft('booking-1', h.actor);
     expect(draft.items.map(item => item.sourceBookingId)).toEqual(['booking-1']);
   });
+
+  it('accepts the manager receipt of a technician case opened with serviceOrderId only', async () => {
+    const h = fixture();
+    h.rows.SupportCase[1].bookingId = null;
+    h.rows.SupportCase[1].caseType = SupportCaseType.TECHNICIAN_REPLACEMENT;
+    const draft = await h.service.interruptionDraft('booking-1', h.actor);
+    expect(draft.items[0].sourceCaseId).toBe('case-1');
+  });
 });

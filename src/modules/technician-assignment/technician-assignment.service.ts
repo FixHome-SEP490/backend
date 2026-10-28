@@ -5,7 +5,7 @@ import { ConflictException } from '@nestjs/common';
 import { newOrderCode } from '../service-orders/order-code';
 import { Injectable, Logger, NotFoundException, ForbiddenException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, Repository } from 'typeorm';
+import { DataSource, In, Not, Repository } from 'typeorm';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { OrderStatusHistory } from '../service-orders/entities/order-status-history.entity';
@@ -81,14 +81,22 @@ export class TechnicianAssignmentService {
     const payment = cash || groupPayment || order.paymentStatus !== PaymentStatus.UNPAID;
     const incompleteSiblings = booking.visitGroupId
       ? await manager.count(VisitGroupItem, { where: { groupId: booking.visitGroupId, outcome: null } }) > 1 : false;
-    const flags = { approvedQuote, openQuote, invoice, payment, voucher, parts, incompleteSiblings, assignmentChanged };
+    const conflictingCase = await manager.count(SupportCase, { where: [
+      { serviceOrderId: order.id, id: Not(supportCase.id), requestIntent: 'stop_or_replace', status: In([SupportCaseStatus.OPEN, SupportCaseStatus.IN_REVIEW]) },
+      { serviceOrderId: order.id, id: Not(supportCase.id), caseType: SupportCaseType.TECHNICIAN_REPLACEMENT, status: In([SupportCaseStatus.OPEN, SupportCaseStatus.IN_REVIEW]) },
+    ] }) > 0;
+    const flags = { approvedQuote, openQuote, invoice, payment, voucher, parts, incompleteSiblings, assignmentChanged, conflictingCase };
     const active = [SupportCaseStatus.OPEN, SupportCaseStatus.IN_REVIEW].includes(supportCase.status)
       && (supportCase.caseType === SupportCaseType.TECHNICIAN_REPLACEMENT || supportCase.requestIntent === 'stop_or_replace');
+    const phaseAllowed = order.status === ServiceOrderStatus.UNDER_REPAIR
+      || (supportCase.caseType === SupportCaseType.TECHNICIAN_REPLACEMENT
+        && supportCase.requestIntent !== 'stop_or_replace' && order.status === ServiceOrderStatus.EN_ROUTE);
     const common = [
       ...(!active ? ['CASE_NOT_ACTIVE'] : []),
-      ...(order.status !== ServiceOrderStatus.UNDER_REPAIR ? ['ORDER_NOT_UNDER_REPAIR'] : []),
+      ...(!phaseAllowed ? ['ORDER_NOT_UNDER_REPAIR'] : []),
       ...(order.completionRequestedAt ? ['COMPLETION_REQUESTED'] : []),
       ...(assignmentChanged ? ['ASSIGNMENT_CHANGED'] : []),
+      ...(conflictingCase ? ['CONFLICTING_CASE'] : []),
       ...(invoice ? ['INVOICE_EXISTS'] : []),
       ...(payment ? ['PAYMENT_EXPOSURE'] : []),
       ...(voucher ? ['VOUCHER_EXPOSURE'] : []),
@@ -114,6 +122,9 @@ export class TechnicianAssignmentService {
     const order = await manager.findOne(ServiceOrder, { where: { id: supportCase.serviceOrderId } });
     const booking = order && await manager.findOne(Booking, { where: { id: order.bookingId } });
     if (!order || !booking) throw new ConflictException('Support case order is unavailable');
+    if ((supportCase.bookingId != null && supportCase.bookingId !== booking.id) || supportCase.customerId !== booking.customerId) {
+      throw new ConflictException('Support case context changed');
+    }
     return this.interruptionOptions(manager, supportCase, booking, order);
   }
 
@@ -144,7 +155,8 @@ export class TechnicianAssignmentService {
       const booking = await manager.findOne(Booking, { where: { id: bookingReference.id }, lock: { mode: 'pessimistic_write' } });
       const order = await manager.findOne(ServiceOrder, { where: { id: orderReference.id }, lock: { mode: 'pessimistic_write' } });
       const supportCase = await manager.findOne(SupportCase, { where: { id: caseId }, lock: { mode: 'pessimistic_write' } });
-      if (!booking || !order || !supportCase || supportCase.serviceOrderId !== order.id || order.bookingId !== booking.id) {
+      if (!booking || !order || !supportCase || supportCase.serviceOrderId !== order.id || order.bookingId !== booking.id
+        || (supportCase.bookingId != null && supportCase.bookingId !== booking.id) || supportCase.customerId !== booking.customerId) {
         throw new ConflictException('Support case context changed');
       }
       if (supportCase.interruptionCommandId) {
@@ -162,6 +174,7 @@ export class TechnicianAssignmentService {
           CASE_NOT_ACTIVE: 'hồ sơ không còn mở', ORDER_NOT_UNDER_REPAIR: 'đơn không còn đang sửa',
           COMPLETION_REQUESTED: 'thợ đã yêu cầu hoàn tất', INVOICE_EXISTS: 'đã có hóa đơn',
           ASSIGNMENT_CHANGED: 'kỹ thuật viên đang phụ trách đã thay đổi',
+          CONFLICTING_CASE: 'còn yêu cầu dừng sửa hoặc đổi thợ khác đang mở',
           PAYMENT_EXPOSURE: 'có trạng thái thanh toán cần đối soát', VOUCHER_EXPOSURE: 'có ưu đãi cần đối soát',
           PARTS_CUSTODY_REVIEW: 'có linh kiện cần đối soát', VISIT_GROUP_CHILD: 'không đổi thợ riêng một thiết bị trong lượt sửa',
           APPROVED_QUOTE: 'khách đã duyệt báo giá hoặc chi phí phát sinh',

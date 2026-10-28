@@ -55,4 +55,11 @@ describe('customer stop or replace request', () => {
     await expect((h.service as any).requestStopOrReplace('order-1', 'Tôi muốn dừng sửa thiết bị này', actor)).rejects.toThrow();
     expect(h.manager.save).not.toHaveBeenCalled();
   });
+
+  it('keeps the customer stop intent UNDER_REPAIR-only even when the technician checked in EN_ROUTE', async () => {
+    const h = setup();
+    h.order.status = ServiceOrderStatus.EN_ROUTE;
+    await expect((h.service as any).requestStopOrReplace('order-1', 'Tôi muốn dừng sửa thiết bị này', actor)).rejects.toThrow();
+    expect(h.manager.save).not.toHaveBeenCalled();
+  });
 });

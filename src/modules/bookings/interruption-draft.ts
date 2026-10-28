@@ -33,10 +33,11 @@ export async function buildInterruptionDraft(manager: EntityManager, anchorId: s
     const order = await manager.findOneBy(ServiceOrder, { bookingId: sourceId });
     if (!order || order.status !== ServiceOrderStatus.CANCELLED) deny();
     const sourceCase = await manager.findOneBy(SupportCase, {
-      bookingId: sourceId, serviceOrderId: order.id, customerId: actor.id,
+      serviceOrderId: order.id, customerId: actor.id,
       status: SupportCaseStatus.RESOLVED, resolutionCode: 'interrupted_for_rebook',
     });
-    if (!sourceCase?.interruptionCommandId || !sourceCase.technicianId) deny();
+    if (!sourceCase?.interruptionCommandId || !sourceCase.technicianId
+      || (sourceCase.bookingId != null && sourceCase.bookingId !== sourceId)) deny();
     const service = await manager.findOneBy(Service, { id: booking.serviceId, isActive: true });
     if (!service) deny();
     items.push({ sourceBookingId: sourceId, sourceOrderId: order.id, sourceCaseId: sourceCase.id,
