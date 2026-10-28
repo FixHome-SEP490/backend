@@ -104,6 +104,19 @@ describe('ReputationService.penalize', () => {
   });
 });
 
+describe('ReputationService.penalizeReviewedCase', () => {
+  it('records one manager-attributed case event with the configured deduction', async () => {
+    const s = setup({ id: 't1', role: Role.TECHNICIAN, reputationPoints: 75 });
+    const event = await s.service.penalizeReviewedCase(s.manager as never, {
+      caseId: 'case-1', technicianId: 't1', serviceOrderId: 'order-1', actorId: 'sm-1',
+      reason: 'Bằng chứng xác nhận lỗi kỹ thuật viên',
+    });
+    expect(pointsOf(s.updates)).toBe(65);
+    expect(event).toMatchObject({ kind: 'violation', supportCaseId: 'case-1', actorUserId: 'sm-1', delta: -10 });
+    expect(s.saved).toHaveLength(1);
+  });
+});
+
 describe('ReputationService.adjust', () => {
   const staff = { id: 'sm-1', role: Role.SERVICE_MANAGER };
 

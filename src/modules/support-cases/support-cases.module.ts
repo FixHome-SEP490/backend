@@ -12,12 +12,15 @@ import { SupportCasesController } from './support-cases.controller';
 import { CustomerStopRequestController } from './customer-stop-request.controller';
 import { SupportCasesService } from './support-cases.service';
 import { SupportCase } from './entities';
+import { ReputationModule } from '../reputation/reputation.module';
+import { TechnicianReportService } from './technician-report.service';
 
 @Module({
   imports: [
     AuditLogModule,
     CustomerWalletModule,
     NotificationsModule,
+    ReputationModule,
     TypeOrmModule.forFeature([
       SupportCase,
       Booking,
@@ -28,7 +31,7 @@ import { SupportCase } from './entities';
     ]),
   ],
   controllers: [SupportCasesController, CustomerStopRequestController],
-  providers: [SupportCasesService],
+  providers: [SupportCasesService, TechnicianReportService],
   exports: [SupportCasesService],
 })
 export class SupportCasesModule {}

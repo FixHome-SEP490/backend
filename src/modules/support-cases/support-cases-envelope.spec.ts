@@ -48,7 +48,7 @@ const makeController = () => {
       total: 1,
     }),
   };
-  const controller = new SupportCasesController(supportCasesService as any);
+  const controller = new SupportCasesController(supportCasesService as any, {} as any);
   return { controller, supportCasesService };
 };
 

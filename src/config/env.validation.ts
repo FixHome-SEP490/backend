@@ -22,6 +22,9 @@ export enum Environment {
 
 export class EnvironmentVariables {
   @IsIn(['true', 'false'])
+  CASH_FIRST_ENABLED: string = 'false';
+
+  @IsIn(['true', 'false'])
   P1_CUSTODY_ENABLED: string = 'false';
 
   @IsIn(['true', 'false'])

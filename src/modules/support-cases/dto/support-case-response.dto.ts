@@ -174,6 +174,27 @@ export class SupportCaseSummaryDto {
   workflowVersion: number;
 
   @ApiPropertyOptional({ nullable: true })
+  reasonClass: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  reasonCode: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  responsibility: string | null;
+
+  @ApiPropertyOptional({ format: 'uuid', nullable: true })
+  responsibilityActorId: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  responsibilityReason: string | null;
+
+  @ApiPropertyOptional({ type: [String], nullable: true })
+  responsibilityEvidenceRefs: string[] | null;
+
+  @ApiPropertyOptional({ format: 'date-time', nullable: true })
+  responsibilityDecidedAt: Date | null;
+
+  @ApiPropertyOptional({ nullable: true })
   liableParty: string | null;
 
   @ApiPropertyOptional({ nullable: true })
