@@ -35,6 +35,8 @@ import { OrderStatusHistory } from '../service-orders/entities/order-status-hist
 import { isCompletionHeld } from '../support-cases/completion-hold';
 import { applyOrderCompletionEffects } from '../service-orders/order-completion-effects';
 import { Payment } from './entities/payment.entity';
+import { CashPaymentIntent, type CashIntentScope } from './entities/cash-payment-intent.entity';
+import { assertCashReceiptMatchesIntent, type CashIntentAllocation } from './cash-intent-policy';
 import { PlatformDue } from './entities/platform-due.entity';
 import {
   CashSettlementConfirmationDto,
@@ -93,6 +95,10 @@ export interface FinanceActor {
 export class FinanceService {
   private readonly logger = new Logger(FinanceService.name);
 
+  private cashFirstEnabled(): boolean {
+    return this.config?.get<string>('CASH_FIRST_ENABLED') === 'true';
+  }
+
   async assertFundedCollectionReady(): Promise<void> {
     if (!this.vouchersService || !this.walletService ||
         !this.customerWalletService || !this.settlementService) {
@@ -125,6 +131,388 @@ export class FinanceService {
       throw new BusinessException(ErrorCodes.CONFLICT,
         'Đơn đang áp dụng ưu đãi. Vui lòng tiếp tục thanh toán ưu đãi hoặc hủy áp dụng trước.');
     }
+  }
+
+  private async assertNoActiveCashIntent(manager: EntityManager, scopeKind: CashIntentScope, scopeId: string): Promise<void> {
+    if (!this.cashFirstEnabled()) return;
+    if (await manager.findOne(CashPaymentIntent, { where: { scopeKind, scopeId, status: 'pending' } })) {
+      throw new BusinessException(ErrorCodes.CONFLICT, 'Khách đã chọn tiền mặt. Vui lòng hủy lựa chọn đó trước khi đổi phương thức.');
+    }
+  }
+
+  /** A customer selection is durable, but it never proves that physical cash changed hands. */
+  async createCashIntent(scopeKind: CashIntentScope, scopeId: string,
+    input: { commandId: string; voucherReservationId?: string }, actor: FinanceActor): Promise<CashPaymentIntent> {
+    if (!this.cashFirstEnabled()) {
+      throw new BusinessException(ErrorCodes.CONFLICT, 'Thanh toán tiền mặt theo bước mới chưa được mở.');
+    }
+    if (actor.role !== Role.CUSTOMER) {
+      throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Chỉ khách hàng được chọn thanh toán tiền mặt.');
+    }
+    if (input.voucherReservationId) await this.assertFundedCollectionReady();
+    const replay = await this.dataSource.getRepository(CashPaymentIntent).findOne({
+      where: { customerId: actor.id, commandId: input.commandId },
+    });
+    if (replay) {
+      if (replay.scopeKind === scopeKind && replay.scopeId === scopeId &&
+          replay.voucherReservationId === (input.voucherReservationId ?? null)) return replay;
+      throw new BusinessException(ErrorCodes.CONFLICT, 'Mã thao tác đã được dùng.');
+    }
+    return this.dataSource.transaction(async manager => {
+      let customerId: string;
+      let technicianId: string;
+      let gross: number;
+      let due: number;
+      let allocations: CashIntentAllocation[];
+      if (scopeKind === 'SOLO') {
+        const reference = await manager.findOneBy(Invoice, { serviceOrderId: scopeId });
+        if (!reference) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Không tìm thấy hóa đơn.');
+        const quote = input.voucherReservationId ? await this.quoteVoucherRail(manager, {
+          reservationId: input.voucherReservationId, customerId: actor.id, scopeId,
+          scopeKind, rail: 'CASH', invoiceId: reference.id,
+        }) : null;
+        const invoice = await manager.findOne(Invoice, { where: { id: reference.id }, lock: { mode: 'pessimistic_write' } });
+        const order = await manager.findOne(ServiceOrder, { where: { id: scopeId }, lock: { mode: 'pessimistic_write' } });
+        const booking = order && await manager.findOne(Booking, { where: { id: order.bookingId } });
+        if (!invoice || !order || !booking || booking.customerId !== actor.id || booking.visitGroupId ||
+            invoice.serviceOrderId !== scopeId) {
+          throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Không tìm thấy đơn sửa chữa.');
+        }
+        const assignment = await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: scopeId, isActive: true } });
+        if (!assignment || !order.completionRequestedAt ||
+            ![ServiceOrderStatus.UNDER_REPAIR, ServiceOrderStatus.COMPLETED].includes(order.status) ||
+            invoice.paymentStatus === PaymentStatus.PAID || await isCompletionHeld(manager, scopeId)) {
+          throw new BusinessException(ErrorCodes.CONFLICT, 'Đơn chưa sẵn sàng thanh toán tiền mặt.');
+        }
+        customerId = booking.customerId;
+        technicianId = assignment.technicianId;
+        gross = this.requireWholeVnd(invoice.grandTotal, 'Invoice amount');
+        due = quote?.total.customerDueVnd ?? gross;
+        if (quote && quote.total.originalGrossVnd !== gross) {
+          throw new BusinessException(ErrorCodes.CONFLICT, 'Hóa đơn đã thay đổi.');
+        }
+        allocations = [{ invoiceId: invoice.id, serviceOrderId: scopeId, originalGrossVnd: gross, customerDueVnd: due }];
+        if (await manager.findOne(CashSettlement, { where: { serviceOrderId: scopeId } })) {
+          throw new BusinessException(ErrorCodes.CONFLICT, 'Đơn đã có khai báo tiền mặt cần được xử lý trước.');
+        }
+      } else {
+        const reference = await manager.findOneBy(VisitGroup, { id: scopeId });
+        if (!reference || reference.customerId !== actor.id) {
+          throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Không tìm thấy lượt sửa.');
+        }
+        const quote = input.voucherReservationId ? await this.quoteVoucherRail(manager, {
+          reservationId: input.voucherReservationId, customerId: actor.id, scopeId,
+          scopeKind, rail: 'CASH',
+        }) : null;
+        await this.visitAccess(manager, scopeId, actor, true);
+        const charge = await this.readyVisitCharge(manager, scopeId);
+        const funded = quote ? allocateFundedVisitCharge(charge, quote) : null;
+        gross = charge.total;
+        due = funded?.customerDue ?? gross;
+        allocations = charge.allocations.map(item => ({
+          invoiceId: item.invoiceId, serviceOrderId: item.serviceOrderId,
+          originalGrossVnd: item.amount,
+          customerDueVnd: funded?.allocations.find(a => a.invoiceId === item.invoiceId)?.amount ?? item.amount,
+        }));
+        customerId = reference.customerId;
+        const assignments: string[] = [];
+        for (const item of allocations) {
+          const order = await manager.findOne(ServiceOrder, { where: { id: item.serviceOrderId } });
+          const booking = order && await manager.findOne(Booking, { where: { id: order.bookingId } });
+          const assignment = await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: item.serviceOrderId, isActive: true } });
+          if (!order || !booking || booking.visitGroupId !== scopeId || booking.customerId !== actor.id ||
+              !order.completionRequestedAt || !assignment || await isCompletionHeld(manager, item.serviceOrderId) ||
+              await manager.findOne(CashSettlement, { where: { serviceOrderId: item.serviceOrderId } })) {
+            throw new BusinessException(ErrorCodes.CONFLICT, 'Lượt sửa chưa sẵn sàng thanh toán tiền mặt.');
+          }
+          assignments.push(assignment.technicianId);
+        }
+        if (!assignments.length || assignments.some(id => id !== assignments[0])) {
+          throw new BusinessException(ErrorCodes.CONFLICT, 'Kỹ thuật viên của lượt sửa không nhất quán.');
+        }
+        technicianId = assignments[0];
+        const previous = await manager.find(VisitGroupPayment, { where: { visitGroupId: scopeId } });
+        if (previous.some(row => row.rail === 'cash' || row.status === 'verified' || row.status === 'pending')) {
+          throw new BusinessException(ErrorCodes.CONFLICT, 'Lượt sửa có thanh toán đang xử lý.');
+        }
+      }
+      if (due <= 0 || gross <= 0 || !Number.isSafeInteger(due) || !Number.isSafeInteger(gross)) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Khoản 0 ₫ dùng bước xác nhận miễn phí.');
+      }
+      if (!input.voucherReservationId) await this.assertLegacyCollectionAllowed(manager, scopeId);
+      const invoiceIds = allocations.map(item => item.invoiceId);
+      const attempts = await manager.find(Payment, { where: { invoiceId: In(invoiceIds), purpose: PaymentPurpose.INVOICE } });
+      if (attempts.some(row => row.status === PaymentAttemptStatus.PENDING || row.status === PaymentAttemptStatus.VERIFIED)) {
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Có giao dịch thanh toán đang xử lý. Vui lòng kiểm tra lại.');
+      }
+      if (input.voucherReservationId && await manager.findOne(VoucherPaymentLink, { where: { reservationId: input.voucherReservationId } })) {
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Ưu đãi đã có thanh toán đang xử lý.');
+      }
+      const previous = await manager.findOne(CashPaymentIntent, {
+        where: { scopeKind, scopeId, status: 'pending' }, lock: { mode: 'pessimistic_write' },
+      });
+      if (previous) {
+        if (previous.customerId === actor.id && previous.commandId === input.commandId &&
+            previous.voucherReservationId === (input.voucherReservationId ?? null)) return previous;
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Đã chọn thanh toán tiền mặt cho đơn này.');
+      }
+      const reused = await manager.findOne(CashPaymentIntent, { where: { customerId: actor.id, commandId: input.commandId } });
+      if (reused) throw new BusinessException(ErrorCodes.CONFLICT, 'Mã thao tác đã được dùng.');
+      const intent = await manager.save(CashPaymentIntent, manager.create(CashPaymentIntent, {
+        scopeKind, scopeId, customerId, technicianId, status: 'pending', grossVnd: gross,
+        customerDueVnd: due, allocations, voucherReservationId: input.voucherReservationId ?? null,
+        commandId: input.commandId, receiptCommandId: null, cancelCommandId: null, receivedAmountVnd: null,
+        receiptEvidenceUrl: null, receivedAt: null, cashSettlementId: null, visitGroupPaymentId: null,
+      }));
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role,
+        action: 'CASH_INTENT_CREATED', resourceType: 'cash_payment_intent', resourceId: intent.id,
+        after: { scopeKind, scopeId, amount: due, voucherReservationId: input.voucherReservationId ?? null } });
+      await manager.insert(Notification, { userId: technicianId,
+        title: 'Khách đã chọn thanh toán tiền mặt',
+        message: `Khách đã chọn trả ${due.toLocaleString('vi-VN')} ₫ bằng tiền mặt. Chỉ xác nhận sau khi đã thực nhận đủ tiền.`,
+        type: 'CASH_INTENT_CREATED', referenceType: scopeKind, referenceId: scopeId, isRead: false });
+      return intent;
+    });
+  }
+
+  /** The only new cash-to-PAID path: a current technician acknowledges actual receipt. */
+  async receiveCashIntent(scopeKind: CashIntentScope, scopeId: string,
+    input: { intentId: string; commandId: string; receivedAmountVnd: number; receiptEvidenceUrl?: string },
+    actor: FinanceActor): Promise<CashPaymentIntent> {
+    if (!this.cashFirstEnabled()) {
+      throw new BusinessException(ErrorCodes.CONFLICT, 'Thanh toán tiền mặt theo bước mới chưa được mở.');
+    }
+    if (actor.role !== Role.TECHNICIAN) {
+      throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Chỉ kỹ thuật viên phụ trách được xác nhận đã nhận tiền.');
+    }
+    const sameReplay = (intent: CashPaymentIntent) => intent.status === 'received' &&
+      intent.scopeKind === scopeKind && intent.scopeId === scopeId &&
+      intent.technicianId === actor.id && intent.receiptCommandId === input.commandId &&
+      Number(intent.receivedAmountVnd) === input.receivedAmountVnd &&
+      (intent.receiptEvidenceUrl ?? null) === (input.receiptEvidenceUrl ?? null);
+    const reference = await this.dataSource.getRepository(CashPaymentIntent).findOneBy({ id: input.intentId });
+    if (!reference || reference.scopeKind !== scopeKind || reference.scopeId !== scopeId ||
+        reference.technicianId !== actor.id) {
+      throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Không tìm thấy yêu cầu tiền mặt.');
+    }
+    if (sameReplay(reference)) return reference;
+    if (reference.status !== 'pending') throw new BusinessException(ErrorCodes.CONFLICT, 'Yêu cầu tiền mặt không còn chờ nhận.');
+    if (reference.voucherReservationId) await this.assertFundedCollectionReady();
+    try {
+      return await this.dataSource.transaction(async manager => {
+        // Voucher rails take campaign and reservation locks before invoice locks.
+        const quote = reference.voucherReservationId ? await this.quoteVoucherRail(manager, {
+          reservationId: reference.voucherReservationId, customerId: reference.customerId,
+          scopeId, scopeKind, rail: 'CASH',
+          invoiceId: scopeKind === 'SOLO' ? reference.allocations[0]?.invoiceId : undefined,
+        }) : null;
+        let allocations: CashIntentAllocation[];
+        let group: VisitGroup | null = null;
+        if (scopeKind === 'SOLO') {
+          const invoice = await manager.findOne(Invoice, { where: { id: reference.allocations[0]?.invoiceId }, lock: { mode: 'pessimistic_write' } });
+          const order = await manager.findOne(ServiceOrder, { where: { id: scopeId }, lock: { mode: 'pessimistic_write' } });
+          const booking = order && await manager.findOne(Booking, { where: { id: order.bookingId } });
+          const assignment = order && await manager.findOne(TechnicianAssignment, { where: {
+            serviceOrderId: scopeId, technicianId: actor.id, isActive: true,
+          } });
+          if (!invoice || !order || !booking || booking.customerId !== reference.customerId || booking.visitGroupId ||
+              invoice.serviceOrderId !== scopeId || !assignment || !order.completionRequestedAt ||
+              ![ServiceOrderStatus.UNDER_REPAIR, ServiceOrderStatus.COMPLETED].includes(order.status) ||
+              invoice.paymentStatus === PaymentStatus.PAID || await isCompletionHeld(manager, scopeId)) {
+            throw new BusinessException(ErrorCodes.CONFLICT, 'Đơn hoặc kỹ thuật viên đã thay đổi.');
+          }
+          const gross = this.requireWholeVnd(invoice.grandTotal, 'Invoice amount');
+          allocations = [{ invoiceId: invoice.id, serviceOrderId: scopeId,
+            originalGrossVnd: gross, customerDueVnd: quote?.total.customerDueVnd ?? gross }];
+        } else {
+          group = await this.visitAccess(manager, scopeId, actor, true);
+          if (group.customerId !== reference.customerId) {
+            throw new BusinessException(ErrorCodes.CONFLICT, 'Chủ lượt sửa đã thay đổi.');
+          }
+          const charge = await this.readyVisitCharge(manager, scopeId);
+          const funded = quote ? allocateFundedVisitCharge(charge, quote) : null;
+          allocations = charge.allocations.map(item => ({ invoiceId: item.invoiceId,
+            serviceOrderId: item.serviceOrderId, originalGrossVnd: item.amount,
+            customerDueVnd: funded?.allocations.find(a => a.invoiceId === item.invoiceId)?.amount ?? item.amount }));
+        }
+        const intent = await manager.findOne(CashPaymentIntent, { where: { id: input.intentId }, lock: { mode: 'pessimistic_write' } });
+        if (!intent || intent.scopeKind !== scopeKind || intent.scopeId !== scopeId ||
+            intent.customerId !== reference.customerId) {
+          throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Không tìm thấy yêu cầu tiền mặt.');
+        }
+        if (sameReplay(intent)) return intent;
+        if (intent.status !== 'pending') throw new BusinessException(ErrorCodes.CONFLICT, 'Yêu cầu tiền mặt không còn chờ nhận.');
+        assertCashReceiptMatchesIntent(intent, actor.id, input.receivedAmountVnd, allocations);
+        if (!intent.voucherReservationId) await this.assertLegacyCollectionAllowed(manager, scopeId);
+        const invoiceIds = allocations.map(item => item.invoiceId);
+        const attempts = await manager.find(Payment, { where: { invoiceId: In(invoiceIds), purpose: PaymentPurpose.INVOICE } });
+        if (attempts.some(row => row.status === PaymentAttemptStatus.PENDING || row.status === PaymentAttemptStatus.VERIFIED)) {
+          throw new BusinessException(ErrorCodes.CONFLICT, 'Có thanh toán khác chưa ngã ngũ. Vui lòng kiểm tra lại.');
+        }
+        if (scopeKind === 'SOLO') {
+          if (await manager.findOne(CashSettlement, { where: { serviceOrderId: scopeId } })) {
+            throw new BusinessException(ErrorCodes.CONFLICT, 'Đã có khai báo tiền mặt khác.');
+          }
+        } else {
+          const otherPayments = await manager.find(VisitGroupPayment, { where: { visitGroupId: scopeId } });
+          if (otherPayments.some(row => row.rail === 'cash' || row.status === 'pending' || row.status === 'verified')) {
+            throw new BusinessException(ErrorCodes.CONFLICT, 'Lượt sửa có thanh toán khác đang xử lý.');
+          }
+        }
+        const groupOrders = new Map<string, { order: ServiceOrder; invoice: Invoice }>();
+        if (scopeKind === 'VISIT_GROUP') {
+          // All order locks precede the technician custody/user lock.
+          for (const allocation of [...allocations].sort((a, b) => a.serviceOrderId.localeCompare(b.serviceOrderId))) {
+            const order = await manager.findOne(ServiceOrder, { where: { id: allocation.serviceOrderId }, lock: { mode: 'pessimistic_write' } });
+            const invoice = await manager.findOne(Invoice, { where: { id: allocation.invoiceId } });
+            const booking = order && await manager.findOne(Booking, { where: { id: order.bookingId } });
+            const assignment = order && await manager.findOne(TechnicianAssignment, { where: {
+              serviceOrderId: order.id, technicianId: actor.id, isActive: true,
+            } });
+            if (!order || !invoice || !booking || booking.customerId !== intent.customerId ||
+                booking.visitGroupId !== scopeId || !assignment || !order.completionRequestedAt ||
+                await isCompletionHeld(manager, order.id) ||
+                await manager.findOne(CashSettlement, { where: { serviceOrderId: order.id } })) {
+              throw new BusinessException(ErrorCodes.CONFLICT, 'Một thiết bị hoặc kỹ thuật viên đã thay đổi.');
+            }
+            groupOrders.set(order.id, { order, invoice });
+          }
+        }
+        await lockCustodyTechnician(manager, actor.id);
+        const now = new Date();
+        if (scopeKind === 'SOLO') {
+          const allocation = allocations[0];
+          const order = await manager.findOneOrFail(ServiceOrder, { where: { id: scopeId } });
+          const invoice = await manager.findOneOrFail(Invoice, { where: { id: allocation.invoiceId } });
+          const settlement = await manager.save(CashSettlement, manager.create(CashSettlement, {
+            serviceOrderId: scopeId, declaredByTechnicianId: actor.id,
+            declaredAmount: allocation.customerDueVnd, declaredAt: now,
+            receiptEvidenceUrl: input.receiptEvidenceUrl ?? null,
+            status: CashSettlementStatus.PENDING_CONFIRMATION,
+          }));
+          if (intent.voucherReservationId) {
+            await this.bindVoucherPaymentAfterRecord(manager, { reservationId: intent.voucherReservationId,
+              rail: 'CASH', sourceId: settlement.id, customerId: intent.customerId,
+              scopeId, scopeKind: 'SOLO' });
+          }
+          settlement.status = CashSettlementStatus.CONFIRMED;
+          // The customer confirmed the intent before this receipt; there is no later approval.
+          settlement.confirmedByCustomerId = intent.customerId;
+          settlement.confirmedAmount = allocation.customerDueVnd;
+          settlement.confirmedAt = now;
+          await manager.save(CashSettlement, settlement);
+          await this.applyConfirmedCash(manager, { order, invoice, settlement, actor, now,
+            collectedAmount: allocation.customerDueVnd });
+          intent.cashSettlementId = settlement.id;
+        } else {
+          const payment = await manager.save(VisitGroupPayment, manager.create(VisitGroupPayment, {
+            visitGroupId: scopeId, rail: 'cash', status: 'pending_confirmation',
+            amount: intent.customerDueVnd, allocations: allocations.map(item => ({
+              invoiceId: item.invoiceId, serviceOrderId: item.serviceOrderId, amount: item.customerDueVnd,
+            })), idempotencyKey: `CASH_INTENT:${intent.id}`, requestedByUserId: actor.id,
+            requestedAt: now,
+          }));
+          if (intent.voucherReservationId) {
+            await this.bindVoucherPaymentAfterRecord(manager, { reservationId: intent.voucherReservationId,
+              rail: 'CASH', sourceId: payment.id, customerId: intent.customerId,
+              scopeId, scopeKind: 'VISIT_GROUP' });
+          }
+          for (const allocation of allocations) {
+            const locked = groupOrders.get(allocation.serviceOrderId);
+            if (!locked || locked.invoice.id !== allocation.invoiceId) {
+              throw new BusinessException(ErrorCodes.CONFLICT, 'Phân bổ lượt sửa đã thay đổi.');
+            }
+            const { order, invoice } = locked;
+            const settlement = await manager.save(CashSettlement, manager.create(CashSettlement, {
+              serviceOrderId: order.id, declaredByTechnicianId: actor.id,
+              declaredAmount: allocation.customerDueVnd, declaredAt: now,
+              status: CashSettlementStatus.CONFIRMED,
+              confirmedByCustomerId: intent.customerId,
+              confirmedAmount: allocation.customerDueVnd, confirmedAt: now,
+              receiptEvidenceUrl: input.receiptEvidenceUrl ?? null,
+              technicianNotes: `Thu chung lượt sửa ${scopeId}`,
+            }));
+            await this.applyConfirmedCash(manager, { order, invoice, settlement, actor, now,
+              collectedAmount: allocation.customerDueVnd });
+          }
+          payment.status = 'verified';
+          payment.verifiedAt = now;
+          await manager.save(VisitGroupPayment, payment);
+          intent.visitGroupPaymentId = payment.id;
+        }
+        if (intent.voucherReservationId) {
+          if (!this.walletService || !this.vouchersService) {
+            throw new BusinessException(ErrorCodes.PAYMENT_PROVIDER_UNAVAILABLE, 'Thanh toán ưu đãi chưa sẵn sàng.');
+          }
+          await commitConfirmedCashVoucherFunding(manager, intent.voucherReservationId, this.walletService);
+          await this.vouchersService.redeemSettled(intent.cashSettlementId ?? intent.visitGroupPaymentId!, manager);
+        }
+        intent.status = 'received';
+        intent.receiptCommandId = input.commandId;
+        intent.receivedAmountVnd = input.receivedAmountVnd;
+        intent.receiptEvidenceUrl = input.receiptEvidenceUrl ?? null;
+        intent.receivedAt = now;
+        const saved = await manager.save(CashPaymentIntent, intent);
+        await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role,
+          action: 'CASH_INTENT_RECEIVED', resourceType: 'cash_payment_intent', resourceId: intent.id,
+          after: { scopeKind, scopeId, amount: intent.customerDueVnd } });
+        await manager.insert(Notification, { userId: intent.customerId,
+          title: 'Đã ghi nhận thanh toán tiền mặt',
+          message: 'Kỹ thuật viên đã xác nhận thực nhận tiền mặt. Thanh toán của bạn đã được ghi nhận.',
+          type: 'CASH_INTENT_RECEIVED', referenceType: scopeKind, referenceId: scopeId, isRead: false });
+        return saved;
+      });
+    } catch (error) {
+      const latest = await this.dataSource.getRepository(CashPaymentIntent).findOneBy({ id: input.intentId });
+      if (latest && sameReplay(latest)) return latest;
+      throw error;
+    }
+  }
+
+  async cancelCashIntent(scopeKind: CashIntentScope, scopeId: string,
+    input: { intentId: string; commandId: string }, actor: FinanceActor): Promise<CashPaymentIntent> {
+    if (actor.role !== Role.CUSTOMER) {
+      throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Chỉ khách hàng được hủy lựa chọn tiền mặt.');
+    }
+    return this.dataSource.transaction(async manager => {
+      const intent = await manager.findOne(CashPaymentIntent, { where: { id: input.intentId }, lock: { mode: 'pessimistic_write' } });
+      if (!intent || intent.scopeKind !== scopeKind || intent.scopeId !== scopeId || intent.customerId !== actor.id) {
+        throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Không tìm thấy yêu cầu tiền mặt.');
+      }
+      if (intent.status === 'cancelled' && intent.cancelCommandId === input.commandId) return intent;
+      if (intent.status !== 'pending') {
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Yêu cầu tiền mặt không thể hủy ở trạng thái hiện tại.');
+      }
+      intent.status = 'cancelled';
+      intent.cancelCommandId = input.commandId;
+      const saved = await manager.save(CashPaymentIntent, intent);
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role,
+        action: 'CASH_INTENT_CANCELLED', resourceType: 'cash_payment_intent', resourceId: intent.id,
+        after: { scopeKind, scopeId } });
+      return saved;
+    });
+  }
+
+  async getCashIntent(scopeKind: CashIntentScope, scopeId: string, actor: FinanceActor): Promise<CashPaymentIntent | null> {
+    if (scopeKind === 'SOLO') {
+      const order = await this.dataSource.manager.findOneBy(ServiceOrder, { id: scopeId });
+      const booking = order && await this.dataSource.manager.findOneBy(Booking, { id: order.bookingId });
+      if (!booking || booking.visitGroupId ||
+          (actor.role === Role.CUSTOMER && booking.customerId !== actor.id) ||
+          (actor.role === Role.TECHNICIAN && !await this.dataSource.manager.findOne(TechnicianAssignment, {
+            where: { serviceOrderId: scopeId, technicianId: actor.id, isActive: true },
+          })) || ![Role.CUSTOMER, Role.TECHNICIAN, Role.SERVICE_MANAGER, Role.ADMIN].includes(actor.role as Role)) {
+        throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Không tìm thấy đơn sửa chữa.');
+      }
+    } else if (actor.role === Role.SERVICE_MANAGER || actor.role === Role.ADMIN) {
+      const group = await this.dataSource.manager.findOneBy(VisitGroup, { id: scopeId });
+      if (!group) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Không tìm thấy lượt sửa.');
+    } else {
+      await this.visitAccess(this.dataSource.manager, scopeId, actor);
+    }
+    return this.dataSource.getRepository(CashPaymentIntent).findOne({
+      where: { scopeKind, scopeId, status: In(['pending', 'received']) }, order: { createdAt: 'DESC' },
+    });
   }
 
   /** Read-only discovery, never a declaration or permission to collect without POST validation. */
@@ -374,6 +762,7 @@ export class FinanceService {
       if (this.requireWholeVnd(invoice.grandTotal, 'Invoice amount') <= 0) {
         throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hóa đơn 0 ₫ cần được xác nhận miễn phí.');
       }
+      await this.assertNoActiveCashIntent(manager, 'SOLO', order.id);
       await this.assertLegacyCollectionAllowed(manager, order.id);
 
       const payment = paymentRepository.create({
@@ -463,6 +852,7 @@ export class FinanceService {
         await this.visitAccess(manager, scopeId, actor, true);
         allocations = allocateFundedVisitCharge(await this.readyVisitCharge(manager, scopeId), quote).allocations;
       }
+      await this.assertNoActiveCashIntent(manager, scopeKind, scopeId);
       const now = new Date();
       const txnRef = randomUUID().replace(/-/g, '');
       const amount = quote.total.customerDueVnd;
@@ -553,6 +943,7 @@ export class FinanceService {
       if (this.requireWholeVnd(invoice.grandTotal, 'Invoice amount') < 5000) {
         throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'VNPay chỉ áp dụng cho hóa đơn từ 5.000 ₫. Vui lòng chọn ví hoặc tiền mặt.');
       }
+      await this.assertNoActiveCashIntent(manager, 'SOLO', order.id);
       await this.assertLegacyCollectionAllowed(manager, order.id);
       const txnRef = randomUUID().replace(/-/g, '');
       const created = paymentRepository.create({
@@ -1024,6 +1415,9 @@ export class FinanceService {
     actor: FinanceActor,
     voucherReservationId?: string,
   ): Promise<ReturnType<typeof toCashSettlementResponse>> {
+    if (this.cashFirstEnabled()) {
+      throw new BusinessException(ErrorCodes.CONFLICT, 'Vui lòng chờ khách chọn tiền mặt trước khi xác nhận đã nhận.');
+    }
     if (actor.role !== Role.TECHNICIAN) {
       throw new BusinessException(
         ErrorCodes.OWNERSHIP_DENIED,
@@ -1247,6 +1641,11 @@ export class FinanceService {
     if (actor.role !== Role.CUSTOMER) {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Only the customer can confirm cash payment');
     }
+    if (this.cashFirstEnabled() && await this.dataSource.getRepository(CashPaymentIntent).exists({
+      where: { scopeKind: 'SOLO', scopeId: orderId },
+    })) {
+      throw new BusinessException(ErrorCodes.CONFLICT, 'Yêu cầu tiền mặt mới không cần khách xác nhận lần nữa.');
+    }
     return this.confirmVoucherCash(orderId, dto, actor, reservationId);
   }
 
@@ -1330,6 +1729,11 @@ export class FinanceService {
     if (actor.role !== Role.CUSTOMER) {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Only the customer can confirm cash payment');
     }
+    if (this.cashFirstEnabled() && await this.dataSource.getRepository(CashPaymentIntent).exists({
+      where: { scopeKind: 'VISIT_GROUP', scopeId: groupId },
+    })) {
+      throw new BusinessException(ErrorCodes.CONFLICT, 'Yêu cầu tiền mặt mới không cần khách xác nhận lần nữa.');
+    }
     return this.confirmVoucherVisitCash(groupId, dto, actor, reservationId);
   }
 
@@ -1343,6 +1747,12 @@ export class FinanceService {
         ErrorCodes.OWNERSHIP_DENIED,
         'Only the invoice customer can confirm cash payment',
       );
+    }
+
+    if (this.cashFirstEnabled() && await this.dataSource.getRepository(CashPaymentIntent).exists({
+      where: { scopeKind: 'SOLO', scopeId: orderId },
+    })) {
+      throw new BusinessException(ErrorCodes.CONFLICT, 'Yêu cầu tiền mặt mới không cần khách xác nhận lần nữa.');
     }
 
     const fundedCash = await this.dataSource.getRepository(CashSettlement).findOneBy({ serviceOrderId: orderId });
@@ -2067,6 +2477,7 @@ export class FinanceService {
         await this.visitAccess(manager, scopeId, actor, true);
         allocateFundedVisitCharge(await this.readyVisitCharge(manager, scopeId), quote);
       }
+      await this.assertNoActiveCashIntent(manager, scopeKind, scopeId);
       const link = await bindVoucherPaymentLink(manager, reservationId, 'ZERO');
       if (link.customerId !== actor.id || link.scopeId !== scopeId ||
           link.scopeKind !== scopeKind || link.customerDueVnd !== 0) {
@@ -2110,6 +2521,7 @@ export class FinanceService {
           order.status === ServiceOrderStatus.CANCELLED) {
         throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Invoice not found');
       }
+      await this.assertNoActiveCashIntent(manager, 'SOLO', order.id);
       const amount = quote.total.customerDueVnd;
       const now = new Date();
       const debit = await this.customerWalletService!.apply(manager, { userId: actor.id,
@@ -2144,6 +2556,7 @@ export class FinanceService {
       await this.visitAccess(manager, groupId, actor, true);
       const charge = await this.readyVisitCharge(manager, groupId);
       const funded = allocateFundedVisitCharge(charge, quote);
+      await this.assertNoActiveCashIntent(manager, 'VISIT_GROUP', groupId);
       const amount = funded.customerDue;
       const now = new Date();
       const debit = await this.customerWalletService!.apply(manager, { userId: actor.id,
@@ -2207,6 +2620,7 @@ export class FinanceService {
       }
       const amount = this.requireWholeVnd(invoice.grandTotal, 'Invoice amount');
       if (amount <= 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hoá đơn không có số tiền cần thanh toán');
+      await this.assertNoActiveCashIntent(manager, 'SOLO', order.id);
       await this.assertLegacyCollectionAllowed(manager, order.id);
       const now = new Date();
       const tx = await wallet.apply(manager, {
@@ -2486,6 +2900,7 @@ export class FinanceService {
     return this.dataSource.transaction(async (manager) => {
       await this.visitAccess(manager, groupId, actor, true);
       const charge = await this.readyVisitCharge(manager, groupId);
+      await this.assertNoActiveCashIntent(manager, 'VISIT_GROUP', groupId);
       await this.assertLegacyCollectionAllowed(manager, groupId);
       const now = new Date();
       const tx = await wallet.apply(manager, {
@@ -2530,6 +2945,7 @@ export class FinanceService {
     const payment = await this.dataSource.transaction(async (manager) => {
       await this.visitAccess(manager, groupId, actor, true);
       const charge = await this.readyVisitCharge(manager, groupId);
+      await this.assertNoActiveCashIntent(manager, 'VISIT_GROUP', groupId);
       if (charge.total < 5000) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'VNPay chỉ áp dụng từ 5.000 ₫. Vui lòng chọn ví hoặc tiền mặt.');
       await this.assertLegacyCollectionAllowed(manager, groupId);
       return manager.save(VisitGroupPayment, manager.create(VisitGroupPayment, {
@@ -2554,6 +2970,9 @@ export class FinanceService {
 
   /** The technician reports the cash of the whole visit, once; the customer then confirms it. */
   async declareVisitCash(groupId: string, dto: CashSettlementDeclarationDto, actor: FinanceActor, voucherReservationId?: string) {
+    if (this.cashFirstEnabled()) {
+      throw new BusinessException(ErrorCodes.CONFLICT, 'Vui lòng chờ khách chọn tiền mặt trước khi xác nhận đã nhận.');
+    }
     if (actor.role !== Role.TECHNICIAN) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Only the assigned technician can declare cash received');
     if (voucherReservationId !== undefined) return this.declareVoucherVisitCash(groupId, dto, actor, voucherReservationId);
     return this.dataSource.transaction(async (manager) => {
@@ -2604,6 +3023,11 @@ export class FinanceService {
    */
   async confirmVisitCash(groupId: string, dto: CashSettlementConfirmationDto, actor: FinanceActor) {
     if (actor.role !== Role.CUSTOMER) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Only the visit customer can confirm cash payment');
+    if (this.cashFirstEnabled() && await this.dataSource.getRepository(CashPaymentIntent).exists({
+      where: { scopeKind: 'VISIT_GROUP', scopeId: groupId },
+    })) {
+      throw new BusinessException(ErrorCodes.CONFLICT, 'Yêu cầu tiền mặt mới không cần khách xác nhận lần nữa.');
+    }
     const fundedPayment = await this.dataSource.getRepository(VisitGroupPayment).findOne({ where: {
       visitGroupId: groupId, rail: 'cash' }, order: { createdAt: 'DESC' } });
     if (fundedPayment) {

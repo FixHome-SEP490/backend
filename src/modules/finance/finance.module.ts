@@ -16,6 +16,8 @@ import { Invoice } from '../service-orders/entities/invoice.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { FinanceController, FundedFinanceController } from './finance.controller';
 import { FinanceService } from './finance.service';
+import { CashIntentController } from './cash-intent.controller';
+import { CashPaymentIntent } from './entities/cash-payment-intent.entity';
 import { VnpayController } from './vnpay/vnpay.controller';
 import { Payment } from './entities/payment.entity';
 import { PlatformDue } from './entities/platform-due.entity';
@@ -42,9 +44,10 @@ import { VouchersModule } from '../vouchers/vouchers.module';
       ServiceOrder,
       Payment,
       PlatformDue,
+      CashPaymentIntent,
     ]),
   ],
-  controllers: [FinanceController, FundedFinanceController, VnpayController, CustomerWalletController, AdminPaymentsController],
+  controllers: [FinanceController, FundedFinanceController, CashIntentController, VnpayController, CustomerWalletController, AdminPaymentsController],
   providers: [
     FinanceService,
     AdminPaymentsService,
