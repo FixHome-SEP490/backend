@@ -62,6 +62,8 @@ const makeService = (
     findOneBy: vi.fn().mockResolvedValue(supportCase),
     createQueryBuilder: vi.fn(),
     manager: {
+      // Legacy audit stub does not persist receipts; readback must stay unverified.
+      find: vi.fn().mockResolvedValue([]),
       transaction: vi.fn(async (callback) => callback(transactionManager)),
     },
   };
