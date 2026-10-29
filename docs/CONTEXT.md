@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-29 12:40 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-platform-first-backend-t1-20261029
+> Cập nhật lần cuối: 2026-10-29 13:19 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-platform-first-parts-t3-20261029
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -93,6 +93,8 @@ Ba điều không đổi giữa các repo:
 Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức của nhóm). Mâu thuẫn giữa code và tài liệu thì ghi vào mục 8 và hỏi PO, không tự quyết.
 
 ## 3. Trạng thái hiện tại
+
+Platform-first T3 audit (29/10/2026): test storage cô lập xác nhận thợ gốc GET/declare sau real repair failure và assignment inactive, chỉ SM nhận full/partial/discrepancy, không auto-accept, replay/version/quantity giữ nghĩa vụ. Không sửa production/API/cohort/cờ hoặc tích hợp T2. Legacy đã nhận nhưng không có PartCustody vẫn vắng khỏi queue; chưa được coi là đã trả đủ. Repro, giới hạn mixed usage và blocker consumer: `docs/PLATFORM-FIRST-T3-PARTS-AUDIT.md`. PostgreSQL/Web/Mobile/runtime NOT VERIFIED.
 
 Platform-first T1 (source, 29/10/2026): thêm lệnh thợ ghi gián đoạn onsite và GET eligibility riêng cho khách. Receipt nghiêm ngặt kiểm assignment/check-in VALID, UUID/fingerprint và ownership; không phụ thuộc case SM đóng hay mở. Tách REPORT_ONLY; không tự phạt/cấp voucher. T1 dùng fallback bản ghi gián đoạn đã xác minh, giữ nguyên trạng thái, assignment, quote/tiền/vật tư và sibling/checkout; receipt chặn kết quả dịch vụ thứ hai. Chưa chứng minh chuyển trạng thái cuối giữ nghĩa vụ an toàn; prefill/confirm/D3 và đối soát cuối thuộc T2/T3. Không migration/cờ mới, không ghi DB. Contract: `docs/PLATFORM-FIRST-T1-BACKEND-CONTRACT.md`; PostgreSQL/Web/Mobile/runtime NOT VERIFIED.
 
@@ -325,6 +327,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 8. Việc đang dở và rủi ro đã biết
 
+- T3: AT10 chưa đạt; legacy pre-cohort có receivedAt nhưng thiếu PartCustody khiến SM pending/byOrder trả mảng rỗng, thợ gốc inactive không có route khai trả legacy. Cần schema unknown/manual-review liên BE/Web và consumer riêng, không bịa số 0/receipt hoặc backfill cohort. Objective failure còn từ chối request dùng một phần và trả phần dư (422); T2 phải giữ quantity truth khi thiết kế stop, không hạ used để vượt guard. Chi tiết và repro ở `docs/PLATFORM-FIRST-T3-PARTS-AUDIT.md`; không tuyên bố platform-first hoàn tất.
+
 - Platform-first T1 chưa có terminal transition an toàn cho quote đã duyệt/tiền/vật tư: chỉ lưu verified interruption, assignment và lịch bận cũ còn giữ; group checkout có thể chờ outcome. T2 phải nối draft/confirm, source consumption, loại thợ cũ và D3; T3 kiểm return access sau deassign, legacy/manual review, SM partial receipt/discrepancy. Không coi receipt này là CANCELLED hoặc miễn/hoàn tiền; không mở lại completion bằng cách đóng case. PostgreSQL lock/index/RLS/callback/race, Docker `/health`, HTTP/JWT và authenticated DEV E2E NOT VERIFIED; cần review tài chính/vật tư độc lập và restart backend ở đợt tích hợp được phép.
 
 - Cash-first/reputation: gate CI DEV chỉ chấp nhận đúng hai migration cộng thêm sau voucher/interruption, kiểm RLS/revoke/index/cột rồi mới cho restart; source chưa chạy migration mới trên PostgreSQL cô lập hoặc shared DEV. CI có test PostgreSQL riêng, kết quả chạy CI CHƯA KIỂM CHỨNG; Docker daemon local không kết nối. Cần kiểm JWT/IDOR, race receipt với VNPay IPN và wallet, F4 subsidy/PlatformDue, replay và group failed child trên DB dùng một lần trước khi bật `CASH_FIRST_ENABLED`. Mobile chính thức còn gọi khai tiền mặt thợ trước; bật cash-first chung DEV chỉ qua commit riêng của `docker-compose.part-returns.dev.yml` với compat ON, Web đã release và DB/race được kiểm, rồi kiểm Mobile hai bước cũ. Chưa thể coi shared DEV activation an toàn từ unit test; không tắt cờ khi còn intent pending. Provider thật, socket, Docker `/health` và cross-repo runtime: NOT VERIFIED.
@@ -358,6 +362,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
+- 2026-10-29 13:19 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-parts-t3-20261029 | Ghi audit/test custody sau terminal và SM-only manual receipt; full suite/lint/typecheck/build xanh, xác định blocker legacy queue và mixed usage chưa xử lý.
 - 2026-10-29 12:40 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-backend-t1-20261029 | Thêm verified onsite interruption và eligibility độc lập SM, giữ nghĩa vụ cũ; ghi blocker terminal và T2/T3 chưa kiểm chứng.
 - 2026-10-29 01:35 (UTC+7) | foxonworld | foxonworld/fixhome-cash-reputation-core-20261029 | Bổ sung gate DEV đúng hai migration, capability GET, compat Mobile, overlay DEV bật riêng sau Web và lưu mốc P1 cũ; PostgreSQL CI/race chưa kiểm chứng.
 - 2026-10-29 01:08 (UTC+7) | foxonworld | foxonworld/fixhome-cash-reputation-core-20261029 | Ghi cash-first có cờ cutover, case thợ typed/SM review, hai migration cộng thêm và gate PostgreSQL/Web/Mobile chưa kiểm chứng.
@@ -397,7 +402,6 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-20 17:32 (UTC+7) | ToanAltF4 | fix/catalog-v3-idempotent-parts | seed:catalog-v3 đọc giá linh kiện trước khi ghi để chạy lại không báo cập nhật giả (UPDATE TypeORM trả [rows, count]); đã nạp V3 vào DB chung 20/10
 - 2026-10-20 17:02 (UTC+7) | ToanAltF4 | feat/catalog-v3 | Catalog V3: thêm 8 dịch vụ (WM-06 FR-02 WH-03 KT-06..10), 14 biến thể giá cố định (tủ đứng AC-02-31, máy giặt sấy WM-02-34...), giá tham khảo theo loại máy cho dịch vụ sửa, 44 linh kiện mới + sửa 11 giá linh kiện; thuộc tính acMounting=floor, washerHasDryer; lệnh nạp npm run seed:catalog-v3 (chỉ bổ sung, chạy lại an toàn)
 - 2026-10-20 14:36 (UTC+7) | foxonworld | foxonworld/fixhome-p013-quote-billing-20261020 | Chặn sớm báo giá lệch số lượng nguyên dòng PRE_REPAIR và hủy nguồn kho cần thiết sau duyệt; giữ usage/P1 finance và dữ liệu lịch sử.
-- 2026-10-20 14:25 (UTC+7) | foxonworld | foxonworld/fixhome-p013-quote-billing-20261020 | Thêm cấp kho theo phần thiếu của báo giá, chặn hóa đơn thiếu bằng chứng, xác nhận miễn phí và ngưỡng VNPay 5.000 ₫; chưa ghi DB/runtime.
 
 ### Lịch sử lưu trữ ngoài 40 dòng nhật ký gần nhất
 
