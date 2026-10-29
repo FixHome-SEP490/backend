@@ -86,6 +86,17 @@ function fixture() {
         ],
       },
     ],
+    PartRequestItem: [
+      {
+        id: 'item',
+        partRequestId: 'request',
+        partCatalogId: 'catalog',
+        partSource: PartSource.FIXHOME,
+        partNameSnapshot: 'Synthetic part',
+        quantity: 3,
+        usageStatus: PartUsageStatus.RETURNED,
+      },
+    ],
     PartCustody: [
       {
         id: 'custody',
@@ -159,6 +170,72 @@ function fixture() {
       table(entity).push(...(Array.isArray(value) ? value : [value]));
     },
     createQueryBuilder: (entity) => {
+      if (entity?.name === 'PartRequestItem') {
+        let antiCustody = false;
+        let partSource: string | undefined;
+        let requireReceived = false;
+        let statuses: string[] | undefined;
+        let offset = 0;
+        let pageSize = 20;
+        const matching = () => rows.PartRequestItem.filter((item) => {
+          const request = rows.PartRequest.find((row) => row.id === item.partRequestId);
+          if (!request) return false;
+          if (partSource && item.partSource !== partSource) return false;
+          if (requireReceived && !request.receivedAt) return false;
+          if (statuses && !statuses.includes(request.status)) return false;
+          if (antiCustody && rows.PartCustody.some((row) => row.partRequestItemId === item.id)) return false;
+          return true;
+        });
+        const qb: any = {
+          innerJoin: () => qb,
+          select: () => qb,
+          where: (sql: string) => {
+            if (/NOT EXISTS/i.test(sql)) antiCustody = true;
+            return qb;
+          },
+          andWhere: (sql: string, params?: any) => {
+            if (/i\.part_source/.test(sql)) partSource = params.partSource;
+            if (/r\.received_at IS NOT NULL/.test(sql)) requireReceived = true;
+            if (/r\.status IN/.test(sql)) statuses = params.statuses;
+            return qb;
+          },
+          orderBy: () => qb,
+          addOrderBy: () => qb,
+          offset: (value: number) => {
+            offset = value;
+            return qb;
+          },
+          limit: (value: number) => {
+            pageSize = value;
+            return qb;
+          },
+          getCount: async () => matching().length,
+          getRawMany: async () => matching()
+            .sort((left, right) => {
+              const leftRequest = rows.PartRequest.find((row) => row.id === left.partRequestId)!;
+              const rightRequest = rows.PartRequest.find((row) => row.id === right.partRequestId)!;
+              const byReceivedAt = new Date(leftRequest.receivedAt).getTime() - new Date(rightRequest.receivedAt).getTime();
+              return byReceivedAt !== 0 ? byReceivedAt : left.id.localeCompare(right.id);
+            })
+            .slice(offset, offset + pageSize)
+            .map((item) => {
+              const request = rows.PartRequest.find((row) => row.id === item.partRequestId)!;
+              return {
+                partRequestItemId: item.id,
+                partRequestId: item.partRequestId,
+                partCatalogId: item.partCatalogId ?? null,
+                partNameSnapshot: item.partNameSnapshot,
+                issuedQty: item.quantity,
+                orderId: request.serviceOrderId,
+                technicianId: request.technicianId,
+                requestType: request.requestType,
+                requestStatus: request.status,
+                handedOverAt: request.receivedAt,
+              };
+            }),
+        };
+        return qb;
+      }
       if (entity?.name !== 'PartCustody')
         throw new Error('Unexpected fixture query');
       let owner: string | undefined;
@@ -594,6 +671,260 @@ describe('T3 physical part return audit (in-memory storage)', () => {
       managerAcceptedQty: 0,
       outstandingQty: 3,
     });
+  });
+
+  it('T3b: SM sees a received pre-cohort FixHome item as legacy_manual_review with UNKNOWN receipt and no inferred quantities', async () => {
+    const h = fixture();
+    h.rows.PartCustody = [];
+    const result = await h.controller.legacyManualReview(
+      { page: 1, pageSize: 20 },
+      { user: sm },
+    );
+    expect(result.meta).toEqual({ total: 1, page: 1, pageSize: 20 });
+    expect(result.data).toEqual([
+      {
+        kind: 'legacy_manual_review',
+        receiptState: 'UNKNOWN',
+        orderId: 'order',
+        partRequestId: 'request',
+        partRequestItemId: 'item',
+        technicianId: tech.id,
+        requestType: PartRequestType.PRE_REPAIR,
+        requestStatus: PartRequestStatus.RECEIVED,
+        handedOverAt: '2026-10-20T01:00:00.000Z',
+        partCatalogId: 'catalog',
+        partNameSnapshot: 'Synthetic part',
+        issuedQty: 3,
+      },
+    ]);
+    // Unknown is not zero: no accepted/declared/outstanding count is invented.
+    const row = result.data[0] as unknown as Record<string, unknown>;
+    for (const key of [
+      'acceptedQty',
+      'managerAcceptedQty',
+      'declaredQty',
+      'outstandingQty',
+      'usedQty',
+    ]) {
+      expect(row).not.toHaveProperty(key);
+    }
+    expect(h.rows.PartCustody).toEqual([]);
+  });
+
+  it('T3b: anti-join excludes enrolled custody and mixed requests return only unenrolled FixHome items', async () => {
+    const h = fixture();
+    // The baseline item is enrolled, so the legacy view is empty.
+    expect(
+      (
+        await h.controller.legacyManualReview(
+          { page: 1, pageSize: 20 },
+          { user: sm },
+        )
+      ).data,
+    ).toEqual([]);
+
+    const extraItems = [
+      {
+        id: 'legacy-item',
+        partRequestId: 'request',
+        partCatalogId: 'catalog-2',
+        partSource: PartSource.FIXHOME,
+        partNameSnapshot: 'Legacy part',
+        quantity: 2,
+        usageStatus: PartUsageStatus.RETURNED,
+      },
+      {
+        id: 'technician-item',
+        partRequestId: 'request',
+        partCatalogId: null,
+        partSource: PartSource.TECHNICIAN,
+        partNameSnapshot: 'Technician own part',
+        quantity: 1,
+        usageStatus: PartUsageStatus.USED,
+      },
+    ];
+    h.rows.PartRequestItem.push(...extraItems);
+    h.rows.PartRequest[0].items.push(...extraItems);
+
+    const result = await h.controller.legacyManualReview(
+      { page: 1, pageSize: 20 },
+      { user: sm },
+    );
+    expect(result.data.map((row) => row.partRequestItemId)).toEqual([
+      'legacy-item',
+    ]);
+    expect(result.data[0]).toMatchObject({
+      receiptState: 'UNKNOWN',
+      issuedQty: 2,
+    });
+  });
+
+  it('T3b: only durable received evidence qualifies; unreceived and inconsistent statuses stay out; cancelled keeps its real status', async () => {
+    const h = fixture();
+    h.rows.PartCustody = [];
+    const template = h.rows.PartRequestItem[0];
+    const cases: Array<[string, PartRequestStatus, Date | null]> = [
+      ['requested', PartRequestStatus.REQUESTED, null],
+      ['ready', PartRequestStatus.READY, null],
+      ['received-without-date', PartRequestStatus.RECEIVED, null],
+      ['cancelled-without-date', PartRequestStatus.CANCELLED, null],
+      ['requested-with-date', PartRequestStatus.REQUESTED, new Date('2026-10-01T00:00:00Z')],
+      ['completed', PartRequestStatus.COMPLETED, new Date('2026-10-02T00:00:00Z')],
+      ['cancelled-received', PartRequestStatus.CANCELLED, new Date('2026-10-05T00:00:00Z')],
+    ];
+    for (const [id, status, receivedAt] of cases) {
+      h.rows.PartRequest.push({
+        id,
+        serviceOrderId: 'order',
+        technicianId: tech.id,
+        requestType: PartRequestType.PRE_REPAIR,
+        status,
+        receivedAt,
+      });
+      h.rows.PartRequestItem.push({
+        ...template,
+        id: `${id}-item`,
+        partRequestId: id,
+      });
+    }
+
+    const result = await h.controller.legacyManualReview(
+      { page: 1, pageSize: 20 },
+      { user: sm },
+    );
+    expect(result.data.map((row) => row.partRequestItemId)).toEqual([
+      'completed-item',
+      'cancelled-received-item',
+      'item',
+    ]);
+    expect(
+      result.data.find(
+        (row) => row.partRequestItemId === 'cancelled-received-item',
+      )?.requestStatus,
+    ).toBe(PartRequestStatus.CANCELLED);
+    for (const excluded of [
+      'requested-item',
+      'ready-item',
+      'received-without-date-item',
+      'cancelled-without-date-item',
+      'requested-with-date-item',
+    ]) {
+      expect(
+        result.data.some((row) => row.partRequestItemId === excluded),
+      ).toBe(false);
+    }
+  });
+
+  it.each([Role.ADMIN, Role.CUSTOMER, Role.TECHNICIAN])(
+    'T3b: %s cannot read the legacy manual-review list at service and route guards',
+    async (role) => {
+      const h = fixture();
+      h.rows.PartCustody = [];
+      const actor = {
+        id: role === Role.TECHNICIAN ? tech.id : role,
+        role,
+      };
+      await expect(
+        h.custody.legacyManualReview(actor, 1, 20),
+      ).rejects.toMatchObject({ status: 403 });
+
+      const guard = new RolesGuard(new Reflector());
+      const context = {
+        getHandler: () => h.controller.legacyManualReview,
+        getClass: () => PartReturnsController,
+        switchToHttp: () => ({ getRequest: () => ({ user: actor }) }),
+      } as unknown as ExecutionContext;
+      expect(() => guard.canActivate(context)).toThrow();
+      const allowed = {
+        ...context,
+        switchToHttp: () => ({ getRequest: () => ({ user: sm }) }),
+      } as unknown as ExecutionContext;
+      expect(guard.canActivate(allowed)).toBe(true);
+    },
+  );
+
+  it('T3b: legacy review is bounded, paginated and deterministically ordered by handover time then item id', async () => {
+    const h = fixture();
+    h.rows.PartCustody = [];
+    const template = h.rows.PartRequestItem[0];
+    h.rows.PartRequestItem = [
+      { ...template, id: 'c-item', partRequestId: 'c' },
+      { ...template, id: 'a-item', partRequestId: 'a' },
+      { ...template, id: 'b-item', partRequestId: 'b' },
+    ];
+    h.rows.PartRequest = [
+      {
+        id: 'c',
+        serviceOrderId: 'order',
+        technicianId: tech.id,
+        requestType: PartRequestType.PRE_REPAIR,
+        status: PartRequestStatus.RECEIVED,
+        receivedAt: new Date('2026-10-03T00:00:00Z'),
+      },
+      {
+        id: 'a',
+        serviceOrderId: 'order',
+        technicianId: tech.id,
+        requestType: PartRequestType.PRE_REPAIR,
+        status: PartRequestStatus.RECEIVED,
+        receivedAt: new Date('2026-10-01T00:00:00Z'),
+      },
+      {
+        id: 'b',
+        serviceOrderId: 'order',
+        technicianId: tech.id,
+        requestType: PartRequestType.PRE_REPAIR,
+        status: PartRequestStatus.RECEIVED,
+        receivedAt: new Date('2026-10-02T00:00:00Z'),
+      },
+    ];
+
+    const first = await h.controller.legacyManualReview(
+      { page: 1, pageSize: 2 },
+      { user: sm },
+    );
+    expect(first.meta).toEqual({ total: 3, page: 1, pageSize: 2 });
+    expect(first.data.map((row) => row.partRequestItemId)).toEqual([
+      'a-item',
+      'b-item',
+    ]);
+    const second = await h.controller.legacyManualReview(
+      { page: 2, pageSize: 2 },
+      { user: sm },
+    );
+    expect(second.meta).toEqual({ total: 3, page: 2, pageSize: 2 });
+    expect(second.data.map((row) => row.partRequestItemId)).toEqual([
+      'c-item',
+    ]);
+    const capped = await h.controller.legacyManualReview(
+      { page: 1, pageSize: 999 },
+      { user: sm },
+    );
+    expect(capped.meta.pageSize).toBe(100);
+  });
+
+  it('T3b: SM cannot turn a legacy unknown into a receipt through accept-return', async () => {
+    const h = fixture();
+    h.rows.PartCustody = [];
+    const legacy = await h.controller.legacyManualReview(
+      { page: 1, pageSize: 20 },
+      { user: sm },
+    );
+    expect(legacy.data[0]).toMatchObject({
+      kind: 'legacy_manual_review',
+      receiptState: 'UNKNOWN',
+    });
+    await expect(
+      h.custody.command(
+        'request',
+        'item',
+        'accept_return',
+        command(1, 0, 'legacy-accept'),
+        sm,
+      ),
+    ).rejects.toMatchObject({ status: 404 });
+    expect(h.rows.PartCustody).toEqual([]);
+    expect(h.rows.PartCustodyEntry ?? []).toEqual([]);
   });
 
   it('AT10 GAP reproduction: pre-cohort received legacy stock disappears from the SM queue; empty is not return proof', async () => {

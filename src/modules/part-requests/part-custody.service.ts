@@ -1,7 +1,8 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { DataSource, EntityManager } from 'typeorm';
-import { AccountStatus, PartSource, PartUsageStatus, Role, ServiceOrderStatus } from '../../shared/enums';
+import { AccountStatus, PartRequestStatus, PartRequestType, PartSource, PartUsageStatus, Role, ServiceOrderStatus } from '../../shared/enums';
+import { MAX_PAGE_SIZE } from '../../shared/constants';
 import { Notification } from '../notifications/entities/notification.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
@@ -11,11 +12,24 @@ import { PartCustody, PartCustodyEntry } from './entities/part-custody.entity';
 import { PartRequest } from './entities/part-request.entity';
 import { PartRequestItem } from './entities/part-request-item.entity';
 import { applyCustodyCommand, createPartCustodySnapshot, PartCustodyRuleError } from './part-custody.rules';
-import { PartCustodyActor, PartCustodyCommand } from './part-custody.types';
+import { LegacyManualReviewRecord, PartCustodyActor, PartCustodyCommand } from './part-custody.types';
 import { custodyActivation, custodyTrackingEnabled, lockCustodyTechnician, partReturnsTrackingEnabled } from './part-custody.policy';
 import { PartReturnDiscrepancyDto, PartReturnDto } from './dto/part-return.dto';
 
 type Usage = { usedQty?: number; expectedVersion?: number; idempotencyKey?: string; usageStatus?: PartUsageStatus };
+
+type LegacyManualReviewQueryRow = {
+  partRequestItemId: string;
+  partRequestId: string;
+  partCatalogId: string | null;
+  partNameSnapshot: string;
+  issuedQty: number | string;
+  orderId: string;
+  technicianId: string;
+  requestType: PartRequestType;
+  requestStatus: PartRequestStatus;
+  handedOverAt: Date | string;
+};
 
 @Injectable()
 export class PartCustodyService {
@@ -100,6 +114,77 @@ export class PartCustodyService {
       .orderBy("(SELECT COALESCE(SUM((d->>'quantity')::int), 0) FROM jsonb_array_elements(COALESCE(c.state->'declarations', '[]'::jsonb)) d) > (c.state->>'managerAcceptedQty')::int", 'DESC')
       .addOrderBy('c.handedOverAt', 'ASC').addOrderBy('c.id', 'ASC').take(100).getMany();
     return rows.map(row => this.view(row));
+  }
+
+  /**
+   * SM-only, read-only review of FixHome parts received before custody
+   * enrollment. The item join is exact and the anti-join is the same primary
+   * key used by the custody ledger. Legacy records have no physical return
+   * ledger, so quantities stay unknown instead of being guessed from usage,
+   * request status or an empty custody queue. No order, request or ledger row
+   * is written.
+   */
+  async legacyManualReview(
+    actor: PartCustodyActor,
+    page = 1,
+    pageSize = 20,
+  ): Promise<{ data: LegacyManualReviewRecord[]; total: number; page: number; pageSize: number }> {
+    if (actor.role !== Role.SERVICE_MANAGER) throw new ForbiddenException();
+    const manager = this.dataSource.manager;
+    // The custody schema is only guaranteed when the feature is active.
+    await this.requireActive(manager);
+    const safePage = Number.isSafeInteger(Number(page)) && Number(page) > 0 ? Number(page) : 1;
+    const safePageSize = Number.isSafeInteger(Number(pageSize)) && Number(pageSize) > 0
+      ? Math.min(MAX_PAGE_SIZE, Number(pageSize))
+      : 20;
+    const qb = manager.createQueryBuilder(PartRequestItem, 'i')
+      .innerJoin(PartRequest, 'r', 'r.id = i.part_request_id')
+      .where('NOT EXISTS (SELECT 1 FROM part_custodies c WHERE c.part_request_item_id = i.id)')
+      .andWhere('i.part_source = :partSource', { partSource: PartSource.FIXHOME })
+      .andWhere('r.received_at IS NOT NULL')
+      // RECEIVED carries the handover; COMPLETED and CANCELLED only qualify
+      // when a durable received_at remains, never as proof of warehouse return.
+      .andWhere('r.status IN (:...statuses)', {
+        statuses: [PartRequestStatus.RECEIVED, PartRequestStatus.COMPLETED, PartRequestStatus.CANCELLED],
+      });
+    const total = await qb.getCount();
+    const rows = await qb
+      .select([
+        'i.id AS "partRequestItemId"',
+        'i.part_request_id AS "partRequestId"',
+        'i.part_catalog_id AS "partCatalogId"',
+        'i.part_name_snapshot AS "partNameSnapshot"',
+        'i.quantity AS "issuedQty"',
+        'r.service_order_id AS "orderId"',
+        'r.technician_id AS "technicianId"',
+        'r.request_type AS "requestType"',
+        'r.status AS "requestStatus"',
+        'r.received_at AS "handedOverAt"',
+      ])
+      .orderBy('r.received_at', 'ASC')
+      .addOrderBy('i.id', 'ASC')
+      .offset((safePage - 1) * safePageSize)
+      .limit(safePageSize)
+      .getRawMany<LegacyManualReviewQueryRow>();
+    return {
+      data: rows.map(row => ({
+        kind: 'legacy_manual_review' as const,
+        receiptState: 'UNKNOWN' as const,
+        orderId: row.orderId,
+        partRequestId: row.partRequestId,
+        partRequestItemId: row.partRequestItemId,
+        technicianId: row.technicianId,
+        requestType: row.requestType,
+        requestStatus: row.requestStatus,
+        handedOverAt: new Date(row.handedOverAt).toISOString(),
+        partCatalogId: row.partCatalogId ?? null,
+        partNameSnapshot: row.partNameSnapshot,
+        issuedQty: Number(row.issuedQty),
+      })),
+      total,
+      page: safePage,
+      pageSize: safePageSize,
+    };
   }
 
   async command(requestId: string, itemId: string, kind: 'declare_return' | 'accept_return' | 'report_discrepancy', body: PartReturnDto | PartReturnDiscrepancyDto, actor: PartCustodyActor): Promise<Record<string, unknown>> {

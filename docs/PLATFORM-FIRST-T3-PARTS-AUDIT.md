@@ -6,9 +6,11 @@ Nhánh: `foxonworld/fixhome-platform-first-parts-t3-20261029`.
 
 ## Phạm vi và kết luận
 
-**Hoàn thành audit và bổ sung test; chưa hoàn thành AT10 hoặc toàn bộ platform-first.**
+**Hoàn thành audit, bổ sung test và T3b read-only Backend; chưa hoàn thành AT10 hoặc toàn bộ platform-first.**
 Không tìm thấy lỗi cần sửa trong cơ chế trả vật lý của hàng đã enroll ở các ca dưới đây.
-Giữ nguyên production code, API, cohort, payment/quote/commission, migrations và cờ runtime.
+T3b thêm API đọc SM-only cho hàng legacy không có custody, nhưng chưa có consumer Web
+nên AT10 vẫn là release blocker. Giữ nguyên `/part-returns/pending`, `byOrder`, cohort,
+payment/quote/commission, migrations và cờ runtime.
 Test cô lập dùng `PART_RETURNS_TRACKING_ENABLED=true`, `P1_CUSTODY_ENABLED=false`;
 không đọc/ghi `.env`, DB chung hoặc production. Không tích hợp WIP của T2.
 
@@ -21,16 +23,18 @@ Không tạo agent khác.
 ## Bằng chứng source và test
 
 File mới: `src/modules/part-requests/platform-first-parts-audit.spec.ts`.
-13 test chạy real services/rules/controller role metadata với storage double có rollback
-và transaction tuần tự. Không mock kết quả `reportRepairFailed`, `byOrder`, `command`
-hoặc `applyCustodyCommand`. Test guard không thay cho HTTP/JWT runtime.
+21 test (13 audit gốc + 8 T3b) chạy real services/rules/controller role metadata với storage
+double có rollback và transaction tuần tự. Không mock kết quả `reportRepairFailed`, `byOrder`,
+`command` hoặc `applyCustodyCommand`; T3b chỉ thêm bảng/query-builder double cho
+`PartRequestItem` để chạy đúng query thật của `legacyManualReview`. Test guard không thay cho
+HTTP/JWT runtime.
 
 | Yêu cầu | Kết quả thực tế |
 | --- | --- |
 | (a) Thợ gốc GET/declare sau CANCELLED, assignment inactive | PASS: gọi real `reportRepairFailed`, xác nhận assignment đã inactive; GET qua controller và declare vẫn được. Thợ thay thế đang active không được đọc/khai custody của thợ gốc. |
 | (b) Chỉ SM nhận vật lý full/partial/discrepancy | PASS: cấp 3, khai 3, nhận 1 còn 2; discrepancy quan sát 1 không tự nhận thêm; nhận cuối 2 mới hết nghĩa vụ. Receipt lưu actor/role/timestamp. Admin/customer/technician bị từ chối ở service và `RolesGuard`. |
 | (c) Không tự nhận khi failed/released | PASS: real failure và outgoing-release không ghi receipt hoặc tăng `managerAcceptedQty`. Chọn `returned` trong báo sửa không được không phải `declare_return`, càng không phải acceptance. |
-| (d) Legacy không được coi là đã trả đủ | FAIL ở yêu cầu sản phẩm: test tái hiện hàng legacy đã nhận nhưng queue/by-order SM trả `[]`; đây là characterization của lỗi còn tồn tại, không phải test khẳng định legacy an toàn. Chi tiết blocker bên dưới. |
+| (d) Legacy không được coi là đã trả đủ | Một phần: queue/by-order cũ vẫn trả `[]` cho hàng legacy, nhưng T3b thêm `GET /part-returns/legacy-manual-review` trả đúng ứng viên với `receiptState: UNKNOWN`, không suy ra số đã nhận/đã trả. AT10 sản phẩm vẫn FAIL vì Web chưa có nhánh hiển thị unknown và chưa tích hợp consumer. |
 | (e) Replay/concurrency/quantity | PASS trong transaction double: hai request cùng key chỉ nhận một lần, replay trả response gốc kể cả sau receipt mới; đổi payload cùng key bị 409; hai SM dùng key khác cùng version chỉ một lệnh thành công, lệnh kia 409; vượt phần còn lại bị chặn. PostgreSQL race NOT VERIFIED. |
 
 Suite hiện có đã kiểm thêm: cấp 3/dùng 1/khai trả 2; actual-use chỉ vào hóa đơn mới;
@@ -76,12 +80,42 @@ Thêm row với số 0 sẽ giấu vấn đề; gán issued quantity làm outsta
 thêm null/discriminator một phía chưa làm queue hiện đúng. Không trả lỗi toàn queue để che
 luôn các custody hợp lệ, không backfill/cấp receipt tổng hợp để lấp khoảng trống.
 
-Bước nhỏ tiếp theo: BE/Web cùng chốt schema additive cho legacy manual-review với quantities
-không xác định và không có action nhận tự động. Query ứng viên phải nối đúng
-`PartRequestItem.id` không có PartCustody + bằng chứng handover (`receivedAt`/status);
-không fuzzy-match tên/SKU/thợ, không suy ra physical receipt từ usage. Web cần một nhóm unknown
-riêng kể cả khi awaiting=0, cùng test empty/error/cap 100. Đối soát lịch sử cần chứng cứ SM;
-không thay đổi dữ liệu legacy trong task này. AT10 vẫn là release blocker.
+T3b đã làm phần Backend: schema additive `legacy_manual_review` + `receiptState: UNKNOWN`,
+không có quantity đã nhận/đã khai/còn lại và không có action nhận tự động. Query ứng viên nối
+đúng `PartRequestItem.id` không có PartCustody + bằng chứng handover (`received_at`), không
+fuzzy-match tên/SKU/thợ, không suy ra physical receipt từ usage. Hợp đồng chi tiết ở mục T3b bên dưới.
+
+Bước còn lại: Web cần một nhóm unknown riêng kể cả khi awaiting=0, cùng test empty/error/cap 100,
+và chỉ hiển thị lời nhắc SM đối soát thủ công; không gọi `accept-return` cho dòng legacy. Đối soát
+lịch sử cần chứng cứ SM; không thay đổi dữ liệu legacy trong task này. AT10 vẫn là release blocker
+cho tới khi Backend + Web được tích hợp và kiểm thử cùng nhau.
+
+### T3b: `GET /part-returns/legacy-manual-review` (SM-only, read-only)
+
+- Route dưới `JwtAuthGuard` + `RolesGuard`, chỉ `service_manager`; service kiểm lại role
+  (`403` cho admin/customer/technician) nên không có IDOR. Không thay route `pending`/`byOrder`.
+- Chỉ đọc, không migration, không ghi order/request/item/custody/audit/notification.
+  Endpoint dùng chung điều kiện mở tính năng trả linh kiện như các route đọc custody khác;
+  chưa bật cờ thì trả `503` như hiện tại, không lộ bảng khi schema chưa có.
+- Ứng viên: `part_request_items` join đúng `part_requests.id` qua `part_request_id`;
+  anti-join `NOT EXISTS part_custodies c WHERE c.part_request_item_id = i.id`;
+  `i.part_source = 'fixhome'`; `r.received_at IS NOT NULL`; status
+  `RECEIVED`, `COMPLETED` hoặc `CANCELLED` chỉ khi còn `received_at` bền vững.
+  Không lấy `REQUESTED`/`READY`/`DELIVERING`, hàng `TECHNICIAN`/`EXTERNAL`, dòng đã có custody,
+  hay request RECEIVED thiếu `received_at`.
+- Sắp xếp `received_at ASC, item.id ASC`, phân trang `page`/`pageSize` (mặc định 1/20, tối đa 100)
+  qua `PageSizeQueryDto`; response `{ data, meta: { total, page, pageSize } }`.
+- Mỗi dòng:
+  `{ kind: 'legacy_manual_review', receiptState: 'UNKNOWN', orderId, partRequestId,
+  partRequestItemId, technicianId, requestType, requestStatus, handedOverAt, partCatalogId,
+  partNameSnapshot, issuedQty }`. `handedOverAt` là `part_requests.received_at` (bàn giao cho thợ),
+  không phải biên nhận kho. Không trả `acceptedQty`, `declaredQty`, `outstandingQty`, `usedQty`,
+  tên/email/SĐT khách hay dữ liệu cá nhân.
+- Legacy unknown không có row custody nên `POST .../accept-return` vẫn trả `404`, không tạo receipt.
+  `pending()` vẫn giới hạn 100 row và chỉ đọc custody; hành vi cũ không đổi.
+- Consumer Web đã đọc ở `b2c8ae3`: `PartReturnsQueue.vue` và `PartReturnRecord` vẫn chỉ có số
+  `issued/used/declared/accepted/outstanding`; chưa có nhánh `kind`/`UNKNOWN`. Vì vậy T3b chưa
+  được coi là hoàn tất UX AT10 và chưa được render/kiểm thử trên Web.
 
 ### Giới hạn failure/stop cần T2 giữ rõ
 
@@ -110,21 +144,26 @@ Các lệnh được chạy trong worktree này, không phải số liệu kế 
 - `npm ci --no-audit --no-fund`: PASS. Lần focused đầu trước cài deps không khởi động
   vì thiếu `vitest/config`; cài đúng lockfile, không đổi dependency/lockfile.
 - Baseline `npx vitest run src/modules/part-requests --maxWorkers=4`: PASS, 8 files / 120 tests
-  (107 test cũ cộng 13 test audit mới). Không có test skipped/expected-fail trong file mới.
-- `npm test` (full suite): PASS, 243 files passed / 3 skipped; 2468 tests passed / 21 skipped.
-  Lần chạy đầu chỉ FAIL duy nhất `test/context-doc.spec.ts` vì WIP thêm dòng nhật ký thứ 41 vào
-  `docs/CONTEXT.md`; đã bỏ dòng cũ nhất đúng quy tắc mục 0 rồi chạy lại toàn bộ, không sửa test
-  và không đổi hành vi sản phẩm.
+  (107 test cũ cộng 13 test audit). Sau T3b, focused cùng thư mục: PASS, 21 test trong file audit.
+- `npm test` (full suite): PASS, 243 files passed / 3 skipped; 2476 tests passed / 21 skipped
+  (baseline trước T3b: 2468 passed, tức +8 test T3b, không thêm skip).
+  Lần chạy đầu của T3 gốc chỉ FAIL duy nhất `test/context-doc.spec.ts` vì WIP thêm dòng nhật ký
+  thứ 41 vào `docs/CONTEXT.md`; đã bỏ dòng cũ nhất đúng quy tắc mục 0 rồi chạy lại toàn bộ,
+  không sửa test và không đổi hành vi sản phẩm.
 - `npm run lint`: PASS, 0 error; còn 2 warning có sẵn ở file ngoài phạm vi T3
   (`kyc-storage.service.spec.ts`, migration 0022), không thêm warning mới.
 - `npm run typecheck`: PASS.
 - `npm run build`: PASS.
 - `git diff --check`: PASS, không có whitespace error.
-- `git status`/`git diff` xác nhận chỉ có `docs/CONTEXT.md`, audit doc mới và spec mới;
-  không sửa production code, API, migration, cohort hay cờ runtime.
+- SQL do TypeORM sinh cho `legacyManualReview` đã đọc qua một test tạm (đã xoá): đúng
+  `NOT EXISTS` anti-join theo `part_request_item_id`, `part_source = 'fixhome'`,
+  `received_at IS NOT NULL` và `ORDER BY received_at ASC, item.id ASC`. Không chạy SQL trên DB thật.
+- `git status`/`git diff` xác nhận chỉ có `docs/CONTEXT.md`, audit doc, spec và ba file T3b
+  (`part-custody.service.ts`, `part-custody.types.ts`, `part-returns.controller.ts`);
+  không sửa migration, cohort, payment/quote/commission hay cờ runtime, không chạm T2/Web/Mobile/AI.
 - PostgreSQL/RLS/unique-index/lock race, `npm run test:e2e`, HTTP/JWT, Docker app `/health`,
-  provider, authenticated DEV và browser: NOT VERIFIED. Không thay production/schema/runtime;
-  không chạy full-app E2E có thể dùng cấu hình DB ngoài phạm vi. Docker daemon có phản hồi
+  provider, authenticated DEV và browser: NOT VERIFIED. Không ghi DB, không chạy migration,
+  không dùng full-app E2E có thể dùng cấu hình DB ngoài phạm vi. Docker daemon có phản hồi
   nhưng không tạo container hoặc chạy migration; không viện lý do Docker unavailable.
 - Chỉ commit local sau khi các gate trên xanh. Không push, PR, merge, deploy hoặc ghi DB chung.
 
