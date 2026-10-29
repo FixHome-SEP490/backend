@@ -89,7 +89,30 @@ describe('WEB-ACCEPT isolated real HTTP/JWT/PostgreSQL (three synthetic actors)'
       logging: false,
     });
     await db.initialize();
+    // This legacy E2E fixture uses a private schema; funding F4 targets public and requires
+    // the already-deployed voucher baseline. Exclude F4 from this unrelated fixture only.
+    // The private-schema fixture does not model public finance cutovers;
+    // dedicated isolated PostgreSQL suites verify their DDL.
+    db.migrations.splice(0, db.migrations.length, ...db.migrations.filter(m =>
+      !['VoucherFundingLedger1792994400001', 'VoucherCampaignLifecycle1793116800000',
+        'CashPaymentIntents1793293200000', 'TechnicianResponsibility1793293200001'].includes(m.name)
+    ));
     await db.runMigrations();
+    // Private-schema legacy fixture only: F4 is forward-only in public DEV.
+    await db.query('ALTER TABLE support_cases ADD COLUMN IF NOT EXISTS voucher_gross_refund_vnd bigint NULL');
+    // Private-schema legacy E2E skips the public cash/reputation migration chain.
+    // Give the current TypeORM entities nullable compatibility columns ONLY inside
+    // this disposable fixture; actual DDL/RLS/indexes run in cash-reputation.postgres.spec.ts.
+    await db.query(`ALTER TABLE support_cases
+      ADD COLUMN IF NOT EXISTS reason_class varchar(32),
+      ADD COLUMN IF NOT EXISTS reason_code varchar(48),
+      ADD COLUMN IF NOT EXISTS responsibility varchar(32),
+      ADD COLUMN IF NOT EXISTS responsibility_command_id uuid,
+      ADD COLUMN IF NOT EXISTS responsibility_actor_id uuid,
+      ADD COLUMN IF NOT EXISTS responsibility_reason varchar(2000),
+      ADD COLUMN IF NOT EXISTS responsibility_evidence_refs jsonb,
+      ADD COLUMN IF NOT EXISTS responsibility_decided_at timestamptz`);
+    await db.query('ALTER TABLE reputation_events ADD COLUMN IF NOT EXISTS support_case_id uuid');
     const { seedRbac } = runtimeRequire('./dist/database/seeds/seed-rbac.js');
     await seedRbac(db);
     const { AppModule } = runtimeRequire('./dist/app.module.js');

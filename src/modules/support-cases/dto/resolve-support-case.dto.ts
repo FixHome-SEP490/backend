@@ -8,6 +8,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUUID,
   Max,
   MaxLength,
   Min,
@@ -37,6 +38,18 @@ const trimEvidenceRefs = ({ value }: { value: unknown }): unknown =>
     : value;
 
 export class ResolveSupportCaseDto {
+  @ApiPropertyOptional({ format: 'uuid', description: 'Required for non-terminal escalate_admin; exact replay is idempotent' })
+  @IsOptional()
+  @IsUUID('4')
+  commandId?: string;
+
+  @ApiPropertyOptional({ minimum: 0, description: 'Required current workflowVersion for escalate_admin' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(2147483646)
+  expectedVersion?: number;
+
   @ApiProperty({ enum: SUPPORT_CASE_FINAL_STATUSES })
   @IsEnum(SupportCaseStatus)
   @IsIn(SUPPORT_CASE_FINAL_STATUSES)
@@ -89,4 +102,12 @@ export class ResolveSupportCaseDto {
   @Min(0)
   @Max(2_000_000_000)
   amount?: number;
+
+  /** Funded vouchers only: approved original-gross portion; amount is customer NET. */
+  @ApiPropertyOptional({ description: 'Funded refund original gross basis (VND); amount stays customer NET' })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(2_000_000_000)
+  grossRefundVnd?: number;
 }

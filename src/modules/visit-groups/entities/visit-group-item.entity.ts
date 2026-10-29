@@ -2,7 +2,7 @@ import { Column, Entity, Index, JoinColumn, ManyToOne } from 'typeorm';
 import { BaseEntity } from '../../../database/base.entity';
 import { VisitGroup } from './visit-group.entity';
 
-export type VisitDeviceOutcome = 'succeeded' | 'failed' | 'quote_declined';
+export type VisitDeviceOutcome = 'succeeded' | 'failed' | 'quote_declined' | 'interrupted';
 
 /**
  * One physical device of a VisitGroup. `sequence` is 1 to 3 and unique in its

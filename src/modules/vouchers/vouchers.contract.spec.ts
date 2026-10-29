@@ -5,7 +5,7 @@ import { Reflector } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import { ThrottlerModule } from '@nestjs/throttler';
 import request from 'supertest';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { Role } from '../../shared/enums';
 import { VouchersController } from './vouchers.controller';
@@ -15,6 +15,8 @@ import {
   ClaimVoucherDto,
   CreateVoucherCampaignDto,
   VoucherCampaignStatusDto,
+  UpdateVoucherCampaignDto,
+  VoucherCampaignLifecycleDto,
 } from './dto/voucher.dto';
 import { VoucherDiscount, VoucherKind } from './voucher.types';
 import { DECORATORS } from '@nestjs/swagger/dist/constants';
@@ -26,7 +28,7 @@ describe('voucher transport contracts', () => {
         DECORATORS.API_OPERATION,
         VouchersController.prototype.createCampaign,
       ).summary,
-    ).toBe('Tạo chương trình ưu đãi với chính sách bất biến');
+    ).toBe('Tạo bản nháp chương trình ưu đãi');
   });
   const pipe = new ValidationPipe({
     whitelist: true,
@@ -67,6 +69,17 @@ describe('voucher transport contracts', () => {
         CreateVoucherCampaignDto,
       ),
     ).toBeInstanceOf(CreateVoucherCampaignDto);
+  });
+  it('requires an integer version and UUID command for draft edits and lifecycle changes, forbidding client state/counters', async () => {
+    const cmd = { version: 1, commandId: randomUUID() };
+    expect(await validate({ ...validCampaign(), ...cmd }, UpdateVoucherCampaignDto)).toBeInstanceOf(UpdateVoucherCampaignDto);
+    expect(await validate({ status: 'PUBLISHED', ...cmd }, VoucherCampaignLifecycleDto)).toBeInstanceOf(VoucherCampaignLifecycleDto);
+    for (const invalid of [{ version: 0 }, { version: '1' }, { commandId: null }, { commandId: 'bad' }, { active: true }, { redeemed: 0 }, { publishedAt: null }]) {
+      await expect(validate({ ...validCampaign(), ...cmd, ...invalid }, UpdateVoucherCampaignDto)).rejects.toThrow();
+    }
+    await expect(validate({ ...validCampaign(), version: 1 }, UpdateVoucherCampaignDto)).rejects.toThrow();
+    await expect(validate({ status: 'DRAFT', ...cmd }, VoucherCampaignLifecycleDto)).rejects.toThrow();
+    await expect(validate({ status: 'PUBLISHED', ...cmd, quota: 100 }, VoucherCampaignLifecycleDto)).rejects.toThrow();
   });
   it.each([
     { quota: 0 },
@@ -115,6 +128,7 @@ describe('voucher transport contracts', () => {
     // Test-only authentication supplies synthetic principals; JWT verification and DB are NOT tested.
     let role: Role | undefined = Role.CUSTOMER;
     let actorId = randomUUID();
+    const preview = vi.fn(async () => ({ previewOnly: true, paymentAvailable: false }));
     const builder = Test.createTestingModule({
       imports: [ThrottlerModule.forRoot([{ ttl: 60000, limit: 5 }])],
       controllers: [VouchersController],
@@ -128,7 +142,11 @@ describe('voucher transport contracts', () => {
             grantPersonal: async () => ({ id: randomUUID() }),
             claim: async () => ({ id: randomUUID() }),
             apply: async () => ({ id: randomUUID(), state: 'RESERVED' }),
+            checkoutPreview: preview,
             listCampaigns: async () => [],
+            getCampaign: async () => ({ status: 'DRAFT', version: 1 }),
+            updateCampaign: async () => ({ status: 'DRAFT', version: 2 }),
+            transitionCampaign: async () => ({ status: 'PUBLISHED', version: 2 }),
             release: async () => ({}),
           },
         },
@@ -155,6 +173,32 @@ describe('voucher transport contracts', () => {
         (await request(http).get('/vouchers/wallet')).body[0].customerId,
       ).toBe(actorId);
       await request(http).get('/vouchers/campaigns').expect(403);
+      const campaignId = randomUUID();
+      const edit = { ...validCampaign(), version: 1, commandId: randomUUID() };
+      const lifecycle = { status: 'PUBLISHED', version: 1, commandId: randomUUID() };
+      for (const forbiddenRole of [Role.CUSTOMER, Role.TECHNICIAN, Role.SERVICE_MANAGER]) {
+        role = forbiddenRole;
+        await request(http).get(`/vouchers/campaigns/${campaignId}`).expect(403);
+        await request(http).patch(`/vouchers/campaigns/${campaignId}`).send(edit).expect(403);
+        await request(http).patch(`/vouchers/campaigns/${campaignId}/lifecycle`).send(lifecycle).expect(403);
+      }
+      role = Role.ADMIN;
+      await request(http).get(`/vouchers/campaigns/${campaignId}`).expect(200);
+      await request(http).patch(`/vouchers/campaigns/${campaignId}`).send(edit).expect(200);
+      await request(http).patch(`/vouchers/campaigns/${campaignId}/lifecycle`).send(lifecycle).expect(200);
+      await request(http).patch(`/vouchers/campaigns/${campaignId}`).send({ ...edit, redeemed: 1 }).expect(400);
+      await request(http).patch(`/vouchers/campaigns/${campaignId}/lifecycle`).send({ ...lifecycle, status: 'DRAFT' }).expect(400);
+      await request(http).patch('/vouchers/campaigns/forged/lifecycle').send(lifecycle).expect(400);
+      await request(http).delete(`/vouchers/campaigns/${campaignId}`).expect(404);
+      role = Role.CUSTOMER;
+      const previewClaim = randomUUID();
+      const previewScope = randomUUID();
+      await request(http).get(`/vouchers/checkout-preview/${previewClaim}/${previewScope}`).expect(200, { previewOnly: true, paymentAvailable: false });
+      expect(preview).toHaveBeenCalledWith({ id: actorId, role: Role.CUSTOMER }, previewClaim, previewScope);
+      expect(preview.mock.calls[0]).toHaveLength(3);
+      await request(http).get(`/vouchers/checkout-preview/${previewClaim}/${previewScope}?amount=1&discount=999999`).expect(400);
+      await request(http).post(`/vouchers/checkout-preview/${previewClaim}/${previewScope}`).send({ amount: 1, discount: 999999 }).expect(404);
+      await request(http).get('/vouchers/checkout-preview/forged/forged').expect(400);
       expect((await request(http).get('/vouchers/general').expect(200)).body[0].code).toBe('GENERAL');
       await request(http).post(`/vouchers/campaigns/${randomUUID()}/grants`).send({ customerId: randomUUID(), grantId: randomUUID() }).expect(403);
       await request(http)
@@ -180,6 +224,7 @@ describe('voucher transport contracts', () => {
       await request(http).post('/vouchers/apply').send(apply).expect(429);
       role = Role.ADMIN;
       await request(http).get('/vouchers/campaigns').expect(200);
+      await request(http).get(`/vouchers/checkout-preview/${randomUUID()}/${randomUUID()}`).expect(403);
       await request(http).get('/vouchers/general').expect(403);
       await request(http).post(`/vouchers/campaigns/${randomUUID()}/grants`).send({ customerId: randomUUID(), grantId: randomUUID() }).expect(201);
       await request(http).post(`/vouchers/campaigns/${randomUUID()}/grants`).send({ customerId: 'bad', grantId: randomUUID() }).expect(400);

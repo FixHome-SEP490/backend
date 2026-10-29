@@ -3,7 +3,8 @@ import { EntityManager } from 'typeorm';
 import { Booking } from '../bookings/entities/booking.entity';
 import { ServiceOrder } from './entities/service-order.entity';
 import { TechnicianAssignment } from './entities/technician-assignment.entity';
-import { Role } from '../../shared/enums';
+import { Role, ServiceOrderStatus } from '../../shared/enums';
+import { assertNoOnsiteInterruption } from './onsite-interruption';
 
 export type OrderActor = { id: string; role: string };
 
@@ -25,7 +26,12 @@ export async function authorizeOrder(
   }
   if (actor.role === Role.CUSTOMER && command !== 'technician') {
     const booking = await manager.findOneBy(Booking, { id: order.bookingId, customerId: actor.id });
-    if (booking) return order;
+    if (booking) {
+      if (lock && command !== 'read' && [ServiceOrderStatus.EN_ROUTE, ServiceOrderStatus.UNDER_REPAIR].includes(order.status)) {
+        await assertNoOnsiteInterruption(manager, order.id);
+      }
+      return order;
+    }
   }
   if (actor.role === Role.TECHNICIAN && command !== 'customer') {
     const assignment = await manager.findOneBy(TechnicianAssignment, {
@@ -33,7 +39,12 @@ export async function authorizeOrder(
       technicianId: actor.id,
       isActive: true,
     });
-    if (assignment) return order;
+    if (assignment) {
+      if (lock && command !== 'read' && [ServiceOrderStatus.EN_ROUTE, ServiceOrderStatus.UNDER_REPAIR].includes(order.status)) {
+        await assertNoOnsiteInterruption(manager, order.id);
+      }
+      return order;
+    }
   }
   throw new ForbiddenException('Order not found or access denied');
 }

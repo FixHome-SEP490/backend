@@ -1,4 +1,6 @@
 import { CustomerWalletService } from '../customer-wallet/customer-wallet.service';
+import { isUUID } from 'class-validator';
+import { AuditLog } from '../audit-log/entities/audit-log.entity';
 import {
   BadRequestException,
   ConflictException,
@@ -15,10 +17,15 @@ import { EntityManager, In, Repository } from 'typeorm';
 import { Booking } from '../bookings/entities/booking.entity';
 import { CashSettlement } from '../service-orders/entities/cash-settlement.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
+import { assertNoFundedVoucherRefund } from '../vouchers/voucher-refund-guard';
+import { commitVerifiedVoucherSupportRefund } from '../vouchers/voucher-refund-commit';
+import { VoucherPaymentLink } from '../vouchers/entities/voucher-funding.entity';
+import { WalletService } from '../wallet/wallet.service';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { Notification } from '../notifications/entities/notification.entity';
 import { User } from '../users/entities/user.entity';
 import {
   CreateSupportCaseDto,
@@ -56,6 +63,7 @@ import {
   MAX_PAGE_SIZE,
 } from '../../shared/constants';
 import {
+  AccountStatus,
   CashSettlementStatus,
   PaymentStatus,
   Role,
@@ -152,6 +160,54 @@ export class SupportCasesService {
     });
 
     return repository.save(supportCase);
+  }
+
+  /** The order lock serializes this hold with technician completion. */
+  async requestStopOrReplace(orderId: string, reasonInput: string, actor: SupportCaseActor): Promise<SupportCase> {
+    if (actor.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
+    const reason = this.requireBoundedText(reasonInput, 'reason', 10, SUPPORT_CASE_MAX_REASON_LENGTH);
+    return this.supportCaseRepository.manager.transaction(async (manager: EntityManager) => {
+      const reference = await manager.findOne(ServiceOrder, { where: { id: orderId } });
+      if (!reference) throw new ForbiddenException('Order not found or access denied');
+      const booking = await manager.findOne(Booking, {
+        where: { id: reference.bookingId, customerId: actor.id }, lock: { mode: 'pessimistic_write' },
+      });
+      if (!booking) throw new ForbiddenException('Order not found or access denied');
+      const order = await manager.findOne(ServiceOrder, { where: { id: orderId }, lock: { mode: 'pessimistic_write' } });
+      if (!order || order.bookingId !== booking.id) throw new ForbiddenException('Order not found or access denied');
+      const existing = await manager.findOne(SupportCase, {
+        where: { serviceOrderId: orderId, requestIntent: 'stop_or_replace', status: In([SupportCaseStatus.OPEN, SupportCaseStatus.IN_REVIEW]) },
+      });
+      if (existing) return existing;
+      if (order.status !== ServiceOrderStatus.UNDER_REPAIR || order.completionRequestedAt) {
+        throw new ConflictException('Đơn không còn ở giai đoạn có thể yêu cầu dừng sửa.');
+      }
+      const assignment = await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: orderId, isActive: true } });
+      if (!assignment) throw new ConflictException('Đơn không có kỹ thuật viên đang phụ trách.');
+      const supportCase = await manager.save(SupportCase, manager.create(SupportCase, {
+        caseType: SupportCaseType.MID_JOB_INTERRUPTION,
+        status: SupportCaseStatus.OPEN, bookingId: booking.id, serviceOrderId: orderId,
+        customerId: actor.id, technicianId: assignment.technicianId, createdByUserId: actor.id,
+        reason, description: null, requestIntent: 'stop_or_replace', holdCompletion: true,
+        workflowVersion: 0, isUrgent: true, respondBy: respondByFor(order.status, true),
+      }));
+      await this.auditLogService.logWithManagerStrict(manager, {
+        actorUserId: actor.id, actorRole: actor.role, action: 'CUSTOMER_STOP_REPLACE_REQUEST',
+        resourceType: 'support_case', resourceId: supportCase.id,
+        after: { serviceOrderId: orderId, requestIntent: 'stop_or_replace', holdCompletion: true },
+      });
+      const managers = await manager.find(User, {
+        where: { role: Role.SERVICE_MANAGER, status: AccountStatus.ACTIVE, isActive: true }, select: { id: true },
+      });
+      if (managers.length) {
+        await manager.insert(Notification, managers.map(user => ({
+          userId: user.id, title: 'Khách yêu cầu dừng sửa hoặc đổi thợ',
+          message: `Đơn #${order.code} cần quản lý xem xét.`, type: 'CUSTOMER_STOP_REPLACE_REQUEST',
+          referenceId: supportCase.id, referenceType: 'SUPPORT_CASE',
+        })));
+      }
+      return supportCase;
+    });
   }
 
   /**
@@ -389,6 +445,11 @@ export class SupportCasesService {
       id: supportCase.id,
       caseType: supportCase.caseType,
       status: supportCase.status,
+      requestIntent: supportCase.requestIntent ?? null,
+      ...(supportCase.requestIntent === 'stop_or_replace'
+        ? { resolutionCode: supportCase.resolutionCode ?? null } : {}),
+      holdCompletion: supportCase.holdCompletion ?? false,
+      responsibility: supportCase.responsibility ?? null,
       bookingId: supportCase.bookingId,
       serviceOrderId: supportCase.serviceOrderId,
       reason: writtenByOther
@@ -494,10 +555,17 @@ export class SupportCasesService {
       10,
       SUPPORT_CASE_MAX_RESOLUTION_REASON_LENGTH,
     );
+    if (dto.grossRefundVnd !== undefined && resolutionCode !== 'refund_to_wallet') {
+      throw new BadRequestException('Gross refund basis is only valid for a wallet refund.');
+    }
     const evidenceRefs =
       dto.evidenceRefs === undefined
         ? undefined
         : this.normalizeEvidenceRefs(dto.evidenceRefs);
+
+    if (resolutionCode === 'escalate_admin') {
+      return this.escalateAdmin(id, dto, actor, reason, evidenceRefs);
+    }
 
     let refunded: { customerId: string; amount: number; orderCode: string } | null = null;
     const resolvedCase = await this.supportCaseRepository.manager.transaction(
@@ -516,6 +584,10 @@ export class SupportCasesService {
           supportCase.status !== SupportCaseStatus.IN_REVIEW
         ) {
           throw new ConflictException('Support case is already terminal');
+        }
+        if ((supportCase.requestIntent === 'stop_or_replace' || supportCase.caseType === SupportCaseType.TECHNICIAN_REPLACEMENT)
+          && ['worker_reassigned', 'order_cancelled_no_fee'].includes(resolutionCode)) {
+          throw new ConflictException('Dùng lệnh resolve-interruption để cập nhật đơn và hồ sơ hỗ trợ cùng lúc.');
         }
 
         const isCashCase =
@@ -539,9 +611,11 @@ export class SupportCasesService {
           evidenceRefs: evidenceRefs ?? supportCase.evidenceRefs ?? null,
           resolvedAt: new Date(),
           holdCompletion: false,
+          workflowVersion: (supportCase.workflowVersion ?? 0) + 1,
           // A refund into the wallet is FixHome's to bear unless the manager says otherwise (PO 09/10/2026).
           liableParty: dto.liableParty ?? supportCase.liableParty ?? (resolutionCode === 'refund_to_wallet' ? 'platform' : null),
           amount: dto.amount ?? supportCase.amount ?? null,
+          voucherGrossRefundVnd: dto.grossRefundVnd ?? supportCase.voucherGrossRefundVnd ?? null,
         };
 
         const updateResult = await repository.update(
@@ -555,7 +629,7 @@ export class SupportCasesService {
           throw new ConflictException('Support case is already terminal');
         }
 
-        await this.applyCashSettlementResolution(
+        const cashExecuted = await this.applyCashSettlementResolution(
           manager,
           supportCase,
           finalStatus,
@@ -564,7 +638,7 @@ export class SupportCasesService {
           reason,
         );
         if (resolutionCode === 'refund_to_wallet') {
-          refunded = await this.refundToWallet(manager, supportCase, finalStatus, dto.amount);
+          refunded = await this.refundToWallet(manager, supportCase, finalStatus, dto.amount, dto.grossRefundVnd);
         }
 
         await this.auditLogService.logWithManagerStrict(manager, {
@@ -581,6 +655,8 @@ export class SupportCasesService {
             reason,
             liableParty: updates.liableParty ?? null,
             amount: updates.amount ?? null,
+            workflowVersion: updates.workflowVersion,
+            resolutionExecutionKind: refunded || cashExecuted ? 'DOMAIN_ACTION_EXECUTED' : 'DECISION_RECORDED',
           },
         });
 
@@ -591,8 +667,8 @@ export class SupportCasesService {
 
     await this.notifyParties(
       resolvedCase,
-      'Khiếu nại đã được xử lý',
-      'Quản lý dịch vụ đã xử lý khiếu nại liên quan đến đơn của bạn. Vui lòng xem kết quả.',
+      'Đã ghi nhận kết luận hỗ trợ',
+      'Quản lý dịch vụ đã ghi nhận kết luận. Việc ghi nhận không tự thay đổi giá, bảo hành, hoàn tiền hoặc xử lý vi phạm; các thao tác đó chưa thực hiện nếu chưa có xác nhận riêng.',
       'SUPPORT_CASE_RESOLVED',
     );
     const refund = refunded as { customerId: string; amount: number; orderCode: string } | null;
@@ -609,6 +685,90 @@ export class SupportCasesService {
     return this.toDetailDto(resolvedCase);
   }
 
+  /** Existing resolve transport, but escalation is explicitly NON-terminal. */
+  private async escalateAdmin(
+    id: string, dto: ResolveSupportCaseDto, actor: SupportCaseActor,
+    reason: string, evidenceRefs: string[] | null | undefined,
+  ): Promise<SupportCaseDetailDto> {
+    if (!isUUID(dto.commandId ?? '', '4') || !Number.isInteger(dto.expectedVersion)
+      || dto.expectedVersion! < 0 || dto.expectedVersion! >= 2147483647
+      || dto.finalStatus !== SupportCaseStatus.RESOLVED
+      || dto.amount !== undefined || dto.liableParty !== undefined || dto.grossRefundVnd !== undefined) {
+      throw new BadRequestException('escalate_admin cần commandId UUID và expectedVersion hiện tại; không nhận quyết định tiền hoặc trách nhiệm. Hồ sơ vẫn đang xem xét.');
+    }
+    if (evidenceRefs?.some(ref => !isUUID(ref, '4'))) {
+      throw new BadRequestException('Chuyển xem xét chỉ nhận mã bằng chứng nội bộ, không nhận đường dẫn công khai.');
+    }
+    const commandId = dto.commandId!.toLowerCase();
+    const refs = evidenceRefs?.map(ref => ref.toLowerCase()) ?? null;
+    let replay = false;
+    const escalated = await this.supportCaseRepository.manager.transaction(async manager => {
+      const repository = manager.getRepository(SupportCase);
+      const supportCase = await repository.findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
+      if (!supportCase) throw new NotFoundException('Support case not found');
+      const events = await manager.find(AuditLog, {
+        where: { resourceType: 'support_case', resourceId: id, action: 'SUPPORT_CASE_ESCALATE_ADMIN' },
+      });
+      const previous = events.filter(event => event.after?.commandId === commandId);
+      if (previous.length > 1) throw new ConflictException('Escalation audit is ambiguous');
+      if (previous.length === 1) {
+        const event = previous[0];
+        const proof = event.after!;
+        if (event.actorRole !== Role.SERVICE_MANAGER || event.actorUserId !== actor.id
+          || event.resourceId !== id || event.resourceType !== 'support_case'
+          || event.action !== 'SUPPORT_CASE_ESCALATE_ADMIN' || !event.id || !event.createdAt
+          || proof.reason !== reason || proof.expectedVersion !== dto.expectedVersion
+          || proof.workflowVersion !== dto.expectedVersion! + 1
+          || proof.status !== SupportCaseStatus.IN_REVIEW
+          || Number(proof.workflowVersion) > supportCase.workflowVersion
+          || JSON.stringify(proof.evidenceRefs) !== JSON.stringify(refs)) {
+          throw new ConflictException('Escalation command does not match its recorded audit');
+        }
+        replay = true;
+        return supportCase; // A replay never restores an older workflow state.
+      }
+      if (![SupportCaseStatus.OPEN, SupportCaseStatus.IN_REVIEW].includes(supportCase.status)
+        || supportCase.workflowVersion !== dto.expectedVersion) {
+        throw new ConflictException('Hồ sơ đã thay đổi hoặc kết thúc. Vui lòng tải lại phiên bản mới.');
+      }
+      const updates: Partial<SupportCase> = {
+        status: SupportCaseStatus.IN_REVIEW,
+        assignedManagerId: supportCase.assignedManagerId ?? actor.id,
+        resolutionCode: 'escalate_admin', resolutionReason: reason, resolvedAt: null,
+        workflowVersion: supportCase.workflowVersion + 1,
+        // Hold and all domain state stay as recorded before escalation.
+      };
+      const result = await repository.update({ id, workflowVersion: dto.expectedVersion }, updates);
+      if (result.affected !== 1) throw new ConflictException('Support case version changed');
+      await this.auditLogService.logWithManagerStrict(manager, {
+        actorUserId: actor.id, actorRole: actor.role, action: 'SUPPORT_CASE_ESCALATE_ADMIN',
+        resourceType: 'support_case', resourceId: id,
+        before: { status: supportCase.status, workflowVersion: supportCase.workflowVersion,
+          holdCompletion: supportCase.holdCompletion, resolutionCode: supportCase.resolutionCode,
+          resolutionReason: supportCase.resolutionReason },
+        after: { commandId, expectedVersion: dto.expectedVersion, workflowVersion: updates.workflowVersion,
+          status: SupportCaseStatus.IN_REVIEW, reason, evidenceRefs: refs,
+          holdCompletion: supportCase.holdCompletion, assignedManagerId: updates.assignedManagerId },
+      });
+      return repository.findOneByOrFail({ id });
+    });
+    if (!replay && this.notificationsService) {
+      try {
+        const admins = await this.supportCaseRepository.manager.find(User, {
+          where: { role: Role.ADMIN, status: AccountStatus.ACTIVE }, select: ['id'],
+        });
+        await this.notificationsService.createManyNotifications(admins.map(admin => ({
+          userId: admin.id, title: 'Hồ sơ hỗ trợ cần xem xét',
+          message: 'Quản lý dịch vụ đã chuyển hồ sơ để quản trị viên xem xét ở chế độ chỉ đọc. Hồ sơ chưa kết thúc; quản lý dịch vụ tiếp tục phụ trách xử lý.',
+          type: 'SUPPORT_CASE_ESCALATED_ADMIN', referenceId: id, referenceType: 'SUPPORT_CASE',
+        })));
+      } catch {
+        this.logger.warn('Support case escalation notification failed');
+      }
+    }
+    return this.toDetailDto(escalated);
+  }
+
   /**
    * Refund into the customer's wallet (PO 08/10/2026): only on a RESOLVED
    * complaint about an order the customer paid, never more in total than the
@@ -619,6 +779,7 @@ export class SupportCasesService {
     supportCase: SupportCase,
     finalStatus: SupportCaseStatus,
     amount: number | undefined,
+    grossRefundVnd?: number,
   ): Promise<{ customerId: string; amount: number; orderCode: string }> {
     if (!this.customerWalletService) {
       throw new ConflictException('Ví khách chưa sẵn sàng, chưa hoàn tiền được');
@@ -629,11 +790,67 @@ export class SupportCasesService {
     if (!(REFUND_CASE_TYPES as readonly SupportCaseType[]).includes(supportCase.caseType)) {
       throw new BadRequestException('Chỉ hoàn tiền vào ví khi khiếu nại về linh kiện hỏng hoặc bảo hành');
     }
-    if (!Number.isSafeInteger(amount) || (amount as number) <= 0) {
+    if (!Number.isSafeInteger(amount) || (amount as number) < 0) {
       throw new BadRequestException('Nhập số tiền hoàn lớn hơn 0');
     }
     if (!supportCase.customerId || !supportCase.serviceOrderId) {
       throw new BadRequestException('Khiếu nại không gắn với đơn của khách nên không hoàn tiền được');
+    }
+    // Funded invoice: look up without acquiring an invoice write lock, so the
+    // company campaign/reservation lock can be acquired first by the F3 helper.
+    const invoiceReference = await manager.findOne(Invoice, {
+      where: { serviceOrderId: supportCase.serviceOrderId },
+    });
+    if (!invoiceReference) {
+      throw new BadRequestException('No invoice for this refund.');
+    }
+    // Missing funding table cannot be probed inside a transaction: 42P01
+    // poisons the transaction even if caught. Check catalog first.
+    const fundingTable = await manager.query(`SELECT to_regclass('public.voucher_payment_links') AS rel`);
+    const hasFundingTable = fundingTable?.[0]?.rel !== null;
+    let funded: { id: string }[] = [];
+    try {
+      if (hasFundingTable) funded = await manager.query(
+        'SELECT id FROM public.voucher_payment_links WHERE allocation_snapshot @> $1::jsonb LIMIT 2',
+        [JSON.stringify([{ invoiceId: invoiceReference.id }])],
+      );
+    } catch (error) {
+      const sqlState = (error as { driverError?: { code?: string }; code?: string })?.driverError?.code
+        ?? (error as { code?: string })?.code;
+      if (sqlState !== '42P01') {
+        throw new ConflictException('Voucher refund ledger is unavailable.');
+      }
+    }
+    if (!Array.isArray(funded) || funded.length > 1) {
+      throw new ConflictException('Voucher refund source is ambiguous.');
+    }
+    if (funded.length === 1) {
+      // A manager must approve the original gross portion; amount stays the
+      // customer NET. Both are validated against the frozen per-invoice ledger.
+      if (!Number.isSafeInteger(grossRefundVnd) || (grossRefundVnd as number) <= 0) {
+        throw new BadRequestException('Funded refund needs approved grossRefundVnd.');
+      }
+      let wallet: WalletService | undefined;
+      try {
+        wallet = this.moduleRef.get(WalletService, { strict: false });
+      } catch {
+        // Cash-funded reversals fail closed when the technician wallet is not available.
+      }
+      const result = await commitVerifiedVoucherSupportRefund(
+        manager, supportCase.id, this.customerWalletService, wallet,
+      );
+      const order = await manager.findOne(ServiceOrder, { where: { id: supportCase.serviceOrderId } });
+      return {
+        customerId: supportCase.customerId,
+        amount: result.customerRefundVnd,
+        orderCode: order?.code ?? '',
+      };
+    }
+    if (grossRefundVnd !== undefined) {
+      throw new BadRequestException('Gross funded refund cannot be used for an ordinary invoice.');
+    }
+    if ((amount as number) <= 0) {
+      throw new BadRequestException('An ordinary wallet refund must be positive.');
     }
     const invoice = await manager.findOne(Invoice, {
       where: { serviceOrderId: supportCase.serviceOrderId },
@@ -642,6 +859,7 @@ export class SupportCasesService {
     if (!invoice || invoice.paymentStatus !== PaymentStatus.PAID) {
       throw new BadRequestException('Đơn chưa thanh toán nên không có tiền để hoàn');
     }
+    await assertNoFundedVoucherRefund(manager, invoice.id);
     const paid = Number(invoice.grandTotal);
     const already = await this.customerWalletService.refundedForOrder(manager, supportCase.serviceOrderId);
     if (already + (amount as number) > paid) {
@@ -668,7 +886,7 @@ export class SupportCasesService {
     this.requireManager(actor);
     const updated = await this.supportCaseRepository.update(
       { id, status: SupportCaseStatus.OPEN },
-      { status: SupportCaseStatus.IN_REVIEW, assignedManagerId: actor.id },
+      { status: SupportCaseStatus.IN_REVIEW, assignedManagerId: actor.id, workflowVersion: () => '"workflow_version" + 1' },
     );
     if (updated.affected !== 1) {
       await this.findById(id); // 404 when missing
@@ -700,7 +918,11 @@ export class SupportCasesService {
     ) {
       throw new ConflictException('Support case is already terminal');
     }
-    await this.supportCaseRepository.update({ id }, { holdCompletion: hold });
+    const updated = await this.supportCaseRepository.update(
+      { id, status: In([SupportCaseStatus.OPEN, SupportCaseStatus.IN_REVIEW]) },
+      { holdCompletion: hold, workflowVersion: () => '"workflow_version" + 1' },
+    );
+    if (updated.affected !== 1) throw new ConflictException('Support case is already terminal');
     await this.auditLogService.log({
       actorUserId: actor.id,
       actorRole: actor.role,
@@ -797,11 +1019,28 @@ export class SupportCasesService {
         ? this.toCashSettlementContext(cashSettlement)
         : null,
     };
+    if (detail.resolutionExecutionKind === 'EXECUTION_NOT_VERIFIED') {
+      // Code/status alone cannot attest that a specialized domain command ran.
+      const events = await this.supportCaseRepository.manager.find(AuditLog, {
+        where: { resourceType: 'support_case', resourceId: supportCase.id, action: 'SUPPORT_CASE_RESOLVE' },
+      });
+      const matching = events.filter(event => event.actorRole === Role.SERVICE_MANAGER && !!event.actorUserId
+        && event.after?.resolutionExecutionKind === 'DOMAIN_ACTION_EXECUTED'
+        && event.after?.resolutionCode === supportCase.resolutionCode
+        && event.after?.status === SupportCaseStatus.RESOLVED
+        && event.after?.workflowVersion === supportCase.workflowVersion);
+      if (matching.length === 1) {
+        detail.resolutionExecutionKind = 'DOMAIN_ACTION_EXECUTED';
+        detail.needsManualAction = false;
+        detail.nextActor = null;
+      }
+    }
     return detail;
   }
 
   private toSummaryDto(supportCase: SupportCase): SupportCaseSummaryDto {
     return {
+      ...this.resolutionPresentation(supportCase),
       id: supportCase.id,
       caseType: supportCase.caseType,
       status: supportCase.status,
@@ -822,11 +1061,37 @@ export class SupportCasesService {
       isUrgent: supportCase.isUrgent ?? false,
       respondBy: supportCase.respondBy ?? null,
       holdCompletion: supportCase.holdCompletion ?? false,
+      requestIntent: supportCase.requestIntent ?? null,
+      workflowVersion: supportCase.workflowVersion ?? 0,
+      reasonClass: supportCase.reasonClass ?? null,
+      reasonCode: supportCase.reasonCode ?? null,
+      responsibility: supportCase.responsibility ?? null,
+      responsibilityActorId: supportCase.responsibilityActorId ?? null,
+      responsibilityReason: supportCase.responsibilityReason ?? null,
+      responsibilityEvidenceRefs: supportCase.responsibilityEvidenceRefs ?? null,
+      responsibilityDecidedAt: supportCase.responsibilityDecidedAt ?? null,
       liableParty: supportCase.liableParty ?? null,
       amount: supportCase.amount ?? null,
+      voucherGrossRefundVnd: supportCase.voucherGrossRefundVnd ?? null,
       createdAt: supportCase.createdAt,
       updatedAt: supportCase.updatedAt,
     };
+  }
+
+  private resolutionPresentation(supportCase: SupportCase): Pick<SupportCaseSummaryDto,
+    'resolutionExecutionKind' | 'needsManualAction' | 'nextActor'> {
+    const code = supportCase.resolutionCode;
+    if (!code) return { resolutionExecutionKind: 'NOT_RECORDED', needsManualAction: false, nextActor: null };
+    const open = [SupportCaseStatus.OPEN, SupportCaseStatus.IN_REVIEW].includes(supportCase.status);
+    if (code === 'escalate_admin' && open && !supportCase.resolvedAt) {
+      return { resolutionExecutionKind: 'ESCALATED_ADMIN', needsManualAction: true, nextActor: Role.ADMIN };
+    }
+    const specialized = supportCase.status === SupportCaseStatus.RESOLVED &&
+      (code === 'refund_to_wallet' || (code === CASH_SETTLEMENT_MANAGER_CONFIRMATION_CODE
+        && [SupportCaseType.CASH_MISMATCH, SupportCaseType.CASH_NON_RESPONSE].includes(supportCase.caseType)));
+    const needsManualAction = specialized || !['no_action', 'warranty_upheld'].includes(code);
+    return { resolutionExecutionKind: specialized ? 'EXECUTION_NOT_VERIFIED' : 'DECISION_RECORDED',
+      needsManualAction, nextActor: needsManualAction ? Role.SERVICE_MANAGER : null };
   }
 
   private toBookingContext(booking: Booking): SupportCaseBookingContextDto {
@@ -892,20 +1157,20 @@ export class SupportCasesService {
     resolutionCode: string,
     actor: SupportCaseActor,
     reason: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (
       !supportCase.serviceOrderId ||
       (supportCase.caseType !== SupportCaseType.CASH_MISMATCH &&
         supportCase.caseType !== SupportCaseType.CASH_NON_RESPONSE)
     ) {
-      return;
+      return false;
     }
 
     if (
       finalStatus !== SupportCaseStatus.RESOLVED ||
       resolutionCode !== CASH_SETTLEMENT_MANAGER_CONFIRMATION_CODE
     ) {
-      return;
+      return false;
     }
 
     const settlementRepository = manager.getRepository(CashSettlement);
@@ -922,6 +1187,12 @@ export class SupportCasesService {
       throw new NotFoundException(
         'Cash settlement or invoice is not available for manager resolution',
       );
+    }
+    // The legacy manager path settles original gross without funding proof.
+    // A funded dispute needs its own reconciled NET collection and subsidy;
+    // never turn it into an ordinary gross cash confirmation here.
+    if (await manager.findOne(VoucherPaymentLink, { where: { cashSettlementId: settlement.id } })) {
+      throw new ConflictException('Tiền mặt có ưu đãi cần được đối soát theo số tiền thực thu.');
     }
     if (settlement.status === CashSettlementStatus.CONFIRMED) {
       throw new ConflictException('Cash settlement is already confirmed');
@@ -952,6 +1223,7 @@ export class SupportCasesService {
     // dues and wallet settlement live in one place.
     const finance = this.moduleRef.get(FinanceService, { strict: false });
     await finance.applyConfirmedCash(manager, { order, invoice, settlement: saved, actor, now });
+    return true;
   }
 
   private validateFinalStatus(

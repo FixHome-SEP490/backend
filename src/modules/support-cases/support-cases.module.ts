@@ -9,14 +9,19 @@ import { Invoice } from '../service-orders/entities/invoice.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { SupportCasesController } from './support-cases.controller';
+import { CustomerStopRequestController } from './customer-stop-request.controller';
 import { SupportCasesService } from './support-cases.service';
 import { SupportCase } from './entities';
+import { ReputationModule } from '../reputation/reputation.module';
+import { TechnicianReportService } from './technician-report.service';
+import { OnsiteInterruptionController } from './onsite-interruption.controller';
 
 @Module({
   imports: [
     AuditLogModule,
     CustomerWalletModule,
     NotificationsModule,
+    ReputationModule,
     TypeOrmModule.forFeature([
       SupportCase,
       Booking,
@@ -26,8 +31,8 @@ import { SupportCase } from './entities';
       TechnicianAssignment,
     ]),
   ],
-  controllers: [SupportCasesController],
-  providers: [SupportCasesService],
+  controllers: [SupportCasesController, CustomerStopRequestController, OnsiteInterruptionController],
+  providers: [SupportCasesService, TechnicianReportService],
   exports: [SupportCasesService],
 })
 export class SupportCasesModule {}

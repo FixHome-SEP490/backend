@@ -26,6 +26,18 @@ export class MySupportCaseDto {
   @ApiProperty({ enum: SupportCaseStatus })
   status: SupportCaseStatus;
 
+  @ApiPropertyOptional({ enum: ['stop_or_replace'], nullable: true })
+  requestIntent: 'stop_or_replace' | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  resolutionCode?: string | null;
+
+  @ApiProperty()
+  holdCompletion: boolean;
+
+  @ApiPropertyOptional({ nullable: true })
+  responsibility: string | null;
+
   @ApiPropertyOptional({ format: 'uuid', nullable: true })
   bookingId: string | null;
 

@@ -93,9 +93,50 @@ export class SupportCase extends BaseEntity {
   @Column({ name: 'hold_completion', type: 'boolean', default: false })
   holdCompletion: boolean;
 
+  @Column({ name: 'request_intent', type: 'varchar', length: 32, nullable: true })
+  requestIntent: 'stop_or_replace' | null;
+
+  @Column({ name: 'workflow_version', type: 'integer', default: 0 })
+  workflowVersion: number;
+
+  @Column({ name: 'interruption_command_id', type: 'uuid', nullable: true })
+  interruptionCommandId: string | null;
+
+  @Column({ name: 'interruption_fingerprint', type: 'char', length: 64, nullable: true })
+  interruptionFingerprint: string | null;
+
+  @Column({ name: 'reason_class', type: 'varchar', length: 32, nullable: true })
+  reasonClass: 'technician_skill_gap' | 'non_technician_exception' | null;
+
+  @Column({ name: 'reason_code', type: 'varchar', length: 48, nullable: true })
+  reasonCode: string | null;
+
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  responsibility: 'pending_sm_review' | 'technician_fault' | 'no_technician_fault' | 'inconclusive' | null;
+
+  @Column({ name: 'responsibility_command_id', type: 'uuid', nullable: true })
+  responsibilityCommandId: string | null;
+
+  @Column({ name: 'responsibility_actor_id', type: 'uuid', nullable: true })
+  responsibilityActorId: string | null;
+
+  @Column({ name: 'responsibility_reason', type: 'varchar', length: 2000, nullable: true })
+  responsibilityReason: string | null;
+
+  @Column({ name: 'responsibility_evidence_refs', type: 'jsonb', nullable: true })
+  responsibilityEvidenceRefs: string[] | null;
+
+  @Column({ name: 'responsibility_decided_at', type: 'timestamptz', nullable: true })
+  responsibilityDecidedAt: Date | null;
+
   @Column({ name: 'liable_party', type: 'varchar', length: 16, nullable: true })
   liableParty: string | null;
 
   @Column({ name: 'amount', type: 'bigint', nullable: true, transformer: { to: (v?: number | null) => v, from: (v?: string | null) => (v == null ? null : Number(v)) } })
   amount: number | null;
+
+  /** Verified original-gross basis, distinct from amount (customer NET). */
+  @Column({ name: 'voucher_gross_refund_vnd', type: 'bigint', nullable: true,
+    transformer: { to: (v?: number | null) => v, from: (v?: string | null) => (v == null ? null : Number(v)) } })
+  voucherGrossRefundVnd: number | null;
 }

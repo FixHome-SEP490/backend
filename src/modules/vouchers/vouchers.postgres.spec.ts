@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DataSource } from 'typeorm';
 import { VoucherCore1792994400000 } from '../../database/migrations/1792994400000-VoucherCore';
+import { VoucherCampaignLifecycle1793116800000 } from '../../database/migrations/1793116800000-VoucherCampaignLifecycle';
 import { Role } from '../../shared/enums';
 import {
   VOUCHER_ENTITIES,
@@ -55,7 +56,7 @@ describe.skipIf(!enabled)(
       return actor;
     }
     async function campaign(kind = VoucherKind.GENERAL, quota = 100) {
-      return service.createCampaign(admin, {
+      const draft = await service.createCampaign(admin, {
         code: `PG_${randomUUID().replaceAll('-', '').toUpperCase()}`,
         name: 'Synthetic voucher PostgreSQL',
         kind,
@@ -69,6 +70,7 @@ describe.skipIf(!enabled)(
         startsAt: new Date(Date.now() - 86400000).toISOString(),
         endsAt: new Date(Date.now() + 86400000).toISOString(),
       });
+      return service.transitionCampaign(admin, draft.id, { status: 'PUBLISHED', version: 1, commandId: randomUUID() });
     }
     function checkout(actor: VoucherActor): CheckoutFacts {
       const facts: CheckoutFacts = {
@@ -166,6 +168,8 @@ describe.skipIf(!enabled)(
       await db.undoLastMigration();
       roundTrip.push('EMPTY_DOWN');
       roundTrip.push(...(await db.runMigrations()).map((m) => m.name));
+      db.migrations.push(new VoucherCampaignLifecycle1793116800000());
+      roundTrip.push(...(await db.runMigrations()).map((m) => m.name));
       admin = { id: randomUUID(), role: Role.ADMIN };
       await db.query('INSERT INTO users(id) VALUES ($1)', [admin.id]);
       const evidence: VoucherEvidence = {
@@ -191,6 +195,7 @@ describe.skipIf(!enabled)(
         'VoucherCore1792994400000',
         'EMPTY_DOWN',
         'VoucherCore1792994400000',
+        'VoucherCampaignLifecycle1793116800000',
       ]);
       const a = db.createQueryRunner(),
         b = db.createQueryRunner();
@@ -458,7 +463,7 @@ describe.skipIf(!enabled)(
       ).rejects.toMatchObject({ driverError: { code: '23514' } });
       await expect(db.query('DELETE FROM voucher_audit')).rejects.toThrow();
       await expect(db.undoLastMigration()).rejects.toThrow(
-        'Voucher history exists',
+        'forward migration',
       );
       expect(
         await db.getRepository(VoucherClaim).countBy({ id: r.claim.id }),

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ConflictException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { SupportCasesService } from './support-cases.service';
 import { SupportCase } from './entities/support-case.entity';
 import { QuerySupportCasesDto } from './dto';
@@ -50,6 +50,7 @@ const makeService = (
     findOneByOrFail: vi.fn().mockResolvedValue(supportCase),
   };
   const transactionManager = {
+    findOne: vi.fn().mockResolvedValue(null),
     getRepository: vi.fn(
       (entity: unknown) =>
         transactionRepositories?.get(entity) ?? transactionSupportRepository,
@@ -61,6 +62,8 @@ const makeService = (
     findOneBy: vi.fn().mockResolvedValue(supportCase),
     createQueryBuilder: vi.fn(),
     manager: {
+      // Legacy audit stub does not persist receipts; readback must stay unverified.
+      find: vi.fn().mockResolvedValue([]),
       transaction: vi.fn(async (callback) => callback(transactionManager)),
     },
   };
@@ -114,10 +117,54 @@ const makeService = (
     invoiceRepository,
     cashSettlementRepository,
     assignmentRepository,
+    transactionManager,
   };
 };
 
 describe('SupportCasesService', () => {
+  it('keeps amount as customer NET for an invoice without voucher funding', async () => {
+    const supportCase = makeCase({ caseType: SupportCaseType.PARTS_DISPUTE,
+      status: SupportCaseStatus.IN_REVIEW, customerId: 'customer-1', serviceOrderId: 'order-1' });
+    const { service, transactionManager } = makeService(supportCase);
+    const apply = vi.fn().mockResolvedValue({ id: 'wallet-tx-1' });
+    (service as unknown as { customerWalletService: unknown }).customerWalletService = {
+      apply, refundedForOrder: vi.fn().mockResolvedValue(0),
+    };
+    Object.assign(transactionManager, {
+      findOne: vi.fn(async (entity: unknown) => entity === Invoice ?
+        { id: 'invoice-1', serviceOrderId: 'order-1', grandTotal: 100,
+          paymentStatus: PaymentStatus.PAID } : entity === ServiceOrder ?
+          { id: 'order-1', code: 'ORDER-1' } : null),
+      query: vi.fn(async () => []),
+    });
+    await service.resolveCase(supportCase.id, {
+      finalStatus: SupportCaseStatus.RESOLVED, resolutionCode: 'refund_to_wallet',
+      reason: 'Verified faulty part requires a refund.', amount: 30,
+    }, { id: 'manager-1', role: 'service_manager' });
+    expect(apply).toHaveBeenCalledExactlyOnceWith(transactionManager,
+      expect.objectContaining({ amount: 30, idempotencyKey: 'REFUND:CASE_case-1' }));
+  });
+
+  it('blocks original-gross wallet refund for a funded invoice before moving money', async () => {
+    const supportCase = makeCase({ caseType: SupportCaseType.PARTS_DISPUTE,
+      status: SupportCaseStatus.IN_REVIEW, customerId: 'customer-1', serviceOrderId: 'order-1' });
+    const { service, transactionManager, auditLogService } = makeService(supportCase);
+    const apply = vi.fn();
+    (service as unknown as { customerWalletService: unknown }).customerWalletService = { apply };
+    Object.assign(transactionManager, {
+      findOne: vi.fn(async (entity: unknown) => entity === Invoice ?
+        { id: 'invoice-1', serviceOrderId: 'order-1', grandTotal: 100,
+          paymentStatus: PaymentStatus.PAID } : null),
+      query: vi.fn(async () => [{ id: 'funded-link-1' }]),
+    });
+    await expect(service.resolveCase(supportCase.id, {
+      finalStatus: SupportCaseStatus.RESOLVED, resolutionCode: 'refund_to_wallet',
+      reason: 'Verified faulty part requires a refund.', amount: 100,
+    }, { id: 'manager-1', role: 'service_manager' })).rejects.toBeInstanceOf(BadRequestException);
+    expect(apply).not.toHaveBeenCalled();
+    expect(auditLogService.logWithManagerStrict).not.toHaveBeenCalled();
+  });
+
   it('opens a bounded internal case without exposing a public creation flow', async () => {
     const { service, supportRepository } = makeService();
 

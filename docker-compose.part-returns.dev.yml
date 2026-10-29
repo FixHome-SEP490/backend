@@ -5,3 +5,5 @@ services:
     environment:
       PART_RETURNS_TRACKING_ENABLED: "true"
       P1_CUSTODY_ENABLED: "false"
+      CASH_FIRST_ENABLED: "true"
+      CASH_LEGACY_COMPAT_ENABLED: "true"

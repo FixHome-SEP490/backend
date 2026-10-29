@@ -1,9 +1,11 @@
 import { Column, Entity, Index } from 'typeorm';
 import { BaseEntity } from '../../../database/base.entity';
+import { VoucherFundingEntry, VoucherPaymentLink } from './voucher-funding.entity';
 import {
   CheckoutFacts,
   ReservationState,
   VoucherKind,
+  VoucherCampaignState,
   VoucherPolicy,
   VoucherSourceKind,
 } from '../voucher.types';
@@ -18,7 +20,10 @@ export class VoucherCampaign extends BaseEntity {
   @Column({ type: 'jsonb' }) policy: VoucherPolicy;
   @Column({ name: 'starts_at', type: 'timestamptz' }) startsAt: Date;
   @Column({ name: 'ends_at', type: 'timestamptz' }) endsAt: Date;
-  @Column({ type: 'boolean', default: true }) active: boolean;
+  @Column({ type: 'boolean', default: false }) active: boolean;
+  @Column({ type: 'varchar', length: 16, default: VoucherCampaignState.DRAFT }) status: VoucherCampaignState;
+  @Column({ type: 'int', default: 1 }) version: number;
+  @Column({ name: 'published_at', type: 'timestamptz', nullable: true }) publishedAt: Date | null;
   @Column({ name: 'auto_compensation', type: 'boolean', default: false }) autoCompensation: boolean;
   @Column({ type: 'int' }) quota: number;
   @Column({ type: 'int', default: 0 }) redeemed: number;
@@ -100,4 +105,6 @@ export const VOUCHER_ENTITIES = [
   VoucherClaim,
   VoucherReservation,
   VoucherAudit,
+  VoucherPaymentLink,
+  VoucherFundingEntry,
 ];

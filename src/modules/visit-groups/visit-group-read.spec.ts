@@ -137,6 +137,19 @@ describe('VisitGroupsService parent paging', () => {
     expect(deriveVisitGroupStatus([child(1, { bookingStatus: 'cancelled', orderStatus: null, orderId: null })])).toBe('cancelled');
     expect(deriveVisitGroupStatus([child(1, { outcome: 'succeeded', orderStatus: 'completed' })])).toBe('completed');
   });
+
+  it('keeps an interrupted child visible with two continuing devices', async () => {
+    const h = harness([parent], 1, [
+      child(1, { outcome: 'interrupted', orderStatus: 'cancelled', bookingStatus: 'cancelled', hasActiveAssignment: false }),
+      child(2, { orderStatus: 'under_repair' }), child(3, { orderStatus: 'under_repair' }),
+    ]);
+    const page = await h.service.assignedPage('tech-current', { tab: 'in_progress' });
+    expect(page.data[0].status).toBe('under_repair');
+    expect(page.data[0].items).toHaveLength(3);
+    expect(page.data[0].items[0].outcome).toBe('interrupted');
+    const filters = h.calls.filter(call => call.method === 'andWhere').map(call => String(call.args[0]));
+    expect(filters.join('\n')).toContain("vgi.outcome IS DISTINCT FROM 'interrupted'");
+  });
 });
 
 describe('Visit group page query validation', () => {

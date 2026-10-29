@@ -19,6 +19,7 @@ import {
 import { ModuleRef } from '@nestjs/core';
 import { VisitGroupsService } from '../visit-groups/visit-groups.service';
 import { RepairFailureRebookDto } from './dto/repair-failure-rebook.dto';
+import { InterruptionRebookDto } from './dto/interruption-rebook.dto';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiOkResponse } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 import { sendVideoStream } from '../../shared/cloudinary';
@@ -288,6 +289,32 @@ export class BookingsController {
   ) {
     const groupService = this.moduleRef?.get(VisitGroupsService, { strict: false });
     return { data: await this.bookingsService.confirmRepairFailureRebook(id, body, req.user,
+      (groupDto, actor, manager) => {
+        if (!groupService) throw new Error('VisitGroupsService unavailable');
+        return groupService.create(groupDto, actor, manager);
+      }) };
+  }
+
+  @Get(':id/interruption-draft')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('booking:read_own')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Customer: read a verified onsite or manager-closed interruption draft' })
+  async interruptionDraft(@Param('id', ParseUUIDPipe) id: string,
+    @Req() req: { user: { id: string; role: string } }) {
+    return { data: await this.bookingsService.interruptionDraft(id, req.user) };
+  }
+
+  @Post(':id/interruption-rebook')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('booking:create')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Customer: confirm a fresh schedule and repriced booking for interrupted work' })
+  async confirmInterruptionRebook(@Param('id', ParseUUIDPipe) id: string,
+    @Body() body: InterruptionRebookDto, @Req() req: { user: { id: string; role: string } }) {
+    const groupService = this.moduleRef?.get(VisitGroupsService, { strict: false });
+    return { data: await this.bookingsService.confirmInterruptionRebook(id, body, req.user,
       (groupDto, actor, manager) => {
         if (!groupService) throw new Error('VisitGroupsService unavailable');
         return groupService.create(groupDto, actor, manager);

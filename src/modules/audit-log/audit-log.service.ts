@@ -133,6 +133,9 @@ export class AuditLogService {
     action?: string;
   }): Promise<{ data: AuditLog[]; total: number }> {
     const qb = this.auditRepo.createQueryBuilder('log');
+    // Physical legacy observations are SM-only, including their notes/evidence.
+    // The official readback is the guarded legacy part-return API.
+    qb.andWhere('log.action <> :privateAction', { privateAction: 'SM_LEGACY_PARTS_MANUAL_REVIEW' });
 
     if (options.resourceType) {
       qb.andWhere('log.resourceType = :resourceType', {
@@ -158,6 +161,7 @@ export class AuditLogService {
 
   /** Find a single audit log by ID. Returns null if not found. */
   async findById(id: string): Promise<AuditLog | null> {
-    return this.auditRepo.findOneBy({ id });
+    const entry = await this.auditRepo.findOneBy({ id });
+    return entry?.action === 'SM_LEGACY_PARTS_MANUAL_REVIEW' ? null : entry;
   }
 }

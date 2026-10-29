@@ -1,4 +1,182 @@
-# Voucher V-BE — tích hợp T2 source
+# Voucher T2.1 — handoff Backend, 27/10/2026
+
+Trạng thái source: **safe-to-integrate YES**, sau review tài chính độc lập và các gate
+bên dưới. Trạng thái DEV runtime: **NOT VERIFIED**. Không stage/commit/push/merge/deploy,
+không đọc secret, không kết nối hay ghi DEV DB trong lượt implementation này.
+Giữ nguyên nền T2 đã dirty/untracked và Toàn AI/T1.
+
+## Contract T2.1 hiện tại
+
+- `GET /vouchers/checkout-preview/:claimId/:scopeId` chỉ đọc; `previewOnly=true`.
+  `paymentAvailable` phản ánh schema readiness; `reason=null` khi schema sẵn sàng,
+  ngược lại `VOUCHER_FUNDING_NOT_READY`. Preview không giữ quota hay xác nhận thanh toán.
+- `POST /vouchers/apply` lấy bằng chứng hóa đơn frozen dưới khóa, kiểm owner, nguồn duyệt,
+  thiết bị thành công và không có collection attempt cũ. FAILED/CANCELLED không tự chứng minh
+  tiền đã được trả lại; nguồn legacy đang đối soát phải được xử lý trước khi APPLY.
+- `POST /finance/funded/solo/:id/{wallet,vnpay,zero-closeout}` dùng **invoice ID**;
+  `solo/:id/cash/{declare,confirm}` dùng **service order ID**.
+  `POST /finance/funded/visit-groups/:id/{wallet,vnpay,zero-closeout,cash/declare,cash/confirm}`
+  dùng **VisitGroup ID**. Body phải có `voucherReservationId`; không nhận discount/customerDue
+  do client tự tính. CASH declare thêm `declaredAmount`; confirm thêm `agreed` và lý do dispute
+  tùy chọn, không nhận số tiền xác nhận do client tự cung cấp.
+- Cả 10 funded route giữ JWT, role, permission và ownership. Guard mới kiểm tra service
+  ví/quyết toán có mặt, đúng migration ledger, bảng/cột và quyền SELECT/INSERT thực tế,
+  không bị RLS chặn. Thiếu điều kiện trả 503; không chạy migration hoặc cấp quyền tự động.
+  Callback khoản đã thu không phụ thuộc guard mở giao dịch mới.
+- WALLET trừ đúng customer NET; VNPAY ký đúng NET; CASH chỉ credit đủ subsidy vào ví
+  kỹ thuật viên sau khách xác nhận. Credit vẫn giảm được khoản nợ của ví âm. ZERO không
+  tạo giao dịch VNPay 0 đồng hoặc trừ ví khách. Journal/quota dùng chung transaction với
+  payment/invoice; unique journal và khóa reservation ngăn tác động tiền lặp lại.
+- Invoice gross, commission snapshot, PlatformDue và technician entitlement gốc được giữ.
+  Chỉ hóa đơn của thiết bị thành công được phân bổ trong VisitGroup.
+- Các entry point collection gross cũ chặn scope còn RESERVED dưới khóa hóa đơn. Hai
+  đường CASH confirm kiểm lại trong transaction để declaration mới không bị ghi nhầm dispute.
+  Manager CASH legacy không được biến funded dispute thành gross settlement thiếu subsidy.
+- Hash allocation được canonical hóa theo key trước SHA256 để JSONB round-trip không làm
+  hỏng bằng chứng; sửa giá trị tiền vẫn bị từ chối.
+- F1 kiểm HMAC, merchant/attempt/amount và PayDate ICT nghiêm ngặt. Thanh toán trong cửa sổ
+  hợp lệ có thể nhận callback muộn. Status `01` giữ pending và chờ terminal; status `02`
+  chỉ nhả theo danh sách response không thu tiền đã nhận diện. `07`, trạng thái đảo/hoàn tiền,
+  dữ liệu mâu thuẫn, thời điểm không hợp lệ hoặc thiếu chứng cứ giữ đối soát, không thu thêm
+  phần giảm giá. Tham chiếu: [VNPay 2.1.0](https://sandbox.vnpayment.vn/apis/files/VNPAY%20Payment%20Gateway_Techspec%202.1.0-VN.pdf).
+- Reservation chưa có link chỉ release/expire khi chứng minh lại không có collection.
+  CASH đã khai hoặc VNPay pending/unknown không được tự nhả chỉ vì hết 15 phút.
+- F3 WALLET/ZERO giữ `SupportCase.amount` là **customer NET** và yêu cầu manager duyệt riêng
+  `grossRefundVnd`; phân bổ reversal theo invoice và làm tròn từ tổng tích lũy. Chỉ hoàn đủ
+  toàn scope mới khôi phục quota/claim một lần. **CASH/VNPAY original-rail refund vẫn bị chặn**:
+  credit ví không phải bằng chứng hoàn tiền mặt hoặc hoàn về ngân hàng. Không có refund giả.
+
+## Follow-up TECHNICIAN CASH — contract Web, 27/10/2026
+
+- `GET /finance/funded/solo/:id/cash/reservation`: `id` là **serviceOrderId**.
+- `GET /finance/funded/visit-groups/:id/cash/reservation`: `id` là **visitGroupId**.
+  Dùng cùng API base `/api/v1` hiện có; không đổi casing của path/field.
+- JWT + role `TECHNICIAN` (giá trị enum runtime `technician`) + permission
+  `order:read_related`. SOLO phải được phân công active; group phải phụ trách active
+  **mọi invoice billable**. Kiểm lại customer/scope/assignment sau khóa invoice.
+  Không trả claim, customer, policy hay thông tin riêng tư.
+- `200`, `Cache-Control: no-store`, response đúng hai field trong `data`:
+
+  ```json
+  {"data":{"voucherReservationId":"<uuid>","customerDueVnd":50000}}
+  ```
+
+  Đây là phần `data` của envelope chung có `success`, `statusCode`, `message`;
+  interceptor không thêm một lớp `data` nữa.
+  Chỉ trả funded khi đúng một reservation `RESERVED`, chưa hết hạn theo giờ DB,
+  frozen invoice và quote CASH hợp lệ, chưa có collection evidence. Tiền là số nguyên VND
+  server tính; không dùng invoice gross hoặc tự trừ discount ở client.
+- NONE dùng sentinel rõ ràng, không có `status` mới:
+
+  ```json
+  {"data":{"voucherReservationId":null,"customerDueVnd":null}}
+  ```
+
+  Chỉ sentinel này cho phép UI chọn flow CASH gross hiện có. `null` không phải 0 đồng.
+  Không có live `RESERVED`/`REDEEMED`, invoice vẫn phải frozen/unpaid và không có attempt
+  cần đối soát. GET đọc lại reservation sau khóa để không trả NONE từ snapshot trước Apply.
+- `401` thiếu xác thực; `403` sai role/permission; `404` không thuộc công việc hoặc sai scope;
+  `409` ambiguous/expired RESERVED/REDEEMED, quote đổi, ZERO hoặc collection đã tồn tại
+  (kể cả attempt legacy FAILED/CANCELLED chưa chứng minh hoàn tiền); `503` chưa sẵn sàng.
+  **Không fallback sang gross trên bất kỳ lỗi nào.** `409` yêu cầu tải lại trạng thái;
+  declaration đã có thì hiển thị trạng thái đó, không hướng dẫn thu lần hai.
+- UI đọc GET ngay trước khai tiền; khi funded, gửi nguyên `voucherReservationId` và
+  `declaredAmount=customerDueVnd` vào `POST` CASH declare tương ứng ở contract trên.
+  POST vẫn tự kiểm lại reservation/amount/ownership; GET không giữ giá, gia hạn voucher,
+  ghi declaration hay cho phép bỏ qua xác nhận khách. Nếu khách Apply sau GET NONE,
+  gross POST vẫn bị chặn bởi guard RESERVED dưới khóa invoice; tải lại thay vì thu gross.
+- ZERO dùng customer zero-closeout, không khai CASH 0 đồng. Subsidy chỉ credit sau khách
+  xác nhận đúng một lần. F3 CASH/VNPAY refund giữ fail closed khi thiếu original-rail proof.
+- Không đổi migration, env, dependency, refund hoặc POST contract. Lead cập nhật
+  `docs/CONTEXT.md` trong PR; Web/Mobile runtime và PostgreSQL locks: **NOT VERIFIED**.
+
+File thay đổi riêng follow-up: `finance/finance.service.ts`, `finance/finance.controller.ts`,
+`finance/dto/voucher-funding.dto.ts`, hai test `finance/voucher-cash-reservation.spec.ts`,
+`finance/voucher-cash-reservation.controller.spec.ts` và handoff này (đều dưới `src/modules/`).
+
+Kiểm chứng follow-up:
+
+- RED → GREEN cho service/HTTP lookup và race Apply đồng thời SOLO/GROUP.
+- Focused + review độc lập: **4 files / 88 tests PASS**; review code **safe-to-integrate YES**.
+- `npm test`: **223 files PASS, 1 skipped; 2307 tests PASS, 11 skipped**, exit 0.
+- `npm run typecheck`, `npm run build`: **PASS**, exit 0.
+- `npm run lint`: **PASS**, 0 errors, giữ nguyên 2 warning cũ ngoài scope.
+- Hash 64 file nền: chỉ 4 file hiện hữu nêu trên thay đổi; thêm đúng 2 test mới.
+  Migration và các phần nền khác giữ nguyên; không thao tác staging/commit/release/DB.
+- HTTP smoke dùng principal test với guard role/permission thật, không chứng minh chữ ký JWT.
+  PostgreSQL isolated/e2e, Web/browser và DEV runtime: **NOT VERIFIED** theo phạm vi/waiver.
+  Lead restart Backend trước manual E2E; cập nhật Web để dùng lookup contract này.
+
+## Migration và giới hạn release
+
+- Theo handoff owner, `VoucherCore1792994400000` và `RepairFailureRebook1790000000053`
+  **đã apply DEV**. Không chạy lại, sửa hoặc đánh dấu lại hai migration đó.
+- Migration mới `VoucherFundingLedger1792994400001` **chưa chạy**. Đã review DDL tĩnh;
+  phụ thuộc VoucherCore, VisitGroupPayments, wallet/customer-wallet và support_cases.
+  Thêm immutable link/journal, gross refund column và REFUNDED; không backfill tiền.
+  `down` từ chối rollback để giữ lịch sử, phải dùng forward migration đã review.
+- Lead kiểm ledger/pending migrations, apply riêng phần mới đúng một lần bằng quy trình
+  release được duyệt, rồi restart Backend và kiểm `/health`. Không dùng readiness để bỏ
+  qua schema, không bật synchronize, không nới auth/RLS. Không có dependency/env/image mới.
+- Owner đã miễn isolated PostgreSQL tests và tự QA E2E sau deploy. PostgreSQL DDL execution,
+  deferred triggers, nhiều instance/row locks/concurrency và Docker/HTTP/provider thật:
+  **NOT VERIFIED**. Một số đường khóa group/order và invoice khác thứ tự có thể deadlock
+  rồi rollback/retry; test doubles không chứng minh hành vi PostgreSQL.
+- Funded querydr chưa có verifier riêng được chứng minh; giữ fail closed, không nhận
+  response querydr như IPN đã xác minh. Không tuyên bố fallback/hoàn tiền provider hoạt động.
+- Web là writer khác; Web/Mobile parity và browser QA: **NOT VERIFIED**. Web phải đọc lại
+  trạng thái server sau callback; không coi browser return/preview là hóa đơn PAID.
+- `docs/CONTEXT.md` nằm ngoài scope writer này. Lead phải cập nhật theo section 0 trong
+  cùng PR và phối hợp context Web/Mobile/docs trước release.
+
+## Kiểm chứng lượt implementation
+
+- `npm test`: **PASS**, 221 files pass, 1 file skip; 2253 tests pass, 11 tests skip.
+- `npm run typecheck`: **PASS**, exit 0.
+- `npm run lint`: **PASS**, 0 errors; 2 warning cũ ngoài scope.
+- `npm run build`: **PASS**, exit 0.
+- `git diff --check`: **PASS**, chỉ cảnh báo LF/CRLF của Git.
+- Review độc lập cuối: **PASS**, 19 files / 158 tests, không thấy blocker source mới.
+- `npm run test:e2e`, PostgreSQL, Docker, DEV deploy và manual E2E: **NOT VERIFIED**;
+  không chạy theo phạm vi/waiver của owner.
+
+## File do writer hoàn thiện trong lượt này
+
+Đường dẫn tương đối từ root; không bao gồm các file nền T2 giữ nguyên từ handoff.
+
+```text
+src/modules/finance/finance.controller.ts
+src/modules/finance/finance.service.ts
+src/modules/finance/funded-finance.controller.spec.ts
+src/modules/finance/voucher-collection-exclusion.spec.ts
+src/modules/finance/voucher-readiness.spec.ts
+src/modules/support-cases/support-cases.service.ts
+src/modules/support-cases/support-cases.service.spec.ts
+src/modules/support-cases/voucher-cash-resolution.spec.ts
+src/modules/vouchers/INTEGRATION.md
+src/modules/vouchers/repair-failure-voucher-evidence.ts
+src/modules/vouchers/vouchers.service.ts
+src/modules/vouchers/voucher-allocation-digest.ts
+src/modules/vouchers/voucher-funding-readiness.ts
+src/modules/vouchers/voucher-checkout-evidence.spec.ts
+src/modules/vouchers/voucher-preview-readiness.spec.ts
+src/modules/vouchers/voucher-payment-link.ts
+src/modules/vouchers/voucher-refund-commit.ts
+src/modules/vouchers/voucher-cash-credit.ts
+src/modules/vouchers/voucher-cash-credit.spec.ts
+src/modules/vouchers/voucher-settlement-evidence.ts
+src/modules/vouchers/voucher-settlement-evidence.spec.ts
+src/modules/vouchers/voucher-provider-ledger.ts
+src/modules/vouchers/voucher-provider-ledger.spec.ts
+src/modules/vouchers/voucher-vnpay-evidence.ts
+src/modules/vouchers/voucher-vnpay-evidence.spec.ts
+```
+
+## Lịch sử V-BE trước T2.1
+
+Phần bên dưới giữ nguyên để truy vết lane V-BE cũ, **không** đại diện trạng thái release
+hiện tại. Các phát biểu fail-closed/migration chưa chạy và checklist cũ bên dưới được
+thay thế bởi contract T2.1 và trạng thái migration nêu phía trên.
 
 Module độc lập trên base `290e2f46e559928083bb0637e8d0e1ab37c9d8b5`.
 Phạm vi: `src/modules/vouchers/` và migration cộng thêm chỉ cho voucher

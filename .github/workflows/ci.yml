@@ -46,6 +46,14 @@ jobs:
         run: npm test
       - name: Build
         run: npm run build
+      - name: Isolated voucher lifecycle PostgreSQL gate
+        run: npx vitest run src/modules/vouchers/voucher-campaign.postgres.spec.ts
+        env:
+          VOUCHER_CAMPAIGN_ISOLATED_PG: '1'
+      - name: Isolated cash and reputation PostgreSQL migration gate
+        run: npx vitest run src/database/cash-reputation.postgres.spec.ts
+        env:
+          CASH_REPUTATION_ISOLATED_PG: '1'
       - name: Integration tests
         run: npm run test:e2e
         env:
@@ -76,6 +84,22 @@ jobs:
             set -e
             cd ~/backend
             git pull --ff-only
+            # The committed DEV overlay is the activation authority. A separate
+            # reviewed overlay commit changes both flags after Web and DB QA.
+            if grep -Eq '^[[:space:]]*CASH_FIRST_ENABLED:[[:space:]]*"true"[[:space:]]*$' docker-compose.part-returns.dev.yml; then
+              desired_cash_first=true
+              activation=1
+            elif grep -Eq '^[[:space:]]*CASH_FIRST_ENABLED:[[:space:]]*"false"[[:space:]]*$' docker-compose.part-returns.dev.yml; then
+              desired_cash_first=false
+              activation=0
+            else
+              echo "Blocked: DEV overlay must explicitly set CASH_FIRST_ENABLED"
+              exit 1
+            fi
+            if [ "$desired_cash_first" = true ] && ! grep -Eq '^[[:space:]]*CASH_LEGACY_COMPAT_ENABLED:[[:space:]]*"true"[[:space:]]*$' docker-compose.part-returns.dev.yml; then
+              echo "Blocked: Mobile compatibility must be enabled for DEV cash-first"
+              exit 1
+            fi
             # Reject an existing P1 finance cutover rather than override its semantics.
             if [ -f .env ] && grep -Eq '^[[:space:]]*P1_CUSTODY_ENABLED[[:space:]]*=[[:space:]]*["\x27]?true["\x27]?[[:space:]]*$' .env; then
               echo "Blocked: VPS env currently enables P1 finance custody"
@@ -88,11 +112,26 @@ jobs:
               echo "Blocked: existing backend uses P1 finance custody"
               exit 1
             fi
-            docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml up -d --build backend
+            # Do not downgrade an active cash-first backend to legacy mode.
+            if [ "$desired_cash_first" != true ] && [ -n "$existing" ] && docker inspect "$existing" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -Fxq 'CASH_FIRST_ENABLED=true'; then
+              echo "Blocked: existing backend has cash-first enabled but DEV overlay does not"
+              exit 1
+            fi
+            # Prepare a new image while the previous DEV backend keeps serving.
+            # Fail closed unless the exact two cash/reputation migrations and
+            # database app-role safety preflight pass in the disposable one-off.
+            # On failure, DO NOT restart the working Backend container.
+            docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml build backend
+            docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml run --rm --no-deps -e CASH_REPUTATION_DEV_RELEASE=1 -e CASH_FIRST_DEV_ACTIVATION="$activation" backend node dist/database/cash-reputation-dev-release.js
+            docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml up -d --no-build backend
             active="$(docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml ps -q backend)"
             test -n "$active"
-            runtime_flags="$(docker inspect "$active" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^(PART_RETURNS_TRACKING_ENABLED|P1_CUSTODY_ENABLED)=')"
+            runtime_flags="$(docker inspect "$active" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^(PART_RETURNS_TRACKING_ENABLED|P1_CUSTODY_ENABLED|CASH_FIRST_ENABLED|CASH_LEGACY_COMPAT_ENABLED)=')"
             printf '%s\n' "$runtime_flags" | grep -Fxq 'PART_RETURNS_TRACKING_ENABLED=true'
             printf '%s\n' "$runtime_flags" | grep -Fxq 'P1_CUSTODY_ENABLED=false'
-            echo "Dev-only physical returns tracking configured; finance custody remains disabled"
+            printf '%s\n' "$runtime_flags" | grep -Fxq "CASH_FIRST_ENABLED=$desired_cash_first"
+            if [ "$desired_cash_first" = true ]; then
+              printf '%s\n' "$runtime_flags" | grep -Fxq 'CASH_LEGACY_COMPAT_ENABLED=true'
+            fi
+            echo "DEV cash-first overlay verified; finance custody remains disabled"
             docker image prune -f

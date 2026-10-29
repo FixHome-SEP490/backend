@@ -38,6 +38,8 @@ import {
   SupportCaseSummaryDto,
 } from './dto';
 import { SupportCasesService, SupportCaseActor } from './support-cases.service';
+import { TechnicianReportService } from './technician-report.service';
+import { DecideTechnicianResponsibilityDto, TechnicianReportDto } from './dto/technician-report.dto';
 
 @ApiTags('Support Cases')
 @Controller('support/cases')
@@ -46,7 +48,29 @@ import { SupportCasesService, SupportCaseActor } from './support-cases.service';
 @RequirePermission('support:read_all')
 @ApiBearerAuth()
 export class SupportCasesController {
-  constructor(private readonly supportCasesService: SupportCasesService) {}
+  constructor(private readonly supportCasesService: SupportCasesService,
+    private readonly technicianReports: TechnicianReportService) {}
+
+  @Post('technician-report')
+  @HttpCode(HttpStatus.CREATED)
+  @Roles(Role.TECHNICIAN)
+  @RequirePermission('order:read_related')
+  @ApiOperation({ summary: 'Technician: report a typed repair exception for manager review' })
+  async technicianReport(@Body() dto: TechnicianReportDto, @CurrentUser() actor: SupportCaseActor): Promise<MySupportCaseDto> {
+    const report = await this.technicianReports.report(dto, actor);
+    return this.supportCasesService.findMineById(report.id, actor);
+  }
+
+  @Post(':id/responsibility')
+  @HttpCode(HttpStatus.OK)
+  @Roles(Role.SERVICE_MANAGER, Role.ADMIN)
+  @RequirePermission('support:resolve')
+  @ApiOperation({ summary: 'Manager/Admin: decide responsibility before any case-linked point deduction' })
+  async decideResponsibility(@Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: DecideTechnicianResponsibilityDto, @CurrentUser() actor: SupportCaseActor): Promise<SupportCaseDetailDto> {
+    const report = await this.technicianReports.decide(id, dto, actor);
+    return this.supportCasesService.findById(report.id);
+  }
 
   @Post()
   @HttpCode(HttpStatus.CREATED)

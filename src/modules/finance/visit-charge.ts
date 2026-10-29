@@ -5,9 +5,10 @@ import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
 import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity';
 import type { VisitPaymentAllocation } from '../visit-groups/entities/visit-group-payment.entity';
+import type { VoucherFundingAllocation } from '../vouchers/voucher-funding-allocation';
 
 /** Where one device of a visit stands for the visit's single payment. */
-export type VisitDeviceState = 'succeeded' | 'failed' | 'quote_declined' | 'cancelled' | 'open';
+export type VisitDeviceState = 'succeeded' | 'failed' | 'quote_declined' | 'cancelled' | 'open' | 'interrupted';
 
 export interface VisitDeviceCharge {
   sequence: number;
@@ -20,6 +21,7 @@ export interface VisitDeviceCharge {
   invoiceId: string | null;
   amount: number;
   paid: boolean;
+  financialFollowupRequired?: boolean;
 }
 
 export interface VisitCharge {
@@ -31,6 +33,7 @@ export interface VisitCharge {
   waiting: number;
   ready: boolean;
   paid: boolean;
+  financialFollowupRequired?: boolean;
 }
 
 /**
@@ -53,6 +56,9 @@ export async function loadVisitCharge(manager: EntityManager, groupId: string, l
   const orderByBooking = new Map(orders.map((order) => [order.bookingId, order]));
   const invoiceByOrder = new Map(invoices.map((invoice) => [invoice.serviceOrderId, invoice]));
 
+  // Preserve the pre-stop allocation eligibility for historical provider callbacks.
+  // A stop may hold NEW collection, never reinterpret an already-frozen split.
+  const historicallyChargeable = new Set<string>();
   const devices = items.map((item): VisitDeviceCharge => {
     const booking = bookingById.get(item.bookingId);
     const order = orderByBooking.get(item.bookingId) ?? null;
@@ -61,7 +67,10 @@ export async function loadVisitCharge(manager: EntityManager, groupId: string, l
     if (item.outcome === 'failed' || item.outcome === 'quote_declined') state = item.outcome;
     else if (booking?.status === BookingStatus.CANCELLED || order?.status === ServiceOrderStatus.CANCELLED) state = 'cancelled';
     else if (order?.completionRequestedAt && invoice) state = 'succeeded';
-    const charged = state === 'succeeded' && invoice ? Number(invoice.grandTotal) : 0;
+    if (state === 'succeeded' && order) historicallyChargeable.add(order.id);
+    const stopped = item.outcome === 'interrupted' && order?.status !== ServiceOrderStatus.CANCELLED;
+    const charged = (state === 'succeeded' || stopped) && invoice ? Number(invoice.grandTotal) : 0;
+    if (stopped) state = 'interrupted';
     return {
       sequence: item.sequence,
       deviceLabel: item.deviceLabel ?? null,
@@ -70,23 +79,26 @@ export async function loadVisitCharge(manager: EntityManager, groupId: string, l
       serviceOrderId: order?.id ?? null,
       orderCode: order?.code ?? null,
       state,
-      invoiceId: state === 'succeeded' ? invoice?.id ?? null : null,
+      invoiceId: state === 'succeeded' || state === 'interrupted' ? invoice?.id ?? null : null,
       amount: charged,
-      paid: state === 'succeeded' && invoice?.paymentStatus === PaymentStatus.PAID,
+      paid: (state === 'succeeded' || stopped) && invoice?.paymentStatus === PaymentStatus.PAID,
+      ...(stopped && invoice ? { financialFollowupRequired: true } : {}),
     };
   });
   const allocations = devices
-    .filter((device) => device.state === 'succeeded' && !device.paid && device.amount > 0)
+    .filter((device) => historicallyChargeable.has(device.serviceOrderId!) && !device.paid && device.amount > 0)
     .map((device) => ({ invoiceId: device.invoiceId!, serviceOrderId: device.serviceOrderId!, amount: device.amount }));
   const waiting = devices.filter((device) => device.state === 'open').length;
   const total = allocations.reduce((sum, allocation) => sum + allocation.amount, 0);
+  const financialFollowupRequired = devices.some(device => device.financialFollowupRequired);
   return {
     devices,
     allocations,
     total,
     waiting,
-    ready: waiting === 0 && allocations.length > 0,
-    paid: waiting === 0 && allocations.length === 0 && devices.some((device) => device.state === 'succeeded'),
+    ready: !financialFollowupRequired && waiting === 0 && allocations.length > 0,
+    paid: !financialFollowupRequired && waiting === 0 && allocations.length === 0 && devices.some((device) => device.state === 'succeeded'),
+    ...(financialFollowupRequired ? { financialFollowupRequired: true } : {}),
   };
 }
 
@@ -94,4 +106,32 @@ export async function loadVisitCharge(manager: EntityManager, groupId: string, l
 export function sameAllocations(frozen: VisitPaymentAllocation[], now: VisitPaymentAllocation[]): boolean {
   const key = (list: VisitPaymentAllocation[]) => list.map((a) => `${a.invoiceId}:${Number(a.amount)}`).sort().join('|');
   return frozen.length === now.length && key(frozen) === key(now);
+}
+
+/** The payment split for a funded visit; never mutates the original invoice charge. */
+export function allocateFundedVisitCharge(
+  charge: VisitCharge,
+  funding: Pick<VoucherFundingAllocation, 'invoices' | 'total'>,
+): { originalGross: number; customerDue: number; allocations: VisitPaymentAllocation[] } {
+  const invalid = (): never => { throw new RangeError('Voucher visit allocation is inconsistent.'); };
+  if (!charge.ready || charge.waiting !== 0 || charge.paid ||
+      !Array.isArray(funding.invoices) || funding.invoices.length !== charge.allocations.length ||
+      !Number.isSafeInteger(charge.total) || charge.total <= 0 ||
+      funding.total.originalGrossVnd !== charge.total ||
+      !Number.isSafeInteger(funding.total.customerDueVnd) || funding.total.customerDueVnd < 0) invalid();
+  const byInvoice = new Map(charge.allocations.map(item => [item.invoiceId, item]));
+  if (byInvoice.size !== charge.allocations.length) invalid();
+  const seen = new Set<string>();
+  const allocations = funding.invoices.map(invoice => {
+    const original = byInvoice.get(invoice.invoiceId);
+    if (!original || seen.has(invoice.invoiceId) ||
+        original.amount !== invoice.originalGrossVnd ||
+        !Number.isSafeInteger(invoice.customerDueVnd) || invoice.customerDueVnd < 0 ||
+        invoice.customerDueVnd > original.amount) invalid();
+    seen.add(invoice.invoiceId);
+    return { invoiceId: original.invoiceId, serviceOrderId: original.serviceOrderId,
+      amount: invoice.customerDueVnd };
+  });
+  if (allocations.reduce((sum, item) => sum + item.amount, 0) !== funding.total.customerDueVnd) invalid();
+  return { originalGross: charge.total, customerDue: funding.total.customerDueVnd, allocations };
 }

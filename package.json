@@ -31,6 +31,7 @@
     "seed:demo": "npx ts-node src/database/seeds/run-seed.ts",
     "seed:parts": "npx ts-node src/database/seeds/seed-parts-catalog-791.ts",
     "seed:catalog-v3": "npx ts-node src/database/seeds/seed-catalog-v3.ts",
+    "seed:parts-2026-10-27": "npx ts-node src/database/seeds/seed-parts-2026-10-27.ts",
     "ai:point": "node scripts/point-at-ai.js"
   },
   "dependencies": {

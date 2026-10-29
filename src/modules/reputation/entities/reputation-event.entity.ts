@@ -31,6 +31,9 @@ export class ReputationEvent extends BaseEntity {
   @Column({ name: 'cancellation_id', type: 'uuid', nullable: true })
   cancellationId?: string | null;
 
+  @Column({ name: 'support_case_id', type: 'uuid', nullable: true })
+  supportCaseId?: string | null;
+
   /** Staff member for an adjustment; null for automatic changes. */
   @Column({ name: 'actor_user_id', type: 'uuid', nullable: true })
   actorUserId?: string | null;
