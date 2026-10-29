@@ -11,6 +11,7 @@ import { createPartCustodySnapshot } from './part-custody.rules';
 import { releaseOutgoingTechnicianPartRequests } from './part-request-lifecycle';
 import { ServiceOrdersService } from '../service-orders/service-orders.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import { AuditLog } from '../audit-log/entities/audit-log.entity';
 import {
   AccountStatus,
   BookingStatus,
@@ -695,6 +696,8 @@ describe('T3 physical part return audit (in-memory storage)', () => {
         partCatalogId: 'catalog',
         partNameSnapshot: 'Synthetic part',
         issuedQty: 3,
+        manualReviewState: 'UNKNOWN',
+        lastManualReview: null,
       },
     ]);
     // Unknown is not zero: no accepted/declared/outstanding count is invented.
@@ -998,4 +1001,123 @@ describe('T3 physical part return audit (in-memory storage)', () => {
       expect(h.rows.SupportCase ?? []).toEqual([]);
     },
   );
+});
+
+describe('T11 legacy physical observations (in-memory storage, not PostgreSQL)', () => {
+  const body = (patch: Record<string, unknown> = {}) => ({
+    commandId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', expectedVersion: 0,
+    status: 'INVESTIGATING', reason: 'Đối chiếu chứng từ bàn giao cũ', ...patch,
+  });
+  const setup = () => {
+    const h = fixture();
+    h.rows.PartCustody = [];
+    return h;
+  };
+  const review = (h: ReturnType<typeof fixture>, patch = {}, actor = sm, itemId = 'item') =>
+    (h.custody as any).reviewLegacyItem(itemId, body(patch), actor);
+
+  it('persists an immutable observation, replays it after later observations, and never accepts stock', async () => {
+    const h = setup();
+    expect((h.custody as any).reviewLegacyItem).toBeTypeOf('function');
+    const before = structuredClone(h.rows);
+    const first = await review(h);
+    expect(first).toMatchObject({ receiptState: 'UNKNOWN', manualReviewState: 'INVESTIGATING',
+      lastManualReview: { version: 1, actorUserId: sm.id, actorRole: Role.SERVICE_MANAGER,
+        orderId: 'order', technicianId: tech.id, partRequestId: 'request', partRequestItemId: 'item' } });
+    const final = await review(h, { commandId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', expectedVersion: 1,
+      status: 'PHYSICALLY_VERIFIED', observedQty: 2, evidenceReferenceId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' });
+    expect(final).toMatchObject({ receiptState: 'UNKNOWN', manualReviewState: 'PHYSICALLY_VERIFIED', lastManualReview: { observedQty: 2 } });
+    expect(await review(h, { commandId: body().commandId.toUpperCase() })).toEqual(first);
+    expect(h.rows.AuditLog).toHaveLength(2);
+    expect(h.rows.AuditLog[0]).toMatchObject({ action: 'SM_LEGACY_PARTS_MANUAL_REVIEW', resourceType: 'part_request_item', resourceId: 'item' });
+    const listed = await h.custody.legacyManualReview(sm);
+    expect(listed.data[0]).toMatchObject(final);
+    for (const key of ['managerAcceptedQty', 'acceptedQty', 'outstandingQty', 'usedQty']) expect(listed.data[0]).not.toHaveProperty(key);
+    for (const [key, rows] of Object.entries(before)) expect(h.rows[key]).toEqual(rows);
+  });
+
+  it.each([Role.ADMIN, Role.CUSTOMER, Role.TECHNICIAN])('rejects %s in service and route guard', async role => {
+    const h = setup();
+    await expect(review(h, {}, { id: role, role })).rejects.toMatchObject({ status: 403 });
+    const guard = new RolesGuard(new Reflector());
+    const ctx = { getHandler: () => (h.controller as any).reviewLegacyItem, getClass: () => PartReturnsController,
+      switchToHttp: () => ({ getRequest: () => ({ user: { id: role, role } }) }) } as ExecutionContext;
+    expect(() => guard.canActivate(ctx)).toThrow();
+    expect(h.rows.AuditLog ?? []).toEqual([]);
+  });
+
+  it('rejects missing items, non-FixHome sources, missing/fake handovers and enrolled custody', async () => {
+    await expect(review(setup(), {}, sm, 'other-item')).rejects.toMatchObject({ status: 404 });
+    for (const mutate of [
+      h => { h.rows.PartRequestItem[0].partSource = PartSource.TECHNICIAN; },
+      h => { h.rows.PartRequest[0].receivedAt = null; },
+      h => { h.rows.PartRequest[0].receivedAt = new Date('invalid'); },
+      h => { h.rows.PartRequest[0].status = PartRequestStatus.READY; },
+      h => { h.rows.PartRequestItem[0].partRequestId = 'wrong-request'; },
+      h => { h.rows.PartRequest[0].serviceOrderId = 'wrong-order'; },
+      h => { h.rows.PartCustody = [{ partRequestItemId: 'item' }]; },
+    ]) {
+      const h = setup(); mutate(h);
+      await expect(review(h)).rejects.toMatchObject({ status: 409 });
+      expect(h.rows.AuditLog ?? []).toEqual([]);
+    }
+  });
+
+  it('rejects changed replay, stale competing observations and final overwrite without documented correction', async () => {
+    const h = setup();
+    const outcomes = await Promise.allSettled([review(h), review(h, { commandId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' })]);
+    expect(outcomes.map(row => row.status).sort()).toEqual(['fulfilled', 'rejected']);
+    expect((outcomes.find(row => row.status === 'rejected') as PromiseRejectedResult).reason.status).toBe(409);
+    await expect(review(h, { reason: 'Nội dung bị thay đổi' })).rejects.toMatchObject({ status: 409 });
+    await expect(review(h, {}, { id: 'other-manager', role: Role.SERVICE_MANAGER })).rejects.toMatchObject({ status: 409 });
+    const final = await review(h, { commandId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', expectedVersion: 1,
+      status: 'DISCREPANCY_RECORDED' });
+    const correction = { commandId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', expectedVersion: 2,
+      status: 'PHYSICALLY_VERIFIED', evidenceReferenceId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' };
+    await expect(review(h, correction)).rejects.toMatchObject({ status: 409 });
+    await expect(review(h, { ...correction, correctsEventId: 'ffffffff-ffff-4fff-8fff-ffffffffffff', correctionReason: 'Có chứng từ đối chiếu bổ sung' })).rejects.toMatchObject({ status: 409 });
+    const corrected = await review(h, { ...correction, correctsEventId: final.lastManualReview.id,
+      correctionReason: 'Có chứng từ đối chiếu bổ sung' });
+    expect(corrected.lastManualReview).toMatchObject({ version: 3, correctsEventId: final.lastManualReview.id });
+    expect(h.rows.AuditLog).toHaveLength(3);
+    expect(h.rows.AuditLog[1].after.event.status).toBe('DISCREPANCY_RECORDED');
+  });
+
+  it('allows observations on stopped/deassigned old work without changing booking, finances or assignments', async () => {
+    const h = setup();
+    h.rows.ServiceOrder[0].status = ServiceOrderStatus.CANCELLED;
+    h.rows.TechnicianAssignment[0].isActive = false;
+    h.rows.PartRequest[0].status = PartRequestStatus.CANCELLED;
+    const before = structuredClone(h.rows);
+    await review(h);
+    for (const [key, rows] of Object.entries(before)) expect(h.rows[key]).toEqual(rows);
+    expect(h.rows.PartCustody).toEqual([]);
+  });
+
+  it('rolls back on audit failure and rejects malformed prior proof', async () => {
+    const h = setup();
+    const insert = h.manager.insert;
+    h.manager.insert = async entity => { if (entity === AuditLog) throw new Error('audit unavailable'); };
+    await expect(review(h)).rejects.toThrow('audit unavailable');
+    expect(h.rows.AuditLog ?? []).toEqual([]);
+    h.manager.insert = insert;
+    await review(h);
+    h.rows.AuditLog[0].after.event.technicianId = 'wrong-technician';
+    await expect(review(h)).rejects.toMatchObject({ status: 409 });
+    await expect(h.custody.legacyManualReview(sm)).rejects.toMatchObject({ status: 409 });
+  });
+
+  it.each([
+    { commandId: 'invalid' }, { expectedVersion: -1 }, { expectedVersion: 0.5 }, { status: 'ACCEPTED' },
+    { reason: '    ' }, { reason: 'x'.repeat(301) }, { reason: 'https://example.test/evidence' },
+    { reason: 'person@example.test' }, { evidenceReferenceId: 'https://example.test/evidence' },
+    { evidenceReferenceId: null }, { observedQty: -1 }, { observedQty: 101 }, { observedQty: 1.5 },
+    { observedQty: 1 }, { observedQty: null }, { observedQty: 1, evidenceReferenceId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' },
+    { status: 'PHYSICALLY_VERIFIED' }, { correctsEventId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' },
+    { correctionReason: 'Không có bản trước' }, { receivedAt: '2026-10-20' }, { managerAcceptedQty: 2 },
+  ])('rejects invalid/bounded evidence or invented physical authority %o', async patch => {
+    const h = setup();
+    await expect(review(h, patch)).rejects.toMatchObject({ status: 400 });
+    expect(h.rows.AuditLog ?? []).toEqual([]);
+  });
 });

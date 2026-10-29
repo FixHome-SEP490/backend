@@ -8,6 +8,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PartReturnDiscrepancyDto, PartReturnDto } from './dto/part-return.dto';
 import { PartCustodyService } from './part-custody.service';
 import { PartCustodyActor } from './part-custody.types';
+import { LegacyManualReviewDto } from './dto/legacy-manual-review.dto';
 
 @ApiTags('Part Returns')
 @ApiBearerAuth()
@@ -39,6 +40,14 @@ export class PartReturnsController {
   @Roles(Role.TECHNICIAN)
   async mine(@Req() req: { user: PartCustodyActor }) {
     return { data: await this.custody.pending(req.user) };
+  }
+
+  @Post('part-returns/legacy-manual-review/:itemId')
+  @HttpCode(200)
+  @Roles(Role.SERVICE_MANAGER)
+  async reviewLegacyItem(@Param('itemId', ParseUUIDPipe) itemId: string,
+    @Body() body: LegacyManualReviewDto, @Req() req: { user: PartCustodyActor }) {
+    return { data: await this.custody.reviewLegacyItem(itemId, body, req.user) };
   }
 
   @Post('part-requests/:requestId/items/:itemId/return-discrepancy')

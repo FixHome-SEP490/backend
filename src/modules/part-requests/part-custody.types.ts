@@ -1,4 +1,17 @@
 import { PartRequestStatus, PartRequestType, PartSource, Role, ServiceOrderStatus } from '../../shared/enums';
+import type { LegacyManualReviewDto, LegacyReviewStatus } from './dto/legacy-manual-review.dto';
+
+export interface LegacyManualReviewEvent extends LegacyManualReviewDto {
+  readonly id: string;
+  readonly version: number;
+  readonly actorUserId: string;
+  readonly actorRole: Role.SERVICE_MANAGER;
+  readonly occurredAt: string;
+  readonly orderId: string;
+  readonly technicianId: string;
+  readonly partRequestId: string;
+  readonly partRequestItemId: string;
+}
 
 export type PartCustodyCommandKind =
   | 'record_usage'
@@ -49,6 +62,8 @@ export interface LegacyManualReviewRecord {
   readonly partCatalogId: string | null;
   readonly partNameSnapshot: string;
   readonly issuedQty: number;
+  readonly manualReviewState: 'UNKNOWN' | LegacyReviewStatus;
+  readonly lastManualReview: LegacyManualReviewEvent | null;
 }
 
 export interface PartCustodyDeclaration {
