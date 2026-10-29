@@ -1006,7 +1006,7 @@ export class BookingsService {
       if (!anchor) throw new ForbiddenException('Interrupted order not found or access denied');
       const originalItems = anchor.visitGroupId
         ? await manager.find(VisitGroupItem, { where: { groupId: anchor.visitGroupId }, order: { sequence: 'ASC' } }) : [];
-      if (anchor.visitGroupId && (!originalItems.length || !originalItems.some(item => item.bookingId === anchorId && item.outcome === 'interrupted'))) {
+      if (anchor.visitGroupId && (!originalItems.length || !originalItems.some(item => item.bookingId === anchorId))) {
         throw new ForbiddenException('Interrupted order not found or access denied');
       }
       const leadId = originalItems[0]?.bookingId ?? anchorId;
@@ -1018,7 +1018,9 @@ export class BookingsService {
       if (existing) {
         if (existing.requestFingerprint !== fingerprint) throw new BusinessException(ErrorCodes.CONFLICT, 'Khóa xác nhận đã dùng với nội dung khác.');
         const sources = await manager.find(InterruptionRebookSource, { where: { rebookId: existing.id } });
-        if (sources.length !== existing.sourceCount || !sources.some(source => source.sourceBookingId === anchorId)) {
+        if (sources.length !== existing.sourceCount || sources.length !== dto.items.length
+          || !sources.some(source => source.sourceBookingId === anchorId)
+          || dto.items.some(item => !sources.some(source => source.sourceBookingId === item.sourceBookingId && source.sourceCaseId === item.sourceCaseId))) {
           throw new BusinessException(ErrorCodes.CONFLICT, 'Biên nhận đặt lại không đầy đủ.');
         }
         const items = sources.sort((a, b) => a.sourceBookingId.localeCompare(b.sourceBookingId)).map(source => ({
@@ -1027,7 +1029,10 @@ export class BookingsService {
         return { targetKind: existing.targetVisitGroupId ? 'visit_group' as const : 'booking' as const,
           bookingId: existing.targetVisitGroupId ? null : items[0].bookingId, visitGroupId: existing.targetVisitGroupId, items };
       }
-      const draft = await buildInterruptionDraft(manager, anchorId, customer);
+      if (anchor.visitGroupId) {
+        await manager.findOne(VisitGroup, { where: { id: anchor.visitGroupId, customerId: customer.id }, lock: { mode: 'pessimistic_write' } });
+      }
+      const draft = await buildInterruptionDraft(manager, anchorId, customer, true);
       const expected = new Map(draft.items.map(item => [item.sourceBookingId, item]));
       if (expected.size !== dto.items.length || dto.items.some(item => expected.get(item.sourceBookingId)?.sourceCaseId !== item.sourceCaseId)) {
         throw new ForbiddenException('Interrupted order sources do not match');

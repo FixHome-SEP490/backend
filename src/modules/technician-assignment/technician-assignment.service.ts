@@ -113,7 +113,8 @@ export class TechnicianAssignmentService {
       flags, actions: {
         DIRECT_REASSIGN_SOLO: { allowed: direct.length === 0, reasons: direct },
         CLOSE_FOR_REBOOK: { allowed: close.length === 0, reasons: close },
-        REJECT_REQUEST: { allowed: active, reasons: active ? [] : ['CASE_NOT_ACTIVE'] },
+        REJECT_REQUEST: { allowed: active && !onsiteInterruption,
+          reasons: onsiteInterruption ? ['VERIFIED_ONSITE_INTERRUPTION'] : active ? [] : ['CASE_NOT_ACTIVE'] },
       } };
   }
 
@@ -161,6 +162,12 @@ export class TechnicianAssignmentService {
       if (!booking || !order || !supportCase || supportCase.serviceOrderId !== order.id || order.bookingId !== booking.id
         || (supportCase.bookingId != null && supportCase.bookingId !== booking.id) || supportCase.customerId !== booking.customerId) {
         throw new ConflictException('Support case context changed');
+      }
+      if (await hasOnsiteInterruption(manager, order.id)) {
+        // A strict technician receipt is immutable source proof. Manager
+        // reassign/close/reject cannot rewrite it or restore a second outcome;
+        // old obligations stay for separate finance/parts reconciliation.
+        throw new ConflictException('Gián đoạn tại nhà khách đã được ghi nhận, nghĩa vụ cũ cần đối soát riêng.');
       }
       if (supportCase.interruptionCommandId) {
         if (supportCase.interruptionCommandId !== dto.commandId || supportCase.interruptionFingerprint !== fingerprint) {

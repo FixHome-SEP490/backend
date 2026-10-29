@@ -24,6 +24,7 @@ import {
   onsiteContinuationResult, onsiteInterruptionFingerprint, onsiteInterruptionRequest,
   validAssignmentCheckIn, verifiedOnsiteInterruption,
 } from '../service-orders/onsite-interruption';
+import { buildInterruptionDraft } from '../bookings/interruption-draft';
 
 @Injectable()
 export class TechnicianReportService {
@@ -81,6 +82,10 @@ export class TechnicianReportService {
           }
           return onsiteContinuationResult(order, booking, prior.incident.id);
         }
+        // An exact same-command replay above stays idempotent even if
+        // completion was requested afterwards. Only a NEW interruption is
+        // refused once completion has started.
+        if (order.completionRequestedAt) throw new ConflictException('Đơn đã được yêu cầu hoàn tất, không thể báo gián đoạn sửa chữa.');
         if (booking.status !== BookingStatus.MATCHED ||
           ![ServiceOrderStatus.EN_ROUTE, ServiceOrderStatus.UNDER_REPAIR].includes(order.status)) {
           throw new ConflictException('Đơn không còn ở giai đoạn báo gián đoạn tại nhà khách.');
@@ -156,7 +161,20 @@ export class TechnicianReportService {
       const order = await manager.findOne(ServiceOrder, { where: { id: orderId }, lock: { mode: 'pessimistic_read' } });
       if (!booking || !order || order.bookingId !== booking.id) throw new NotFoundException('Không tìm thấy đơn sửa chữa.');
       const proof = await verifiedOnsiteInterruption(manager, order, booking);
-      return onsiteContinuationResult(order, booking, proof?.incident.id ?? null);
+      const result = onsiteContinuationResult(order, booking, proof?.incident.id ?? null);
+      if (proof) {
+        try {
+          const draft = await buildInterruptionDraft(manager, booking.id, actor);
+          return { ...result, customerContinuation: { ...result.customerContinuation,
+            prefilledRebookAvailable: true, draftPath: `/api/v1/bookings/${booking.id}/interruption-draft`,
+            confirmationPath: draft.confirmation.path, targetKind: draft.targetKind, sourceCount: draft.items.length } };
+        } catch (error) {
+          // Consumed/ineligible form sources do not revoke the independent
+          // interruption proof. Storage/programming failures must surface.
+          if (!(error instanceof ForbiddenException)) throw error;
+        }
+      }
+      return result;
     });
   }
 

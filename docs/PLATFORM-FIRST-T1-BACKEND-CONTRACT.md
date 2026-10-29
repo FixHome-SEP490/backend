@@ -113,12 +113,11 @@ assignment, group outcome, original quotation, invoice, payment, voucher or cust
 The case is urgent with an initial completion hold, while immutable receipt authority is
 independent of that mutable hold. This is not a claim that the old service is CANCELLED.
 
-T2 must provide a reviewed terminal service disposition / historical approved quote
-contract, consume this verified source in draft + confirm, and enforce failed/stopped-only
-selection: one child -> SOLO, two/three -> new VisitGroup. Revalidate new time/prices,
-exclude prior technician, persist source consumption/replay, and never transfer money or
-discount. D3 policy-based one-per-SOLO/group skill-gap compensation needs its own verified
-failure adapter; current interruption receipt alone does not dispatch compensation.
+T2 customer continuation is now implemented in `docs/PLATFORM-FIRST-T2-BACKEND-CONTRACT.md`
+(strict-source draft/confirm, source consumption, old-technician exclusion). The reviewed terminal
+service disposition and the D3 voucher adapter remain blockers. D3 policy-based one-per-SOLO/group
+skill-gap compensation needs its own verified failure adapter; the current interruption receipt alone
+does not dispatch compensation.
 
 T3 must verify return access after eventual deassignment/terminal transition, physical
 partial receipt/discrepancy and legacy/manual review. T1 keeps assignment to preserve old

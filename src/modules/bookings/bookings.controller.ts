@@ -299,7 +299,7 @@ export class BookingsController {
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('booking:read_own')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Customer: read a manager-certified interrupted-work draft' })
+  @ApiOperation({ summary: 'Customer: read a verified onsite or manager-closed interruption draft' })
   async interruptionDraft(@Param('id', ParseUUIDPipe) id: string,
     @Req() req: { user: { id: string; role: string } }) {
     return { data: await this.bookingsService.interruptionDraft(id, req.user) };
