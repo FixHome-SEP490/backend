@@ -447,6 +447,7 @@ export class SupportCasesService {
       ...(supportCase.requestIntent === 'stop_or_replace'
         ? { resolutionCode: supportCase.resolutionCode ?? null } : {}),
       holdCompletion: supportCase.holdCompletion ?? false,
+      responsibility: supportCase.responsibility ?? null,
       bookingId: supportCase.bookingId,
       serviceOrderId: supportCase.serviceOrderId,
       reason: writtenByOther
@@ -953,6 +954,13 @@ export class SupportCasesService {
       holdCompletion: supportCase.holdCompletion ?? false,
       requestIntent: supportCase.requestIntent ?? null,
       workflowVersion: supportCase.workflowVersion ?? 0,
+      reasonClass: supportCase.reasonClass ?? null,
+      reasonCode: supportCase.reasonCode ?? null,
+      responsibility: supportCase.responsibility ?? null,
+      responsibilityActorId: supportCase.responsibilityActorId ?? null,
+      responsibilityReason: supportCase.responsibilityReason ?? null,
+      responsibilityEvidenceRefs: supportCase.responsibilityEvidenceRefs ?? null,
+      responsibilityDecidedAt: supportCase.responsibilityDecidedAt ?? null,
       liableParty: supportCase.liableParty ?? null,
       amount: supportCase.amount ?? null,
       voucherGrossRefundVnd: supportCase.voucherGrossRefundVnd ?? null,

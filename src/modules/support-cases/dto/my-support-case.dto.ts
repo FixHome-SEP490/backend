@@ -35,6 +35,9 @@ export class MySupportCaseDto {
   @ApiProperty()
   holdCompletion: boolean;
 
+  @ApiPropertyOptional({ nullable: true })
+  responsibility: string | null;
+
   @ApiPropertyOptional({ format: 'uuid', nullable: true })
   bookingId: string | null;
 

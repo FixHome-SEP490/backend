@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { User } from '../users/entities/user.entity';
@@ -41,8 +41,8 @@ export class ReputationService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Deduct the violation points inside the caller's transaction and apply the
-   * penalty of the new score. A technician who reported "Cần thay đổi thợ" for
-   * this order is not penalised: the Service Manager reviews that case.
+   * penalty of the new score. A technician's replacement report reserves its
+   * own SM responsibility review; cancellation must not infer fault from it.
    */
   async penalize(manager: EntityManager, v: ReputationViolation): Promise<ReputationEvent | null> {
     if (v.role !== Role.CUSTOMER && v.role !== Role.TECHNICIAN) return null;
@@ -73,6 +73,32 @@ export class ReputationService implements OnModuleInit, OnModuleDestroy {
       referenceType: v.serviceOrderId ? 'SERVICE_ORDER' : null,
       isRead: false,
     });
+    return event;
+  }
+
+  /** Caller locks the typed case first and owns the transaction. The unique case index is the final backstop. */
+  async penalizeReviewedCase(manager: EntityManager, input: {
+    caseId: string; technicianId: string; serviceOrderId: string | null; actorId: string; reason: string;
+  }): Promise<ReputationEvent> {
+    const prior = await manager.findOne(ReputationEvent, { where: { supportCaseId: input.caseId } });
+    if (prior) throw new ConflictException('Báo cáo này đã có sự kiện điểm uy tín.');
+    const user = await manager.findOne(User, { where: { id: input.technicianId }, lock: { mode: 'pessimistic_write' } });
+    if (!user || user.role !== Role.TECHNICIAN) throw new NotFoundException('Không tìm thấy kỹ thuật viên.');
+    const cost = await this.configService.getInt('reputation.violation_points', 10);
+    if (!Number.isSafeInteger(cost) || cost <= 0 || cost > 100) throw new ConflictException('Cấu hình điểm uy tín không hợp lệ.');
+    const before = user.reputationPoints ?? REPUTATION_START;
+    const after = clampPoints(before - cost);
+    await manager.update(User, user.id, { reputationPoints: after });
+    const penalty = await this.applyPenalty(manager, user, Role.TECHNICIAN, after);
+    const event = await manager.save(ReputationEvent, manager.create(ReputationEvent, {
+      userId: user.id, kind: 'violation', delta: after - before, pointsAfter: after,
+      reason: input.reason, penalty, serviceOrderId: input.serviceOrderId,
+      cancellationId: null, supportCaseId: input.caseId, actorUserId: input.actorId,
+    }));
+    await manager.insert(Notification, { userId: user.id,
+      title: 'Điểm uy tín sau xem xét',
+      message: `Quản lý đã xác minh trách nhiệm trong báo cáo và trừ ${before - after} điểm, còn ${after}/100.${penalty ? ' ' + penalty : ''}`,
+      type: 'REPUTATION_CHANGED', referenceType: 'SUPPORT_CASE', referenceId: input.caseId, isRead: false });
     return event;
   }
 

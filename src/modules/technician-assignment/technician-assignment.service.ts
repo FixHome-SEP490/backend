@@ -505,7 +505,7 @@ export class TechnicianAssignmentService {
       const notes = [
         { userId: technicianId, title: 'Bạn được giao một đơn', message: `Quản lý giao cho bạn đơn #${result.code} thay kỹ thuật viên trước. Vui lòng xem đơn và xuất phát.` },
         ...(result.customerId ? [{ userId: result.customerId, title: 'Đơn của bạn đổi kỹ thuật viên', message: `Đơn #${result.code} đã được giao cho kỹ thuật viên khác phù hợp hơn. Thợ mới sẽ liên hệ và tới nơi.` }] : []),
-        ...(result.previous ? [{ userId: result.previous, title: 'Đã đổi thợ cho đơn', message: `Quản lý đã giao đơn #${result.code} cho kỹ thuật viên khác theo báo cáo của bạn. Bạn không bị trừ điểm uy tín.` }] : []),
+        ...(result.previous ? [{ userId: result.previous, title: 'Đã đổi thợ cho đơn', message: `Quản lý đã giao đơn #${result.code} cho kỹ thuật viên khác theo báo cáo của bạn. Trách nhiệm và điểm uy tín được xem xét riêng theo bằng chứng.` }] : []),
       ];
       await this.notificationsService.createManyNotifications(notes.map((n) => ({ ...n, type: 'TECHNICIAN_REPLACED', referenceId: orderId, referenceType: 'SERVICE_ORDER' }))).catch(() => undefined);
     }
