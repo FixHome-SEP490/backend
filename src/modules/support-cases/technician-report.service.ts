@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { DataSource, In } from 'typeorm';
+import { DataSource, EntityManager, In, IsNull } from 'typeorm';
 import { AccountStatus, BookingStatus, CheckInResult, EvidenceType, Role, ServiceOrderStatus, SupportCaseStatus, SupportCaseType } from '../../shared/enums';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { Booking } from '../bookings/entities/booking.entity';
@@ -20,7 +20,7 @@ import { RepairEvidence } from '../service-orders/entities/repair-evidence.entit
 import { VisitGroup } from '../visit-groups/entities/visit-group.entity';
 import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity';
 import {
-  assertNoOnsiteInterruption, hasOnsiteInterruption, ONSITE_INTERRUPTION_ACTION,
+  assertNoOnsiteInterruption, hasOnsiteInterruption, ONSITE_INTERRUPTION_ACTION, ONSITE_STOP_ACTION,
   onsiteContinuationResult, onsiteInterruptionFingerprint, onsiteInterruptionRequest,
   validAssignmentCheckIn, verifiedOnsiteInterruption,
 } from '../service-orders/onsite-interruption';
@@ -34,18 +34,17 @@ export class TechnicianReportService {
     private readonly reputation: ReputationService,
   ) {}
 
-  /** T1 safe fallback: durable verified interruption, never synthetic cancellation or zero billing. */
+  /** Atomic operational stop; old financial and physical obligations remain historical truth. */
   async cannotContinue(orderId: string, input: CannotContinueDto, actor: SupportCaseActor) {
     if (actor.role !== Role.TECHNICIAN) throw new ForbiddenException('Technician role required');
     const request = onsiteInterruptionRequest(input);
     const fingerprint = onsiteInterruptionFingerprint(orderId, actor.id, request);
     try {
       return await this.dataSource.transaction(async manager => {
-        // Authenticate before acquiring any business lock. Assignment is preserved
-        // for original money/custody ownership and is checked again under the lock.
+        // Historical identity permits exact replay after release, never new work.
         const ref = await manager.findOneBy(ServiceOrder, { id: orderId });
         const owned = ref && await manager.findOneBy(TechnicianAssignment, {
-          serviceOrderId: orderId, technicianId: actor.id, isActive: true,
+          serviceOrderId: orderId, technicianId: actor.id,
         });
         if (!ref || !owned) throw new NotFoundException('Không tìm thấy đơn sửa chữa.');
         const bookingRef = await manager.findOneBy(Booking, { id: ref.bookingId });
@@ -69,18 +68,20 @@ export class TechnicianReportService {
           throw new ConflictException('Thông tin đơn sửa chữa đã thay đổi.');
         }
         const assignments = await manager.find(TechnicianAssignment, {
-          where: { serviceOrderId: order.id, isActive: true }, lock: { mode: 'pessimistic_write' },
+          where: { serviceOrderId: order.id }, lock: { mode: 'pessimistic_write' },
         });
-        const assignment = assignments[0];
-        if (assignments.length !== 1 || assignment.technicianId !== actor.id || assignment.id !== owned.id) {
-          throw new ConflictException('Kỹ thuật viên đang phụ trách đã thay đổi.');
-        }
         if (await hasOnsiteInterruption(manager, order.id)) {
           const prior = await verifiedOnsiteInterruption(manager, order, booking);
           if (!prior || prior.incident.technicianId !== actor.id || prior.fingerprint !== fingerprint) {
             throw new ConflictException('Gián đoạn đã được ghi nhận với lệnh hoặc nội dung khác.');
           }
-          return onsiteContinuationResult(order, booking, prior.incident.id);
+          if (!prior.workStopped) await this.finalizeStop(manager, order, booking, prior, actor);
+          return onsiteContinuationResult(order, booking, prior.incident.id, true);
+        }
+        const active = assignments.filter(item => item.isActive);
+        const assignment = active[0];
+        if (active.length !== 1 || assignment.technicianId !== actor.id) {
+          throw new ConflictException('Kỹ thuật viên đang phụ trách đã thay đổi.');
         }
         // An exact same-command replay above stays idempotent even if
         // completion was requested afterwards. Only a NEW interruption is
@@ -120,8 +121,7 @@ export class TechnicianReportService {
           isUrgent: true, respondBy: respondByFor(order.status, true), holdCompletion: true, workflowVersion: 0,
           interruptionCommandId: request.commandId, interruptionFingerprint: fingerprint,
         }));
-        // The strict receipt is the independent authority, not the mutable SM
-        // status/hold. Retain assignment and every quote/payment/part unchanged.
+        // T1 receipt stays immutable; finalization below separately proves release.
         await this.auditLog.logWithManagerStrict(manager, {
           actorUserId: actor.id, actorRole: actor.role, action: ONSITE_INTERRUPTION_ACTION,
           resourceType: 'service_order', resourceId: order.id,
@@ -130,24 +130,52 @@ export class TechnicianReportService {
             sourceVisitGroupId: booking.visitGroupId ?? null, serviceOrderStatus: order.status,
             assignmentId: assignment.id, checkInId: checkin.id, fingerprint, request },
         });
+        const proof = await verifiedOnsiteInterruption(manager, order, booking);
+        if (!proof) throw new ConflictException('Không xác minh được nguồn gián đoạn.');
+        await this.finalizeStop(manager, order, booking, proof, actor);
         const staff = await manager.find(User, { where: {
           role: In([Role.SERVICE_MANAGER, Role.ADMIN]), status: AccountStatus.ACTIVE, isActive: true,
         }, select: { id: true } });
         await manager.insert(Notification, [
-          { userId: booking.customerId, title: 'Đã ghi nhận gián đoạn sửa chữa',
+          { userId: booking.customerId, title: 'Công việc sửa chữa đã dừng',
             message: 'Bạn có thể tự đặt lịch mới. Báo giá, thanh toán và linh kiện của đơn cũ được giữ để đối soát riêng.',
             type: ONSITE_INTERRUPTION_ACTION, referenceType: 'SUPPORT_CASE', referenceId: incident.id, isRead: false },
           ...staff.map(user => ({ userId: user.id, title: 'Gián đoạn sửa chữa cần đối soát',
             message: 'Đã ghi nhận kỹ thuật viên không thể tiếp tục tại nhà khách. Kiểm tra nghĩa vụ đơn cũ; trả linh kiện vẫn cần quản lý xác nhận thực nhận.',
             type: ONSITE_INTERRUPTION_ACTION, referenceType: 'SUPPORT_CASE', referenceId: incident.id, isRead: false })),
         ]);
-        return onsiteContinuationResult(order, booking, incident.id);
+        return onsiteContinuationResult(order, booking, incident.id, true);
       });
     } catch (error) {
       // The existing unique command index serializes cross-order UUID reuse.
       if ((error as { code?: string })?.code === '23505') throw new ConflictException('Mã lệnh đã được sử dụng.');
       throw error;
     }
+  }
+
+  private async finalizeStop(manager: EntityManager, order: ServiceOrder, booking: Booking,
+    proof: NonNullable<Awaited<ReturnType<typeof verifiedOnsiteInterruption>>>, actor: SupportCaseActor) {
+    const stoppedAt = new Date(Date.now());
+    const released = await manager.update(TechnicianAssignment, {
+      id: proof.assignment.id, serviceOrderId: order.id, technicianId: actor.id, isActive: true,
+    }, { isActive: false, unassignedAt: stoppedAt, unassignReason: ONSITE_STOP_ACTION });
+    if (released.affected !== 1) throw new ConflictException('Phân công đã thay đổi.');
+    if (booking.visitGroupId) {
+      const outcome = await manager.update(VisitGroupItem, { groupId: booking.visitGroupId, bookingId: booking.id, outcome: IsNull() }, {
+        outcome: 'interrupted', outcomeReason: ONSITE_STOP_ACTION, outcomeAt: stoppedAt,
+      });
+      if (outcome.affected !== 1) throw new ConflictException('Thiết bị đã có kết quả hoặc không thuộc lượt sửa.');
+    }
+    await this.auditLog.logWithManagerStrict(manager, {
+      actorUserId: actor.id, actorRole: actor.role, action: ONSITE_STOP_ACTION,
+      resourceType: 'service_order', resourceId: order.id,
+      after: { version: 1, disposition: 'STOPPED_OLD_OBLIGATIONS_PRESERVED',
+        receiptId: proof.receipt.id, incidentId: proof.incident.id,
+        sourceBookingId: booking.id, customerId: booking.customerId,
+        sourceVisitGroupId: booking.visitGroupId ?? null, serviceOrderStatus: order.status,
+        assignmentId: proof.assignment.id, checkInId: proof.checkin.id,
+        commandId: proof.request.commandId, fingerprint: proof.fingerprint, stoppedAt: stoppedAt.toISOString() },
+    });
   }
 
   async customerContinuation(orderId: string, actor: SupportCaseActor) {
@@ -161,7 +189,7 @@ export class TechnicianReportService {
       const order = await manager.findOne(ServiceOrder, { where: { id: orderId }, lock: { mode: 'pessimistic_read' } });
       if (!booking || !order || order.bookingId !== booking.id) throw new NotFoundException('Không tìm thấy đơn sửa chữa.');
       const proof = await verifiedOnsiteInterruption(manager, order, booking);
-      const result = onsiteContinuationResult(order, booking, proof?.incident.id ?? null);
+      const result = onsiteContinuationResult(order, booking, proof?.incident.id ?? null, proof?.workStopped);
       if (proof) {
         try {
           const draft = await buildInterruptionDraft(manager, booking.id, actor);

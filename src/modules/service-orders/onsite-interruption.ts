@@ -14,6 +14,7 @@ import { VisitGroup } from '../visit-groups/entities/visit-group.entity';
 import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity';
 
 export const ONSITE_INTERRUPTION_ACTION = 'TECHNICIAN_CANNOT_CONTINUE_ONSITE';
+export const ONSITE_STOP_ACTION = 'TECHNICIAN_ONSITE_STOP_FINALIZED';
 
 export function onsiteInterruptionRequest(input: CannotContinueDto) {
   const photos = input?.photoEvidenceIds ?? [];
@@ -37,7 +38,11 @@ export async function hasOnsiteInterruption(manager: EntityManager, orderId: str
   const row = await manager.findOne(AuditLog, { where: {
     action: ONSITE_INTERRUPTION_ACTION, resourceType: 'service_order', resourceId: orderId,
   } });
-  return row?.action === ONSITE_INTERRUPTION_ACTION;
+  if (row?.action === ONSITE_INTERRUPTION_ACTION) return true;
+  const stop = await manager.findOne(AuditLog, { where: {
+    action: ONSITE_STOP_ACTION, resourceType: 'service_order', resourceId: orderId,
+  } });
+  return stop?.action === ONSITE_STOP_ACTION;
 }
 
 export async function assertNoOnsiteInterruption(manager: EntityManager, orderId: string): Promise<void> {
@@ -54,6 +59,12 @@ export async function verifiedOnsiteInterruption(manager: EntityManager, order: 
   if (receipts.length !== 1 || booking.id !== order.bookingId || booking.status !== BookingStatus.MATCHED) return null;
   const receipt = receipts[0];
   const after = receipt.after;
+  const finals = await manager.find(AuditLog, { where: {
+    action: ONSITE_STOP_ACTION, resourceType: 'service_order', resourceId: order.id,
+  } });
+  if (finals.length > 1) return null;
+  const final = finals[0];
+  const stopped = final?.after;
   if (receipt.actorRole !== Role.TECHNICIAN || !receipt.actorUserId || after?.version !== 1
     || after.serviceOutcome !== 'VERIFIED_INTERRUPTION_RECORDED' || after.sourceBookingId !== booking.id
     || after.customerId !== booking.customerId || after.sourceVisitGroupId !== (booking.visitGroupId ?? null)
@@ -71,21 +82,38 @@ export async function verifiedOnsiteInterruption(manager: EntityManager, order: 
     bookingId: booking.id, serviceOrderId: order.id, customerId: booking.customerId,
     technicianId: receipt.actorUserId, createdByUserId: receipt.actorUserId,
     caseType: SupportCaseType.TECHNICIAN_REPLACEMENT });
-  if (!incident || incident.interruptionCommandId !== request.commandId || incident.interruptionFingerprint !== fingerprint
-    || incident.reason !== request.reason || incident.reasonClass !== request.reasonClass || incident.reasonCode !== request.reasonCode
+  if (!incident || incident.interruptionCommandId !== request.commandId || incident.interruptionFingerprint !== fingerprint) return null;
+  // The final proof binds the original immutable request, not later case edits.
+  if (!final && (incident.reason !== request.reason || incident.reasonClass !== request.reasonClass || incident.reasonCode !== request.reasonCode
     || !Array.isArray(incident.evidenceRefs)
-    || JSON.stringify([...incident.evidenceRefs].sort()) !== JSON.stringify(request.photoEvidenceIds)) return null;
+    || JSON.stringify([...incident.evidenceRefs].sort()) !== JSON.stringify(request.photoEvidenceIds))) return null;
   const assignment = await manager.findOneBy(TechnicianAssignment, { id: after.assignmentId,
-    serviceOrderId: order.id, technicianId: receipt.actorUserId, isActive: true });
+    serviceOrderId: order.id, technicianId: receipt.actorUserId });
   const checkin = await manager.findOneBy(ArrivalCheckIn, { id: after.checkInId,
     serviceOrderId: order.id, technicianId: receipt.actorUserId, result: CheckInResult.VALID });
   if (!assignment || !checkin || !validAssignmentCheckIn(assignment, checkin)) return null;
+  if (final) {
+    const stopAt = typeof stopped?.stoppedAt === 'string' ? Date.parse(stopped.stoppedAt) : NaN;
+    if (final.actorRole !== Role.TECHNICIAN || final.actorUserId !== receipt.actorUserId
+      || stopped?.version !== 1 || stopped.disposition !== 'STOPPED_OLD_OBLIGATIONS_PRESERVED'
+      || stopped.receiptId !== receipt.id || stopped.incidentId !== incident.id
+      || stopped.sourceBookingId !== booking.id || stopped.customerId !== booking.customerId
+      || stopped.sourceVisitGroupId !== (booking.visitGroupId ?? null)
+      || stopped.assignmentId !== assignment.id || stopped.checkInId !== checkin.id
+      || stopped.fingerprint !== fingerprint || stopped.commandId !== request.commandId
+      || stopped.serviceOrderStatus !== order.status || assignment.isActive !== false
+      || assignment.unassignReason !== ONSITE_STOP_ACTION || !assignment.unassignedAt
+      || !Number.isFinite(stopAt) || stopAt < new Date(checkin.checkedInAt).getTime() || stopAt > Date.now()
+      || new Date(assignment.unassignedAt).getTime() !== stopAt
+      || await manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, isActive: true })) return null;
+  } else if (!assignment.isActive) return null;
   if (booking.visitGroupId) {
     const group = await manager.findOneBy(VisitGroup, { id: booking.visitGroupId, customerId: booking.customerId });
     const item = await manager.findOneBy(VisitGroupItem, { groupId: booking.visitGroupId, bookingId: booking.id });
-    if (!group || !item || item.outcome != null) return null;
+    if (!group || !item || (final ? item.outcome !== 'interrupted' || !item.outcomeAt
+      || new Date(item.outcomeAt).getTime() !== Date.parse(stopped!.stoppedAt as string) : item.outcome != null)) return null;
   }
-  return { incident, request, fingerprint };
+  return { incident, request, fingerprint, receipt, assignment, checkin, workStopped: !!final };
 }
 
 export function validAssignmentCheckIn(assignment: TechnicianAssignment, checkin: ArrivalCheckIn): boolean {
@@ -96,8 +124,10 @@ export function validAssignmentCheckIn(assignment: TechnicianAssignment, checkin
 }
 
 /** No amounts, evidence, actor IDs or private financial/provider data leave this read model. */
-export function onsiteContinuationResult(order: ServiceOrder, booking: Booking, incidentId: string | null) {
+export function onsiteContinuationResult(order: ServiceOrder, booking: Booking, incidentId: string | null, workStopped = false) {
   return { version: 1, incidentId,
+    operationalDisposition: workStopped ? 'STOPPED' : incidentId ? 'INTERRUPTION_RECORDED' : null,
+    workStopped, assignmentReleased: workStopped,
     serviceOutcome: incidentId ? 'VERIFIED_INTERRUPTION_RECORDED' : null,
     serviceOrderStatus: order.status, terminalTransitionApplied: false,
     oldObligations: { reviewRequired: !!incidentId, quotePreserved: true, moneyPreserved: true, partsPreserved: true,

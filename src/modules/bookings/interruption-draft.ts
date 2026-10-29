@@ -9,7 +9,7 @@ import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity
 import { Booking } from './entities/booking.entity';
 import { InterruptionRebookSource } from './entities/interruption-rebook.entity';
 import { AuditLog } from '../audit-log/entities/audit-log.entity';
-import { ONSITE_INTERRUPTION_ACTION, verifiedOnsiteInterruption } from '../service-orders/onsite-interruption';
+import { hasOnsiteInterruption, ONSITE_INTERRUPTION_ACTION, verifiedOnsiteInterruption } from '../service-orders/onsite-interruption';
 
 const deny = (): never => { throw new ForbiddenException('Interrupted order not found or access denied'); };
 
@@ -42,7 +42,7 @@ export async function buildInterruptionDraft(manager: EntityManager, anchorId: s
       action: ONSITE_INTERRUPTION_ACTION, resourceType: 'service_order', resourceId: order.id,
     } });
     let sourceCase: SupportCase;
-    if (receipts.length) {
+    if (receipts.length || await hasOnsiteInterruption(manager, order.id)) {
       // A damaged onsite receipt must never fall back to manager case prose.
       const proof = await verifiedOnsiteInterruption(manager, order, booking);
       if (!proof || booking.quantity !== 1) deny();

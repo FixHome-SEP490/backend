@@ -47,7 +47,7 @@ function fixture(stopped = 1, grouped = false) {
   }
   const matches = (row: any, where: any): boolean => Array.isArray(where) ? where.some(w => matches(row, w))
     : Object.entries(where ?? {}).every(([key, value]) => value instanceof FindOperator
-      ? value.type === 'in' ? value.value.includes(row[key]) : value.type === 'not' ? row[key] !== value.value : false
+      ? value.type === 'in' ? value.value.includes(row[key]) : value.type === 'not' ? row[key] !== value.value : value.type === 'isNull' ? row[key] == null : false
       : row[key] === value);
   const table = (entity: { name: string }) => rows[entity.name] ??= [];
   const manager: any = {
@@ -149,7 +149,7 @@ describe('verified onsite interruption customer self-service', () => {
     const replay = await h.reports.cannotContinue(h.orderId, request, h.technician);
     expect(replay).toMatchObject({ incidentId: h.rows.SupportCase[0].id,
       serviceOutcome: 'VERIFIED_INTERRUPTION_RECORDED', terminalTransitionApplied: false });
-    expect(h.rows.SupportCase).toHaveLength(1); expect(h.rows.AuditLog).toHaveLength(1);
+    expect(h.rows.SupportCase).toHaveLength(1); expect(h.rows.AuditLog).toHaveLength(2);
   });
 
   it('rejects a different command after completion even when a receipt already exists', async () => {
@@ -158,7 +158,7 @@ describe('verified onsite interruption customer self-service', () => {
     h.rows.ServiceOrder[0].completionRequestedAt = new Date('2026-10-29T04:30:00Z');
     await expect(h.reports.cannotContinue(h.orderId, { ...request, commandId: randomUUID() }, h.technician))
       .rejects.toMatchObject({ status: 409 });
-    expect(h.rows.SupportCase).toHaveLength(1); expect(h.rows.AuditLog).toHaveLength(1);
+    expect(h.rows.SupportCase).toHaveLength(1); expect(h.rows.AuditLog).toHaveLength(2);
   });
 
   it('denies every manager interruption action on a recorded receipt without mutation or replay', async () => {
@@ -260,7 +260,7 @@ describe('verified onsite interruption customer self-service', () => {
     if (kind === 'invalid_receipt') h.rows.AuditLog[0].after.version = 999;
     if (kind === 'changed_assignment') h.rows.TechnicianAssignment[0].technicianId = randomUUID();
     if (kind === 'changed_checkin') h.rows.ArrivalCheckIn[0].result = CheckInResult.FAILED;
-    if (kind === 'changed_source_case') h.rows.SupportCase[0].reason = 'Changed after preview';
+    if (kind === 'changed_source_case') h.rows.SupportCase[0].customerId = randomUUID();
     await expect(h.bookings.interruptionDraft(h.anchorId, h.customer)).rejects.toThrow();
     await expect(h.submit(h.body())).rejects.toThrow(); expect(h.rows.Booking).toHaveLength(1);
   });
@@ -276,6 +276,7 @@ describe('verified onsite interruption customer self-service', () => {
   it('does not grant manager-close authority to a group child with no interrupted outcome', async () => {
     const h = fixture(1, true); await h.stop(); h.rows.AuditLog = [];
     h.rows.Booking[0].status = BookingStatus.CANCELLED; h.rows.ServiceOrder[0].status = ServiceOrderStatus.CANCELLED;
+    h.rows.VisitGroupItem[0].outcome = null;
     h.rows.SupportCase[0].status = 'resolved'; h.rows.SupportCase[0].resolutionCode = 'interrupted_for_rebook';
     await expect(h.bookings.interruptionDraft(h.anchorId, h.customer)).rejects.toThrow();
   });
