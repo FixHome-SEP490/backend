@@ -14,6 +14,7 @@ import { SupportCasesService } from './support-cases.service';
 import { SupportCase } from './entities';
 import { ReputationModule } from '../reputation/reputation.module';
 import { TechnicianReportService } from './technician-report.service';
+import { OnsiteInterruptionController } from './onsite-interruption.controller';
 
 @Module({
   imports: [
@@ -30,7 +31,7 @@ import { TechnicianReportService } from './technician-report.service';
       TechnicianAssignment,
     ]),
   ],
-  controllers: [SupportCasesController, CustomerStopRequestController],
+  controllers: [SupportCasesController, CustomerStopRequestController, OnsiteInterruptionController],
   providers: [SupportCasesService, TechnicianReportService],
   exports: [SupportCasesService],
 })

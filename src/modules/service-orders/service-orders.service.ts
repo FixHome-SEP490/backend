@@ -82,6 +82,8 @@ import type { EntityManager } from 'typeorm';
 import { OrderEvidenceStorage, EvidenceFile, evidenceStampText } from '../media/order-evidence-storage.service';
 import { expireAdditionalCosts } from './expire-additional-costs';
 import { authorizeOrder } from './order-access';
+import { assertNoOnsiteInterruption, ONSITE_INTERRUPTION_ACTION, ONSITE_STOP_ACTION, verifiedOnsiteInterruption } from './onsite-interruption';
+import { loadOnsiteStopFinance } from './onsite-stop-finance';
 import { groupSiblings, mirrorGroupStatus, recordVisitOutcome, refuseLoneGroupedBookingAction } from '../bookings/visit-group-guard';
 import { REPAIR_FAILURE_REASONS, type RepairFailedDto } from './dto/repair-failed.dto';
 import { SupportCase } from '../support-cases/entities/support-case.entity';
@@ -286,6 +288,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         WHERE o.status::text = $2
           AND o.payment_status::text = $1
           AND o.completion_requested_at IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM audit_logs al WHERE al.resource_type = 'service_order'
+                AND al.resource_id = o.id::text AND al.action IN ('${ONSITE_INTERRUPTION_ACTION}', '${ONSITE_STOP_ACTION}'))
           AND NOT EXISTS (
                 SELECT 1 FROM support_cases sc
                  WHERE sc.service_order_id = o.id AND sc.hold_completion = true
@@ -322,6 +326,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
            JOIN invoices i ON i.service_order_id = o.id AND i.payment_status::text = $1
            LEFT JOIN cash_settlements cs ON cs.service_order_id = o.id
           WHERE o.status::text = $2
+            AND NOT EXISTS (SELECT 1 FROM audit_logs al WHERE al.resource_type = 'service_order'
+                  AND al.resource_id = o.id::text AND al.action IN ('${ONSITE_INTERRUPTION_ACTION}', '${ONSITE_STOP_ACTION}'))
             AND EXISTS (SELECT 1 FROM technician_assignments ta WHERE ta.service_order_id = o.id)
             AND NOT EXISTS (
                   SELECT 1 FROM wallet_transactions t
@@ -464,7 +470,9 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         const assignment = await this.dataSource.manager.findOneBy(TechnicianAssignment, {
           serviceOrderId: order.id, technicianId: userId, isActive: true,
         });
-        return assignment ? this.presentOrder(order) : historicalOrderSummary(order);
+        if (assignment) return this.presentOrder(order);
+        const historical = await this.dataSource.manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, technicianId: userId });
+        return this.presentHistoricalOrder(order, historical);
       })),
       total,
     };
@@ -487,11 +495,19 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       const historical = await this.dataSource.manager.findOneBy(TechnicianAssignment, {
         serviceOrderId: id, technicianId: actor.id,
       });
-      if (historical) return historicalOrderSummary(order);
+      if (historical) return this.presentHistoricalOrder(order, historical);
       throw new ForbiddenException('Order not found or access denied');
     }
     await this.checkOrderAccess(order, actor);
     return this.presentOrder(order);
+  }
+
+  async getStoppedWorkFinance(id: string, actor: { id: string; role: string }) {
+    if (![Role.SERVICE_MANAGER, Role.ADMIN].includes(actor.role as Role)) throw new ForbiddenException('Finance review access denied');
+    const order = await this.orderRepo.findOneBy({ id });
+    if (!order) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Order not found');
+    const booking = await this.dataSource.manager.findOneByOrFail(Booking, { id: order.bookingId });
+    return loadOnsiteStopFinance(this.dataSource.manager, order, booking);
   }
 
   /**
@@ -531,6 +547,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   private async presentOrder(order: ServiceOrder): Promise<ServiceOrder> {
     const manager = this.dataSource.manager;
     const booking = await manager.findOneByOrFail(Booking, { id: order.bookingId });
+    const stop = await verifiedOnsiteInterruption(manager, order, booking);
+    const finance = await loadOnsiteStopFinance(manager, order, booking);
     // The technician holding the order now. A technician who withdrew or was
     // replaced is not shown (name, phone, last GPS); a completed order keeps
     // its finishing technician because that assignment stays active.
@@ -548,6 +566,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     const quotation = await manager.findOne(Quotation, { where: { serviceOrderId: order.id }, relations: ['items'], order: { version: 'DESC' } });
     const history = await this.historyRepo.find({ where: { serviceOrderId: order.id }, order: { createdAt: 'ASC' } });
     return Object.assign(order, {
+      ...(finance ? { failedWorkFinance: finance.customer } : {}),
+      ...(stop?.workStopped ? { workStopped: true, assignmentReleased: true, operationalDisposition: 'STOPPED', oldObligationsReviewRequired: true } : {}),
       serviceName: booking.serviceNameSnapshot || '', addressSummary: booking.addressTextSnapshot || '',
       pricingMode: booking.pricingModeSnapshot,
       fixedUnitPrice: booking.fixedUnitPriceSnapshot ? Number(booking.fixedUnitPriceSnapshot) : null,
@@ -576,6 +596,15 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       afterEvidenceCount: await manager.count(RepairEvidence, { where: { serviceOrderId: order.id, type: EvidenceType.AFTER } }),
       timeline: history.map(h => ({ status: h.toStatus, title: h.reason, timestamp: h.createdAt.toISOString(), actor: h.actorRole })),
     });
+  }
+
+  private async presentHistoricalOrder(order: ServiceOrder, assignment: TechnicianAssignment | null): Promise<HistoricalOrderSummary> {
+    const summary = historicalOrderSummary(order);
+    if (assignment?.unassignReason !== ONSITE_STOP_ACTION) return summary;
+    const booking = await this.dataSource.manager.findOneBy(Booking, { id: order.bookingId });
+    const proof = booking && await verifiedOnsiteInterruption(this.dataSource.manager, order, booking);
+    return Object.assign(summary, { workStopped: !!proof?.workStopped,
+      operationalDisposition: proof?.workStopped ? 'STOPPED' : 'STOP_REQUIRES_REVIEW' });
   }
 
   async enRoute(
@@ -1616,6 +1645,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async commitTransition(manager: EntityManager, order: ServiceOrder, next: ServiceOrderStatus, actor: { id: string | null; role: string }, reason: string, cause?: 'repair_failure'): Promise<void> {
+    await assertNoOnsiteInterruption(manager, order.id);
     if (!ServiceOrderStateMachine.canTransition(order.status, next)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Illegal order transition');
     const previous = order.status;
     const now = new Date();

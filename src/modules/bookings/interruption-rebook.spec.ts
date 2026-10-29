@@ -17,6 +17,8 @@ function fixture(outcomes = ['succeeded', 'interrupted', 'succeeded']) {
     Address: [{ id: 'address', userId: 'customer', line1: 'Test', province: 'Test province' }],
     Service: [{ id: 'service', isActive: true }], InterruptionRebookSource: [] };
   const manager = {
+    findOne: vi.fn(async (entity: { name: string }, options: { where?: Record<string, unknown> }) =>
+      (rows[entity.name] ?? []).find(row => Object.entries(options.where ?? {}).every(([key, value]) => row[key] === value)) ?? null),
     findOneBy: vi.fn(async (entity: { name: string }, where: Record<string, unknown>) => (rows[entity.name] ?? []).find(row => Object.entries(where).every(([key, value]) => row[key] === value)) ?? null),
     find: vi.fn(async (entity: { name: string }, options: { where?: Record<string, unknown> }) =>
       (rows[entity.name] ?? []).filter(row => Object.entries(options?.where ?? {}).every(([key, value]) => row[key] === value))),

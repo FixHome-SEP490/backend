@@ -1,7 +1,11 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
-import { createHash } from 'crypto';
-import { DataSource, EntityManager } from 'typeorm';
-import { AccountStatus, PartSource, PartUsageStatus, Role, ServiceOrderStatus } from '../../shared/enums';
+import { createHash, randomUUID } from 'crypto';
+import { plainToInstance } from 'class-transformer';
+import { validateSync } from 'class-validator';
+import { DataSource, EntityManager, In } from 'typeorm';
+import { AuditLog } from '../audit-log/entities/audit-log.entity';
+import { AccountStatus, PartRequestStatus, PartRequestType, PartSource, PartUsageStatus, Role, ServiceOrderStatus } from '../../shared/enums';
+import { MAX_PAGE_SIZE } from '../../shared/constants';
 import { Notification } from '../notifications/entities/notification.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
@@ -11,11 +15,25 @@ import { PartCustody, PartCustodyEntry } from './entities/part-custody.entity';
 import { PartRequest } from './entities/part-request.entity';
 import { PartRequestItem } from './entities/part-request-item.entity';
 import { applyCustodyCommand, createPartCustodySnapshot, PartCustodyRuleError } from './part-custody.rules';
-import { PartCustodyActor, PartCustodyCommand } from './part-custody.types';
+import { LegacyManualReviewEvent, LegacyManualReviewRecord, PartCustodyActor, PartCustodyCommand } from './part-custody.types';
+import { LegacyManualReviewDto } from './dto/legacy-manual-review.dto';
 import { custodyActivation, custodyTrackingEnabled, lockCustodyTechnician, partReturnsTrackingEnabled } from './part-custody.policy';
 import { PartReturnDiscrepancyDto, PartReturnDto } from './dto/part-return.dto';
 
 type Usage = { usedQty?: number; expectedVersion?: number; idempotencyKey?: string; usageStatus?: PartUsageStatus };
+
+type LegacyManualReviewQueryRow = {
+  partRequestItemId: string;
+  partRequestId: string;
+  partCatalogId: string | null;
+  partNameSnapshot: string;
+  issuedQty: number | string;
+  orderId: string;
+  technicianId: string;
+  requestType: PartRequestType;
+  requestStatus: PartRequestStatus;
+  handedOverAt: Date | string;
+};
 
 @Injectable()
 export class PartCustodyService {
@@ -100,6 +118,188 @@ export class PartCustodyService {
       .orderBy("(SELECT COALESCE(SUM((d->>'quantity')::int), 0) FROM jsonb_array_elements(COALESCE(c.state->'declarations', '[]'::jsonb)) d) > (c.state->>'managerAcceptedQty')::int", 'DESC')
       .addOrderBy('c.handedOverAt', 'ASC').addOrderBy('c.id', 'ASC').take(100).getMany();
     return rows.map(row => this.view(row));
+  }
+
+  /**
+   * SM-only, read-only review of FixHome parts received before custody
+   * enrollment. The item join is exact and the anti-join is the same primary
+   * key used by the custody ledger. Legacy records have no physical return
+   * ledger, so quantities stay unknown instead of being guessed from usage,
+   * request status or an empty custody queue. No order, request or ledger row
+   * is written.
+   */
+  async legacyManualReview(
+    actor: PartCustodyActor,
+    page = 1,
+    pageSize = 20,
+  ): Promise<{ data: LegacyManualReviewRecord[]; total: number; page: number; pageSize: number }> {
+    if (actor.role !== Role.SERVICE_MANAGER) throw new ForbiddenException();
+    const manager = this.dataSource.manager;
+    // The custody schema is only guaranteed when the feature is active.
+    await this.requireActive(manager);
+    const safePage = Number.isSafeInteger(Number(page)) && Number(page) > 0 ? Number(page) : 1;
+    const safePageSize = Number.isSafeInteger(Number(pageSize)) && Number(pageSize) > 0
+      ? Math.min(MAX_PAGE_SIZE, Number(pageSize))
+      : 20;
+    const qb = manager.createQueryBuilder(PartRequestItem, 'i')
+      .innerJoin(PartRequest, 'r', 'r.id = i.part_request_id')
+      .where('NOT EXISTS (SELECT 1 FROM part_custodies c WHERE c.part_request_item_id = i.id)')
+      .andWhere('i.part_source = :partSource', { partSource: PartSource.FIXHOME })
+      .andWhere('r.received_at IS NOT NULL')
+      // RECEIVED carries the handover; COMPLETED and CANCELLED only qualify
+      // when a durable received_at remains, never as proof of warehouse return.
+      .andWhere('r.status IN (:...statuses)', {
+        statuses: [PartRequestStatus.RECEIVED, PartRequestStatus.COMPLETED, PartRequestStatus.CANCELLED],
+      });
+    const total = await qb.getCount();
+    const rows = await qb
+      .select([
+        'i.id AS "partRequestItemId"',
+        'i.part_request_id AS "partRequestId"',
+        'i.part_catalog_id AS "partCatalogId"',
+        'i.part_name_snapshot AS "partNameSnapshot"',
+        'i.quantity AS "issuedQty"',
+        'r.service_order_id AS "orderId"',
+        'r.technician_id AS "technicianId"',
+        'r.request_type AS "requestType"',
+        'r.status AS "requestStatus"',
+        'r.received_at AS "handedOverAt"',
+      ])
+      .orderBy('r.received_at', 'ASC')
+      .addOrderBy('i.id', 'ASC')
+      .offset((safePage - 1) * safePageSize)
+      .limit(safePageSize)
+      .getRawMany<LegacyManualReviewQueryRow>();
+    const audits = rows.length ? await manager.find(AuditLog, { where: {
+      action: 'SM_LEGACY_PARTS_MANUAL_REVIEW', resourceType: 'part_request_item',
+      resourceId: In(rows.map(row => row.partRequestItemId)),
+    } }) : [];
+    return {
+      data: rows.map(row => ({
+        kind: 'legacy_manual_review' as const,
+        receiptState: 'UNKNOWN' as const,
+        orderId: row.orderId,
+        partRequestId: row.partRequestId,
+        partRequestItemId: row.partRequestItemId,
+        technicianId: row.technicianId,
+        requestType: row.requestType,
+        requestStatus: row.requestStatus,
+        handedOverAt: new Date(row.handedOverAt).toISOString(),
+        partCatalogId: row.partCatalogId ?? null,
+        partNameSnapshot: row.partNameSnapshot,
+        issuedQty: Number(row.issuedQty),
+        ...this.legacyReviewView(this.legacyReviewEvents(audits.filter(audit => audit.resourceId === row.partRequestItemId), row).at(-1) ?? null),
+      })),
+      total,
+      page: safePage,
+      pageSize: safePageSize,
+    };
+  }
+
+  private legacyReviewView(event: LegacyManualReviewEvent | null) {
+    return { receiptState: 'UNKNOWN' as const, manualReviewState: event?.status ?? 'UNKNOWN' as const, lastManualReview: event };
+  }
+
+  private validateLegacyReview(body: LegacyManualReviewDto): LegacyManualReviewDto {
+    const dto = plainToInstance(LegacyManualReviewDto, body);
+    if (validateSync(dto, { whitelist: true, forbidNonWhitelisted: true }).length ||
+        (dto.status === 'PHYSICALLY_VERIFIED' && !dto.evidenceReferenceId) ||
+        (dto.observedQty !== undefined && (!dto.evidenceReferenceId || dto.status === 'INVESTIGATING')) ||
+        Boolean(dto.correctsEventId) !== Boolean(dto.correctionReason)) {
+      throw new BadRequestException('Nội dung xác minh chưa hợp lệ. Số lượng quan sát cần tham chiếu bằng chứng vật lý.');
+    }
+    return dto;
+  }
+
+  private legacyReviewEvents(audits: AuditLog[], source: Pick<LegacyManualReviewQueryRow, 'partRequestItemId' | 'partRequestId' | 'orderId' | 'technicianId'>): LegacyManualReviewEvent[] {
+    const events = audits.map(audit => {
+      const event = audit.after?.event as LegacyManualReviewEvent;
+      if (audit.action !== 'SM_LEGACY_PARTS_MANUAL_REVIEW' || audit.resourceType !== 'part_request_item' ||
+          audit.resourceId !== source.partRequestItemId || audit.actorRole !== Role.SERVICE_MANAGER ||
+          !audit.actorUserId || !event || event.id !== audit.id || event.actorUserId !== audit.actorUserId ||
+          event.actorRole !== Role.SERVICE_MANAGER || audit.after?.schemaVersion !== 1 ||
+          !/^[a-f0-9]{64}$/.test(String(audit.after?.requestFingerprint)) ||
+          !Number.isFinite(new Date(event.occurredAt).getTime()) ||
+          !Number.isSafeInteger(event.version) ||
+          ['partRequestItemId', 'partRequestId', 'orderId', 'technicianId'].some(key => event[key] !== source[key])) {
+        throw new ConflictException('Lịch sử xác minh không khớp nguồn linh kiện.');
+      }
+      // Read back an explicit allowlist; never return arbitrary audit JSON.
+      const { id, version, actorUserId, actorRole, occurredAt, orderId, technicianId, partRequestId, partRequestItemId,
+        commandId, expectedVersion, status, reason, evidenceReferenceId, observedQty, correctsEventId, correctionReason } = event;
+      const command = this.validateLegacyReview({ commandId, expectedVersion, status, reason,
+        ...(evidenceReferenceId !== undefined ? { evidenceReferenceId } : {}),
+        ...(observedQty !== undefined ? { observedQty } : {}),
+        ...(correctsEventId !== undefined ? { correctsEventId, correctionReason } : {}) });
+      return { ...command, id, version, actorUserId, actorRole, occurredAt, orderId, technicianId, partRequestId, partRequestItemId };
+    }).sort((a, b) => a.version - b.version);
+    const commands = new Set<string>();
+    for (let i = 0; i < events.length; i++) {
+      const event = events[i];
+      const previous = events[i - 1];
+      if (event.version !== i + 1 || event.expectedVersion !== i || commands.has(event.commandId) ||
+          (previous && previous.status !== 'INVESTIGATING' && event.correctsEventId !== previous.id) ||
+          (event.correctsEventId && event.correctsEventId !== previous?.id)) {
+        throw new ConflictException('Lịch sử xác minh bị xung đột.');
+      }
+      commands.add(event.commandId);
+    }
+    return events;
+  }
+
+  /** Observation only. Request lock also serializes QR enrollment; no legacy backfill. */
+  async reviewLegacyItem(itemId: string, body: LegacyManualReviewDto, actor: PartCustodyActor) {
+    if (actor.role !== Role.SERVICE_MANAGER) throw new ForbiddenException();
+    const dto = this.validateLegacyReview(body);
+    itemId = itemId.toLowerCase();
+    return this.dataSource.transaction(async manager => {
+      await this.requireActive(manager);
+      const reference = await manager.findOne(PartRequestItem, { where: { id: itemId } });
+      if (!reference) throw new NotFoundException('Không tìm thấy linh kiện cần xác minh.');
+      // Match existing request -> item lock order. No order mutation/assignment requirement.
+      const request = await manager.findOne(PartRequest, { where: { id: reference.partRequestId }, lock: { mode: 'pessimistic_write' } });
+      const item = await manager.findOne(PartRequestItem, { where: { id: itemId }, lock: { mode: 'pessimistic_write' } });
+      if (!request || !item || item.partRequestId !== request.id || item.partSource !== PartSource.FIXHOME ||
+          !(request.receivedAt instanceof Date) || !Number.isFinite(request.receivedAt.getTime()) ||
+          ![PartRequestStatus.RECEIVED, PartRequestStatus.COMPLETED, PartRequestStatus.CANCELLED].includes(request.status) ||
+          !await manager.findOne(ServiceOrder, { where: { id: request.serviceOrderId } }) ||
+          await manager.findOne(PartCustody, { where: { partRequestItemId: itemId } })) {
+        throw new ConflictException('Linh kiện không có đủ bằng chứng bàn giao legacy hoặc đã được theo dõi hoàn trả.');
+      }
+      const source = { partRequestItemId: item.id, partRequestId: request.id, orderId: request.serviceOrderId, technicianId: request.technicianId };
+      // AuditLog is append-only. The locked original request/item serialize its
+      // first insert and every subsequent read/insert, including an empty history.
+      const audits = await manager.find(AuditLog, { where: { action: 'SM_LEGACY_PARTS_MANUAL_REVIEW',
+        resourceType: 'part_request_item', resourceId: item.id } });
+      const events = this.legacyReviewEvents(audits, source);
+      // Fixed field order, normalized UUIDs; actor and exact original item are bound to replay.
+      const fingerprint = createHash('sha256').update(JSON.stringify({ ...source, actorId: actor.id,
+        commandId: dto.commandId, expectedVersion: dto.expectedVersion, status: dto.status, reason: dto.reason,
+        evidenceReferenceId: dto.evidenceReferenceId, observedQty: dto.observedQty,
+        correctsEventId: dto.correctsEventId, correctionReason: dto.correctionReason })).digest('hex');
+      const prior = events.find(event => event.commandId === dto.commandId);
+      if (prior) {
+        if (audits.find(audit => audit.id === prior.id)?.after?.requestFingerprint !== fingerprint) {
+          throw new ConflictException('Mã lệnh đã được dùng cho nội dung hoặc người xác minh khác.');
+        }
+        return this.legacyReviewView(prior);
+      }
+      const last = events.at(-1);
+      if (dto.expectedVersion !== events.length ||
+          (last && last.status !== 'INVESTIGATING' && dto.correctsEventId !== last.id) ||
+          (dto.correctsEventId && dto.correctsEventId !== last?.id)) {
+        throw new ConflictException('Xác minh đã thay đổi. Kết luận đã ghi cần đính chính có lý do và tham chiếu bản trước.');
+      }
+      const now = new Date();
+      const event: LegacyManualReviewEvent = { ...dto, ...source, id: randomUUID(), version: events.length + 1,
+        actorUserId: actor.id, actorRole: Role.SERVICE_MANAGER, occurredAt: now.toISOString() };
+      // Insert directly: a failed durable audit MUST abort this command.
+      await manager.insert(AuditLog, { id: event.id, actorUserId: actor.id, actorRole: actor.role,
+        action: 'SM_LEGACY_PARTS_MANUAL_REVIEW', resourceType: 'part_request_item', resourceId: item.id,
+        before: null, after: { schemaVersion: 1, requestFingerprint: fingerprint, event },
+        createdAt: now, ip: null, userAgent: null });
+      return this.legacyReviewView(event);
+    });
   }
 
   async command(requestId: string, itemId: string, kind: 'declare_return' | 'accept_return' | 'report_discrepancy', body: PartReturnDto | PartReturnDiscrepancyDto, actor: PartCustodyActor): Promise<Record<string, unknown>> {

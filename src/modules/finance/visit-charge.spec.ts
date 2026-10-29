@@ -16,6 +16,39 @@ const order = (n: number, extra: object = {}) => ({ id: `o${n}`, bookingId: `b${
 const invoice = (n: number, grandTotal: number, paymentStatus = 'unpaid') => ({ id: `i${n}`, serviceOrderId: `o${n}`, grandTotal: String(grandTotal), paymentStatus });
 
 describe('loadVisitCharge', () => {
+  it('stops only the interrupted child from waiting or charging while preserving old invoices', async () => {
+    const rows = { items: [item(1), item(2, 'interrupted'), item(3)],
+      bookings: [booking(1), booking(2), booking(3)],
+      orders: [order(1), order(2), order(3)],
+      invoices: [invoice(1, 200000), invoice(2, 700000, 'paid'), invoice(3, 300000)] };
+    const before = structuredClone(rows);
+    const charge = await loadVisitCharge(manager(rows) as never, 'g');
+    expect(charge).toMatchObject({ ready: false, paid: false, waiting: 0, total: 500000, financialFollowupRequired: true });
+    expect(charge.devices[1]).toMatchObject({ state: 'interrupted', amount: 700000, invoiceId: 'i2', paid: true, financialFollowupRequired: true });
+    expect(charge.allocations.map(a => a.invoiceId)).toEqual(['i1', 'i3']);
+    expect(rows).toEqual(before);
+  });
+
+  it('holds an interrupted pending invoice without changing its old group allocation or provider split', async () => {
+    const rows = { items: [item(1), item(2)], bookings: [booking(1), booking(2)],
+      orders: [order(1), order(2)], invoices: [invoice(1, 200000), invoice(2, 700000)] };
+    const before = await loadVisitCharge(manager(rows) as never, 'g');
+    rows.items[1].outcome = 'interrupted'; const snapshot = structuredClone(rows);
+    const stopped = await loadVisitCharge(manager(rows) as never, 'g');
+    expect(stopped).toMatchObject({ ready: false, paid: false, financialFollowupRequired: true, total: before.total });
+    expect(stopped.devices[1]).toMatchObject({ amount: 700000, paid: false, invoiceId: 'i2' });
+    expect(stopped.allocations).toEqual(before.allocations);
+    expect(sameAllocations(before.allocations, stopped.allocations)).toBe(true);
+    expect(rows).toEqual(snapshot);
+  });
+
+  it('allows the existing single sibling checkout only when the stopped child has no invoice', async () => {
+    const charge = await loadVisitCharge(manager({ items: [item(1), item(2, 'interrupted'), item(3)],
+      bookings: [booking(1), booking(2), booking(3)], orders: [order(1), order(2, { completionRequestedAt: null }), order(3)],
+      invoices: [invoice(1, 200000), invoice(3, 300000)] }) as never, 'g');
+    expect(charge).toMatchObject({ ready: true, waiting: 0, total: 500000 });
+    expect(charge.allocations.map(a => a.invoiceId)).toEqual(['i1', 'i3']);
+  });
   it('charges the repaired devices only, once nothing is still open', async () => {
     const charge = await loadVisitCharge(manager({
       items: [item(1), item(2, 'failed'), item(3, 'quote_declined')],

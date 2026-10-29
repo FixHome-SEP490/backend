@@ -135,6 +135,12 @@ describe('AuditLogService', () => {
   });
 
   describe('findAll', () => {
+    it('excludes private SM legacy observations from the admin audit query even when explicitly filtered', async () => {
+      await auditLogService.findAll({ page: 1, limit: 10, action: 'SM_LEGACY_PARTS_MANUAL_REVIEW' });
+      expect(mockAuditRepo.createQueryBuilder().andWhere).toHaveBeenCalledWith(
+        'log.action <> :privateAction', { privateAction: 'SM_LEGACY_PARTS_MANUAL_REVIEW' },
+      );
+    });
     it('returns paginated results', async () => {
       const result = await auditLogService.findAll({ page: 1, limit: 10 });
       expect(result.data).toHaveLength(2);
@@ -158,6 +164,11 @@ describe('AuditLogService', () => {
   });
 
   describe('findById', () => {
+    it('does not expose private SM observation notes/evidence to admin by a known audit ID', async () => {
+      mockAuditRepo.findOneBy.mockResolvedValue(makeLog({ action: 'SM_LEGACY_PARTS_MANUAL_REVIEW',
+        after: { event: { reason: 'private observation', evidenceReferenceId: 'private-reference' } } }));
+      expect(await auditLogService.findById('log-uuid-1')).toBeNull();
+    });
     it('returns log when found', async () => {
       const result = await auditLogService.findById('log-uuid-1');
       expect(result?.id).toBe('log-uuid-1');

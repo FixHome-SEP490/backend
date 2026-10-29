@@ -10,6 +10,7 @@ import { Payment } from './entities/payment.entity';
 import { VisitGroupPayment } from '../visit-groups/entities/visit-group-payment.entity';
 import { VoucherPaymentLink } from '../vouchers/entities/voucher-funding.entity';
 import { VisitGroup } from '../visit-groups/entities/visit-group.entity';
+import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity';
 import { createHmac } from 'crypto';
 import { bindVoucherPaymentLink } from '../vouchers/voucher-payment-link';
 import { commitConfirmedCashVoucherFunding } from '../vouchers/voucher-cash-credit';
@@ -34,15 +35,23 @@ const quote = { total: { originalGrossVnd: 100000, customerDueVnd: 50000 },
 
 function serviceFor(scope: 'SOLO' | 'VISIT_GROUP') {
   const invoice = { id: 'invoice-1', serviceOrderId: 'order-1', grandTotal: 100000, paymentStatus: 'unpaid' };
+  const booking = { id: 'booking-1', customerId: actor.id };
+  const order = { id: 'order-1', bookingId: booking.id, code: 'O1', status: 'completed',
+    completionRequestedAt: new Date('2026-10-26T15:00:00Z') };
   const manager = {
     queryRunner: { isTransactionActive: true },
+    // Exercise the real stopped-collection guard against this completed, billed child.
+    find: vi.fn(async (entity: unknown) => entity === VisitGroupItem
+      ? [{ id: 'item-1', groupId: 'group-1', bookingId: booking.id, sequence: 1, outcome: 'succeeded' }]
+      : entity === Invoice ? [invoice] : []),
+    findBy: vi.fn(async (entity: unknown) => entity === Booking ? [booking] : entity === ServiceOrder ? [order] : []),
     findOne: vi.fn(async (entity: unknown) => entity === Invoice ? invoice
-      : entity === ServiceOrder ? { id: 'order-1', bookingId: 'booking-1', code: 'O1', status: 'completed' }
+      : entity === ServiceOrder ? order
         : entity === TechnicianAssignment ? { technicianId: 'technician-1' }
-        : entity === Booking ? { id: 'booking-1', customerId: actor.id } : null),
+        : entity === Booking ? booking : null),
     findOneBy: vi.fn(async (entity: unknown) => entity === Invoice ? invoice
-      : entity === ServiceOrder ? { id: 'order-1', bookingId: 'booking-1', code: 'O1', status: 'completed' }
-        : entity === Booking ? { id: 'booking-1', customerId: actor.id }
+      : entity === ServiceOrder ? order
+        : entity === Booking ? booking
           : entity === VisitGroup ? { id: 'group-1', customerId: actor.id } : null),
     findOneOrFail: vi.fn(async () => invoice),
     update: vi.fn(),

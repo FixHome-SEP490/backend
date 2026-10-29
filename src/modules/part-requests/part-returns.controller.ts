@@ -1,12 +1,14 @@
-import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Role } from '../../shared/enums';
+import { PageSizeQueryDto } from '../../shared/dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PartReturnDiscrepancyDto, PartReturnDto } from './dto/part-return.dto';
 import { PartCustodyService } from './part-custody.service';
 import { PartCustodyActor } from './part-custody.types';
+import { LegacyManualReviewDto } from './dto/legacy-manual-review.dto';
 
 @ApiTags('Part Returns')
 @ApiBearerAuth()
@@ -27,10 +29,25 @@ export class PartReturnsController {
     return { data: await this.custody.pending(req.user) };
   }
 
+  @Get('part-returns/legacy-manual-review')
+  @Roles(Role.SERVICE_MANAGER)
+  async legacyManualReview(@Query() query: PageSizeQueryDto, @Req() req: { user: PartCustodyActor }) {
+    const result = await this.custody.legacyManualReview(req.user, query.page, query.pageSize);
+    return { data: result.data, meta: { total: result.total, page: result.page, pageSize: result.pageSize } };
+  }
+
   @Get('part-returns/mine')
   @Roles(Role.TECHNICIAN)
   async mine(@Req() req: { user: PartCustodyActor }) {
     return { data: await this.custody.pending(req.user) };
+  }
+
+  @Post('part-returns/legacy-manual-review/:itemId')
+  @HttpCode(200)
+  @Roles(Role.SERVICE_MANAGER)
+  async reviewLegacyItem(@Param('itemId', ParseUUIDPipe) itemId: string,
+    @Body() body: LegacyManualReviewDto, @Req() req: { user: PartCustodyActor }) {
+    return { data: await this.custody.reviewLegacyItem(itemId, body, req.user) };
   }
 
   @Post('part-requests/:requestId/items/:itemId/return-discrepancy')
