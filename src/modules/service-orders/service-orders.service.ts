@@ -83,6 +83,7 @@ import { OrderEvidenceStorage, EvidenceFile, evidenceStampText } from '../media/
 import { expireAdditionalCosts } from './expire-additional-costs';
 import { authorizeOrder } from './order-access';
 import { assertNoOnsiteInterruption, ONSITE_INTERRUPTION_ACTION, ONSITE_STOP_ACTION, verifiedOnsiteInterruption } from './onsite-interruption';
+import { loadOnsiteStopFinance } from './onsite-stop-finance';
 import { groupSiblings, mirrorGroupStatus, recordVisitOutcome, refuseLoneGroupedBookingAction } from '../bookings/visit-group-guard';
 import { REPAIR_FAILURE_REASONS, type RepairFailedDto } from './dto/repair-failed.dto';
 import { SupportCase } from '../support-cases/entities/support-case.entity';
@@ -501,6 +502,14 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     return this.presentOrder(order);
   }
 
+  async getStoppedWorkFinance(id: string, actor: { id: string; role: string }) {
+    if (![Role.SERVICE_MANAGER, Role.ADMIN].includes(actor.role as Role)) throw new ForbiddenException('Finance review access denied');
+    const order = await this.orderRepo.findOneBy({ id });
+    if (!order) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Order not found');
+    const booking = await this.dataSource.manager.findOneByOrFail(Booking, { id: order.bookingId });
+    return loadOnsiteStopFinance(this.dataSource.manager, order, booking);
+  }
+
   /**
    * Public guest lookup by order code + registered phone (no auth).
    * Same generic not-found error whether the code or the phone is wrong,
@@ -539,6 +548,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     const manager = this.dataSource.manager;
     const booking = await manager.findOneByOrFail(Booking, { id: order.bookingId });
     const stop = await verifiedOnsiteInterruption(manager, order, booking);
+    const finance = await loadOnsiteStopFinance(manager, order, booking);
     // The technician holding the order now. A technician who withdrew or was
     // replaced is not shown (name, phone, last GPS); a completed order keeps
     // its finishing technician because that assignment stays active.
@@ -556,6 +566,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     const quotation = await manager.findOne(Quotation, { where: { serviceOrderId: order.id }, relations: ['items'], order: { version: 'DESC' } });
     const history = await this.historyRepo.find({ where: { serviceOrderId: order.id }, order: { createdAt: 'ASC' } });
     return Object.assign(order, {
+      ...(finance ? { failedWorkFinance: finance.customer } : {}),
       ...(stop?.workStopped ? { workStopped: true, assignmentReleased: true, operationalDisposition: 'STOPPED', oldObligationsReviewRequired: true } : {}),
       serviceName: booking.serviceNameSnapshot || '', addressSummary: booking.addressTextSnapshot || '',
       pricingMode: booking.pricingModeSnapshot,

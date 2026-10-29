@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-29 16:02 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-platform-first-safe-exit-t8-20261029
+> Cập nhật lần cuối: 2026-10-29 16:14 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-platform-first-failed-work-t9-20261029
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -94,7 +94,9 @@ Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức c
 
 ## 3. Trạng thái hiện tại
 
-Platform-first T8 (source, 29/10/2026): cannot-continue ghi finalization audit bất biến, nhả assignment gốc và chỉ đánh dấu child bị dừng `interrupted` với điều kiện outcome rỗng. Giữ Booking/Order status, quote, tiền và vật tư; không giả CANCELLED/0/refund. Proof T1 + finalization cho phép T2 draft/confirm sau deassign, không phụ thuộc case prose; exact replay giữ một lần release. Detail/history trả `workStopped` và `operationalDisposition: STOPPED`; paid sweep loại receipt dừng. Group có hóa đơn cũ giữ amount/paid/allocation và hold checkout mới cho T9; child không hóa đơn không chặn checkout sibling thành công. 3 spec/115 tests và typecheck PASS; PostgreSQL/shared DEV/provider E2E/Web/Mobile/full regression NOT VERIFIED. T9/T10 chưa triển khai. ADR và giới hạn: `docs/PLATFORM-FIRST-SAFE-EXIT-ADR.md`, `docs/PLATFORM-FIRST-T8-IMPLEMENTATION.md`.
+Platform-first T9: thêm read-only failedWorkFinance và endpoint SM/Admin stopped-work-finance; tách quote lịch sử khỏi payable null, không giả 0/refund. Guard chỉ khoản thu mới, phân biệt SOLO/VisitGroup; child STOP có hóa đơn giữ hold, không hóa đơn vẫn cho checkout sibling thành công. Giữ callback/xác nhận tiền cũ và ledger. Blocker: T8 STOP chưa chứng minh genuine failed repair cho 2A; T9b/D3 hoãn. Giới hạn kiểm chứng: docs/PLATFORM-FIRST-T9-FINANCE-DISPOSITION.md.
+
+Platform-first T8 (source, 29/10/2026): cannot-continue ghi finalization audit bất biến, nhả assignment gốc và chỉ đánh dấu child bị dừng `interrupted` với điều kiện outcome rỗng. Giữ Booking/Order status, quote, tiền và vật tư; không giả CANCELLED/0/refund. Proof T1 + finalization cho phép T2 draft/confirm sau deassign, không phụ thuộc case prose; exact replay giữ một lần release. Detail/history trả `workStopped` và `operationalDisposition: STOPPED`; paid sweep loại receipt dừng. Group có hóa đơn cũ giữ amount/paid/allocation và hold checkout mới cho T9; child không hóa đơn không chặn checkout sibling thành công. 3 spec/115 tests và typecheck PASS; PostgreSQL/shared DEV/provider E2E/Web/Mobile/full regression NOT VERIFIED. T9 đã bổ sung read model/guard có giới hạn; T9b đối soát và T10 chưa triển khai. ADR và giới hạn: `docs/PLATFORM-FIRST-SAFE-EXIT-ADR.md`, `docs/PLATFORM-FIRST-T8-IMPLEMENTATION.md`.
 
 Platform-first T3 (29/10/2026): test storage cô lập xác nhận thợ gốc GET/declare sau real repair failure và assignment inactive, chỉ SM nhận full/partial/discrepancy, không auto-accept, replay/version/quantity giữ nghĩa vụ. T3b thêm `GET /part-returns/legacy-manual-review` chỉ SM, chỉ đọc, trả hàng FIXHOME đã `received_at` mà thiếu PartCustody với `receiptState: UNKNOWN`, không suy ra đã nhận/đã trả. Legacy vẫn vắng khỏi queue/byOrder cũ và Web chưa có nhánh unknown nên AT10 vẫn FAIL. Repro, hợp đồng và blocker consumer: `docs/PLATFORM-FIRST-T3-PARTS-AUDIT.md`. PostgreSQL/Web/Mobile/runtime NOT VERIFIED.
 
@@ -205,6 +207,8 @@ Kiểu modular monolith: mỗi module `controller → service → TypeORM reposi
 Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ success: false, statusCode, error: { code, message, details? }, timestamp, path }`.
 
 ## 5. Hợp đồng với repo khác
+
+- T9 additive: order detail/list có `failedWorkFinance` (payable null, quote chỉ lịch sử, trạng thái unbilled hoặc review, không xác nhận hoàn tiền). `GET /service-orders/:id/stopped-work-finance` chỉ SM/Admin có `order:read_related`, trả reason codes và ID/state tài chính nội bộ; không cấp cho khách/thợ. Web/Mobile/docs repo adoption NOT VERIFIED; không sửa repo khác. Chi tiết và blocker 2A: `docs/PLATFORM-FIRST-T9-FINANCE-DISPOSITION.md`.
 
 - T8 additive: cùng route cannot-continue/customer-continuation trả `workStopped`, `assignmentReleased`, `operationalDisposition`; order detail/history chỉ báo STOP sau strict final proof. Giữ `version:1`, `VERIFIED_INTERRUPTION_RECORDED` và `terminalTransitionApplied:false` vì không chuyển ServiceOrder enum. Visit charge thêm state `interrupted`; có hóa đơn cũ giữ amount/paid/allocations và trả `financialFollowupRequired:true`, `ready:false`, group `paid:false` để chờ T9. Consumer Web/Mobile context/runtime NOT VERIFIED, không sửa repo khác. Xem `docs/PLATFORM-FIRST-T8-IMPLEMENTATION.md`.
 
@@ -336,7 +340,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 - T3: AT10 chưa đạt. T3b đã có Backend read-only `GET /part-returns/legacy-manual-review` (SM-only, `receiptState: UNKNOWN`) nhưng Web chưa có nhánh hiển thị, nên chưa thể coi legacy là đã xử lý; `pending`/`byOrder` vẫn trả rỗng cho legacy và thợ gốc inactive vẫn không có route khai trả legacy. Cần tích hợp Backend+Web cùng consumer riêng, không bịa số 0/receipt hoặc backfill cohort. Objective failure còn từ chối request dùng một phần và trả phần dư (422); T2 phải giữ quantity truth khi thiết kế stop, không hạ used để vượt guard. Chi tiết và repro ở `docs/PLATFORM-FIRST-T3-PARTS-AUDIT.md`; không tuyên bố platform-first hoàn tất.
 
-- Platform-first T8 đã có operational STOP/deassign và proof T2 sau release, giữ nguyên trạng thái/tổng tiền cũ. Chưa có T9 đối soát tiền/zero-charge hay T10 D3; group có hóa đơn interrupted giữ hold, không tự miễn hoặc hoàn tiền. PostgreSQL T8/race/RLS, actual sweep SQL, provider/funded callbacks, shared DEV, Docker/health, Web/Mobile/runtime/full regression và independent review NOT VERIFIED; chưa đủ gate release. Restart backend ở đợt runtime QA được phép. Xem `docs/PLATFORM-FIRST-T8-IMPLEMENTATION.md`.
+- Platform-first T8 đã có operational STOP/deassign và proof T2 sau release, giữ nguyên trạng thái/tổng tiền cũ. T9 có read model/guard mới; chưa có T9b đối soát tiền/zero-charge hay T10 D3; group có hóa đơn interrupted giữ hold, không tự miễn hoặc hoàn tiền. PostgreSQL T8/race/RLS, actual sweep SQL, provider/funded callbacks, shared DEV, Docker/health, Web/Mobile/runtime/full regression và independent review NOT VERIFIED; chưa đủ gate release. Restart backend ở đợt runtime QA được phép. Xem `docs/PLATFORM-FIRST-T8-IMPLEMENTATION.md`.
 
 - Cash-first/reputation: gate CI DEV chỉ chấp nhận đúng hai migration cộng thêm sau voucher/interruption, kiểm RLS/revoke/index/cột rồi mới cho restart; source chưa chạy migration mới trên PostgreSQL cô lập hoặc shared DEV. CI có test PostgreSQL riêng, kết quả chạy CI CHƯA KIỂM CHỨNG; Docker daemon local không kết nối. Cần kiểm JWT/IDOR, race receipt với VNPay IPN và wallet, F4 subsidy/PlatformDue, replay và group failed child trên DB dùng một lần trước khi bật `CASH_FIRST_ENABLED`. Mobile chính thức còn gọi khai tiền mặt thợ trước; bật cash-first chung DEV chỉ qua commit riêng của `docker-compose.part-returns.dev.yml` với compat ON, Web đã release và DB/race được kiểm, rồi kiểm Mobile hai bước cũ. Chưa thể coi shared DEV activation an toàn từ unit test; không tắt cờ khi còn intent pending. Provider thật, socket, Docker `/health` và cross-repo runtime: NOT VERIFIED.
 
@@ -369,6 +373,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
+- 2026-10-29 16:14 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-failed-work-t9-20261029 | Thêm T9 read-only finance disposition và guard khoản thu mới, bảo toàn sibling checkout/tiền cũ; ghi blocker genuine failed work và giới hạn kiểm chứng.
 - 2026-10-29 16:02 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-safe-exit-t8-20261029 | Thêm T8 operational STOP/deassign với strict final proof, giữ nghĩa vụ cũ và hold checkout hóa đơn interrupted; ghi giới hạn T9/T10 và kiểm chứng tối thiểu.
 - 2026-10-29 13:53 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-backend-integration-20261029 | Hợp nhất T2 và T3b vào nhánh tích hợp cục bộ, giữ cả hai mục 3/5/8/9; chạy lại gate và ghi review release.
 - 2026-10-29 13:45 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-parts-t3-20261029 | Thêm T3b read-only SM-only legacy manual-review với receipt unknown, cập nhật hợp đồng/audit; full suite/lint/typecheck/build xanh, AT10 vẫn chờ Web.
@@ -408,4 +413,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-20 22:15 (UTC+7) | ToanAltF4 | fix/overrun-release-closed | Nhả đơn đặt yêu cầu về closed (không còn thông báo sai Chưa có kỹ thuật viên nhận lời mời); ghi chú tiến trình nhả/rút đơn bằng tiếng Việt
 - 2026-10-20 21:41 (UTC+7) | ToanAltF4 | fix/kyc-face-video | Hồ sơ xác minh thợ nhận video khuôn mặt (face_video, video/webm|mp4) thay ảnh khuôn mặt, migration 046 thêm enum IF NOT EXISTS và mở bucket kyc-private cho video
 - 2026-10-20 21:06 (UTC+7) | ToanAltF4 | feat/technician-overrun-release | Thợ nhả đơn kế tiếp khi đơn đang làm chưa xong (GET/POST /service-orders/:id/overrun-release): không trừ điểm, khách nhận TECHNICIAN_RELEASED và tự chọn thợ khác, ngưỡng matching.overrun_release_window_minutes mặc định 180; đặt lại (rebook) giữ thiết bị + phạm vi đã chốt
-- 2026-10-20 20:13 (UTC+7) | Hgnv11 | fix/departure-grace-and-catalog-copy | Ân hạn cảnh báo chưa xuất phát order.departure_grace_minutes đổi 0 thành 15 (seed, DB và migration 1790000000045 chỉ đổi khi còn giá trị 0); mô tả dịch vụ seed bỏ chữ Catalog V2/V3 và câu staging

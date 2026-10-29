@@ -55,6 +55,11 @@ function setup() {
       return (rows[entity.name] ?? []).find(row => matches(row, options.where)) ?? null;
     }),
     findOneBy: vi.fn(async (entity: any, where: any) => (rows[entity.name] ?? []).find(row => matches(row, where)) ?? null),
+    findOneByOrFail: async (entity: any, where: any) => {
+      const row = (rows[entity.name] ?? []).find(row => matches(row, where));
+      if (!row) throw new Error('fixture row not found');
+      return row;
+    },
     findOneOrFail: vi.fn(async (entity: any, options: any) => {
       const row = (rows[entity.name] ?? []).find(row => matches(row, options.where));
       if (!row) throw new Error('fixture row not found');
@@ -93,7 +98,8 @@ function setup() {
     reason: 'Không đủ kỹ năng để tiếp tục sửa thiết bị này', photoEvidenceIds: [] as string[] };
   const stop = (dto = command, actor = tech) => (service as any).cannotContinue(order.id, dto, actor);
   const eligibility = (actor = customer) => (service as any).customerContinuation(order.id, actor);
-  const orders = Object.assign(Object.create(ServiceOrdersService.prototype), { dataSource }) as ServiceOrdersService;
+  const orders = Object.assign(Object.create(ServiceOrdersService.prototype), { dataSource,
+    orderRepo: { findOneBy: async () => structuredClone(order) } }) as ServiceOrdersService;
   const assignments = Object.assign(Object.create(TechnicianAssignmentService.prototype), { dataSource }) as TechnicianAssignmentService;
   return { rows, manager, dataSource, operations, tech, customer, booking, order, assignment, checkin, reputation,
     service, command, stop, eligibility, orders, assignments };
@@ -482,4 +488,64 @@ describe('platform-first verified onsite interruption', () => {
     expect(await h.orders.findById(h.order.id, h.customer)).toMatchObject({ workStopped: true,
       operationalDisposition: 'STOPPED', paymentStatus: PaymentStatus.UNPAID, grandTotal: 500000 });
   });
+
+  it('separates unbilled STOP from payable and keeps staff evidence out of customer detail', async () => {
+    const h = setup(); await h.stop();
+    Object.assign(h.orders, { orderRepo: { findOneBy: async () => structuredClone(h.order) },
+      historyRepo: { find: async () => [] }, configService: { getInt: async () => 60 }, cancelOverdueOrders: async () => {} });
+    h.manager.findOneByOrFail = async (entity: any, where: any) => h.manager.findOneOrFail(entity, { where });
+    const before = structuredClone(h.rows);
+    const detail: any = await h.orders.findById(h.order.id, h.customer);
+    expect(detail.failedWorkFinance).toMatchObject({ state: 'VERIFIED_WORK_STOPPED_UNBILLED',
+      customerPayableVnd: null, newCollectionAllowed: false, historicalQuoteOnly: true,
+      refundState: 'NOT_DETERMINED', reviewRequired: true });
+    expect(detail.failedWorkFinance).not.toHaveProperty('evidence');
+    expect(detail.failedWorkFinance).not.toHaveProperty('reasonCodes');
+    const staff = { id: randomUUID(), role: Role.SERVICE_MANAGER };
+    const finance = await (h.orders as any).getStoppedWorkFinance(h.order.id, staff);
+    expect(finance.reasonCodes).toContain('FAILED_WORK_NOT_PROVEN');
+    expect(finance.evidence.invoices).toEqual([]);
+    expect(h.rows).toEqual(before);
+    await expect((h.orders as any).getStoppedWorkFinance(h.order.id, h.customer)).rejects.toMatchObject({ status: 403 });
+    await expect((h.orders as any).getStoppedWorkFinance(h.order.id, h.tech)).rejects.toMatchObject({ status: 403 });
+    await expect(h.orders.findById(h.order.id, { id: randomUUID(), role: Role.CUSTOMER })).rejects.toThrow();
+  });
+
+  it.each(['invoice', 'payment_paid', 'payment_pending', 'cash', 'cash_first', 'voucher', 'parts', 'invalid_proof', 'paid_without_invoice', 'evidence_unavailable'])
+    ('fails closed for %s and leaves old money/parts unchanged on repeated reads', async kind => {
+      const h = setup(); await h.stop();
+      if (kind === 'invoice' || kind.startsWith('payment')) h.rows.Invoice = [{ id: randomUUID(), serviceOrderId: h.order.id, grandTotal: 500000, paymentStatus: 'unpaid' }];
+      if (kind.startsWith('payment')) h.rows.Payment = [{ id: randomUUID(), invoiceId: h.rows.Invoice[0].id,
+        status: kind === 'payment_paid' ? 'verified' : 'pending', providerReference: 'private-provider-ref' }];
+      if (kind === 'cash') h.rows.CashSettlement = [{ id: randomUUID(), serviceOrderId: h.order.id, status: 'pending_confirmation', technicianNotes: 'private-notes' }];
+      if (kind === 'cash_first') h.rows.CashPaymentIntent = [{ id: randomUUID(), scopeId: h.order.id, scopeKind: 'SOLO', status: 'pending' }];
+      if (kind === 'voucher') {
+        h.rows.VoucherReservation = [{ id: randomUUID(), scopeId: h.order.id, state: 'REDEEMED', claimId: randomUUID() }];
+        h.rows.VoucherPaymentLink = [{ id: randomUUID(), scopeId: h.order.id }];
+        h.rows.VoucherFundingEntry = [{ id: randomUUID(), linkId: h.rows.VoucherPaymentLink[0].id, kind: 'SUBSIDY_COMMITTED' }];
+      }
+      if (kind === 'parts') {
+        h.rows.PartRequest = [{ id: randomUUID(), serviceOrderId: h.order.id, receivedAt: new Date(), items: [{ partSource: 'FIXHOME', usageStatus: 'used' }] }];
+        h.rows.PartCustody = [{ id: randomUUID(), serviceOrderId: h.order.id, state: { used: 1 } }];
+      }
+      if (kind === 'invalid_proof') h.rows.AuditLog[1].after.fingerprint = 'tampered';
+      if (kind === 'paid_without_invoice') h.order.paymentStatus = PaymentStatus.PAID;
+      if (kind === 'evidence_unavailable') {
+        const read = h.manager.find;
+        h.manager.find = async (entity: any, options: any) => {
+          if (entity.name === 'CashPaymentIntent') throw new Error('schema unavailable');
+          return read(entity, options);
+        };
+      }
+      const before = structuredClone(h.rows);
+      const staff = { id: randomUUID(), role: Role.ADMIN };
+      const result = await (h.orders as any).getStoppedWorkFinance(h.order.id, staff);
+      expect(result.customer).toMatchObject({ state: 'FINANCIAL_REVIEW_REQUIRED', customerPayableVnd: null,
+        newCollectionAllowed: false, refundState: 'NOT_DETERMINED' });
+      expect(JSON.stringify(result)).not.toContain('private-provider-ref');
+      expect(JSON.stringify(result)).not.toContain('private-notes');
+      if (kind === 'evidence_unavailable') expect(result.reasonCodes).toContain('EVIDENCE_UNAVAILABLE');
+      expect(await (h.orders as any).getStoppedWorkFinance(h.order.id, staff)).toEqual(result);
+      expect(h.rows).toEqual(before);
+    });
 });
