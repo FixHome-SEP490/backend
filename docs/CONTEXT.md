@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-29 01:35 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-cash-reputation-core-20261029
+> Cập nhật lần cuối: 2026-10-29 12:40 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-platform-first-backend-t1-20261029
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -93,6 +93,8 @@ Ba điều không đổi giữa các repo:
 Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức của nhóm). Mâu thuẫn giữa code và tài liệu thì ghi vào mục 8 và hỏi PO, không tự quyết.
 
 ## 3. Trạng thái hiện tại
+
+Platform-first T1 (source, 29/10/2026): thêm lệnh thợ ghi gián đoạn onsite và GET eligibility riêng cho khách. Receipt nghiêm ngặt kiểm assignment/check-in VALID, UUID/fingerprint và ownership; không phụ thuộc case SM đóng hay mở. Tách REPORT_ONLY; không tự phạt/cấp voucher. T1 dùng fallback bản ghi gián đoạn đã xác minh, giữ nguyên trạng thái, assignment, quote/tiền/vật tư và sibling/checkout; receipt chặn kết quả dịch vụ thứ hai. Chưa chứng minh chuyển trạng thái cuối giữ nghĩa vụ an toàn; prefill/confirm/D3 và đối soát cuối thuộc T2/T3. Không migration/cờ mới, không ghi DB. Contract: `docs/PLATFORM-FIRST-T1-BACKEND-CONTRACT.md`; PostgreSQL/Web/Mobile/runtime NOT VERIFIED.
 
 Cash-first và trách nhiệm thợ sau SM review (source, 29/10/2026): thêm intent tiền mặt của khách cho SOLO/VISIT_GROUP, thợ đang phụ trách chỉ xác nhận sau khi thực nhận đúng NET; dùng lại `applyConfirmedCash` và F4 voucher credit trong cùng transaction. `CASH_FIRST_ENABLED` mặc định OFF giữ Web/Mobile cũ; khi bật riêng DEV cùng `CASH_LEGACY_COMPAT_ENABLED=true`, Mobile vẫn khai và khách xác nhận theo luồng cũ, cùng scope có pending intent mới thì khai cũ bị chặn. Gate CI DEV chỉ chấp nhận đúng hai migration mới theo thứ tự; activation dùng commit overlay DEV riêng sau Web + DB QA, gate cho deploy tiếp khi overlay vẫn ON và chặn downgrade. Case thợ có lý do typed, SM/admin quyết định trách nhiệm rồi mới ghi tối đa một sự kiện điểm gắn case khi lỗi thợ; bản báo cáo không tự trừ điểm hoặc đóng đơn. Hai migration mới chưa chạy trên shared DEV; PostgreSQL/race, Docker, provider, Web/Mobile runtime NOT VERIFIED. Hợp đồng và release gate: `docs/CASH_FIRST_REPUTATION_API_CONTRACT.md`.
 
@@ -199,6 +201,8 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 ## 5. Hợp đồng với repo khác
 
 ### Với `web` và `mobile`
+
+- Platform-first T1: `POST /service-orders/:id/cannot-continue` chỉ thợ hiện tại với UUID `commandId`, reason typed và tối đa 3 private `photoEvidenceIds`; trả `VERIFIED_INTERRUPTION_RECORDED`, `terminalTransitionApplied:false` và eligibility. `GET /service-orders/:id/customer-continuation` chỉ khách sở hữu, no-store, xác minh receipt độc lập SM; chưa tạo draft/confirm mới. Report cũ nhận optional `intent: REPORT_ONLY`; bỏ trống giữ client cũ. Nghĩa vụ cũ không chuyển sang booking mới. DTO/response, blocker và consumer work: `docs/PLATFORM-FIRST-T1-BACKEND-CONTRACT.md`. Consumer context và Web/Mobile runtime NOT VERIFIED; không sửa repo tiêu thụ trong T1.
 
 - Cash-first/reputation: `GET|POST /api/v1/finance/cash-intents/:scopeKind/:scopeId`, `POST .../received`, `POST .../cancel` cho `SOLO|VISIT_GROUP`; khách gửi UUID `commandId` và voucher reservation nếu có, thợ gửi intent ID, UUID receipt command và đúng NET đã thực nhận. `GET` trả `meta.cashFirstEnabled` sau kiểm quyền, kể cả `data:null`; không trả bằng chứng riêng tư hoặc allocation nội bộ. `POST /api/v1/support/cases/technician-report` cho thợ có lý do typed; `POST /api/v1/support/cases/:id/responsibility` chỉ SM/admin có `support:resolve`, yêu cầu version/command/decision/reason. `CASH_FIRST_ENABLED` và `CASH_LEGACY_COMPAT_ENABLED` mặc định OFF; DEV có thể bật cả hai sau Web + DB QA để Web dùng intent còn Mobile giữ hai bước cũ, ngăn trùng trên cùng scope. Contract DTO, quyền, idempotency và gate tại `docs/CASH_FIRST_REPUTATION_API_CONTRACT.md`; consumer context/runtime NOT VERIFIED.
 
@@ -321,6 +325,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 8. Việc đang dở và rủi ro đã biết
 
+- Platform-first T1 chưa có terminal transition an toàn cho quote đã duyệt/tiền/vật tư: chỉ lưu verified interruption, assignment và lịch bận cũ còn giữ; group checkout có thể chờ outcome. T2 phải nối draft/confirm, source consumption, loại thợ cũ và D3; T3 kiểm return access sau deassign, legacy/manual review, SM partial receipt/discrepancy. Không coi receipt này là CANCELLED hoặc miễn/hoàn tiền; không mở lại completion bằng cách đóng case. PostgreSQL lock/index/RLS/callback/race, Docker `/health`, HTTP/JWT và authenticated DEV E2E NOT VERIFIED; cần review tài chính/vật tư độc lập và restart backend ở đợt tích hợp được phép.
+
 - Cash-first/reputation: gate CI DEV chỉ chấp nhận đúng hai migration cộng thêm sau voucher/interruption, kiểm RLS/revoke/index/cột rồi mới cho restart; source chưa chạy migration mới trên PostgreSQL cô lập hoặc shared DEV. CI có test PostgreSQL riêng, kết quả chạy CI CHƯA KIỂM CHỨNG; Docker daemon local không kết nối. Cần kiểm JWT/IDOR, race receipt với VNPay IPN và wallet, F4 subsidy/PlatformDue, replay và group failed child trên DB dùng một lần trước khi bật `CASH_FIRST_ENABLED`. Mobile chính thức còn gọi khai tiền mặt thợ trước; bật cash-first chung DEV chỉ qua commit riêng của `docker-compose.part-returns.dev.yml` với compat ON, Web đã release và DB/race được kiểm, rồi kiểm Mobile hai bước cũ. Chưa thể coi shared DEV activation an toàn từ unit test; không tắt cờ khi còn intent pending. Provider thật, socket, Docker `/health` và cross-repo runtime: NOT VERIFIED.
 
 - P0/P1 interruption source chỉ có SQL structure/rollback guard test bằng QueryRunner giả; chưa chạy migration `InterruptionWorkflow1793203200000` trên PostgreSQL cô lập hoặc DEV. Cần PostgreSQL cô lập để kiểm DDL/index/FK, app-role/RLS, lock order nhiều instance, concurrent replay, transaction rollback và HTTP/JWT thật; các mục này NOT VERIFIED. Docker daemon không kết nối; không chạy Compose/health hoặc E2E vào DB chung. Sau review/CI cần rehearsal DB riêng, gate apply migration một lần trên DEV, restart Backend rồi xác nhận `/health` và ba vai trò; Web/Mobile consumer chưa tích hợp. Parts còn REQUESTED/READY/DELIVERING/RECEIVED/COMPLETED, invoice, thanh toán hoặc voucher đều chặn exception close/direct, phải đối soát nghiệp vụ trước; không tự hoàn tiền hay xóa ledger.
@@ -352,6 +358,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
+- 2026-10-29 12:40 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-backend-t1-20261029 | Thêm verified onsite interruption và eligibility độc lập SM, giữ nghĩa vụ cũ; ghi blocker terminal và T2/T3 chưa kiểm chứng.
 - 2026-10-29 01:35 (UTC+7) | foxonworld | foxonworld/fixhome-cash-reputation-core-20261029 | Bổ sung gate DEV đúng hai migration, capability GET, compat Mobile, overlay DEV bật riêng sau Web và lưu mốc P1 cũ; PostgreSQL CI/race chưa kiểm chứng.
 - 2026-10-29 01:08 (UTC+7) | foxonworld | foxonworld/fixhome-cash-reputation-core-20261029 | Ghi cash-first có cờ cutover, case thợ typed/SM review, hai migration cộng thêm và gate PostgreSQL/Web/Mobile chưa kiểm chứng.
 - 2026-10-28 14:25 (UTC+7) | foxonworld | foxonworld/fixhome-p0-replace-core-20261028 | Khôi phục xử lý case thợ báo tại EN_ROUTE, chặn case xung đột và ghi cổng kiểm migration cô lập.
@@ -391,7 +398,6 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-20 17:02 (UTC+7) | ToanAltF4 | feat/catalog-v3 | Catalog V3: thêm 8 dịch vụ (WM-06 FR-02 WH-03 KT-06..10), 14 biến thể giá cố định (tủ đứng AC-02-31, máy giặt sấy WM-02-34...), giá tham khảo theo loại máy cho dịch vụ sửa, 44 linh kiện mới + sửa 11 giá linh kiện; thuộc tính acMounting=floor, washerHasDryer; lệnh nạp npm run seed:catalog-v3 (chỉ bổ sung, chạy lại an toàn)
 - 2026-10-20 14:36 (UTC+7) | foxonworld | foxonworld/fixhome-p013-quote-billing-20261020 | Chặn sớm báo giá lệch số lượng nguyên dòng PRE_REPAIR và hủy nguồn kho cần thiết sau duyệt; giữ usage/P1 finance và dữ liệu lịch sử.
 - 2026-10-20 14:25 (UTC+7) | foxonworld | foxonworld/fixhome-p013-quote-billing-20261020 | Thêm cấp kho theo phần thiếu của báo giá, chặn hóa đơn thiếu bằng chứng, xác nhận miễn phí và ngưỡng VNPay 5.000 ₫; chưa ghi DB/runtime.
-- 2026-10-20 01:53 (UTC+7) | Hgnv11 | feat/customer-activity-stages | Thêm stage cho danh sách booking và đơn của khách và GET /bookings/my/activity-counts để mobile phân trang, phân loại và đếm ở server
 
 ### Lịch sử lưu trữ ngoài 40 dòng nhật ký gần nhất
 

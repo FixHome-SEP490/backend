@@ -1,4 +1,4 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional, OmitType } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { ArrayMaxSize, IsArray, IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, MaxLength, Min, MinLength } from 'class-validator';
 import { SUPPORT_CASE_MAX_EVIDENCE_REF_LENGTH, SUPPORT_CASE_MAX_EVIDENCE_REFS } from '../support-case.constants';
@@ -27,6 +27,11 @@ export enum TechnicianResponsibility {
 }
 
 export class TechnicianReportDto {
+  @ApiPropertyOptional({ enum: ['REPORT_ONLY'], description: 'Informational report; never stops the service' })
+  @IsOptional()
+  @IsEnum({ REPORT_ONLY: 'REPORT_ONLY' })
+  intent?: 'REPORT_ONLY';
+
   @ApiProperty({ format: 'uuid' })
   @IsUUID('4')
   serviceOrderId: string;
@@ -56,6 +61,20 @@ export class TechnicianReportDto {
   @Transform(({ value }: { value: unknown }) => Array.isArray(value)
     ? value.map(item => typeof item === 'string' ? item.trim() : item) : value)
   evidenceRefs?: string[];
+}
+
+/** A separate endpoint/command; the legacy report route cannot stop work. */
+export class CannotContinueDto extends OmitType(TechnicianReportDto, ['serviceOrderId', 'intent', 'evidenceRefs'] as const) {
+  @ApiProperty({ format: 'uuid' })
+  @IsUUID('4')
+  commandId: string;
+
+  @ApiPropertyOptional({ type: [String], maxItems: 3 })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(3)
+  @IsUUID('4', { each: true })
+  photoEvidenceIds?: string[];
 }
 
 export class DecideTechnicianResponsibilityDto {

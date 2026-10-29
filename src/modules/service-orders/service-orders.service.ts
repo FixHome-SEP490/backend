@@ -82,6 +82,7 @@ import type { EntityManager } from 'typeorm';
 import { OrderEvidenceStorage, EvidenceFile, evidenceStampText } from '../media/order-evidence-storage.service';
 import { expireAdditionalCosts } from './expire-additional-costs';
 import { authorizeOrder } from './order-access';
+import { assertNoOnsiteInterruption } from './onsite-interruption';
 import { groupSiblings, mirrorGroupStatus, recordVisitOutcome, refuseLoneGroupedBookingAction } from '../bookings/visit-group-guard';
 import { REPAIR_FAILURE_REASONS, type RepairFailedDto } from './dto/repair-failed.dto';
 import { SupportCase } from '../support-cases/entities/support-case.entity';
@@ -1616,6 +1617,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async commitTransition(manager: EntityManager, order: ServiceOrder, next: ServiceOrderStatus, actor: { id: string | null; role: string }, reason: string, cause?: 'repair_failure'): Promise<void> {
+    await assertNoOnsiteInterruption(manager, order.id);
     if (!ServiceOrderStateMachine.canTransition(order.status, next)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Illegal order transition');
     const previous = order.status;
     const now = new Date();

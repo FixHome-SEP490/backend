@@ -39,6 +39,7 @@ import { ServiceOrderStateMachine } from '../service-orders/service-order-state-
 import { closeBookingForCancelledOrder } from '../service-orders/close-cancelled-booking';
 import { InterruptionAction, ResolveInterruptionDto } from './resolve-interruption.dto';
 import { EntityManager } from 'typeorm';
+import { assertNoOnsiteInterruption, hasOnsiteInterruption } from '../service-orders/onsite-interruption';
 
 @Injectable()
 export class TechnicianAssignmentService {
@@ -61,6 +62,7 @@ export class TechnicianAssignmentService {
   ) {}
 
   private async interruptionOptions(manager: EntityManager, supportCase: SupportCase, booking: Booking, order: ServiceOrder) {
+    const onsiteInterruption = await hasOnsiteInterruption(manager, order.id);
     const scopeId = booking.visitGroupId ?? order.id;
     const activeAssignment = await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: order.id, isActive: true } });
     const assignmentChanged = !activeAssignment || activeAssignment.technicianId !== supportCase.technicianId;
@@ -92,6 +94,7 @@ export class TechnicianAssignmentService {
       || (supportCase.caseType === SupportCaseType.TECHNICIAN_REPLACEMENT
         && supportCase.requestIntent !== 'stop_or_replace' && order.status === ServiceOrderStatus.EN_ROUTE);
     const common = [
+      ...(onsiteInterruption ? ['VERIFIED_ONSITE_INTERRUPTION'] : []),
       ...(!active ? ['CASE_NOT_ACTIVE'] : []),
       ...(!phaseAllowed ? ['ORDER_NOT_UNDER_REPAIR'] : []),
       ...(order.completionRequestedAt ? ['COMPLETION_REQUESTED'] : []),
@@ -179,6 +182,7 @@ export class TechnicianAssignmentService {
           PARTS_CUSTODY_REVIEW: 'có linh kiện cần đối soát', VISIT_GROUP_CHILD: 'không đổi thợ riêng một thiết bị trong lượt sửa',
           APPROVED_QUOTE: 'khách đã duyệt báo giá hoặc chi phí phát sinh',
           OPEN_QUOTE: 'còn báo giá đang soạn hoặc chờ khách duyệt',
+          VERIFIED_ONSITE_INTERRUPTION: 'gián đoạn tại nhà khách đã được ghi nhận, nghĩa vụ cũ cần đối soát riêng',
         };
         throw new ConflictException(`Không thể xử lý yêu cầu: ${decision.reasons.map(reason => explanations[reason] ?? reason).join('; ')}.`);
       }
@@ -424,6 +428,7 @@ export class TechnicianAssignmentService {
       const booking = await manager.findOne(Booking, { where: { id: ref.bookingId }, lock: { mode: 'pessimistic_write' } });
       const order = await manager.findOne(ServiceOrder, { where: { id: orderId }, lock: { mode: 'pessimistic_write' } });
       if (!booking || !order) throw new NotFoundException('Service order not found');
+      await assertNoOnsiteInterruption(manager, order.id);
       if (booking.visitGroupId) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'VisitGroup không cho phép thay thợ một thiết bị.');
       if (![ServiceOrderStatus.EN_ROUTE, ServiceOrderStatus.UNDER_REPAIR].includes(order.status)) {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chỉ đổi thợ khi đơn đang đi hoặc đang sửa');
