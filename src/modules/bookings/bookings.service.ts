@@ -36,7 +36,7 @@ import { BOOKING_SLOTS, resolveBookingWindow, vnDate, type BookingSlot } from '.
 import { distanceToBooking, servesArea, technicianOrigin } from './technician-location';
 import { technicianDistances } from './technician-distance';
 import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
-import { loadEligibilityPreload, technicianEligibility } from './technician-eligibility';
+import { loadEligibilityBulk, loadEligibilityPreload, technicianEligibility } from './technician-eligibility';
 import { groupSiblings, refuseLoneGroupedBookingAction } from './visit-group-guard';
 import { VisitGroup } from '../visit-groups/entities/visit-group.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
@@ -728,9 +728,11 @@ export class BookingsService {
 
     // The full check costs about a dozen queries per technician; run a batch of them at once and keep
     // the ranking order, stopping as soon as 20 are eligible (was one technician at a time: 8-11 s).
+    // ponytail: one bulk read for the whole ranked list; per-technician queries were ~16 round trips each.
+    const bulk = ranked.length ? await loadEligibilityBulk(this.dataSource.manager, booking, ranked) : undefined;
     const profiles = await firstEligible(
       ranked,
-      async (p) => (await technicianEligibility(this.dataSource.manager, p.userId, booking)).eligible,
+      async (p) => (await technicianEligibility(this.dataSource.manager, p.userId, booking, undefined, { bulk })).eligible,
       CANDIDATE_LIMIT,
       ELIGIBILITY_BATCH,
     );
