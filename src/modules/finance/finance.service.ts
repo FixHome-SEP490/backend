@@ -2372,6 +2372,10 @@ export class FinanceService {
           actorRole: Role.CUSTOMER,
           reason: 'Work completed by the technician and payment verified',
         });
+        // BUG_DETECTOR_26_PAID_PART_CLOSE: never finalize stock held by a former technician.
+        // The existing lifecycle helper marks only the current holder's RECEIVED requests.
+        if (await manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, isActive: true }))
+          await closeOrderPartRequests(manager, order.id, false);
         await applyOrderCompletionEffects(manager, order, invoice.id, now);
       }
     }
@@ -2754,6 +2758,10 @@ export class FinanceService {
           actorRole: actor.role,
           reason: 'Work completed by the technician and payment verified',
         });
+        // BUG_DETECTOR_26_PAID_PART_CLOSE: never finalize stock held by a former technician.
+        // The existing lifecycle helper marks only the current holder's RECEIVED requests.
+        if (await manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, isActive: true }))
+          await closeOrderPartRequests(manager, order.id, false);
         await applyOrderCompletionEffects(manager, order, invoice.id, now);
       }
 
