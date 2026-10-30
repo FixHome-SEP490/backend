@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-29 16:14 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-platform-first-failed-work-t9-20261029
+> Cập nhật lần cuối: 2026-10-30 08:12 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-bug-detector-empty-candidates-b3-20261030
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -337,6 +337,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - F3 wallet-only source amendment still requires CI review/merge before DEV. Original settled-payment proof and transaction idempotency remain hard gates; real authenticated E2E belongs to owner.
 
 ## 8. Việc đang dở và rủi ro đã biết
+- BUG41_CANDIDATE_EMPTY_DIAGNOSTICS (LOCAL, chưa merge DEV): GET /bookings/:id/technician-candidates vẫn trả {data: TechnicianCandidate[]} cho Mobile; chỉ khi ?diagnostics=1 mới trả thêm emptyReason (BOOKING_LOCATION_MISSING / OUTSIDE_COVERAGE / TIME_UNAVAILABLE / UNAVAILABLE hoặc null). Lý do tính từ cùng lần lọc kỹ năng, vị trí/vùng phục vụ và eligibility; chỉ kết luận OUTSIDE_COVERAGE khi tất cả nguồn tọa độ xác định đều ở ngoài; chỉ kết luận TIME_UNAVAILABLE khi mọi ứng viên gần đều vướng lịch; không lộ lý do riêng từng thợ. Chủ booking/staff guard giữ nguyên, VisitGroup endpoint riêng không bị thay. Đã test unit/contract/typecheck local; PG/E2E và review độc lập chưa chạy.
+
 
 - T3: AT10 chưa đạt. T3b đã có Backend read-only `GET /part-returns/legacy-manual-review` (SM-only, `receiptState: UNKNOWN`) nhưng Web chưa có nhánh hiển thị, nên chưa thể coi legacy là đã xử lý; `pending`/`byOrder` vẫn trả rỗng cho legacy và thợ gốc inactive vẫn không có route khai trả legacy. Cần tích hợp Backend+Web cùng consumer riêng, không bịa số 0/receipt hoặc backfill cohort. Objective failure còn từ chối request dùng một phần và trả phần dư (422); T2 phải giữ quantity truth khi thiết kế stop, không hạ used để vượt guard. Chi tiết và repro ở `docs/PLATFORM-FIRST-T3-PARTS-AUDIT.md`; không tuyên bố platform-first hoàn tất.
 
@@ -373,6 +375,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
+- 2026-10-30 08:12 (UTC+7) | foxonworld | foxonworld/fixhome-bug-detector-empty-candidates-b3-20261030 | BUG41_CANDIDATE_EMPTY_DIAGNOSTICS: bổ sung chẩn đoán danh sách thợ rỗng opt-in trên API không phá dữ liệu mảng cũ; bảo toàn quyền, lọc hiện hành, chưa PG/E2E.
 - 2026-10-29 16:14 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-failed-work-t9-20261029 | Thêm T9 read-only finance disposition và guard khoản thu mới, bảo toàn sibling checkout/tiền cũ; ghi blocker genuine failed work và giới hạn kiểm chứng.
 - 2026-10-29 16:02 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-safe-exit-t8-20261029 | Thêm T8 operational STOP/deassign với strict final proof, giữ nghĩa vụ cũ và hold checkout hóa đơn interrupted; ghi giới hạn T9/T10 và kiểm chứng tối thiểu.
 - 2026-10-29 13:53 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-backend-integration-20261029 | Hợp nhất T2 và T3b vào nhánh tích hợp cục bộ, giữ cả hai mục 3/5/8/9; chạy lại gate và ghi review release.
@@ -412,4 +415,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-20 23:16 (UTC+7) | foxonworld | foxonworld/tech-partial-qty-20261020 | Tracking-only partial USED quantity and new-invoice actual charge for 3/1/2; forbid legacy overwrite; return and owner gates unchanged.
 - 2026-10-20 22:15 (UTC+7) | ToanAltF4 | fix/overrun-release-closed | Nhả đơn đặt yêu cầu về closed (không còn thông báo sai Chưa có kỹ thuật viên nhận lời mời); ghi chú tiến trình nhả/rút đơn bằng tiếng Việt
 - 2026-10-20 21:41 (UTC+7) | ToanAltF4 | fix/kyc-face-video | Hồ sơ xác minh thợ nhận video khuôn mặt (face_video, video/webm|mp4) thay ảnh khuôn mặt, migration 046 thêm enum IF NOT EXISTS và mở bucket kyc-private cho video
-- 2026-10-20 21:06 (UTC+7) | ToanAltF4 | feat/technician-overrun-release | Thợ nhả đơn kế tiếp khi đơn đang làm chưa xong (GET/POST /service-orders/:id/overrun-release): không trừ điểm, khách nhận TECHNICIAN_RELEASED và tự chọn thợ khác, ngưỡng matching.overrun_release_window_minutes mặc định 180; đặt lại (rebook) giữ thiết bị + phạm vi đã chốt
