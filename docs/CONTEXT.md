@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-30 11:23 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-bug-detector-backend-release-integration-20261030
+> Cập nhật lần cuối: 2026-10-30 13:07 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-bug-detector-backend-release-integration-20261030
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -342,6 +342,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 8. Việc đang dở và rủi ro đã biết
 
+- PR #173 CI run `41011245514`: 34 E2E FAIL (33 tại shortlist 409, 1 candidate VisitGroup rỗng); AI/history và conversation dừng ở helper Accept trước assertion riêng. Fixture DEV1 và WEB-ACCEPT thiếu ví thợ theo guard #42. Đã thêm Wallet tổng hợp 1.000.000 ₫ theo fixture custody, đúng User ID và schema E2E riêng; không gọi nạp ví/provider, không đổi guard/config/migration hoặc assertion. Docker daemon local không kết nối, chưa có PostgreSQL local; E2E sau sửa trên PostgreSQL 16 CI còn NOT VERIFIED. Không dùng DB chung hoặc deploy.
+
 - BUG DETECTOR release: Docker daemon local không kết nối, không tìm thấy PostgreSQL local; PG E2E/race/rollback, Docker image Linux và `/health`, provider thật, browser/Web/Mobile runtime NOT VERIFIED. Chỉ cho push nhánh feature/PR vào `dev`; push `dev` tự deploy VPS nên Lead phải kiểm CI PostgreSQL 16 và latest `origin/dev` trước merge. Các harness mới #27/#30/#32/#42 và IPN có opt-in riêng, CI mặc định không bật nên CI xanh không tự chứng minh các race này. Cần Lead chạy các harness cô lập và QA rút/nhận đồng thời, notification rollback, parts active-holder và quota trước release. Dependency sharp đổi image: sau gate release phải `docker compose up -d --build`, restart backend rồi kiểm `/health`. #39 cash core vẫn chặn tới khi có bằng chứng provider/backend NOT_SETTLED và không còn nghĩa vụ, không tự chuyển tiền mặt. Không thêm migration, không chạy DB dùng chung/AI Service/provider.
 
 - T3: AT10 chưa đạt. T3b đã có Backend read-only `GET /part-returns/legacy-manual-review` (SM-only, `receiptState: UNKNOWN`) nhưng Web chưa có nhánh hiển thị, nên chưa thể coi legacy là đã xử lý; `pending`/`byOrder` vẫn trả rỗng cho legacy và thợ gốc inactive vẫn không có route khai trả legacy. Cần tích hợp Backend+Web cùng consumer riêng, không bịa số 0/receipt hoặc backfill cohort. Objective failure còn từ chối request dùng một phần và trả phần dư (422); T2 phải giữ quantity truth khi thiết kế stop, không hạ used để vượt guard. Chi tiết và repro ở `docs/PLATFORM-FIRST-T3-PARTS-AUDIT.md`; không tuyên bố platform-first hoàn tất.
@@ -379,6 +381,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
+- 2026-10-30 13:07 (UTC+7) | foxonworld | foxonworld/fixhome-bug-detector-backend-release-integration-20261030 | Ghi nguyên nhân 34 lỗi E2E PR #173, seed ví thợ tổng hợp trong schema riêng và giới hạn kiểm chứng PostgreSQL CI.
 - 2026-10-30 11:23 (UTC+7) | foxonworld | foxonworld/fixhome-bug-detector-backend-release-integration-20261030 | Tích hợp 12 patch BUG DETECTOR, hòa giải finance/booking và guard state machine; ghi hợp đồng, giới hạn PostgreSQL/runtime và gate Lead trước merge tự deploy.
 - 2026-10-29 16:14 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-failed-work-t9-20261029 | Thêm T9 read-only finance disposition và guard khoản thu mới, bảo toàn sibling checkout/tiền cũ; ghi blocker genuine failed work và giới hạn kiểm chứng.
 - 2026-10-29 16:02 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-safe-exit-t8-20261029 | Thêm T8 operational STOP/deassign với strict final proof, giữ nghĩa vụ cũ và hold checkout hóa đơn interrupted; ghi giới hạn T9/T10 và kiểm chứng tối thiểu.
@@ -418,4 +421,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-21 11:26 (UTC+7) | ToanAltF4 | fix/reschedule-once-fast-slots | Đổi lịch: mỗi booking chỉ đổi buổi một lần (cột reschedule_count, migration 048 điền từ audit BOOKING_RESCHEDULE), sửa mô tả vẫn được; available-slots đọc dữ liệu thợ một lần (loadEligibilityPreload) thay vì mỗi buổi (15 s -> dưới 1 s); mô tả không bắt buộc khi giá chắc chắn (cố định hoặc biến thể đã chốt), việc khảo sát vẫn bắt buộc; migration 049 xoá câu tự sinh "Yêu cầu dịch vụ: ..."; GET /services sắp theo danh mục (sortOrder, tên) rồi tên dịch vụ
 - 2026-10-20 23:16 (UTC+7) | foxonworld | foxonworld/tech-partial-qty-20261020 | Tracking-only partial USED quantity and new-invoice actual charge for 3/1/2; forbid legacy overwrite; return and owner gates unchanged.
 - 2026-10-20 22:15 (UTC+7) | ToanAltF4 | fix/overrun-release-closed | Nhả đơn đặt yêu cầu về closed (không còn thông báo sai Chưa có kỹ thuật viên nhận lời mời); ghi chú tiến trình nhả/rút đơn bằng tiếng Việt
-- 2026-10-20 21:41 (UTC+7) | ToanAltF4 | fix/kyc-face-video | Hồ sơ xác minh thợ nhận video khuôn mặt (face_video, video/webm|mp4) thay ảnh khuôn mặt, migration 046 thêm enum IF NOT EXISTS và mở bucket kyc-private cho video
