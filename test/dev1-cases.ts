@@ -46,6 +46,9 @@ export function registerDev1Cases(context: () => Context) {
       const service = await save('Service', { categoryId: category.id, name: 'Repair fixture', code: randomUUID(), pricingMode, fixedPrice: pricingMode === 'fixed_price' ? 200000 : null, scopeDescription: 'Fixture scope', unit: 'job' });
       const address = await save('Address', { userId: owner.user.id, line1: '1 Test Street', district: 'D1', province: 'P1', lat: 10.77, lng: 106.69 });
       for (const actor of [tech, spare]) {
+        // Synthetic balance in this E2E's private schema, as in the custody fixture;
+        // satisfy #42 without calling a top-up/payment provider or weakening eligibility.
+        await save('Wallet', { technicianId: actor.user.id, balance: 1000000 });
         const profile = await db.getRepository('TechnicianProfile').findOneByOrFail({ userId: actor.user.id });
         await db.getRepository('TechnicianProfile').update(profile.id, { verificationStatus: 'verified', isAvailable: true });
         await save('TechnicianSkill', { technicianId: profile.id, serviceId: service.id, listedLaborPrice: 100000, verificationStatus: 'verified' });

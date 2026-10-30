@@ -214,11 +214,15 @@ export async function technicianEligibility(
   if (!keeping && (bulk ? bulk.dues.has(technicianId) : await manager.count(CommissionDue, { where: { technicianId, status: CommissionDueStatus.PENDING } }))) return fail('Active unpaid PlatformDue');
   const balance = keeping ? null
     : bulk ? (bulk.wallets.get(technicianId) ?? null)
-      : await manager.findOneBy(Wallet, { technicianId }).then((w) => (w ? Number(w.balance) : null));
-  if (balance !== null) {
+      // Accept and shortlist transactions retain this read lock until commit,
+      // serializing the new-work decision with wallet debits/deletion.
+      : await (manager.queryRunner?.isTransactionActive
+        ? manager.findOne(Wallet, { where: { technicianId }, lock: { mode: 'pessimistic_read' } })
+        : manager.findOneBy(Wallet, { technicianId })).then((w) => (w ? Number(w.balance) : null));
+  if (!keeping) {
     const minConfig = bulk ? null : await manager.findOneBy(SystemConfig, { key: 'wallet.minimum_balance' });
     const minimumBalance = bulk ? bulk.minBalance : minConfig ? Number(minConfig.value) : 200000;
-    if (balance < minimumBalance) {
+    if (balance === null || !Number.isFinite(balance) || balance < minimumBalance) {
       return fail('Minimum wallet balance is required to accept new jobs');
     }
   }

@@ -902,21 +902,12 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       const withdrawal = await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: CancelActor.TECHNICIAN, actorUserId: actor.id, reason: body.reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
       if (secondary) {
         // Another device of the visit: the lead booking's rematch below finds the replacement for all.
-        await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from, actorUserId: actor.id, actorRole: actor.role, reason: 'Kỹ thuật viên rút trước khi tới, đang tìm thợ thay cho cả lượt. Lý do: ' + body.reason });
+        await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from, actorUserId: actor.id, actorRole: actor.role, reason: 'Kỹ thuật viên rút trước khi tới, đang xử lý phân công lại cả lượt. Lý do: ' + body.reason });
         await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'TECHNICIAN_WITHDRAWAL_REMATCH', resourceType: 'service_order', resourceId: orderId, after: { reason: body.reason, strikeApplied: false, visitGroupId: booking.visitGroupId } });
         return order;
       }
       await this.reputationService?.penalize(manager, { userId: actor.id, role: Role.TECHNICIAN, reason: `Huỷ nhận đơn #${order.code}: ${body.reason}`, serviceOrderId: orderId, cancellationId: withdrawal.id });
-      if (this.notificationsService && booking.customerId) {
-        void this.notificationsService.createNotification({
-          userId: booking.customerId,
-          title: 'Kỹ thuật viên đã huỷ nhận đơn',
-          message: `Kỹ thuật viên đã xin rút khỏi đơn #${order.code} (Lý do: "${body.reason}"). Hệ thống đang tự động tìm kiếm thợ thay thế cho bạn.`,
-          type: 'ORDER_CANCELLED',
-          referenceId: order.id,
-          referenceType: 'SERVICE_ORDER',
-        });
-      }
+      // BUG_DETECTOR_WITHDRAW_OUTCOME: customer notice only after matching decision.
       const previous = await manager.find(BookingInvitation, { where: { bookingId: booking.id }, order: { priorityOrder: 'ASC' } });
       const last = Math.max(0, ...previous.filter(inv => inv.status === InvitationStatus.ACCEPTED).map(inv => inv.priorityOrder));
       // Append a fresh invitation round; the original dispatch history stays immutable.
@@ -931,7 +922,49 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       await manager.save(booking);
       await mirrorGroupStatus(manager, booking, BookingStatus.MATCHING);
       await activateNextInvitation(manager, booking, await this.configService.getInt('matching.invitation_ttl_minutes', 30), invitationActivatedHook(this.notificationsService));
-      await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from, actorUserId: actor.id, actorRole: actor.role, reason: 'Kỹ thuật viên rút trước khi tới, đang tìm thợ thay. Lý do: ' + body.reason });
+      // Re-read the persisted result: activateNextInvitation updates Booking via manager.update.
+      const rematch = await manager.findOneBy(Booking, { id: booking.id });
+      if (!rematch || ![BookingStatus.MATCHING, BookingStatus.CLOSED].includes(rematch.status))
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Không xác định được kết quả tìm thợ thay thế.');
+      if (rematch.status === BookingStatus.CLOSED) {
+        // No eligible replacement. Keep physical RECEIVED parts awaiting the Service Manager;
+        // generic commitTransition(CANCELLED) would incorrectly cancel those part requests.
+        for (const sibling of [booking, ...await groupSiblings(manager, booking, true)]) {
+          const affected = sibling.id === booking.id
+            ? order
+            : await manager.findOne(ServiceOrder, { where: { bookingId: sibling.id }, lock: { mode: 'pessimistic_write' } });
+          if (!affected || affected.status === ServiceOrderStatus.CANCELLED) continue;
+          if (![ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(affected.status) ||
+              !ServiceOrderStateMachine.canTransition(affected.status, ServiceOrderStatus.CANCELLED) ||
+              affected.paymentStatus === PaymentStatus.PAID ||
+              await manager.count(TechnicianAssignment, { where: { serviceOrderId: affected.id, isActive: true } }))
+            throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Đơn cần quản lý kiểm tra trước khi đóng.');
+          const closedAt = new Date();
+          const previousStatus = affected.status;
+          await manager.update(ServiceOrder, affected.id, { status: ServiceOrderStatus.CANCELLED, cancelledAt: closedAt });
+          await manager.insert(OrderStatusHistory, { serviceOrderId: affected.id, fromStatus: previousStatus,
+            toStatus: ServiceOrderStatus.CANCELLED, actorUserId: actor.id, actorRole: actor.role,
+            reason: 'Thợ đã rút và không còn thợ thay thế đủ điều kiện.' });
+          await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role,
+            action: 'TECHNICIAN_WITHDRAWAL_NO_REPLACEMENT', resourceType: 'service_order',
+            resourceId: affected.id, before: { status: previousStatus }, after: { status: ServiceOrderStatus.CANCELLED } });
+          affected.status = ServiceOrderStatus.CANCELLED;
+          affected.cancelledAt = closedAt;
+        }
+      } else {
+        await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from,
+          actorUserId: actor.id, actorRole: actor.role,
+          reason: 'Kỹ thuật viên rút trước khi tới, đang tìm thợ thay. Lý do: ' + body.reason });
+      }
+      // Durable customer notification in the same transaction, after the rematch decision.
+      if (booking.customerId) await manager.insert(Notification, {
+        userId: booking.customerId,
+        title: rematch.status === BookingStatus.CLOSED ? 'Chưa tìm được thợ thay thế' : 'Đang tìm thợ thay thế',
+        message: rematch.status === BookingStatus.CLOSED
+          ? 'Thợ đã rút khỏi đơn #' + order.code + '. Hiện chưa có thợ thay thế phù hợp; bạn có thể đặt lại lịch.'
+          : 'Thợ đã rút khỏi đơn #' + order.code + '. FixHome đang tìm thợ thay thế cho bạn.',
+        type: 'ORDER_CANCELLED', referenceId: order.id, referenceType: 'SERVICE_ORDER', isRead: false,
+      });
       await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'TECHNICIAN_WITHDRAWAL_REMATCH', resourceType: 'service_order', resourceId: orderId, after: { reason: body.reason, strikeApplied: false } });
       return order;
     }

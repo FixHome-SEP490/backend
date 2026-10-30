@@ -226,7 +226,7 @@ export class QuotationsService {
     const items = await this.validateItems(manager, dto.items, await this.laborWarranty(manager, order, actor.id));
     const labor = items.filter(i=>i.type===CostItemType.LABOR).reduce((v,i)=>v+i.quantity*i.unitPrice,0);
     const parts = items.filter(i=>i.type===CostItemType.PARTS_EQUIPMENT).reduce((v,i)=>v+i.quantity*i.unitPrice,0);
-    const ttl = await this.configService.getInt('additional_cost.ttl_minutes',120);
+    const ttl = await this.configService.getInt('additional_cost.approval_ttl_minutes',60);
     const shippingFee = Number(dto.shippingFee ?? 0);
     const fulfillmentMethod = dto.fulfillmentMethod ?? FulfillmentMethod.PICKUP;
     if (shippingFee > 0 && (fulfillmentMethod !== FulfillmentMethod.DELIVERY || !items.some(i => i.partSource === PartSource.FIXHOME))) {
