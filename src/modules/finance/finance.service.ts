@@ -1119,6 +1119,17 @@ export class FinanceService {
     if (!hashSecret || !verifySignature(query, hashSecret)) {
       return { RspCode: '97', Message: 'Invalid signature' };
     }
+    if (typeof query.vnp_TxnRef !== 'string' || !query.vnp_TxnRef.trim()) {
+      return { RspCode: '01', Message: 'Order not found' };
+    }
+    // Both signed outcomes are required Numeric[2], even for voucher evidence.
+    // Reject before dispatch: malformed proof must not fail/quarantine a pending attempt.
+    // VNPay IPN RspCode 99 means no update (retry), unlike 00/02 which stop retrying.
+    // https://sandbox.vnpayment.vn/apis/docs/thanh-toan-pay/pay.html
+    if (![query.vnp_ResponseCode, query.vnp_TransactionStatus].every(value =>
+      typeof value === 'string' && value.length === 2 && /^\d{2}$/.test(value))) {
+      return { RspCode: '99', Message: 'Invalid outcome fields' };
+    }
     const payment = await this.paymentRepository.findOne({
       where: { idempotencyKey: query.vnp_TxnRef, provider: 'vnpay' },
     });
@@ -2372,6 +2383,10 @@ export class FinanceService {
           actorRole: Role.CUSTOMER,
           reason: 'Work completed by the technician and payment verified',
         });
+        // BUG_DETECTOR_26_PAID_PART_CLOSE: never finalize stock held by a former technician.
+        // The existing lifecycle helper marks only the current holder's RECEIVED requests.
+        if (await manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, isActive: true }))
+          await closeOrderPartRequests(manager, order.id, false);
         await applyOrderCompletionEffects(manager, order, invoice.id, now);
       }
     }
@@ -2754,6 +2769,10 @@ export class FinanceService {
           actorRole: actor.role,
           reason: 'Work completed by the technician and payment verified',
         });
+        // BUG_DETECTOR_26_PAID_PART_CLOSE: never finalize stock held by a former technician.
+        // The existing lifecycle helper marks only the current holder's RECEIVED requests.
+        if (await manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, isActive: true }))
+          await closeOrderPartRequests(manager, order.id, false);
         await applyOrderCompletionEffects(manager, order, invoice.id, now);
       }
 

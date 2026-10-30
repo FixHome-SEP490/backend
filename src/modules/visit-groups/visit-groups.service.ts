@@ -159,7 +159,7 @@ export class VisitGroupsService {
     if (!group) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Visit group not found');
     const items = await (manager ? manager.find(VisitGroupItem, { where: { groupId }, order: { sequence: 'ASC' } }) : this.itemRepo.find({ where: { groupId }, order: { sequence: 'ASC' } }));
     const bookings = items.length
-      ? await (manager ?? this.dataSource).getRepository(Booking).find({ where: { id: In(items.map((item) => item.bookingId)) }, relations: ['media'] })
+      ? await (manager ?? this.dataSource).getRepository(Booking).find({ where: { id: In(items.map((item) => item.bookingId)), customerId: customer.id, visitGroupId: group.id }, relations: ['media'] })
       : [];
     const byId = new Map(bookings.map((booking) => [booking.id, booking]));
     return {
@@ -270,6 +270,10 @@ export class VisitGroupsService {
 
     const groupIds = groups.map((group) => group.id);
     const assignmentJoin = technicianId ? 'AND ta.technician_id = $2' : '';
+    // The frozen address is visible only via an active assignment to this technician.
+    const assignedAddressProjection = technicianId
+      ? 'CASE WHEN ta.id IS NOT NULL THEN vb.address_text_snapshot ELSE NULL END'
+      : 'NULL::text';
     const parameters = technicianId ? [groupIds, technicianId] : [groupIds];
     const rows = await this.dataSource.query(`
       SELECT
@@ -285,7 +289,8 @@ export class VisitGroupsService {
         so.id AS "orderId",
         so.code AS "orderCode",
         so.status AS "orderStatus",
-        (ta.id IS NOT NULL) AS "hasActiveAssignment"
+        (ta.id IS NOT NULL) AS "hasActiveAssignment",
+        ${assignedAddressProjection} AS "assignedAddressSnapshot"
       FROM visit_group_items vgi
       JOIN bookings vb ON vb.id = vgi.booking_id
       LEFT JOIN service_orders so ON so.booking_id = vb.id
@@ -311,6 +316,7 @@ export class VisitGroupsService {
       orderCode: string | null;
       orderStatus: string | null;
       hasActiveAssignment: boolean;
+      assignedAddressSnapshot: string | null;
     }>;
 
     const byGroup = new Map<string, typeof rows>();
@@ -330,7 +336,10 @@ export class VisitGroupsService {
         scheduledAt: group.preferredStartAt,
         scheduledEndAt: group.preferredEndAt,
         status,
-        items: items.map(({ groupId: _groupId, hasActiveAssignment: _active, ...item }) => item),
+        ...(technicianId ? {
+          assignedAddressSummary: items.find((item) => item.hasActiveAssignment && item.assignedAddressSnapshot)?.assignedAddressSnapshot ?? null,
+        } : {}),
+        items: items.map(({ groupId: _groupId, hasActiveAssignment: _active, assignedAddressSnapshot: _address, ...item }) => item),
       };
     });
     return { data, total, page, pageSize };
