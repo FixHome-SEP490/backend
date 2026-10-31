@@ -220,6 +220,16 @@ export class SupportCaseSummaryDto {
   updatedAt: Date;
 }
 
+/** What a technician reported about a late or released next order (PO 31/10/2026); read-only for the manager. Fields are null when a newer report on the same order replaced them. */
+export class SupportCaseTechnicianDelayDto {
+  @ApiProperty({ nullable: true }) reasonCode: string | null;
+  @ApiProperty({ nullable: true }) delayMinutes: number | null;
+  @ApiProperty({ nullable: true }) noticedAt: Date | null;
+  @ApiProperty({ nullable: true, description: 'wait | switch | cancel once the customer answered' }) decision: string | null;
+  @ApiProperty({ format: 'uuid', nullable: true, description: 'The job the technician is still on; its ADDITIONAL photos are the evidence.' }) currentOrderId: string | null;
+  @ApiProperty({ nullable: true }) currentOrderCode: string | null;
+}
+
 export class SupportCaseDetailDto extends SupportCaseSummaryDto {
   @ApiPropertyOptional({ type: SupportCaseBookingContextDto, nullable: true })
   booking: SupportCaseBookingContextDto | null;
@@ -229,6 +239,9 @@ export class SupportCaseDetailDto extends SupportCaseSummaryDto {
     nullable: true,
   })
   serviceOrder: SupportCaseServiceOrderContextDto | null;
+
+  @ApiPropertyOptional({ type: SupportCaseTechnicianDelayDto, nullable: true })
+  technicianDelay: SupportCaseTechnicianDelayDto | null;
 
   @ApiPropertyOptional({ type: SupportCaseInvoiceContextDto, nullable: true })
   invoice: SupportCaseInvoiceContextDto | null;

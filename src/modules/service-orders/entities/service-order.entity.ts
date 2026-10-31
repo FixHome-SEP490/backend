@@ -42,6 +42,16 @@ export class ServiceOrder extends BaseEntity {
   @Column({ name: 'delay_decision', type: 'varchar', length: 8, nullable: true })
   delayDecision?: 'wait' | 'switch' | 'cancel' | null;
 
+  /** Why the technician reported (one of DELAY_REASON_CODES), the job they are still on, and the support case the manager reads. */
+  @Column({ name: 'delay_reason_code', type: 'varchar', length: 32, nullable: true })
+  delayReasonCode?: string | null;
+
+  @Column({ name: 'delay_current_order_id', type: 'uuid', nullable: true })
+  delayCurrentOrderId?: string | null;
+
+  @Column({ name: 'delay_support_case_id', type: 'uuid', nullable: true })
+  delaySupportCaseId?: string | null;
+
   @Column({ name: 'started_at', type: 'timestamptz', nullable: true })
   startedAt?: Date | null;
 

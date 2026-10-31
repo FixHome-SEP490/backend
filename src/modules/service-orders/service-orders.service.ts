@@ -97,7 +97,7 @@ import { VouchersService } from '../vouchers/vouchers.service';
 import { historicalOrderSummary, type HistoricalOrderSummary } from './historical-order-summary';
 import { repairHistoryStatuses } from './repair-history-filter';
 import { checkOverrunRelease, OVERRUN_RELEASE_WINDOW_DEFAULT_MINUTES, OVERRUN_RELEASE_WINDOW_KEY, type OverrunReleaseCheck } from './overrun-release';
-import { DELAY_DECISIONS, DELAY_NOTICE_MINUTES, type DelayDecision } from './dto/delay-notice.dto';
+import { DELAY_DECISIONS, DELAY_NOTICE_MINUTES, type DelayDecision, type DelayNoticeDto, type DelayReasonCode, type DelayReportDto } from './dto/delay-notice.dto';
 
 /** A cancellation as the review list shows it: who cancelled, and which order. */
 export type CancellationListItem = Cancellation & {
@@ -144,9 +144,12 @@ function filterOrderList(
 /** A paid order the sweep could not complete or settle is tried again after this long. */
 const PAID_SWEEP_RETRY_MS = 15 * 60_000;
 
-export interface DelayNoticeView { minutes: number; noticedAt: Date; decision: DelayDecision | null }
+export interface DelayNoticeView { minutes: number; noticedAt: Date; decision: DelayDecision | null; reasonCode: string | null }
+const DELAY_REASON_LABELS: Record<DelayReasonCode, string> = { new_fault_found: 'phát sinh lỗi thêm', waiting_parts: 'chờ linh kiện', repair_longer: 'sửa lâu hơn dự kiến', other: 'lý do khác' };
+const DELAY_RESOLUTION_CODES: Record<DelayDecision, string> = { wait: 'delay_customer_waits', switch: 'delay_switch', cancel: 'delay_cancel' };
+const DELAY_DECISION_LABELS: Record<DelayDecision, string> = { wait: 'đợi thêm', switch: 'chọn kỹ thuật viên khác', cancel: 'hủy không phí' };
 const delayNoticeView = (order: ServiceOrder): DelayNoticeView | null => order.delayNoticedAt && order.delayNoticeMinutes
-  ? { minutes: order.delayNoticeMinutes, noticedAt: order.delayNoticedAt, decision: order.delayDecision ?? null } : null;
+  ? { minutes: order.delayNoticeMinutes, noticedAt: order.delayNoticedAt, decision: order.delayDecision ?? null, reasonCode: order.delayReasonCode ?? null } : null;
 
 @Injectable()
 export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
@@ -1148,11 +1151,61 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * PO 31/10/2026: a technician still on another job tells the customer this order will start
-   * late by 30/60/90/120 minutes. Same eligibility as the release; nothing changes on the order
+   * PO 31/10/2026: a report that the next order will be late or released is never a bare tap. It needs a reason,
+   * 1 to 3 private photos of the job still under repair and a confirmation, and becomes a support case the
+   * manager reads. Returns the case; `changed` is false when an open case already holds the same words and photos.
+   */
+  private async recordDelayReport(
+    manager: EntityManager,
+    p: { order: ServiceOrder; booking: Booking; check: OverrunReleaseCheck; actor: { id: string; role: string }; report: DelayReportDto },
+  ): Promise<{ supportCaseId: string; changed: boolean }> {
+    const { order, booking, check, actor, report } = p;
+    const current = check.currentOrderId ? await manager.findOne(ServiceOrder, { where: { id: check.currentOrderId } }) : null;
+    if (!current || current.status !== ServiceOrderStatus.UNDER_REPAIR || current.completionRequestedAt) {
+      throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chỉ báo khi đơn bạn đang làm còn đang sửa và chưa yêu cầu bàn giao.');
+    }
+    const ids = [...new Set(report.evidenceIds.map(id => id.toLowerCase()))];
+    const photos = await manager.find(RepairEvidence, { where: { id: In(ids), serviceOrderId: current.id, uploaderId: actor.id, type: EvidenceType.ADDITIONAL } });
+    const prefix = `cloudinary://evidence/fixhome/evidence/${current.id}/${actor.id}/`;
+    if (!ids.length || photos.length !== ids.length || photos.some(photo => !['image/jpeg', 'image/png', 'image/webp'].includes(photo.mimeType)
+      || !photo.mediaUrl?.startsWith(prefix) || !/^[a-zA-Z0-9-]+$/.test(photo.mediaUrl.slice(prefix.length)))) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Ảnh phải là ảnh riêng tư do bạn tải lên cho đơn đang sửa.');
+    }
+    const open = order.delaySupportCaseId
+      ? await manager.findOne(SupportCase, { where: { id: order.delaySupportCaseId, status: SupportCaseStatus.OPEN }, lock: { mode: 'pessimistic_write' } }) : null;
+    if (open) {
+      if (open.reason === report.reason && JSON.stringify(open.evidenceRefs ?? []) === JSON.stringify(ids)) return { supportCaseId: open.id, changed: false };
+      await manager.update(SupportCase, open.id, { reason: report.reason, evidenceRefs: ids });
+      return { supportCaseId: open.id, changed: true };
+    }
+    const created = await manager.save(SupportCase, manager.create(SupportCase, {
+      caseType: SupportCaseType.TECHNICIAN_DELAY, status: SupportCaseStatus.OPEN, bookingId: booking.id, serviceOrderId: order.id,
+      customerId: booking.customerId, technicianId: actor.id, createdByUserId: actor.id, assignedManagerId: null,
+      reason: report.reason, description: null, evidenceRefs: ids, isUrgent: false, respondBy: null, holdCompletion: false, workflowVersion: 0,
+    }));
+    const staff = await manager.find(User, { where: { role: In([Role.ADMIN, Role.SERVICE_MANAGER]), status: AccountStatus.ACTIVE, isActive: true }, select: { id: true } });
+    if (staff.length) {
+      await manager.insert(Notification, staff.map(user => ({
+        userId: user.id, title: 'Kỹ thuật viên báo không kịp đơn kế tiếp',
+        message: `Kỹ thuật viên đang làm đơn #${current.code} báo không kịp đơn #${order.code} (${DELAY_REASON_LABELS[report.reasonCode]}). Hồ sơ có lý do và ảnh để xem.`,
+        type: 'TECHNICIAN_DELAY_REPORTED', referenceId: created.id, referenceType: 'SUPPORT_CASE' })));
+    }
+    return { supportCaseId: created.id, changed: true };
+  }
+
+  /** The report is read-only for the manager, so it closes itself once the customer answers or the order is released. */
+  private async closeDelayCase(manager: EntityManager, supportCaseId: string | null | undefined, resolutionCode: string, resolutionReason: string): Promise<void> {
+    if (!supportCaseId) return;
+    await manager.update(SupportCase, { id: supportCaseId, status: SupportCaseStatus.OPEN }, { status: SupportCaseStatus.RESOLVED, resolutionCode, resolutionReason, resolvedAt: new Date() });
+  }
+
+  /**
+   * PO 31/10/2026: a technician still on another job tells the customer this order will start late by
+   * 30/60/90/120 minutes, with a reason and photos. Same eligibility as the release; nothing changes on the order
    * until the customer answers (decideDelay) or the technician releases it.
    */
-  async sendDelayNotice(orderId: string, delayMinutes: number, actor: { id: string; role: string }): Promise<ServiceOrder> {
+  async sendDelayNotice(orderId: string, dto: DelayNoticeDto, actor: { id: string; role: string }): Promise<ServiceOrder> {
+    const delayMinutes = dto.delayMinutes;
     if (!(DELAY_NOTICE_MINUTES as readonly number[]).includes(delayMinutes)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Số phút báo trễ không hợp lệ.');
     const reference = await authorizeOrder(this.dataSource.manager, orderId, actor, 'technician');
     const windowMinutes = await this.configService.getInt(OVERRUN_RELEASE_WINDOW_KEY, OVERRUN_RELEASE_WINDOW_DEFAULT_MINUTES);
@@ -1161,17 +1214,22 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
       const check = await checkOverrunRelease(manager, order, actor.id, windowMinutes);
       if (!check.eligible) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chỉ báo trễ khi bạn đang làm đơn khác và đơn này sắp tới giờ hẹn.', { block: check.block });
+      const recorded = await this.recordDelayReport(manager, { order, booking, check, actor, report: dto });
       // Same notice sent again (a retry) changes nothing and tells nobody twice.
-      if (order.delayNoticeMinutes === delayMinutes && !order.delayDecision) return { order, sent: false, customerId: null as string | null, code: order.code };
-      await manager.update(ServiceOrder, order.id, { delayNoticeMinutes: delayMinutes, delayNoticedAt: new Date(), delayDecision: null });
-      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'TECHNICIAN_DELAY_NOTICE', resourceType: 'service_order', resourceId: orderId, after: { delayMinutes, currentOrderCode: check.currentOrderCode } });
+      if (!recorded.changed && order.delayNoticeMinutes === delayMinutes && order.delayReasonCode === dto.reasonCode && !order.delayDecision) {
+        return { order, sent: false, customerId: null as string | null, code: order.code };
+      }
+      await manager.update(ServiceOrder, order.id, { delayNoticeMinutes: delayMinutes, delayNoticedAt: new Date(), delayDecision: null,
+        delayReasonCode: dto.reasonCode, delayCurrentOrderId: check.currentOrderId, delaySupportCaseId: recorded.supportCaseId });
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'TECHNICIAN_DELAY_NOTICE', resourceType: 'service_order', resourceId: orderId,
+        after: { delayMinutes, reasonCode: dto.reasonCode, currentOrderCode: check.currentOrderCode, supportCaseId: recorded.supportCaseId, evidenceCount: dto.evidenceIds.length } });
       return { order: await manager.findOneByOrFail(ServiceOrder, { id: orderId }), sent: true, customerId: booking.customerId, code: order.code };
     });
     if (result.sent && this.notificationsService && result.customerId) {
       void this.notificationsService.createNotification({
         userId: result.customerId,
         title: 'Kỹ thuật viên báo trễ',
-        message: `Kỹ thuật viên chưa xong đơn trước nên có thể tới trễ khoảng ${delayMinutes} phút cho đơn #${result.code}. Bạn chọn đợi thêm, chọn kỹ thuật viên khác hoặc hủy, không mất phí.`,
+        message: `Kỹ thuật viên chưa xong đơn trước (${DELAY_REASON_LABELS[dto.reasonCode]}) nên có thể tới trễ khoảng ${delayMinutes} phút cho đơn #${result.code}. Bạn chọn đợi thêm, chọn kỹ thuật viên khác hoặc hủy, không mất phí.`,
         type: 'TECHNICIAN_DELAY_NOTICE',
         referenceId: orderId,
         referenceType: 'SERVICE_ORDER',
@@ -1204,6 +1262,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Đơn không còn ở trạng thái chờ kỹ thuật viên tới.', { block: check.block });
       }
       await manager.update(ServiceOrder, order.id, { delayDecision: decision });
+      await this.closeDelayCase(manager, order.delaySupportCaseId, DELAY_RESOLUTION_CODES[decision], `Khách chọn: ${DELAY_DECISION_LABELS[decision]}.`);
       if (decision === 'switch') {
         await this.releaseCheckedOrder(manager, booking, order, { id: assignment.technicianId, role: Role.TECHNICIAN }, check.currentOrderCode ?? 'khác');
       } else if (decision === 'cancel') {
@@ -1230,8 +1289,9 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   /**
    * Thợ đang ở đơn khác chưa xong nhả đơn kế tiếp: không trừ điểm, không tự mời
    * thợ dự phòng; yêu cầu quay về chờ khách chọn thợ khác với giá và lịch cũ.
+   * Cần lý do, ảnh bằng chứng và xác nhận; hồ sơ hỗ trợ cho quản lý dịch vụ xem (PO 31/10/2026).
    */
-  async releaseForOverrun(orderId: string, actor: { id: string; role: string }): Promise<{ order: ServiceOrder; currentOrderCode: string }> {
+  async releaseForOverrun(orderId: string, report: DelayReportDto, actor: { id: string; role: string }): Promise<{ order: ServiceOrder; currentOrderCode: string }> {
     const reference = await authorizeOrder(this.dataSource.manager, orderId, actor, 'technician');
     const windowMinutes = await this.configService.getInt(OVERRUN_RELEASE_WINDOW_KEY, OVERRUN_RELEASE_WINDOW_DEFAULT_MINUTES);
     return this.dataSource.transaction(async manager => {
@@ -1241,6 +1301,9 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       if (!check.eligible) {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chỉ nhả đơn khi bạn đang làm đơn khác và đơn này sắp tới giờ hẹn.', { block: check.block });
       }
+      const recorded = await this.recordDelayReport(manager, { order, booking, check, actor, report });
+      await manager.update(ServiceOrder, order.id, { delayReasonCode: report.reasonCode, delayCurrentOrderId: check.currentOrderId, delaySupportCaseId: recorded.supportCaseId });
+      await this.closeDelayCase(manager, recorded.supportCaseId, 'delay_released', 'Kỹ thuật viên nhả đơn, khách chọn thợ khác.');
       return this.releaseCheckedOrder(manager, booking, order, actor, check.currentOrderCode!);
     });
   }

@@ -25,6 +25,9 @@ export interface OverrunReleaseCheck {
   block: OverrunReleaseBlock | null;
   /** Mã đơn thợ đang làm, để thợ và khách hiểu vì sao. */
   currentOrderCode: string | null;
+  /** Đơn thợ đang làm: app mở đúng biểu mẫu báo cáo; báo cáo có ảnh chỉ nhận khi đơn đó đang sửa. */
+  currentOrderId: string | null;
+  currentOrderStatus: ServiceOrderStatus | null;
   windowMinutes: number;
 }
 
@@ -35,8 +38,9 @@ export async function checkOverrunRelease(
   windowMinutes: number,
   now: Date = new Date(),
 ): Promise<OverrunReleaseCheck> {
-  const result = (block: OverrunReleaseBlock | null, currentOrderCode: string | null = null): OverrunReleaseCheck =>
-    ({ eligible: block === null, block, currentOrderCode, windowMinutes });
+  const result = (block: OverrunReleaseBlock | null, current: ServiceOrder | null = null): OverrunReleaseCheck =>
+    ({ eligible: block === null, block, currentOrderCode: current?.code ?? null, currentOrderId: current?.id ?? null,
+      currentOrderStatus: current?.status ?? null, windowMinutes });
 
   const assignment = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, technicianId, isActive: true });
   if (!assignment) return result('NOT_ASSIGNED');
@@ -63,6 +67,6 @@ export async function checkOverrunRelease(
 
   const booking = await manager.findOneBy(Booking, { id: order.bookingId });
   const start = booking?.preferredStartAt ? new Date(booking.preferredStartAt).getTime() : null;
-  if (start === null || start > now.getTime() + windowMinutes * 60_000) return result('NOT_STARTING_SOON', current.code);
-  return result(null, current.code);
+  if (start === null || start > now.getTime() + windowMinutes * 60_000) return result('NOT_STARTING_SOON', current);
+  return result(null, current);
 }

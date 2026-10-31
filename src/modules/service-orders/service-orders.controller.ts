@@ -1,7 +1,7 @@
 // src/modules/service-orders/service-orders.controller.ts
 import { ReviewCancellationDto } from './dto/review-cancellation.dto';
 import { RepairFailedDto } from './dto/repair-failed.dto';
-import { DelayDecisionDto, DelayNoticeDto } from './dto/delay-notice.dto';
+import { DelayDecisionDto, DelayNoticeDto, DelayReportDto } from './dto/delay-notice.dto';
 import { MyOrderListQueryDto, OrderBoardQueryDto, StrikeListQueryDto } from './dto/order-list-query.dto';
 import { PageSizeQueryDto } from '../../shared/dto/page-size-query.dto';
 import {
@@ -374,12 +374,13 @@ export class ServiceOrdersController {
   @RequirePermission('order:cancel')
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Technician releases an upcoming order while still on another job; no penalty; the customer picks another technician' })
+  @ApiOperation({ summary: 'Technician releases an upcoming order while still on another job; needs a reason, 1-3 photos and a confirmation; no penalty; the customer picks another technician; a support case records it for the manager' })
   async releaseForOverrun(
     @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: DelayReportDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
-    return { data: await this.serviceOrdersService.releaseForOverrun(id, req.user) };
+    return { data: await this.serviceOrdersService.releaseForOverrun(id, body, req.user) };
   }
 
   @Post('service-orders/:id/delay-notice')
@@ -393,7 +394,7 @@ export class ServiceOrdersController {
     @Body() body: DelayNoticeDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
-    return { data: await this.serviceOrdersService.sendDelayNotice(id, body.delayMinutes, req.user) };
+    return { data: await this.serviceOrdersService.sendDelayNotice(id, body, req.user) };
   }
 
   @Post('service-orders/:id/delay-decision')

@@ -36,6 +36,7 @@ import {
   SupportCaseDetailDto,
   SupportCaseInvoiceContextDto,
   SupportCaseServiceOrderContextDto,
+  SupportCaseTechnicianDelayDto,
   SupportCaseSummaryDto,
   QuerySupportCasesDto,
   ResolveSupportCaseDto,
@@ -1014,6 +1015,9 @@ export class SupportCasesService {
       serviceOrder: serviceOrder
         ? this.toServiceOrderContext(serviceOrder)
         : null,
+      technicianDelay: supportCase.caseType === SupportCaseType.TECHNICIAN_DELAY && serviceOrder
+        ? await this.toTechnicianDelay(supportCase, serviceOrder)
+        : null,
       invoice: invoice ? this.toInvoiceContext(invoice) : null,
       cashSettlement: cashSettlement
         ? this.toCashSettlementContext(cashSettlement)
@@ -1100,6 +1104,22 @@ export class SupportCasesService {
       status: booking.status,
       customerId: booking.customerId,
       serviceId: booking.serviceId,
+    };
+  }
+
+  private async toTechnicianDelay(supportCase: SupportCase, order: ServiceOrder): Promise<SupportCaseTechnicianDelayDto> {
+    const latest = order.delaySupportCaseId === supportCase.id;
+    const currentOrderId = latest ? (order.delayCurrentOrderId ?? null) : null;
+    const current = currentOrderId
+      ? await this.supportCaseRepository.manager.findOne(ServiceOrder, { where: { id: currentOrderId }, select: { id: true, code: true } })
+      : null;
+    return {
+      reasonCode: latest ? (order.delayReasonCode ?? null) : null,
+      delayMinutes: latest ? (order.delayNoticeMinutes ?? null) : null,
+      noticedAt: latest ? (order.delayNoticedAt ?? null) : null,
+      decision: latest ? (order.delayDecision ?? null) : null,
+      currentOrderId,
+      currentOrderCode: current?.code ?? null,
     };
   }
 

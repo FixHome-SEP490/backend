@@ -11,4 +11,5 @@ export {
   SupportCaseResponseDto,
   SupportCaseServiceOrderContextDto,
   SupportCaseSummaryDto,
+  SupportCaseTechnicianDelayDto,
 } from './support-case-response.dto';
