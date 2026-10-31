@@ -1037,20 +1037,31 @@ export function registerDev1Cases(context: () => Context) {
       // Not on another job yet: the usual cancel (with points) is the only way out.
       expect(unwrap((await get(path, f.tech).expect(200)).body)).toMatchObject({ eligible: false, block: 'NO_CURRENT_JOB' });
       await arrived(current.id, f.tech);
+      // PO 31/10/2026: a report needs photos of the job under repair. The stubbed storage path is made to look like the real one so Backend's ownership check applies.
+      await db.query("UPDATE service_orders SET status = 'under_repair' WHERE id = $1 AND status <> 'under_repair'", [current.id]);
+      const photoId = unwrap((await evidence(current.id, f.tech, 'additional').expect(201)).body).id;
+      await db.query('UPDATE repair_evidences SET media_url = $2 WHERE id = $1', [photoId, `cloudinary://evidence/fixhome/evidence/${current.id}/${f.tech.user.id}/${randomUUID()}`]);
+      const report = { reasonCode: 'new_fault_found', reason: 'Phát sinh lỗi thêm, cần thay linh kiện', evidenceIds: [photoId], confirm: true };
       const [{ code: currentCode }] = await db.query('SELECT code FROM service_orders WHERE id = $1', [current.id]);
       // On a job, but the next order is not due within the window.
       expect(unwrap((await get(path, f.tech).expect(200)).body)).toMatchObject({ eligible: false, block: 'NOT_STARTING_SOON', currentOrderCode: currentCode, windowMinutes: 180 });
-      denied(await post(path, f.tech));
+      denied(await post(path, f.tech, report));
       await setWindow(100000);
       try {
-        expect(unwrap((await get(path, f.tech).expect(200)).body)).toMatchObject({ eligible: true, block: null, currentOrderCode: currentCode });
-        denied(await post(path, f.spare));
-        denied(await post(path, f.owner));
+        expect(unwrap((await get(path, f.tech).expect(200)).body)).toMatchObject({ eligible: true, block: null, currentOrderCode: currentCode, currentOrderId: current.id });
+        denied(await post(path, f.spare, report));
+        denied(await post(path, f.owner, report));
         // The order on site can never be released this way.
         expect(unwrap((await get(`/service-orders/${current.id}/overrun-release`, f.tech).expect(200)).body).eligible).toBe(false);
-        const released = unwrap((await post(path, f.tech).expect(200)).body);
+        // Never a bare tap: no body, no reason, no photo or no confirmation is refused and changes nothing.
+        for (const bad of [{}, { ...report, reason: 'ngắn' }, { ...report, evidenceIds: [] }, { ...report, evidenceIds: [randomUUID()] }, { ...report, confirm: false }, { ...report, reasonCode: 'x' }]) {
+          denied(await post(path, f.tech, bad));
+        }
+        expect(await db.query('SELECT 1 FROM support_cases WHERE service_order_id = $1', [nextOrder.id])).toEqual([]);
+        expect(await db.getRepository('TechnicianAssignment').count({ where: { serviceOrderId: nextOrder.id, isActive: true } })).toBe(1);
+        const released = unwrap((await post(path, f.tech, report).expect(200)).body);
         expect(released.currentOrderCode).toBe(currentCode);
-        denied(await post(path, f.tech));
+        denied(await post(path, f.tech, report));
       } finally {
         await setWindow(180);
       }
@@ -1060,6 +1071,11 @@ export function registerDev1Cases(context: () => Context) {
       expect(cancellation).toMatchObject({ actor: 'technician', strike_applied: false });
       expect(cancellation.reason).toContain(currentCode);
       expect(await db.getRepository('TechnicianAssignment').count({ where: { serviceOrderId: nextOrder.id, isActive: true } })).toBe(0);
+      // The manager can read why: one technician_delay case with the reason and the photo, closed by the release.
+      const delayCases = await db.query('SELECT case_type, status, resolution_code, reason, evidence_refs FROM support_cases WHERE service_order_id = $1', [nextOrder.id]);
+      expect(delayCases).toHaveLength(1);
+      expect(delayCases[0]).toMatchObject({ case_type: 'technician_delay', status: 'resolved', resolution_code: 'delay_released', reason: report.reason });
+      expect(delayCases[0].evidence_refs).toEqual([photoId]);
       // Closed, not matching: no "nobody accepted" notice; the customer can still choose.
       expect((await db.getRepository('Booking').findOneByOrFail({ id: next.id })).status).toBe('closed');
       expect(await db.query("SELECT 1 FROM notifications WHERE type = 'BOOKING_MATCHING_EXHAUSTED' AND reference_id = $1", [next.id])).toEqual([]);
