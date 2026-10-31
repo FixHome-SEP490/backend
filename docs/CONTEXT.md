@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-29 16:14 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-platform-first-failed-work-t9-20261029
+> Cập nhật lần cuối: 2026-10-30 11:10 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-bug-detector-visit-assigned-address-b4-20261030
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -93,6 +93,8 @@ Ba điều không đổi giữa các repo:
 Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức của nhóm). Mâu thuẫn giữa code và tài liệu thì ghi vào mục 8 và hỏi PO, không tự quyết.
 
 ## 3. Trạng thái hiện tại
+
+BUG DETECTOR #17: `assigned-page` thêm `assignedAddressSummary` ở parent từ snapshot booking có assignment active của đúng thợ đăng nhập. SQL chiếu NULL khi không có assignment; child và `my-page` không trả trường địa chỉ mới. Detail khách kiểm ownership của group và chỉ đọc booking thuộc cùng khách/cùng group; giữ `addressTextSnapshot` của chính khách để Web hiển thị địa điểm trước khi có child order, không thêm summary của thợ. Giữ nguyên trạng thái/outcome từng child và tiền. Unit kiểm role, identity, projection, release giữa hai lần đọc, detail và mixed outcome; PG16/HTTP tích hợp và Web/Mobile runtime NOT VERIFIED, không truy cập DB dùng chung.
 
 Platform-first T9: thêm read-only failedWorkFinance và endpoint SM/Admin stopped-work-finance; tách quote lịch sử khỏi payable null, không giả 0/refund. Guard chỉ khoản thu mới, phân biệt SOLO/VisitGroup; child STOP có hóa đơn giữ hold, không hóa đơn vẫn cho checkout sibling thành công. Giữ callback/xác nhận tiền cũ và ledger. Blocker: T8 STOP chưa chứng minh genuine failed repair cho 2A; T9b/D3 hoãn. Giới hạn kiểm chứng: docs/PLATFORM-FIRST-T9-FINANCE-DISPOSITION.md.
 
@@ -373,6 +375,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
+- 2026-10-30 11:10 (UTC+7) | foxonworld | foxonworld/fixhome-bug-detector-visit-assigned-address-b4-20261030 | Khôi phục snapshot địa chỉ detail cho chủ booking theo owner, giới hạn truy vấn cùng khách/cùng group; giữ privacy assigned-page và gate PG16/runtime.
 - 2026-10-29 16:14 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-failed-work-t9-20261029 | Thêm T9 read-only finance disposition và guard khoản thu mới, bảo toàn sibling checkout/tiền cũ; ghi blocker genuine failed work và giới hạn kiểm chứng.
 - 2026-10-29 16:02 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-safe-exit-t8-20261029 | Thêm T8 operational STOP/deassign với strict final proof, giữ nghĩa vụ cũ và hold checkout hóa đơn interrupted; ghi giới hạn T9/T10 và kiểm chứng tối thiểu.
 - 2026-10-29 13:53 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-backend-integration-20261029 | Hợp nhất T2 và T3b vào nhánh tích hợp cục bộ, giữ cả hai mục 3/5/8/9; chạy lại gate và ghi review release.
@@ -412,4 +415,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-20 23:16 (UTC+7) | foxonworld | foxonworld/tech-partial-qty-20261020 | Tracking-only partial USED quantity and new-invoice actual charge for 3/1/2; forbid legacy overwrite; return and owner gates unchanged.
 - 2026-10-20 22:15 (UTC+7) | ToanAltF4 | fix/overrun-release-closed | Nhả đơn đặt yêu cầu về closed (không còn thông báo sai Chưa có kỹ thuật viên nhận lời mời); ghi chú tiến trình nhả/rút đơn bằng tiếng Việt
 - 2026-10-20 21:41 (UTC+7) | ToanAltF4 | fix/kyc-face-video | Hồ sơ xác minh thợ nhận video khuôn mặt (face_video, video/webm|mp4) thay ảnh khuôn mặt, migration 046 thêm enum IF NOT EXISTS và mở bucket kyc-private cho video
-- 2026-10-20 21:06 (UTC+7) | ToanAltF4 | feat/technician-overrun-release | Thợ nhả đơn kế tiếp khi đơn đang làm chưa xong (GET/POST /service-orders/:id/overrun-release): không trừ điểm, khách nhận TECHNICIAN_RELEASED và tự chọn thợ khác, ngưỡng matching.overrun_release_window_minutes mặc định 180; đặt lại (rebook) giữ thiết bị + phạm vi đã chốt

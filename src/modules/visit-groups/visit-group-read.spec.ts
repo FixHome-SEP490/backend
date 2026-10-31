@@ -5,6 +5,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { VisitGroupsService } from './visit-groups.service';
 import { VisitGroupMyPageQueryDto, VisitGroupAssignedPageQueryDto } from './visit-group-page.dto';
 import { deriveVisitGroupStatus } from './visit-group-read';
+import { ExecutionContext, ForbiddenException } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Role } from '../../shared/enums';
+import { VisitGroupsController } from './visit-groups.controller';
 
 const parent = {
   id: 'group-1',
@@ -54,6 +59,92 @@ function harness(groups: unknown[] = [parent], total = groups.length, rows: unkn
 }
 
 describe('VisitGroupsService parent paging', () => {
+  it('binds the requesting technician on the same active order join that projects the snapshot', async () => {
+    const technicianId = "tech' OR true --";
+    const h = harness([parent], 1, [child(1)]);
+    await h.service.assignedPage(technicianId, {});
+    const [sql, parameters] = h.dataSource.query.mock.calls[0] as unknown as [string, unknown[]];
+    expect(parameters).toEqual([[parent.id], technicianId]);
+    expect(sql).not.toContain(technicianId);
+    expect(sql).toContain('ta.service_order_id = so.id AND ta.is_active = true AND ta.technician_id = $2');
+    expect(sql).toContain('CASE WHEN ta.id IS NOT NULL THEN vb.address_text_snapshot ELSE NULL END');
+    expect(sql).toContain('JOIN bookings vb ON vb.id = vgi.booking_id');
+    expect(sql).toContain('WHERE vgi.group_id = ANY($1::uuid[])');
+  });
+
+  it('never selects an inactive sibling address and strips all child address fields', async () => {
+    const h = harness([parent], 1, [
+      child(1, { outcome: 'failed', hasActiveAssignment: false, assignedAddressSnapshot: 'PRIVATE_FAILED' }),
+      child(2, { outcome: 'interrupted', hasActiveAssignment: false, assignedAddressSnapshot: 'PRIVATE_INTERRUPTED' }),
+      child(3, { assignedAddressSnapshot: 'SYNTHETIC_CURRENT' }),
+    ]);
+    const result = await h.service.assignedPage('current', {});
+    expect(result.data[0].assignedAddressSummary).toBe('SYNTHETIC_CURRENT');
+    expect(JSON.stringify(result)).not.toMatch(/PRIVATE_FAILED|PRIVATE_INTERRUPTED|assignedAddressSnapshot|hasActiveAssignment/);
+  });
+
+  it('fails closed for the address when assignment is released between parent and child reads', async () => {
+    const h = harness([parent], 1, [child(1, { hasActiveAssignment: false, assignedAddressSnapshot: 'PRIVATE_STALE' })]);
+    const result = await h.service.assignedPage('former', {});
+    expect(result.data[0].assignedAddressSummary).toBeNull();
+    expect(JSON.stringify(result)).not.toContain('PRIVATE_STALE');
+  });
+
+  it('preserves each mixed child state and outcome without mutating source rows', async () => {
+    const rows = [
+      child(1, { outcome: 'succeeded', orderStatus: 'completed' }),
+      child(2, { outcome: 'failed', orderStatus: 'cancelled', hasActiveAssignment: false }),
+      child(3, { outcome: 'quote_declined', orderStatus: 'cancelled' }),
+    ];
+    const before = structuredClone(rows);
+    const result = await harness([parent], 1, rows).service.assignedPage('current', {});
+    expect(result.data[0].status).toBe('mixed');
+    expect(result.data[0].items.map(({ orderStatus, outcome }) => ({ orderStatus, outcome })))
+      .toEqual(rows.map(({ orderStatus, outcome }) => ({ orderStatus, outcome })));
+    expect(rows).toEqual(before);
+  });
+
+  it('keeps customer detail ownership and does not add the assigned-page summary', async () => {
+    const groupRepo = { findOneBy: vi.fn(async ({ id, customerId }) => id === parent.id && customerId === parent.customerId ? parent : null) };
+    const itemRepo = { find: vi.fn(async () => []) };
+    const service = Object.assign(Object.create(VisitGroupsService.prototype), { groupRepo, itemRepo }) as VisitGroupsService;
+    await expect(service.detail(parent.id, { id: 'other-customer' })).rejects.toThrow();
+    await expect(service.detail(parent.id, { id: 'former-technician' })).rejects.toThrow();
+    await expect(service.detail('foreign-group', { id: parent.customerId })).rejects.toThrow();
+    expect(groupRepo.findOneBy).toHaveBeenCalledWith({ id: 'foreign-group', customerId: parent.customerId });
+    expect(itemRepo.find).not.toHaveBeenCalled();
+    const result = await service.detail(parent.id, { id: parent.customerId });
+    expect(result).not.toHaveProperty('assignedAddressSummary');
+  });
+
+  it('preserves the owner lead booking address before a child order exists', async () => {
+    const booking = { id: 'booking-1', customerId: parent.customerId, visitGroupId: parent.id, addressTextSnapshot: 'SYNTHETIC_PRIVATE_DETAIL', status: 'submitted' };
+    const service = Object.assign(Object.create(VisitGroupsService.prototype), {
+      groupRepo: { findOneBy: async () => parent },
+      itemRepo: { find: async () => [{ bookingId: booking.id, sequence: 1 }] },
+      dataSource: { getRepository: () => ({ find: async () => [booking] }) },
+    }) as VisitGroupsService;
+    const result = await service.detail(parent.id, { id: parent.customerId });
+    expect(result.leadBookingId).toBe(booking.id);
+    expect(result.items[0].booking).toMatchObject({ id: booking.id, status: booking.status, addressTextSnapshot: booking.addressTextSnapshot });
+    expect(result).not.toHaveProperty('assignedAddressSummary');
+    expect(booking.addressTextSnapshot).toBe('SYNTHETIC_PRIVATE_DETAIL');
+  });
+
+  it('constrains detail booking reads to the owner and group even with an unrelated item reference', async () => {
+    const find = vi.fn(async () => []);
+    const service = Object.assign(Object.create(VisitGroupsService.prototype), {
+      groupRepo: { findOneBy: async () => parent },
+      itemRepo: { find: async () => [{ bookingId: 'foreign-booking', sequence: 1 }] },
+      dataSource: { getRepository: () => ({ find }) },
+    }) as VisitGroupsService;
+    const result = await service.detail(parent.id, { id: parent.customerId });
+    expect(find).toHaveBeenCalledWith({
+      where: { id: expect.anything(), customerId: parent.customerId, visitGroupId: parent.id },
+      relations: ['media'],
+    });
+    expect(result.items[0].booking).toBeNull();
+  });
   it('returns one parent row with three ordered children and no address or technician-only data', async () => {
     const h = harness([parent], 21, [
       child(1), child(2, { orderStatus: 'en_route' }), child(3, { orderStatus: 'under_repair' }),
@@ -112,6 +203,27 @@ describe('VisitGroupsService parent paging', () => {
     expect(h.dataSource.query).not.toHaveBeenCalled();
   });
 
+  it('shows an address snapshot only for a currently assigned technician, never in customer listing', async () => {
+    const address = '12 Đường kiểm thử, Quận 1';
+    const h = harness([parent], 1, [
+      child(1, { assignedAddressSnapshot: address, hasActiveAssignment: true }),
+      child(2, { assignedAddressSnapshot: null, hasActiveAssignment: false, outcome: 'failed' }),
+    ]);
+    const assigned = await h.service.assignedPage('tech-current', { page: 1, pageSize: 20 });
+    expect(assigned.data[0]).toMatchObject({ assignedAddressSummary: address });
+    expect(assigned.data[0].items[0]).not.toHaveProperty('assignedAddressSnapshot');
+    const recordedQueries = h.dataSource.query.mock.calls as unknown as Array<[string, unknown[]]>;
+    const sql = recordedQueries[0][0];
+    expect(sql).toContain('ta.id IS NOT NULL');
+    expect(sql).toContain('vb.address_text_snapshot');
+    expect(recordedQueries[0][1]).toContain('tech-current');
+
+    const publicPage = await h.service.myPage('customer-a', { page: 1, pageSize: 20 });
+    expect(publicPage.data[0]).not.toHaveProperty('assignedAddressSummary');
+    expect(JSON.stringify(publicPage.data)).not.toContain(address);
+    expect(recordedQueries[1][0]).not.toContain('vb.address_text_snapshot');
+  });
+
   it('maps the technician in-progress tab to accepted, en-route, and under-repair child order states', async () => {
     const h = harness([parent], 1, [child(1)]);
 
@@ -153,6 +265,24 @@ describe('VisitGroupsService parent paging', () => {
 });
 
 describe('Visit group page query validation', () => {
+  it.each([undefined, Role.CUSTOMER, Role.ADMIN, Role.SERVICE_MANAGER, Role.TECHNICIAN])('enforces assigned-page role metadata for %s', (role) => {
+    const guard = new RolesGuard(new Reflector());
+    const context = {
+      getHandler: () => VisitGroupsController.prototype.assignedPage,
+      getClass: () => VisitGroupsController,
+      switchToHttp: () => ({ getRequest: () => ({ user: role ? { id: 'actor', role } : undefined }) }),
+    } as unknown as ExecutionContext;
+    if (role === Role.TECHNICIAN) expect(guard.canActivate(context)).toBe(true);
+    else expect(() => guard.canActivate(context)).toThrow(ForbiddenException);
+  });
+
+  it('uses authenticated identity even when an untrusted query carries another technician ID', async () => {
+    const assignedPage = vi.fn(async () => ({ data: [], total: 0, page: 1, pageSize: 20 }));
+    const controller = new VisitGroupsController({ assignedPage } as unknown as VisitGroupsService, {} as never);
+    const query = Object.assign(new VisitGroupAssignedPageQueryDto(), { technicianId: 'victim' });
+    await controller.assignedPage({ user: { id: 'authenticated', role: Role.TECHNICIAN } }, query);
+    expect(assignedPage).toHaveBeenCalledWith('authenticated', query);
+  });
   it('rejects invalid page bounds, status, tab, and oversized search', () => {
     const customerQuery = plainToInstance(VisitGroupMyPageQueryDto, {
       page: '0', pageSize: '101', status: 'submitted OR 1=1', q: 'q'.repeat(101),
