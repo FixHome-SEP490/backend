@@ -54,7 +54,11 @@ export async function checkOverrunRelease(
   const candidates = others.length
     ? await manager.find(ServiceOrder, { where: { id: In(others.map(a => a.serviceOrderId)), status: In([ServiceOrderStatus.EN_ROUTE, ServiceOrderStatus.UNDER_REPAIR]) } })
     : [];
-  let current: ServiceOrder | null = candidates.find(o => o.status === ServiceOrderStatus.UNDER_REPAIR) ?? null;
+  // A technician may hold several orders under repair (a visit's devices, or ones already handed over). The job they are
+  // still on is the one not yet handed over, then the one touched last; never an arbitrary row.
+  const repairing = candidates.filter(o => o.status === ServiceOrderStatus.UNDER_REPAIR)
+    .sort((a, b) => Number(!!a.completionRequestedAt) - Number(!!b.completionRequestedAt) || +new Date(b.updatedAt) - +new Date(a.updatedAt));
+  let current: ServiceOrder | null = repairing[0] ?? null;
   if (!current) {
     for (const candidate of candidates) {
       if (await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: candidate.id, technicianId, result: CheckInResult.VALID })) {
