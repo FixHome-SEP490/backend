@@ -574,6 +574,9 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     const quotation = await manager.findOne(Quotation, { where: { serviceOrderId: order.id }, relations: ['items'], order: { version: 'DESC' } });
     const history = await this.historyRepo.find({ where: { serviceOrderId: order.id }, order: { createdAt: 'ASC' } });
     return Object.assign(order, {
+      // PO 31/10/2026: what the customer needs to answer a delay notice; the raw columns below name another order and a manager's case, so they never leave.
+      delayNotice: delayNoticeView(order),
+      delayCurrentOrderId: null, delaySupportCaseId: null,
       ...(finance ? { failedWorkFinance: finance.customer } : {}),
       ...(stop?.workStopped ? { workStopped: true, assignmentReleased: true, operationalDisposition: 'STOPPED', oldObligationsReviewRequired: true } : {}),
       serviceName: booking.serviceNameSnapshot || '', addressSummary: booking.addressTextSnapshot || '',
