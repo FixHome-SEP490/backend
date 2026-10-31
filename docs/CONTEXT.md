@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-31 16:30 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
+> Cập nhật lần cuối: 2026-10-31 17:58 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -382,6 +382,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
+- 2026-10-31 17:58 (UTC+7) | Hgnv11 | dev | Danh sách lượt nhiều thiết bị của kỹ thuật viên (assigned-page) không còn ẩn cả lượt khi một máy bị khách từ chối báo giá (quote_declined, phân công đã tắt) trong lúc máy còn lại vẫn đang sửa.
 - 2026-10-31 16:30 (UTC+7) | Hgnv11 | dev | Dữ liệu đơn trả thêm bookingMedia (ảnh/video khách gửi lúc đặt, dạng riêng tư không kèm url) để kỹ thuật viên đang giữ đơn xem lại; nội dung vẫn đọc qua /bookings/:bookingId/media đã cho phép kỹ thuật viên giữ đơn.
 - 2026-10-31 14:32 (UTC+7) | Hgnv11 | dev | overrun-release trả thêm mô tả và mã ảnh của báo trễ cho đúng thợ đã gửi để xem lại; đơn của khách không có; chưa kiểm chứng PostgreSQL và Web/Mobile.
 - 2026-10-31 14:02 (UTC+7) | Hgnv11 | dev | overrun-release chọn đơn đang làm là đơn chưa bàn giao rồi đơn cập nhật gần nhất khi thợ giữ nhiều đơn đang sửa; chưa kiểm chứng PostgreSQL và Web/Mobile.
@@ -421,4 +422,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-23 14:51 (UTC+7) | Hgnv11 | dev | Cho kỹ thuật viên sửa số lượng đã dùng của linh kiện cả giảm lẫn tăng cho tới khi hóa đơn được tạo hoặc yêu cầu hoàn tất được gửi (trước đây chỉ được tăng, ghi nhầm không sửa lại được); số mới vẫn không vượt phần chưa được quản lý nhận lại và không làm tổng khai trả vượt phần còn lại
 - 2026-10-23 04:05 (UTC+7) | Hgnv11 | dev | Hoàn tác việc trừ linh kiện kỹ thuật viên đang giữ khi duyệt chi phí phát sinh: mỗi chi phí phát sinh có linh kiện FixHome lại luôn tạo yêu cầu ADDITIONAL riêng, vì ghi dùng và đối soát hóa đơn tính theo từng nguồn duyệt (báo giá, từng chi phí phát sinh)
 - 2026-10-23 02:03 (UTC+7) | foxonworld | foxonworld/feature-visit-group-activity-read-20261023 | Thêm trang VisitGroup theo parent, quyền assignment active cho thợ và cờ lọc con group trước phân trang list cũ
-- 2026-10-21 22:09 (UTC+7) | ToanAltF4 | feat/visit-groups-order-link | Đơn sửa chữa trả visitGroupId (máy thuộc lượt sửa nhiều máy) để web dẫn thanh toán, đổi lịch, huỷ về trang lượt

@@ -262,6 +262,18 @@ describe('VisitGroupsService parent paging', () => {
     const filters = h.calls.filter(call => call.method === 'andWhere').map(call => String(call.args[0]));
     expect(filters.join('\n')).toContain("vgi.outcome IS DISTINCT FROM 'interrupted'");
   });
+
+  it('keeps the visit listed when the customer refused one device quote and the other is still being repaired', async () => {
+    const h = harness([parent], 1, [
+      child(1, { orderStatus: 'under_repair' }),
+      child(2, { outcome: 'quote_declined', orderStatus: 'cancelled', bookingStatus: 'cancelled', hasActiveAssignment: false }),
+    ]);
+    const page = await h.service.assignedPage('tech-current', { tab: 'in_progress' });
+    expect(page.data[0].status).toBe('under_repair');
+    expect(page.data[0].items[1].outcome).toBe('quote_declined');
+    const filters = h.calls.filter(call => call.method === 'andWhere').map(call => String(call.args[0]));
+    expect(filters.join('\n')).toContain("vgi.outcome IS DISTINCT FROM 'quote_declined'");
+  });
 });
 
 describe('Visit group page query validation', () => {

@@ -239,7 +239,7 @@ export class VisitGroupsService {
       )`, { technicianId })
       .andWhere(`NOT EXISTS (
         SELECT 1 FROM visit_group_items vgi
-        WHERE vgi.group_id = vg.id AND vgi.outcome IS DISTINCT FROM 'failed' AND vgi.outcome IS DISTINCT FROM 'interrupted' AND NOT EXISTS (
+        WHERE vgi.group_id = vg.id AND vgi.outcome IS DISTINCT FROM 'failed' AND vgi.outcome IS DISTINCT FROM 'interrupted' AND vgi.outcome IS DISTINCT FROM 'quote_declined' AND NOT EXISTS (
           SELECT 1 FROM service_orders so
           JOIN technician_assignments ta ON ta.service_order_id = so.id
           WHERE so.booking_id = vgi.booking_id AND ta.technician_id = :technicianId AND ta.is_active = true
