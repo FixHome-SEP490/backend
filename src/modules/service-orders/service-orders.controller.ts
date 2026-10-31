@@ -1,6 +1,7 @@
 // src/modules/service-orders/service-orders.controller.ts
 import { ReviewCancellationDto } from './dto/review-cancellation.dto';
 import { RepairFailedDto } from './dto/repair-failed.dto';
+import { DelayDecisionDto, DelayNoticeDto } from './dto/delay-notice.dto';
 import { MyOrderListQueryDto, OrderBoardQueryDto, StrikeListQueryDto } from './dto/order-list-query.dto';
 import { PageSizeQueryDto } from '../../shared/dto/page-size-query.dto';
 import {
@@ -368,6 +369,34 @@ export class ServiceOrdersController {
     @Req() req: { user: { id: string; role: string } },
   ) {
     return { data: await this.serviceOrdersService.releaseForOverrun(id, req.user) };
+  }
+
+  @Post('service-orders/:id/delay-notice')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('order:cancel')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Technician still on another job tells the customer this order will start late (30/60/90/120 minutes)' })
+  async sendDelayNotice(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: DelayNoticeDto,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    return { data: await this.serviceOrdersService.sendDelayNotice(id, body.delayMinutes, req.user) };
+  }
+
+  @Post('service-orders/:id/delay-decision')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('order:cancel')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Customer answers a delay notice: wait, pick another technician, or cancel without fee or points' })
+  async decideDelay(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: DelayDecisionDto,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    return { data: await this.serviceOrdersService.decideDelay(id, body.decision, req.user) };
   }
 
   // ── 3. Order Details & History ──

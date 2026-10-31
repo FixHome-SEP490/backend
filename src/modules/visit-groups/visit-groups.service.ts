@@ -1,4 +1,5 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
+import { tidyAddressText } from '../../shared/utils/address-text';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
@@ -282,6 +283,7 @@ export class VisitGroupsService {
         vgi.outcome AS "outcome",
         vb.status AS "bookingStatus",
         vb.service_name_snapshot AS "serviceName",
+        vb.address_text_snapshot AS "addressText",
         so.id AS "orderId",
         so.code AS "orderCode",
         so.status AS "orderStatus",
@@ -307,6 +309,7 @@ export class VisitGroupsService {
       outcome: string | null;
       bookingStatus: string;
       serviceName: string | null;
+      addressText: string | null;
       orderId: string | null;
       orderCode: string | null;
       orderStatus: string | null;
@@ -330,7 +333,9 @@ export class VisitGroupsService {
         scheduledAt: group.preferredStartAt,
         scheduledEndAt: group.preferredEndAt,
         status,
-        items: items.map(({ groupId: _groupId, hasActiveAssignment: _active, ...item }) => item),
+        // Every device of a visit shares one address; shown on the card before an order exists.
+        addressSummary: tidyAddressText(items[0]?.addressText) || null,
+        items: items.map(({ groupId: _groupId, hasActiveAssignment: _active, addressText: _address, ...item }) => item),
       };
     });
     return { data, total, page, pageSize };

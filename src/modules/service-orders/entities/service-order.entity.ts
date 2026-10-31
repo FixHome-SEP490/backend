@@ -32,6 +32,16 @@ export class ServiceOrder extends BaseEntity {
   @Column({ name: 'departure_warned_at', type: 'timestamptz', nullable: true })
   departureWarnedAt?: Date | null;
 
+  /** PO 31/10/2026: the technician told the customer this order will start late; the customer's answer follows. */
+  @Column({ name: 'delay_notice_minutes', type: 'int', nullable: true })
+  delayNoticeMinutes?: number | null;
+
+  @Column({ name: 'delay_noticed_at', type: 'timestamptz', nullable: true })
+  delayNoticedAt?: Date | null;
+
+  @Column({ name: 'delay_decision', type: 'varchar', length: 8, nullable: true })
+  delayDecision?: 'wait' | 'switch' | 'cancel' | null;
+
   @Column({ name: 'started_at', type: 'timestamptz', nullable: true })
   startedAt?: Date | null;
 
