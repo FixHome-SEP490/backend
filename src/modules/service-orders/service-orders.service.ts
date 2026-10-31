@@ -1147,10 +1147,16 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   }
 
   /** Thợ xem đơn này có được nhả vì đơn trước chưa xong không (PO 20/10/2026). */
-  async overrunReleaseStatus(orderId: string, actor: { id: string; role: string }): Promise<OverrunReleaseCheck & { delayNotice: DelayNoticeView | null }> {
+  async overrunReleaseStatus(orderId: string, actor: { id: string; role: string }): Promise<OverrunReleaseCheck & { delayNotice: (DelayNoticeView & { reason: string | null; evidenceIds: string[] }) | null }> {
     const order = await authorizeOrder(this.dataSource.manager, orderId, actor, 'technician');
     const windowMinutes = await this.configService.getInt(OVERRUN_RELEASE_WINDOW_KEY, OVERRUN_RELEASE_WINDOW_DEFAULT_MINUTES);
-    return { ...await checkOverrunRelease(this.dataSource.manager, order, actor.id, windowMinutes), delayNotice: delayNoticeView(order) };
+    const notice = delayNoticeView(order);
+    // The technician who wrote the report reads back what they sent: the description and the photos. The customer's view of the order never carries these.
+    const written = notice && order.delaySupportCaseId ? await this.dataSource.manager.findOneBy(SupportCase, { id: order.delaySupportCaseId }) : null;
+    return {
+      ...await checkOverrunRelease(this.dataSource.manager, order, actor.id, windowMinutes),
+      delayNotice: notice ? { ...notice, reason: written?.reason ?? null, evidenceIds: written?.evidenceRefs ?? [] } : null,
+    };
   }
 
   /**

@@ -34,7 +34,11 @@ function build(order: Partial<ServiceOrder> = {}, opts: { photos?: unknown[]; cu
   const manager: any = {
     findOneOrFail: vi.fn(async () => ({ id: 'b-1', customerId: 'cus-1' })),
     findOneByOrFail: vi.fn(async () => row),
-    findOneBy: vi.fn(async (entity: unknown) => (entity === TechnicianAssignment ? { technicianId: 'tech-1' } : null)),
+    findOneBy: vi.fn(async (entity: unknown, where: any) => {
+      if (entity === TechnicianAssignment) return { technicianId: 'tech-1' };
+      if (entity === SupportCase) return cases.find(c => c.id === where.id) ?? null;
+      return null;
+    }),
     findOne: vi.fn(async (entity: unknown, o: any) => {
       if (entity === ServiceOrder) return current;
       if (entity === SupportCase) return cases.find(c => c.id === o.where.id && c.status === o.where.status) ?? null;
@@ -95,6 +99,15 @@ describe('delay notice', () => {
     expect(row).toMatchObject({ delayNoticeMinutes: 60, delayReasonCode: 'new_fault_found', delayCurrentOrderId: 'cur-1', delaySupportCaseId: 'case-1', delayDecision: null });
     expect(inserted[0]).toMatchObject({ userId: 'sm-1', type: 'TECHNICIAN_DELAY_REPORTED', referenceType: 'SUPPORT_CASE', referenceId: 'case-1' });
     expect(notify.mock.calls[0][0]).toMatchObject({ userId: 'cus-1', type: 'TECHNICIAN_DELAY_NOTICE' });
+  });
+
+  it('lets the technician read back what they sent: minutes, reason group, description and photos', async () => {
+    const { service } = build();
+    expect((await service.overrunReleaseStatus('o-1', tech)).delayNotice).toBeNull();
+    await service.sendDelayNotice('o-1', notice(90), tech);
+    expect((await service.overrunReleaseStatus('o-1', tech)).delayNotice).toMatchObject({
+      minutes: 90, reasonCode: 'new_fault_found', decision: null, reason: report.reason, evidenceIds: [EV],
+    });
   });
 
   it('a retry of the same report changes nothing and tells nobody twice', async () => {
