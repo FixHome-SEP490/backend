@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PrivateBookingPhotoStorage } from './private-booking-photo-storage.service';
+import sharp from 'sharp';
+import { Writable } from 'node:stream';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const OWNER_ID = '7f2fd9d2-e616-4d44-b2c3-9be271029eba';
@@ -38,7 +40,10 @@ describe('PrivateBookingPhotoStorage', () => {
       return writable;
     });
 
-    const reference = await storage.upload(OWNER_ID, PNG_FILE);
+    const validPng = await sharp({ create: {
+      width: 4, height: 4, channels: 3, background: { r: 10, g: 20, b: 30 },
+    } }).png().toBuffer();
+    const reference = await storage.upload(OWNER_ID, { buffer: validPng, mimetype: 'image/png', size: validPng.length });
 
     expect(reference).toMatch(/^cloudinary:\/\/booking-photos\/fixhome\/booking-photos\//);
     expect(reference).toContain(OWNER_ID.toLowerCase());
@@ -77,11 +82,33 @@ describe('PrivateBookingPhotoStorage', () => {
       `cloudinary://booking-photos/fixhome/booking-photos/${OTHER_OWNER_ID}/${validObjectId}`,
       'https://attacker.example/photo.png',
       `storage://booking-private/${OWNER_ID}/${validObjectId}`,
+      `cloudinary://booking-photos/fixhome/booking-photos/${OWNER_ID}/../${validObjectId}`,
+      `cloudinary://booking-photos/fixhome/booking-photos/${OWNER_ID}/${validObjectId}?url=https://attacker.example`,
     ];
 
     for (const reference of references) {
       await expect(storage.download(reference, OWNER_ID)).rejects.toThrow();
     }
+    expect(mockUrl).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the provider stream errors without invoking its callback', async () => {
+    let reportStreamError: () => void;
+    const streamError = new Promise<void>((resolve) => { reportStreamError = resolve; });
+    mockUploadStream.mockImplementation(() => {
+      const writable = new Writable({
+        write(_chunk, _encoding, callback) { callback(new Error('synthetic provider error')); },
+      });
+      writable.on('error', () => reportStreamError());
+      return writable;
+    });
+    const buffer = await sharp({ create: { width: 2, height: 2, channels: 3, background: 'red' } }).png().toBuffer();
+    const result = await Promise.race([
+      storage.upload(OWNER_ID, { buffer, size: buffer.length, mimetype: 'image/png' })
+        .then(() => 'unexpected success', (error: Error) => error.message),
+      streamError.then(() => new Promise<string>((resolve) => setImmediate(() => resolve('upload remained pending')))),
+    ]);
+    expect(result).toBe('Private booking photo storage is unavailable');
   });
 
   it('downloads via signed URL and detects MIME type from magic bytes', async () => {
@@ -93,11 +120,15 @@ describe('PrivateBookingPhotoStorage', () => {
     mockUrl.mockReturnValue('https://res.cloudinary.com/signed-download');
 
     const { default: axios } = await import('axios');
-    const getSpy = vi.spyOn(axios, 'get').mockResolvedValue({ data: PNG_BYTES });
+    const validPng = await sharp({ create: {
+      width: 4, height: 4, channels: 3, background: { r: 10, g: 20, b: 30 },
+    } }).png().toBuffer();
+    const getSpy = vi.spyOn(axios, 'get').mockResolvedValue({ data: validPng });
 
     const result = await storage.download(validRef, OWNER_ID);
 
-    expect(result).toEqual({ buffer: PNG_BYTES, mimeType: 'image/png' });
+    expect(result.mimeType).toBe('image/png');
+    expect(await sharp(result.buffer).raw().toBuffer()).toEqual(await sharp(validPng).raw().toBuffer());
     expect(mockUrl).toHaveBeenCalledWith(expectedPublicId, expect.objectContaining({
       type: 'authenticated',
       sign_url: true,

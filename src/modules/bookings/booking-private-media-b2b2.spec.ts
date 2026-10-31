@@ -82,6 +82,7 @@ function makeTransactionFixture(seeds: UploadSeed[] = []) {
   };
   const manager = {
     queryRunner: { isTransactionActive: true },
+    query: vi.fn(async () => [{ id: '6f2fd9d2-e616-4d44-b2c3-9be271029eba' }]),
     getRepository: vi.fn((entity: unknown) => entity === Booking ? bookingRepository : mediaRepository),
     findOne: vi.fn(async (entity: unknown, options: { where?: { id?: string } }) => {
       if (entity !== PrivateBookingPhotoUpload) return null;

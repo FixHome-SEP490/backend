@@ -32,6 +32,8 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { Optional } from '@nestjs/common';
 import { assertFixedPriceQuote } from './visit-fixed-quote';
 import { recordVisitOutcome } from '../bookings/visit-group-guard';
+import { VisitGroup } from '../visit-groups/entities/visit-group.entity';
+import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity';
 export { CreateCostItemDto, CreateQuotationDto, CreateAdditionalCostDto } from './quotation.dto';
 type Actor = { id: string; role: string };
 
@@ -151,6 +153,22 @@ export class QuotationsService {
     const ref = await this.quotationRepo.findOneBy({ id });
     if (!ref) throw new ForbiddenException('Quotation not found');
     const decided = await this.dataSource.transaction(async manager => {
+      if (action === 'REJECT') {
+        // Rejection closes the Booking below. Take its locks BEFORE the Order,
+        // matching cannot-continue/rebook and avoiding Order -> Booking inversion.
+        const reference = await authorizeOrder(manager, ref.serviceOrderId, actor, 'customer');
+        const booking = await manager.findOne(Booking, { where: { id: reference.bookingId } });
+        if (!booking) throw new ForbiddenException('Booking not found');
+        if (booking.visitGroupId) {
+          const lead = await manager.findOne(VisitGroupItem, { where: { groupId: booking.visitGroupId }, order: { sequence: 'ASC' } });
+          if (!lead) throw new ForbiddenException('Visit group not found');
+          await manager.findOne(Booking, { where: { id: lead.bookingId, customerId: actor.id }, lock: { mode: 'pessimistic_write' } });
+          await manager.findOne(VisitGroup, { where: { id: booking.visitGroupId, customerId: actor.id }, lock: { mode: 'pessimistic_write' } });
+        }
+        if (!await manager.findOne(Booking, { where: { id: reference.bookingId, customerId: actor.id }, lock: { mode: 'pessimistic_write' } })) {
+          throw new ForbiddenException('Booking not found');
+        }
+      }
       const order = await authorizeOrder(manager, ref.serviceOrderId, actor, 'customer', true);
       const quote = await manager.findOneOrFail(Quotation, { where: { id }, relations: ['items'] });
       const target = action === 'APPROVE' ? QuotationStatus.APPROVED : QuotationStatus.REJECTED;
@@ -208,7 +226,7 @@ export class QuotationsService {
     const items = await this.validateItems(manager, dto.items, await this.laborWarranty(manager, order, actor.id));
     const labor = items.filter(i=>i.type===CostItemType.LABOR).reduce((v,i)=>v+i.quantity*i.unitPrice,0);
     const parts = items.filter(i=>i.type===CostItemType.PARTS_EQUIPMENT).reduce((v,i)=>v+i.quantity*i.unitPrice,0);
-    const ttl = await this.configService.getInt('additional_cost.ttl_minutes',120);
+    const ttl = await this.configService.getInt('additional_cost.approval_ttl_minutes',60);
     const shippingFee = Number(dto.shippingFee ?? 0);
     const fulfillmentMethod = dto.fulfillmentMethod ?? FulfillmentMethod.PICKUP;
     if (shippingFee > 0 && (fulfillmentMethod !== FulfillmentMethod.DELIVERY || !items.some(i => i.partSource === PartSource.FIXHOME))) {

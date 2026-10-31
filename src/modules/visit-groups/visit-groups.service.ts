@@ -1,5 +1,4 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
-import { tidyAddressText } from '../../shared/utils/address-text';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
@@ -160,7 +159,7 @@ export class VisitGroupsService {
     if (!group) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Visit group not found');
     const items = await (manager ? manager.find(VisitGroupItem, { where: { groupId }, order: { sequence: 'ASC' } }) : this.itemRepo.find({ where: { groupId }, order: { sequence: 'ASC' } }));
     const bookings = items.length
-      ? await (manager ?? this.dataSource).getRepository(Booking).find({ where: { id: In(items.map((item) => item.bookingId)) }, relations: ['media'] })
+      ? await (manager ?? this.dataSource).getRepository(Booking).find({ where: { id: In(items.map((item) => item.bookingId)), customerId: customer.id, visitGroupId: group.id }, relations: ['media'] })
       : [];
     const byId = new Map(bookings.map((booking) => [booking.id, booking]));
     return {
@@ -271,6 +270,10 @@ export class VisitGroupsService {
 
     const groupIds = groups.map((group) => group.id);
     const assignmentJoin = technicianId ? 'AND ta.technician_id = $2' : '';
+    // The frozen address is visible only via an active assignment to this technician.
+    const assignedAddressProjection = technicianId
+      ? 'CASE WHEN ta.id IS NOT NULL THEN vb.address_text_snapshot ELSE NULL END'
+      : 'NULL::text';
     const parameters = technicianId ? [groupIds, technicianId] : [groupIds];
     const rows = await this.dataSource.query(`
       SELECT
@@ -283,11 +286,11 @@ export class VisitGroupsService {
         vgi.outcome AS "outcome",
         vb.status AS "bookingStatus",
         vb.service_name_snapshot AS "serviceName",
-        vb.address_text_snapshot AS "addressText",
         so.id AS "orderId",
         so.code AS "orderCode",
         so.status AS "orderStatus",
-        (ta.id IS NOT NULL) AS "hasActiveAssignment"
+        (ta.id IS NOT NULL) AS "hasActiveAssignment",
+        ${assignedAddressProjection} AS "assignedAddressSnapshot"
       FROM visit_group_items vgi
       JOIN bookings vb ON vb.id = vgi.booking_id
       LEFT JOIN service_orders so ON so.booking_id = vb.id
@@ -309,11 +312,11 @@ export class VisitGroupsService {
       outcome: string | null;
       bookingStatus: string;
       serviceName: string | null;
-      addressText: string | null;
       orderId: string | null;
       orderCode: string | null;
       orderStatus: string | null;
       hasActiveAssignment: boolean;
+      assignedAddressSnapshot: string | null;
     }>;
 
     const byGroup = new Map<string, typeof rows>();
@@ -333,9 +336,10 @@ export class VisitGroupsService {
         scheduledAt: group.preferredStartAt,
         scheduledEndAt: group.preferredEndAt,
         status,
-        // Every device of a visit shares one address; shown on the card before an order exists.
-        addressSummary: tidyAddressText(items[0]?.addressText) || null,
-        items: items.map(({ groupId: _groupId, hasActiveAssignment: _active, addressText: _address, ...item }) => item),
+        ...(technicianId ? {
+          assignedAddressSummary: items.find((item) => item.hasActiveAssignment && item.assignedAddressSnapshot)?.assignedAddressSnapshot ?? null,
+        } : {}),
+        items: items.map(({ groupId: _groupId, hasActiveAssignment: _active, assignedAddressSnapshot: _address, ...item }) => item),
       };
     });
     return { data, total, page, pageSize };

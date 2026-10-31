@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { QueryFailedError, Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
 import { User } from './entities/user.entity';
@@ -19,6 +19,7 @@ import { AuditLogService } from '../audit-log/audit-log.service';
 import { CustomerVerification } from '../customer-verifications/entities/customer-verification.entity';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
+import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 
 @Injectable()
 export class UsersService {
@@ -168,26 +169,46 @@ export class UsersService {
     const tempPassword = randomBytes(9).toString('base64url');
     const passwordHash = await bcrypt.hash(tempPassword, 12);
 
-    const user = await this.userRepository.save(
-      this.userRepository.create({
-        email,
-        phoneNumber,
-        passwordHash,
-        fullName: dto.fullName.trim(),
-        role: Role.TECHNICIAN,
-        status: AccountStatus.ACTIVE,
-        isActive: true,
-        isEmailVerified: true,
-      }),
-    );
+    const user = await this.userRepository.manager.transaction(async (manager) => {
+      const users = manager.getRepository(User);
+      let created: User;
+      try {
+        created = await users.save(
+          users.create({
+            email,
+            phoneNumber,
+            passwordHash,
+            fullName: dto.fullName.trim(),
+            role: Role.TECHNICIAN,
+            status: AccountStatus.ACTIVE,
+            isActive: true,
+            isEmailVerified: true,
+          }),
+        );
+      } catch (error) {
+        // The database unique indexes remain authoritative when pre-checks race.
+        if (error instanceof QueryFailedError && error.driverError?.code === '23505') {
+          throw new ConflictException('Email or phone number is already registered');
+        }
+        throw error;
+      }
 
-    await this.auditLogService.log({
-      actorUserId: actor.id,
-      actorRole: actor.role,
-      action: 'TECHNICIAN_ACCOUNT_CREATED',
-      resourceType: 'user',
-      resourceId: user.id,
-      after: { email, fullName: user.fullName },
+      const profiles = manager.getRepository(TechnicianProfile);
+      await profiles.save(profiles.create({
+        userId: created.id,
+        verificationStatus: VerificationStatus.PENDING,
+        isAvailable: false, // same initialization as technician self-registration
+      }));
+
+      await this.auditLogService.logWithManagerStrict(manager, {
+        actorUserId: actor.id,
+        actorRole: actor.role,
+        action: 'TECHNICIAN_ACCOUNT_CREATED',
+        resourceType: 'user',
+        resourceId: created.id,
+        after: { email, fullName: created.fullName },
+      });
+      return created;
     });
 
     return { user, tempPassword };

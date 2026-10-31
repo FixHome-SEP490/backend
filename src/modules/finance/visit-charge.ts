@@ -8,7 +8,7 @@ import type { VisitPaymentAllocation } from '../visit-groups/entities/visit-grou
 import type { VoucherFundingAllocation } from '../vouchers/voucher-funding-allocation';
 
 /** Where one device of a visit stands for the visit's single payment. */
-export type VisitDeviceState = 'succeeded' | 'failed' | 'quote_declined' | 'cancelled' | 'open';
+export type VisitDeviceState = 'succeeded' | 'failed' | 'quote_declined' | 'cancelled' | 'open' | 'interrupted';
 
 export interface VisitDeviceCharge {
   sequence: number;
@@ -21,6 +21,7 @@ export interface VisitDeviceCharge {
   invoiceId: string | null;
   amount: number;
   paid: boolean;
+  financialFollowupRequired?: boolean;
 }
 
 export interface VisitCharge {
@@ -32,6 +33,7 @@ export interface VisitCharge {
   waiting: number;
   ready: boolean;
   paid: boolean;
+  financialFollowupRequired?: boolean;
 }
 
 /**
@@ -54,6 +56,9 @@ export async function loadVisitCharge(manager: EntityManager, groupId: string, l
   const orderByBooking = new Map(orders.map((order) => [order.bookingId, order]));
   const invoiceByOrder = new Map(invoices.map((invoice) => [invoice.serviceOrderId, invoice]));
 
+  // Preserve the pre-stop allocation eligibility for historical provider callbacks.
+  // A stop may hold NEW collection, never reinterpret an already-frozen split.
+  const historicallyChargeable = new Set<string>();
   const devices = items.map((item): VisitDeviceCharge => {
     const booking = bookingById.get(item.bookingId);
     const order = orderByBooking.get(item.bookingId) ?? null;
@@ -62,7 +67,10 @@ export async function loadVisitCharge(manager: EntityManager, groupId: string, l
     if (item.outcome === 'failed' || item.outcome === 'quote_declined') state = item.outcome;
     else if (booking?.status === BookingStatus.CANCELLED || order?.status === ServiceOrderStatus.CANCELLED) state = 'cancelled';
     else if (order?.completionRequestedAt && invoice) state = 'succeeded';
-    const charged = state === 'succeeded' && invoice ? Number(invoice.grandTotal) : 0;
+    if (state === 'succeeded' && order) historicallyChargeable.add(order.id);
+    const stopped = item.outcome === 'interrupted' && order?.status !== ServiceOrderStatus.CANCELLED;
+    const charged = (state === 'succeeded' || stopped) && invoice ? Number(invoice.grandTotal) : 0;
+    if (stopped) state = 'interrupted';
     return {
       sequence: item.sequence,
       deviceLabel: item.deviceLabel ?? null,
@@ -71,23 +79,26 @@ export async function loadVisitCharge(manager: EntityManager, groupId: string, l
       serviceOrderId: order?.id ?? null,
       orderCode: order?.code ?? null,
       state,
-      invoiceId: state === 'succeeded' ? invoice?.id ?? null : null,
+      invoiceId: state === 'succeeded' || state === 'interrupted' ? invoice?.id ?? null : null,
       amount: charged,
-      paid: state === 'succeeded' && invoice?.paymentStatus === PaymentStatus.PAID,
+      paid: (state === 'succeeded' || stopped) && invoice?.paymentStatus === PaymentStatus.PAID,
+      ...(stopped && invoice ? { financialFollowupRequired: true } : {}),
     };
   });
   const allocations = devices
-    .filter((device) => device.state === 'succeeded' && !device.paid && device.amount > 0)
+    .filter((device) => historicallyChargeable.has(device.serviceOrderId!) && !device.paid && device.amount > 0)
     .map((device) => ({ invoiceId: device.invoiceId!, serviceOrderId: device.serviceOrderId!, amount: device.amount }));
   const waiting = devices.filter((device) => device.state === 'open').length;
   const total = allocations.reduce((sum, allocation) => sum + allocation.amount, 0);
+  const financialFollowupRequired = devices.some(device => device.financialFollowupRequired);
   return {
     devices,
     allocations,
     total,
     waiting,
-    ready: waiting === 0 && allocations.length > 0,
-    paid: waiting === 0 && allocations.length === 0 && devices.some((device) => device.state === 'succeeded'),
+    ready: !financialFollowupRequired && waiting === 0 && allocations.length > 0,
+    paid: !financialFollowupRequired && waiting === 0 && allocations.length === 0 && devices.some((device) => device.state === 'succeeded'),
+    ...(financialFollowupRequired ? { financialFollowupRequired: true } : {}),
   };
 }
 

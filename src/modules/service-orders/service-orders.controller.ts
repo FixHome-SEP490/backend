@@ -120,6 +120,17 @@ export class ServiceOrdersController {
     return { data: order };
   }
 
+  @Get('service-orders/:id/stopped-work-finance')
+  @Roles(Role.ADMIN, Role.SERVICE_MANAGER)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionGuard)
+  @RequirePermission('order:read_related')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Read stopped work financial exceptions (SM / Admin only; no reconciliation mutation)' })
+  async getStoppedWorkFinance(@Param('id', ParseUUIDPipe) id: string,
+    @Req() req: { user: { id: string; role: string } }) {
+    return { data: await this.serviceOrdersService.getStoppedWorkFinance(id, req.user) };
+  }
+
   // ── 2. Order Lifecycle Transitions ──
 
   @Post('service-orders/:id/en-route')

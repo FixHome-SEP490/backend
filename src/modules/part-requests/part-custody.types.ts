@@ -1,4 +1,17 @@
-import { PartRequestType, PartSource, Role, ServiceOrderStatus } from '../../shared/enums';
+import { PartRequestStatus, PartRequestType, PartSource, Role, ServiceOrderStatus } from '../../shared/enums';
+import type { LegacyManualReviewDto, LegacyReviewStatus } from './dto/legacy-manual-review.dto';
+
+export interface LegacyManualReviewEvent extends LegacyManualReviewDto {
+  readonly id: string;
+  readonly version: number;
+  readonly actorUserId: string;
+  readonly actorRole: Role.SERVICE_MANAGER;
+  readonly occurredAt: string;
+  readonly orderId: string;
+  readonly technicianId: string;
+  readonly partRequestId: string;
+  readonly partRequestItemId: string;
+}
 
 export type PartCustodyCommandKind =
   | 'record_usage'
@@ -28,6 +41,29 @@ export type PartCustodyCommand =
 export interface PartCustodyActor {
   readonly id: string;
   readonly role: Role | string;
+}
+
+/**
+ * Legacy FixHome parts handed to a technician before custody enrollment. The
+ * physical return state is unknown, so this record never carries accepted,
+ * declared or outstanding quantities. `handedOverAt` is only the existing
+ * request receipt evidence, not a warehouse return receipt.
+ */
+export interface LegacyManualReviewRecord {
+  readonly kind: 'legacy_manual_review';
+  readonly receiptState: 'UNKNOWN';
+  readonly orderId: string;
+  readonly partRequestId: string;
+  readonly partRequestItemId: string;
+  readonly technicianId: string;
+  readonly requestType: PartRequestType;
+  readonly requestStatus: PartRequestStatus;
+  readonly handedOverAt: string;
+  readonly partCatalogId: string | null;
+  readonly partNameSnapshot: string;
+  readonly issuedQty: number;
+  readonly manualReviewState: 'UNKNOWN' | LegacyReviewStatus;
+  readonly lastManualReview: LegacyManualReviewEvent | null;
 }
 
 export interface PartCustodyDeclaration {

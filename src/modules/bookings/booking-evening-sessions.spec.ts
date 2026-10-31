@@ -38,6 +38,7 @@ describe('customer evening session contract', () => {
     const stored = { create: (value: object) => value, save: async (value: object) => ({ id: 'new', ...value }) };
     const manager = {
       findOneBy: async () => null,
+      query: async () => [{ id: 'service' }],
       getRepository: (entity: unknown) => entity === Booking ? stored : {},
     };
     const service = Object.create(BookingsService.prototype) as BookingsService;

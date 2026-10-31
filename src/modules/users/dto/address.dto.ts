@@ -2,68 +2,87 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsBoolean,
+  IsDefined,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   Min,
   Max,
+  ValidateIf,
 } from 'class-validator';
 import { Address } from '../entities/address.entity';
+
+const ADDRESS_TEXT_PATTERN = /^[^\p{Cc}]*$/u;
+
+function hasAddressCoordinates(dto: { lat?: number | null; lng?: number | null }): boolean {
+  return (dto.lat !== null && dto.lat !== undefined) ||
+    (dto.lng !== null && dto.lng !== undefined);
+}
 
 export class CreateAddressDto {
   @ApiPropertyOptional({ example: 'Nhà riêng' })
   @IsOptional()
   @IsString()
+  @Matches(ADDRESS_TEXT_PATTERN, { message: 'Address text must not contain control characters' })
   @MaxLength(100)
   label?: string;
 
   @ApiProperty({ example: '123 Nguyen Trai' })
   @IsNotEmpty()
   @IsString()
+  @Matches(ADDRESS_TEXT_PATTERN, { message: 'Address text must not contain control characters' })
   @MaxLength(255)
   line1: string;
 
   @ApiPropertyOptional({ example: 'Phường Bến Thành' })
   @IsOptional()
   @IsString()
+  @Matches(ADDRESS_TEXT_PATTERN, { message: 'Address text must not contain control characters' })
   @MaxLength(100)
   ward?: string;
 
   @ApiProperty({ example: 'Quận 1' })
   @IsNotEmpty()
   @IsString()
+  @Matches(ADDRESS_TEXT_PATTERN, { message: 'Address text must not contain control characters' })
   @MaxLength(100)
   district: string;
 
   @ApiProperty({ example: 'TP. Hồ Chí Minh' })
   @IsNotEmpty()
   @IsString()
+  @Matches(ADDRESS_TEXT_PATTERN, { message: 'Address text must not contain control characters' })
   @MaxLength(100)
   province: string;
 
   @ApiPropertyOptional({ example: '79' })
   @IsOptional()
   @IsString()
+  @Matches(ADDRESS_TEXT_PATTERN, { message: 'Address text must not contain control characters' })
   provinceCode?: string;
 
   @ApiPropertyOptional({ example: '760' })
   @IsOptional()
   @IsString()
+  @Matches(ADDRESS_TEXT_PATTERN, { message: 'Address text must not contain control characters' })
   districtCode?: string;
 
   @ApiPropertyOptional({ example: 10.7769 })
-  @IsOptional()
-  @IsNumber()
+  @ValidateIf(hasAddressCoordinates)
+  @IsDefined()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
   @Min(-90) @Max(90)
-  lat?: number;
+  lat?: number | null;
 
   @ApiPropertyOptional({ example: 106.7009 })
-  @IsOptional()
-  @IsNumber()
+  @ValidateIf(hasAddressCoordinates)
+  @IsDefined()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
   @Min(-180) @Max(180)
-  lng?: number;
+  lng?: number | null;
 
   @ApiPropertyOptional({ example: false })
   @IsOptional()
@@ -75,53 +94,62 @@ export class UpdateAddressDto {
   @ApiPropertyOptional({ example: 'Nhà riêng' })
   @IsOptional()
   @IsString()
+  @Matches(ADDRESS_TEXT_PATTERN, { message: 'Address text must not contain control characters' })
   @MaxLength(100)
   label?: string;
 
   @ApiPropertyOptional({ example: '123 Nguyen Trai' })
   @IsOptional()
   @IsString()
+  @Matches(ADDRESS_TEXT_PATTERN, { message: 'Address text must not contain control characters' })
   @MaxLength(255)
   line1?: string;
 
   @ApiPropertyOptional({ example: 'Phường Bến Thành' })
   @IsOptional()
   @IsString()
+  @Matches(ADDRESS_TEXT_PATTERN, { message: 'Address text must not contain control characters' })
   @MaxLength(100)
   ward?: string;
 
   @ApiPropertyOptional({ example: 'Quận 1' })
   @IsOptional()
   @IsString()
+  @Matches(ADDRESS_TEXT_PATTERN, { message: 'Address text must not contain control characters' })
   @MaxLength(100)
   district?: string;
 
   @ApiPropertyOptional({ example: 'TP. Hồ Chí Minh' })
   @IsOptional()
   @IsString()
+  @Matches(ADDRESS_TEXT_PATTERN, { message: 'Address text must not contain control characters' })
   @MaxLength(100)
   province?: string;
 
   @ApiPropertyOptional({ example: 10.7769 })
-  @IsOptional()
-  @IsNumber()
+  @ValidateIf(hasAddressCoordinates)
+  @IsDefined()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
   @Min(-90) @Max(90)
-  lat?: number;
+  lat?: number | null;
 
   @ApiPropertyOptional({ example: 106.7009 })
-  @IsOptional()
-  @IsNumber()
+  @ValidateIf(hasAddressCoordinates)
+  @IsDefined()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
   @Min(-180) @Max(180)
-  lng?: number;
+  lng?: number | null;
 
   @ApiPropertyOptional({ example: '79' })
   @IsOptional()
   @IsString()
+  @Matches(ADDRESS_TEXT_PATTERN, { message: 'Address text must not contain control characters' })
   provinceCode?: string;
 
   @ApiPropertyOptional({ example: '760' })
   @IsOptional()
   @IsString()
+  @Matches(ADDRESS_TEXT_PATTERN, { message: 'Address text must not contain control characters' })
   districtCode?: string;
 
   @ApiPropertyOptional({ example: false })

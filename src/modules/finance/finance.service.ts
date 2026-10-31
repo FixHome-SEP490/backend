@@ -33,6 +33,7 @@ import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { ServiceOrderStateMachine } from '../service-orders/service-order-state-machine';
 import { OrderStatusHistory } from '../service-orders/entities/order-status-history.entity';
 import { isCompletionHeld } from '../support-cases/completion-hold';
+import { hasOnsiteInterruption } from '../service-orders/onsite-interruption';
 import { applyOrderCompletionEffects } from '../service-orders/order-completion-effects';
 import { Payment } from './entities/payment.entity';
 import { CashPaymentIntent, type CashIntentScope } from './entities/cash-payment-intent.entity';
@@ -150,6 +151,23 @@ export class FinanceService {
     }
   }
 
+  /** New initiation only; existing cash/provider confirmation keeps its original guards. */
+  private async assertNewCollectionAllowed(manager: EntityManager, scopeId: string, scopeKind: CashIntentScope = 'SOLO'): Promise<void> {
+    await this.assertNoStoppedCollection(manager, scopeId, scopeKind);
+    await this.assertLegacyCollectionAllowed(manager, scopeId);
+  }
+
+  private async assertNoStoppedCollection(manager: EntityManager, scopeId: string, scopeKind: CashIntentScope = 'SOLO'): Promise<void> {
+    // Group callers already hold the group lock. Reuse T8's locked invoice/child
+    // exposure proof: an unbilled stopped child must not block successful siblings.
+    const held = scopeKind === 'VISIT_GROUP'
+      ? (await loadVisitCharge(manager, scopeId, true)).financialFollowupRequired
+      : await hasOnsiteInterruption(manager, scopeId);
+    if (held) {
+      throw new BusinessException(ErrorCodes.CONFLICT, 'Công việc đã gián đoạn. Không tạo khoản thu mới; nghĩa vụ cũ cần FixHome đối soát.');
+    }
+  }
+
   private async assertNoActiveCashIntent(manager: EntityManager, scopeKind: CashIntentScope, scopeId: string): Promise<void> {
     if (!this.cashFirstEnabled()) return;
     if (await manager.findOne(CashPaymentIntent, { where: { scopeKind, scopeId, status: 'pending' } })) {
@@ -195,6 +213,7 @@ export class FinanceService {
             invoice.serviceOrderId !== scopeId) {
           throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Không tìm thấy đơn sửa chữa.');
         }
+        await this.assertNoStoppedCollection(manager, scopeId, scopeKind);
         const assignment = await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: scopeId, isActive: true } });
         if (!assignment || !order.completionRequestedAt ||
             ![ServiceOrderStatus.UNDER_REPAIR, ServiceOrderStatus.COMPLETED].includes(order.status) ||
@@ -222,6 +241,7 @@ export class FinanceService {
           scopeKind, rail: 'CASH',
         }) : null;
         await this.visitAccess(manager, scopeId, actor, true);
+        await this.assertNoStoppedCollection(manager, scopeId, scopeKind);
         const charge = await this.readyVisitCharge(manager, scopeId);
         const funded = quote ? allocateFundedVisitCharge(charge, quote) : null;
         gross = charge.total;
@@ -780,7 +800,7 @@ export class FinanceService {
         throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hóa đơn 0 ₫ cần được xác nhận miễn phí.');
       }
       await this.assertNoActiveCashIntent(manager, 'SOLO', order.id);
-      await this.assertLegacyCollectionAllowed(manager, order.id);
+      await this.assertNewCollectionAllowed(manager, order.id);
 
       const payment = paymentRepository.create({
         invoiceId: invoice.id,
@@ -869,6 +889,7 @@ export class FinanceService {
         await this.visitAccess(manager, scopeId, actor, true);
         allocations = allocateFundedVisitCharge(await this.readyVisitCharge(manager, scopeId), quote).allocations;
       }
+      await this.assertNoStoppedCollection(manager, scopeId, scopeKind);
       await this.assertNoActiveCashIntent(manager, scopeKind, scopeId);
       const now = new Date();
       const txnRef = randomUUID().replace(/-/g, '');
@@ -961,7 +982,7 @@ export class FinanceService {
         throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'VNPay chỉ áp dụng cho hóa đơn từ 5.000 ₫. Vui lòng chọn ví hoặc tiền mặt.');
       }
       await this.assertNoActiveCashIntent(manager, 'SOLO', order.id);
-      await this.assertLegacyCollectionAllowed(manager, order.id);
+      await this.assertNewCollectionAllowed(manager, order.id);
       const txnRef = randomUUID().replace(/-/g, '');
       const created = paymentRepository.create({
         invoiceId: invoice.id,
@@ -1097,6 +1118,17 @@ export class FinanceService {
     const hashSecret = this.config.get<string>('VNPAY_HASH_SECRET');
     if (!hashSecret || !verifySignature(query, hashSecret)) {
       return { RspCode: '97', Message: 'Invalid signature' };
+    }
+    if (typeof query.vnp_TxnRef !== 'string' || !query.vnp_TxnRef.trim()) {
+      return { RspCode: '01', Message: 'Order not found' };
+    }
+    // Both signed outcomes are required Numeric[2], even for voucher evidence.
+    // Reject before dispatch: malformed proof must not fail/quarantine a pending attempt.
+    // VNPay IPN RspCode 99 means no update (retry), unlike 00/02 which stop retrying.
+    // https://sandbox.vnpayment.vn/apis/docs/thanh-toan-pay/pay.html
+    if (![query.vnp_ResponseCode, query.vnp_TransactionStatus].every(value =>
+      typeof value === 'string' && value.length === 2 && /^\d{2}$/.test(value))) {
+      return { RspCode: '99', Message: 'Invalid outcome fields' };
     }
     const payment = await this.paymentRepository.findOne({
       where: { idempotencyKey: query.vnp_TxnRef, provider: 'vnpay' },
@@ -1361,6 +1393,7 @@ export class FinanceService {
           ![ServiceOrderStatus.UNDER_REPAIR, ServiceOrderStatus.COMPLETED].includes(order.status)) {
         throw new BusinessException(ErrorCodes.CONFLICT, 'Hóa đơn đã thay đổi.');
       }
+      await this.assertNoStoppedCollection(manager, orderId);
       await this.assertLegacyCashCompatibility(manager, 'SOLO', orderId);
       await lockCustodyTechnician(manager, actor.id);
       const existing = await manager.findOne(CashSettlement, { where: { serviceOrderId: orderId }, lock: { mode: 'pessimistic_write' } });
@@ -1395,6 +1428,7 @@ export class FinanceService {
       await this.visitAccess(manager, groupId, actor, true);
       await lockCustodyTechnician(manager, actor.id);
       const funded = allocateFundedVisitCharge(await this.readyVisitCharge(manager, groupId), quote);
+      await this.assertNoStoppedCollection(manager, groupId, 'VISIT_GROUP');
       await this.assertLegacyCashCompatibility(manager, 'VISIT_GROUP', groupId);
       if (this.requireWholeVnd(dto.declaredAmount, 'Declared amount') !== funded.customerDue) {
         throw new BusinessException(ErrorCodes.CASH_SETTLEMENT_MISMATCH, 'Số tiền mặt không khớp với số tiền khách cần trả.');
@@ -1489,7 +1523,7 @@ export class FinanceService {
       if (this.requireWholeVnd(invoice.grandTotal, 'Invoice amount') <= 0) {
         throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hóa đơn 0 ₫ cần được khách hàng xác nhận miễn phí.');
       }
-      await this.assertLegacyCollectionAllowed(manager, order.id);
+      await this.assertNewCollectionAllowed(manager, order.id);
 
       let settlement = await settlementRepository.findOne({
         where: { serviceOrderId: orderId },
@@ -2349,6 +2383,10 @@ export class FinanceService {
           actorRole: Role.CUSTOMER,
           reason: 'Work completed by the technician and payment verified',
         });
+        // BUG_DETECTOR_26_PAID_PART_CLOSE: never finalize stock held by a former technician.
+        // The existing lifecycle helper marks only the current holder's RECEIVED requests.
+        if (await manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, isActive: true }))
+          await closeOrderPartRequests(manager, order.id, false);
         await applyOrderCompletionEffects(manager, order, invoice.id, now);
       }
     }
@@ -2497,6 +2535,7 @@ export class FinanceService {
         await this.visitAccess(manager, scopeId, actor, true);
         allocateFundedVisitCharge(await this.readyVisitCharge(manager, scopeId), quote);
       }
+      await this.assertNoStoppedCollection(manager, scopeId, scopeKind);
       await this.assertNoActiveCashIntent(manager, scopeKind, scopeId);
       const link = await bindVoucherPaymentLink(manager, reservationId, 'ZERO');
       if (link.customerId !== actor.id || link.scopeId !== scopeId ||
@@ -2541,6 +2580,7 @@ export class FinanceService {
           order.status === ServiceOrderStatus.CANCELLED) {
         throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Invoice not found');
       }
+      await this.assertNoStoppedCollection(manager, order.id);
       await this.assertNoActiveCashIntent(manager, 'SOLO', order.id);
       const amount = quote.total.customerDueVnd;
       const now = new Date();
@@ -2576,6 +2616,7 @@ export class FinanceService {
       await this.visitAccess(manager, groupId, actor, true);
       const charge = await this.readyVisitCharge(manager, groupId);
       const funded = allocateFundedVisitCharge(charge, quote);
+      await this.assertNoStoppedCollection(manager, groupId, 'VISIT_GROUP');
       await this.assertNoActiveCashIntent(manager, 'VISIT_GROUP', groupId);
       const amount = funded.customerDue;
       const now = new Date();
@@ -2641,7 +2682,7 @@ export class FinanceService {
       const amount = this.requireWholeVnd(invoice.grandTotal, 'Invoice amount');
       if (amount <= 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hoá đơn không có số tiền cần thanh toán');
       await this.assertNoActiveCashIntent(manager, 'SOLO', order.id);
-      await this.assertLegacyCollectionAllowed(manager, order.id);
+      await this.assertNewCollectionAllowed(manager, order.id);
       const now = new Date();
       const tx = await wallet.apply(manager, {
         userId: actor.id,
@@ -2728,6 +2769,10 @@ export class FinanceService {
           actorRole: actor.role,
           reason: 'Work completed by the technician and payment verified',
         });
+        // BUG_DETECTOR_26_PAID_PART_CLOSE: never finalize stock held by a former technician.
+        // The existing lifecycle helper marks only the current holder's RECEIVED requests.
+        if (await manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, isActive: true }))
+          await closeOrderPartRequests(manager, order.id, false);
         await applyOrderCompletionEffects(manager, order, invoice.id, now);
       }
 
@@ -2921,7 +2966,7 @@ export class FinanceService {
       await this.visitAccess(manager, groupId, actor, true);
       const charge = await this.readyVisitCharge(manager, groupId);
       await this.assertNoActiveCashIntent(manager, 'VISIT_GROUP', groupId);
-      await this.assertLegacyCollectionAllowed(manager, groupId);
+      await this.assertNewCollectionAllowed(manager, groupId, 'VISIT_GROUP');
       const now = new Date();
       const tx = await wallet.apply(manager, {
         userId: actor.id,
@@ -2967,7 +3012,7 @@ export class FinanceService {
       const charge = await this.readyVisitCharge(manager, groupId);
       await this.assertNoActiveCashIntent(manager, 'VISIT_GROUP', groupId);
       if (charge.total < 5000) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'VNPay chỉ áp dụng từ 5.000 ₫. Vui lòng chọn ví hoặc tiền mặt.');
-      await this.assertLegacyCollectionAllowed(manager, groupId);
+      await this.assertNewCollectionAllowed(manager, groupId, 'VISIT_GROUP');
       return manager.save(VisitGroupPayment, manager.create(VisitGroupPayment, {
         visitGroupId: groupId, rail: 'vnpay', status: 'pending', amount: charge.total, allocations: charge.allocations,
         idempotencyKey: randomUUID().replace(/-/g, ''), requestedByUserId: actor.id, requestedAt: new Date(),
@@ -3000,7 +3045,7 @@ export class FinanceService {
       await lockCustodyTechnician(manager, actor.id);
       const charge = await this.readyVisitCharge(manager, groupId);
       await this.assertLegacyCashCompatibility(manager, 'VISIT_GROUP', groupId);
-      await this.assertLegacyCollectionAllowed(manager, groupId);
+      await this.assertNewCollectionAllowed(manager, groupId, 'VISIT_GROUP');
       if (this.requireWholeVnd(dto.declaredAmount, 'Declared amount') !== charge.total) {
         throw new BusinessException(ErrorCodes.CASH_SETTLEMENT_MISMATCH, `Tiền mặt của cả lượt là ${charge.total.toLocaleString('vi-VN')}đ, vui lòng kiểm lại số tiền đã nhận.`);
       }

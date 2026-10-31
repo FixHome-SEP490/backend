@@ -82,6 +82,8 @@ import type { EntityManager } from 'typeorm';
 import { OrderEvidenceStorage, EvidenceFile, evidenceStampText } from '../media/order-evidence-storage.service';
 import { expireAdditionalCosts } from './expire-additional-costs';
 import { authorizeOrder } from './order-access';
+import { assertNoOnsiteInterruption, ONSITE_INTERRUPTION_ACTION, ONSITE_STOP_ACTION, verifiedOnsiteInterruption } from './onsite-interruption';
+import { loadOnsiteStopFinance } from './onsite-stop-finance';
 import { groupSiblings, mirrorGroupStatus, recordVisitOutcome, refuseLoneGroupedBookingAction } from '../bookings/visit-group-guard';
 import { REPAIR_FAILURE_REASONS, type RepairFailedDto } from './dto/repair-failed.dto';
 import { SupportCase } from '../support-cases/entities/support-case.entity';
@@ -291,6 +293,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         WHERE o.status::text = $2
           AND o.payment_status::text = $1
           AND o.completion_requested_at IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM audit_logs al WHERE al.resource_type = 'service_order'
+                AND al.resource_id = o.id::text AND al.action IN ('${ONSITE_INTERRUPTION_ACTION}', '${ONSITE_STOP_ACTION}'))
           AND NOT EXISTS (
                 SELECT 1 FROM support_cases sc
                  WHERE sc.service_order_id = o.id AND sc.hold_completion = true
@@ -327,6 +331,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
            JOIN invoices i ON i.service_order_id = o.id AND i.payment_status::text = $1
            LEFT JOIN cash_settlements cs ON cs.service_order_id = o.id
           WHERE o.status::text = $2
+            AND NOT EXISTS (SELECT 1 FROM audit_logs al WHERE al.resource_type = 'service_order'
+                  AND al.resource_id = o.id::text AND al.action IN ('${ONSITE_INTERRUPTION_ACTION}', '${ONSITE_STOP_ACTION}'))
             AND EXISTS (SELECT 1 FROM technician_assignments ta WHERE ta.service_order_id = o.id)
             AND NOT EXISTS (
                   SELECT 1 FROM wallet_transactions t
@@ -469,7 +475,9 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         const assignment = await this.dataSource.manager.findOneBy(TechnicianAssignment, {
           serviceOrderId: order.id, technicianId: userId, isActive: true,
         });
-        return assignment ? this.presentOrder(order) : historicalOrderSummary(order);
+        if (assignment) return this.presentOrder(order);
+        const historical = await this.dataSource.manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, technicianId: userId });
+        return this.presentHistoricalOrder(order, historical);
       })),
       total,
     };
@@ -492,11 +500,19 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       const historical = await this.dataSource.manager.findOneBy(TechnicianAssignment, {
         serviceOrderId: id, technicianId: actor.id,
       });
-      if (historical) return historicalOrderSummary(order);
+      if (historical) return this.presentHistoricalOrder(order, historical);
       throw new ForbiddenException('Order not found or access denied');
     }
     await this.checkOrderAccess(order, actor);
     return this.presentOrder(order);
+  }
+
+  async getStoppedWorkFinance(id: string, actor: { id: string; role: string }) {
+    if (![Role.SERVICE_MANAGER, Role.ADMIN].includes(actor.role as Role)) throw new ForbiddenException('Finance review access denied');
+    const order = await this.orderRepo.findOneBy({ id });
+    if (!order) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Order not found');
+    const booking = await this.dataSource.manager.findOneByOrFail(Booking, { id: order.bookingId });
+    return loadOnsiteStopFinance(this.dataSource.manager, order, booking);
   }
 
   /**
@@ -536,6 +552,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   private async presentOrder(order: ServiceOrder): Promise<ServiceOrder> {
     const manager = this.dataSource.manager;
     const booking = await manager.findOneByOrFail(Booking, { id: order.bookingId });
+    const stop = await verifiedOnsiteInterruption(manager, order, booking);
+    const finance = await loadOnsiteStopFinance(manager, order, booking);
     // The technician holding the order now. A technician who withdrew or was
     // replaced is not shown (name, phone, last GPS); a completed order keeps
     // its finishing technician because that assignment stays active.
@@ -553,6 +571,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     const quotation = await manager.findOne(Quotation, { where: { serviceOrderId: order.id }, relations: ['items'], order: { version: 'DESC' } });
     const history = await this.historyRepo.find({ where: { serviceOrderId: order.id }, order: { createdAt: 'ASC' } });
     return Object.assign(order, {
+      ...(finance ? { failedWorkFinance: finance.customer } : {}),
+      ...(stop?.workStopped ? { workStopped: true, assignmentReleased: true, operationalDisposition: 'STOPPED', oldObligationsReviewRequired: true } : {}),
       serviceName: booking.serviceNameSnapshot || '', addressSummary: booking.addressTextSnapshot || '',
       pricingMode: booking.pricingModeSnapshot,
       fixedUnitPrice: booking.fixedUnitPriceSnapshot ? Number(booking.fixedUnitPriceSnapshot) : null,
@@ -581,6 +601,15 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       afterEvidenceCount: await manager.count(RepairEvidence, { where: { serviceOrderId: order.id, type: EvidenceType.AFTER } }),
       timeline: history.map(h => ({ status: h.toStatus, title: h.reason, timestamp: h.createdAt.toISOString(), actor: h.actorRole })),
     });
+  }
+
+  private async presentHistoricalOrder(order: ServiceOrder, assignment: TechnicianAssignment | null): Promise<HistoricalOrderSummary> {
+    const summary = historicalOrderSummary(order);
+    if (assignment?.unassignReason !== ONSITE_STOP_ACTION) return summary;
+    const booking = await this.dataSource.manager.findOneBy(Booking, { id: order.bookingId });
+    const proof = booking && await verifiedOnsiteInterruption(this.dataSource.manager, order, booking);
+    return Object.assign(summary, { workStopped: !!proof?.workStopped,
+      operationalDisposition: proof?.workStopped ? 'STOPPED' : 'STOP_REQUIRES_REVIEW' });
   }
 
   async enRoute(
@@ -878,21 +907,12 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       const withdrawal = await manager.save(Cancellation, manager.create(Cancellation, { serviceOrderId: orderId, actor: CancelActor.TECHNICIAN, actorUserId: actor.id, reason: body.reason, stateAtCancel: from, strikeApplied: false, compensationStatus: CompensationStatus.NOT_ELIGIBLE }));
       if (secondary) {
         // Another device of the visit: the lead booking's rematch below finds the replacement for all.
-        await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from, actorUserId: actor.id, actorRole: actor.role, reason: 'Kỹ thuật viên rút trước khi tới, đang tìm thợ thay cho cả lượt. Lý do: ' + body.reason });
+        await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from, actorUserId: actor.id, actorRole: actor.role, reason: 'Kỹ thuật viên rút trước khi tới, đang xử lý phân công lại cả lượt. Lý do: ' + body.reason });
         await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'TECHNICIAN_WITHDRAWAL_REMATCH', resourceType: 'service_order', resourceId: orderId, after: { reason: body.reason, strikeApplied: false, visitGroupId: booking.visitGroupId } });
         return order;
       }
       await this.reputationService?.penalize(manager, { userId: actor.id, role: Role.TECHNICIAN, reason: `Huỷ nhận đơn #${order.code}: ${body.reason}`, serviceOrderId: orderId, cancellationId: withdrawal.id });
-      if (this.notificationsService && booking.customerId) {
-        void this.notificationsService.createNotification({
-          userId: booking.customerId,
-          title: 'Kỹ thuật viên đã huỷ nhận đơn',
-          message: `Kỹ thuật viên đã xin rút khỏi đơn #${order.code} (Lý do: "${body.reason}"). Hệ thống đang tự động tìm kiếm thợ thay thế cho bạn.`,
-          type: 'ORDER_CANCELLED',
-          referenceId: order.id,
-          referenceType: 'SERVICE_ORDER',
-        });
-      }
+      // BUG_DETECTOR_WITHDRAW_OUTCOME: customer notice only after matching decision.
       const previous = await manager.find(BookingInvitation, { where: { bookingId: booking.id }, order: { priorityOrder: 'ASC' } });
       const last = Math.max(0, ...previous.filter(inv => inv.status === InvitationStatus.ACCEPTED).map(inv => inv.priorityOrder));
       // Append a fresh invitation round; the original dispatch history stays immutable.
@@ -907,7 +927,49 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       await manager.save(booking);
       await mirrorGroupStatus(manager, booking, BookingStatus.MATCHING);
       await activateNextInvitation(manager, booking, await this.configService.getInt('matching.invitation_ttl_minutes', 30), invitationActivatedHook(this.notificationsService));
-      await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from, actorUserId: actor.id, actorRole: actor.role, reason: 'Kỹ thuật viên rút trước khi tới, đang tìm thợ thay. Lý do: ' + body.reason });
+      // Re-read the persisted result: activateNextInvitation updates Booking via manager.update.
+      const rematch = await manager.findOneBy(Booking, { id: booking.id });
+      if (!rematch || ![BookingStatus.MATCHING, BookingStatus.CLOSED].includes(rematch.status))
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Không xác định được kết quả tìm thợ thay thế.');
+      if (rematch.status === BookingStatus.CLOSED) {
+        // No eligible replacement. Keep physical RECEIVED parts awaiting the Service Manager;
+        // generic commitTransition(CANCELLED) would incorrectly cancel those part requests.
+        for (const sibling of [booking, ...await groupSiblings(manager, booking, true)]) {
+          const affected = sibling.id === booking.id
+            ? order
+            : await manager.findOne(ServiceOrder, { where: { bookingId: sibling.id }, lock: { mode: 'pessimistic_write' } });
+          if (!affected || affected.status === ServiceOrderStatus.CANCELLED) continue;
+          if (![ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(affected.status) ||
+              !ServiceOrderStateMachine.canTransition(affected.status, ServiceOrderStatus.CANCELLED) ||
+              affected.paymentStatus === PaymentStatus.PAID ||
+              await manager.count(TechnicianAssignment, { where: { serviceOrderId: affected.id, isActive: true } }))
+            throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Đơn cần quản lý kiểm tra trước khi đóng.');
+          const closedAt = new Date();
+          const previousStatus = affected.status;
+          await manager.update(ServiceOrder, affected.id, { status: ServiceOrderStatus.CANCELLED, cancelledAt: closedAt });
+          await manager.insert(OrderStatusHistory, { serviceOrderId: affected.id, fromStatus: previousStatus,
+            toStatus: ServiceOrderStatus.CANCELLED, actorUserId: actor.id, actorRole: actor.role,
+            reason: 'Thợ đã rút và không còn thợ thay thế đủ điều kiện.' });
+          await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role,
+            action: 'TECHNICIAN_WITHDRAWAL_NO_REPLACEMENT', resourceType: 'service_order',
+            resourceId: affected.id, before: { status: previousStatus }, after: { status: ServiceOrderStatus.CANCELLED } });
+          affected.status = ServiceOrderStatus.CANCELLED;
+          affected.cancelledAt = closedAt;
+        }
+      } else {
+        await manager.insert(OrderStatusHistory, { serviceOrderId: orderId, fromStatus: from, toStatus: from,
+          actorUserId: actor.id, actorRole: actor.role,
+          reason: 'Kỹ thuật viên rút trước khi tới, đang tìm thợ thay. Lý do: ' + body.reason });
+      }
+      // Durable customer notification in the same transaction, after the rematch decision.
+      if (booking.customerId) await manager.insert(Notification, {
+        userId: booking.customerId,
+        title: rematch.status === BookingStatus.CLOSED ? 'Chưa tìm được thợ thay thế' : 'Đang tìm thợ thay thế',
+        message: rematch.status === BookingStatus.CLOSED
+          ? 'Thợ đã rút khỏi đơn #' + order.code + '. Hiện chưa có thợ thay thế phù hợp; bạn có thể đặt lại lịch.'
+          : 'Thợ đã rút khỏi đơn #' + order.code + '. FixHome đang tìm thợ thay thế cho bạn.',
+        type: 'ORDER_CANCELLED', referenceId: order.id, referenceType: 'SERVICE_ORDER', isRead: false,
+      });
       await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'TECHNICIAN_WITHDRAWAL_REMATCH', resourceType: 'service_order', resourceId: orderId, after: { reason: body.reason, strikeApplied: false } });
       return order;
     }
@@ -1710,6 +1772,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async commitTransition(manager: EntityManager, order: ServiceOrder, next: ServiceOrderStatus, actor: { id: string | null; role: string }, reason: string, cause?: 'repair_failure'): Promise<void> {
+    await assertNoOnsiteInterruption(manager, order.id);
     if (!ServiceOrderStateMachine.canTransition(order.status, next)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Illegal order transition');
     const previous = order.status;
     const now = new Date();

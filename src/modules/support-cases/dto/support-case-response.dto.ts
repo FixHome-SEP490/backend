@@ -113,6 +113,16 @@ export class SupportCaseCashSettlementContextDto {
 }
 
 export class SupportCaseSummaryDto {
+  @ApiProperty({ enum: ['NOT_RECORDED', 'DECISION_RECORDED', 'DOMAIN_ACTION_EXECUTED', 'EXECUTION_NOT_VERIFIED', 'ESCALATED_ADMIN'],
+    description: 'A recorded decision does not execute a price, warranty, refund or sanction command; list entries conservatively leave specialized execution unverified' })
+  resolutionExecutionKind: 'NOT_RECORDED' | 'DECISION_RECORDED' | 'DOMAIN_ACTION_EXECUTED' | 'EXECUTION_NOT_VERIFIED' | 'ESCALATED_ADMIN';
+
+  @ApiProperty()
+  needsManualAction: boolean;
+
+  @ApiPropertyOptional({ enum: ['service_manager', 'admin'], nullable: true, description: 'Admin review is read-only and grants no resolution/finance rights' })
+  nextActor: 'service_manager' | 'admin' | null;
+
   @ApiProperty({ format: 'uuid' })
   id: string;
 
