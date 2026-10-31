@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-10-31 14:32 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
+> Cập nhật lần cuối: 2026-10-31 16:30 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -382,6 +382,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
+- 2026-10-31 16:30 (UTC+7) | Hgnv11 | dev | Dữ liệu đơn trả thêm bookingMedia (ảnh/video khách gửi lúc đặt, dạng riêng tư không kèm url) để kỹ thuật viên đang giữ đơn xem lại; nội dung vẫn đọc qua /bookings/:bookingId/media đã cho phép kỹ thuật viên giữ đơn.
 - 2026-10-31 14:32 (UTC+7) | Hgnv11 | dev | overrun-release trả thêm mô tả và mã ảnh của báo trễ cho đúng thợ đã gửi để xem lại; đơn của khách không có; chưa kiểm chứng PostgreSQL và Web/Mobile.
 - 2026-10-31 14:02 (UTC+7) | Hgnv11 | dev | overrun-release chọn đơn đang làm là đơn chưa bàn giao rồi đơn cập nhật gần nhất khi thợ giữ nhiều đơn đang sửa; chưa kiểm chứng PostgreSQL và Web/Mobile.
 - 2026-10-31 13:04 (UTC+7) | Hgnv11 | dev | Đơn trả về có delayNotice và không lộ id nội bộ; ẩn hồ sơ technician_delay khỏi danh sách hỗ trợ của khách và thợ; chưa kiểm chứng PostgreSQL và Web/Mobile.
@@ -421,4 +422,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-23 04:05 (UTC+7) | Hgnv11 | dev | Hoàn tác việc trừ linh kiện kỹ thuật viên đang giữ khi duyệt chi phí phát sinh: mỗi chi phí phát sinh có linh kiện FixHome lại luôn tạo yêu cầu ADDITIONAL riêng, vì ghi dùng và đối soát hóa đơn tính theo từng nguồn duyệt (báo giá, từng chi phí phát sinh)
 - 2026-10-23 02:03 (UTC+7) | foxonworld | foxonworld/feature-visit-group-activity-read-20261023 | Thêm trang VisitGroup theo parent, quyền assignment active cho thợ và cờ lọc con group trước phân trang list cũ
 - 2026-10-21 22:09 (UTC+7) | ToanAltF4 | feat/visit-groups-order-link | Đơn sửa chữa trả visitGroupId (máy thuộc lượt sửa nhiều máy) để web dẫn thanh toán, đổi lịch, huỷ về trang lượt
-- 2026-10-21 21:40 (UTC+7) | ToanAltF4 | feat/visit-groups-p4 | Đặt nhiều máy P4 thanh toán gộp: bảng visit_group_payments (migration 052, mỗi lượt tối đa 1 lần verified), GET /visit-groups/:id/checkout (trạng thái từng máy, chỉ máy sửa được mới tính tiền, chờ mọi máy có kết quả), POST checkout/wallet (trừ ví 1 lần), checkout/vnpay (1 giao dịch, IPN chia về hoá đơn từng máy đã chốt lúc tạo, lệch thì giữ ALLOCATION_CHANGED), checkout/cash/declare (thợ khai đúng tổng) + cash/confirm (khách xác nhận, không đồng ý mở case CASH_MISMATCH); hoá đơn của máy trong lượt không trả lẻ được; báo hoàn thành máy trong lượt ghi outcome succeeded; thợ đang được mời cả lượt xem được ảnh/video riêng tư của mọi máy trong lượt; payments.provider_reference của thanh toán gộp kèm id hoá đơn (unique)

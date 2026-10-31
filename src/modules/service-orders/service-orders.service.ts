@@ -30,6 +30,8 @@ import { BookingInvitation } from '../bookings/entities/booking-invitation.entit
 import { BookingInvitationGroup } from '../bookings/entities/booking-invitation-group.entity';
 import { activateNextInvitation, invitationActivatedHook } from '../bookings/activate-next-invitation';
 import { Booking } from '../bookings/entities/booking.entity';
+import { BookingMedia } from '../bookings/entities/booking-media.entity';
+import { toBookingMediaResponse } from '../bookings/booking-privacy.dto';
 import { User } from '../users/entities/user.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { ServiceOrderStateMachine } from './service-order-state-machine';
@@ -573,7 +575,10 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     const customer = await manager.findOneBy(User, { id: booking.customerId });
     const quotation = await manager.findOne(Quotation, { where: { serviceOrderId: order.id }, relations: ['items'], order: { version: 'DESC' } });
     const history = await this.historyRepo.find({ where: { serviceOrderId: order.id }, order: { createdAt: 'ASC' } });
+    // What the customer attached when booking; bytes are read through /bookings/:id/media, which already admits the technician holding the order.
+    const bookingMedia = (await manager.find(BookingMedia, { where: { bookingId: booking.id }, order: { createdAt: 'ASC' } })).map(toBookingMediaResponse);
     return Object.assign(order, {
+      bookingMedia,
       // PO 31/10/2026: what the customer needs to answer a delay notice; the raw columns below name another order and a manager's case, so they never leave.
       delayNotice: delayNoticeView(order),
       delayCurrentOrderId: null, delaySupportCaseId: null,
