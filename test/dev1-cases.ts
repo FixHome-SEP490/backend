@@ -2203,4 +2203,72 @@ export function registerDev1Cases(context: () => Context) {
       }
     });
   });
+
+  describe('saved address needs a map pin and plain address text (PO 01/11/2026, bug 29)', () => {
+    const api = () => request(context().app.getHttpServer());
+    const as = (session: Session) => ({
+      post: (body: object) => api().post('/api/v1/me/addresses').set('Authorization', `Bearer ${session.accessToken}`).send(body),
+      patch: (id: string, body: object) => api().patch(`/api/v1/me/addresses/${id}`).set('Authorization', `Bearer ${session.accessToken}`).send(body),
+    });
+    const rows = async (userId: string) => (await context().db.query('SELECT label, line1, lat, lng FROM addresses WHERE user_id = $1 ORDER BY created_at', [userId])) as Array<{ label: string; line1: string; lat: string | null; lng: string | null }>;
+    const base = { label: 'Nhà riêng', line1: '12 Tân Trào, Phường Tân Phú', district: 'Quận 7', province: 'TP. Hồ Chí Minh', lat: 10.7296, lng: 106.7215 };
+    const refused = (response: request.Response) => {
+      expect(response.status, JSON.stringify(response.body)).toBe(400);
+      expect(response.body.error.code).toBe('VALIDATION_FAILED');
+      return (response.body.error.details as string[]).join(' ');
+    };
+
+    it('refuses an address with a missing or half coordinate pair and saves nothing', async () => {
+      const customer = await context().register();
+      const noPin = { label: base.label, line1: base.line1, district: base.district, province: base.province };
+      for (const body of [noPin, { ...noPin, lat: 10.73 }, { ...noPin, lng: 106.72 }, { ...noPin, lat: null, lng: null }, { ...base, lat: 91 }, { ...base, lng: '106.72' }]) {
+        const message = refused(await as(customer).post(body));
+        expect(message).toMatch(/Vui lòng chọn vị trí trên bản đồ|Vĩ độ phải là số|Kinh độ phải là số/);
+      }
+      expect(await rows(customer.user.id)).toHaveLength(0);
+
+      const saved = unwrap((await as(customer).post(base).expect(201)).body);
+      expect(saved).toMatchObject({ line1: base.line1, lat: base.lat, lng: base.lng, isDefault: true });
+    });
+
+    it('refuses emoji, invisible and control characters and markup in every text field, keeps Vietnamese', async () => {
+      const customer = await context().register();
+      const bad = ['Nhà 🏠', 'Nhà 👩‍👩‍👧‍👦', '12 Tân\u200BTrào', '12 Tân\u200DTrào', '\uFEFF12 Tân Trào', '12 Tân\u202ETrào', '12\u0000 Tân Trào', '12 Tân\nTrào', '<img src=x onerror=alert(1)>', "<script>alert('x')</script>"];
+      for (const field of ['label', 'line1', 'ward', 'district', 'province']) {
+        for (const text of bad) {
+          const response = await as(customer).post({ ...base, [field]: text });
+          expect(response.status, `${field} ${JSON.stringify(text)} ${JSON.stringify(response.body)}`).toBe(400);
+          expect(refused(response)).toMatch(/chỉ được chứa chữ, số, khoảng trắng/);
+        }
+      }
+      expect(refused(await as(customer).post({ ...base, line1: 'Nhà '.repeat(500) }))).toBe('Địa chỉ cụ thể tối đa 255 ký tự.');
+      expect(await rows(customer.user.id)).toHaveLength(0);
+
+      const good = unwrap((await as(customer).post({ ...base, label: '  Nhà   bố mẹ ', line1: 'Số 5 (cạnh chợ), Hẻm 12/3B, Lô B-12 #05' }).expect(201)).body);
+      expect(good).toMatchObject({ label: 'Nhà bố mẹ', line1: 'Số 5 (cạnh chợ), Hẻm 12/3B, Lô B-12 #05' });
+
+      const edit = await as(customer).patch(good.id, { label: 'Nhà 😀' });
+      expect(refused(edit)).toMatch(/^Tên gợi nhớ chỉ được chứa/);
+      expect((await rows(customer.user.id))[0].label).toBe('Nhà bố mẹ');
+    });
+
+    it('makes a PATCH that moves the address resend both coordinates and an old unpinned address get pinned first', async () => {
+      const customer = await context().register();
+      const saved = unwrap((await as(customer).post(base).expect(201)).body);
+      refused(await as(customer).patch(saved.id, { line1: '45 Nguyễn Huệ' }));
+      refused(await as(customer).patch(saved.id, { lat: null, lng: null }));
+      unwrap((await as(customer).patch(saved.id, { label: 'Công ty' }).expect(200)).body);
+      const moved = unwrap((await as(customer).patch(saved.id, { line1: '45 Nguyễn Huệ', lat: 10.7743, lng: 106.7038 }).expect(200)).body);
+      expect(moved).toMatchObject({ label: 'Công ty', line1: '45 Nguyễn Huệ', lat: 10.7743, lng: 106.7038 });
+
+      // An address saved before the rule, without a pin, still reads back; any change waits for a pin.
+      const legacy = await context().db.getRepository('Address').save({ userId: customer.user.id, line1: '1 Đường Cũ', district: 'Quận 1', province: 'TP. Hồ Chí Minh' });
+      const list = unwrap((await api().get('/api/v1/me/addresses').set('Authorization', `Bearer ${customer.accessToken}`).expect(200)).body);
+      expect(list.find((a: { id: string }) => a.id === legacy.id)).toMatchObject({ line1: '1 Đường Cũ', lat: null, lng: null });
+      const blocked = await as(customer).patch(legacy.id, { isDefault: true });
+      expect(blocked.status).toBe(400);
+      expect(blocked.body.error).toMatchObject({ code: 'ADDRESS_LOCATION_REQUIRED', message: 'Vui lòng chọn vị trí trên bản đồ. Địa chỉ cần có đủ vĩ độ và kinh độ.' });
+      unwrap((await as(customer).patch(legacy.id, { line1: '1 Đường Cũ', lat: 10.776, lng: 106.7 }).expect(200)).body);
+    });
+  });
 }
