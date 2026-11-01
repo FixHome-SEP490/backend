@@ -82,8 +82,17 @@ export class VisitGroupsController {
 
   @Get(':id/technician-candidates')
   @RequirePermission('invitation:shortlist')
-  @ApiOperation({ summary: 'Customer: technicians who offer every device of the visit and are free for its session' })
-  async candidates(@Param('id', ParseUUIDPipe) id: string, @Req() req: AuthedRequest) {
+  @ApiOperation({ summary: 'Customer: technicians who offer every device of the visit and are free for its session', description: 'With diagnostics=1 the response also carries meta.emptyReason (OUTSIDE_COVERAGE, TIME_UNAVAILABLE, BOOKING_LOCATION_MISSING, UNAVAILABLE or null), the same reasons as GET /bookings/:id/technician-candidates?diagnostics=1. Without it data stays a plain list.' })
+  async candidates(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: AuthedRequest,
+    @Query('diagnostics') diagnostics?: string,
+  ) {
+    if (diagnostics === '1') {
+      // Same contract as a single booking: the reason rides in meta, mobile keeps the plain list.
+      const result = await this.visitGroups.candidatesWithDiagnostics(id, req.user);
+      return { data: result.candidates, meta: { emptyReason: result.emptyReason } };
+    }
     return { data: await this.visitGroups.candidates(id, req.user) };
   }
 
