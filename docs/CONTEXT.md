@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-01 19:52 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/address-strict-text-coords
+> Cập nhật lần cuối: 2026-11-01 20:56 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/address-strict-text-coords
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -384,7 +384,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
-- 2026-11-01 19:52 (UTC+7) | ToanAltF4 | fix/address-strict-text-coords | Địa chỉ lưu bắt buộc đủ cặp lat, lng hợp lệ và chữ địa chỉ chỉ gồm chữ, số, khoảng trắng, dấu thường gặp; từ chối emoji, ký tự vô hình, điều khiển, thẻ HTML với câu tiếng Việt (lỗi 29, PO 01/11/2026)
+- 2026-11-01 20:56 (UTC+7) | ToanAltF4 | fix/address-strict-text-coords | Địa chỉ lưu bắt buộc đủ cặp lat, lng hợp lệ và chữ địa chỉ chỉ gồm chữ, số, khoảng trắng, dấu thường gặp; từ chối emoji, ký tự vô hình, điều khiển, thẻ HTML với câu tiếng Việt (lỗi 29, PO 01/11/2026)
 - 2026-11-01 20:35 (UTC+7) | ToanAltF4 | fix/visit-candidates-empty-reason | Gộp dev mới (KYC #178) vào nhánh lý do danh sách thợ rỗng của lượt nhiều thiết bị, không đổi hành vi
 - 2026-11-01 20:13 (UTC+7) | ToanAltF4 | fix/kyc-uploaded-documents | Gửi KYC khách và thợ bị từ chối khi ảnh chưa thật sự tải lên kho kyc-private của chính người gửi (DEF-r2-mobile-01, trước đây đường dẫn bịa vẫn 201); KYC khách không còn ghi họ tên, ngày sinh, giới tính, CCCD, địa chỉ vào hồ sơ lúc gửi, chỉ ghi khi admin duyệt. Bằng chứng kỹ năng của thợ vẫn chỉ kiểm đường dẫn.
 - 2026-11-01 19:43 (UTC+7) | ToanAltF4 | fix/visit-candidates-empty-reason | GET /visit-groups/:id/technician-candidates?diagnostics=1 trả meta.emptyReason cùng logic với đặt lịch một máy (OUTSIDE_COVERAGE, TIME_UNAVAILABLE, BOOKING_LOCATION_MISSING, UNAVAILABLE), bỏ diagnostics vẫn chỉ trả data cho mobile
@@ -424,5 +424,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-26 01:32 (UTC+7) | foxonworld | foxonworld/fixhome-e2e-e0-quote-contract-20261026 | E0 khóa phát sinh khi đã có hóa đơn, chặn USED vượt tổng duyệt cùng SKU và ghi contract fixed-price/Web, actual-use, parent payment; runtime chưa kiểm chứng.
 - 2026-10-25 00:17 (UTC+7) | ToanAltF4 | feat/ai-multi-device | Gộp dev (override body-parser/multer) vào nhánh AI nhiều thiết bị
 - 2026-10-24 23:46 (UTC+7) | ToanAltF4 | chore/audit-body-parser-multer | Nâng override body-parser (1.20.9, 2.4.0) và multer (2.5.0) theo advisory DoS 22/10, npm audit --audit-level=high xanh lại
-- 2026-10-24 23:44 (UTC+7) | ToanAltF4 | feat/ai-multi-device | AI proxy điền serviceId cho từng thiết bị trong devices[] (AI gợi ý tối đa 3 thiết bị/lượt); POST /visit-groups nhận aiSessionId, tóm tắt hội thoại AI gắn vào thiết bị đầu tiên; spec AI đổi sang mã catalog V3
-- 2026-10-23 22:36 (UTC+7) | foxonworld | foxonworld/fixhome-v53-part-return-notify-20261023 | Khai trả mới ghi PART_RETURN_DECLARED cho quản lý dịch vụ đang hoạt động trong cùng transaction, chống trùng khi replay và giữ bước xác nhận nhận hàng riêng; PostgreSQL/socket/Web runtime NOT VERIFIED.
