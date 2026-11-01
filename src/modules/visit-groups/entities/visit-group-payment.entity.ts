@@ -49,6 +49,10 @@ export class VisitGroupPayment extends BaseEntity {
   @Column({ name: 'verified_at', type: 'timestamptz', nullable: true })
   verifiedAt?: Date | null;
 
+  /** vnp_ExpireDate of a VNPay URL (PO 01/11/2026); null for other rails and for attempts opened before it existed. */
+  @Column({ name: 'expires_at', type: 'timestamptz', nullable: true })
+  expiresAt?: Date | null;
+
   @Column({ name: 'failure_code', type: 'varchar', length: 64, nullable: true })
   failureCode?: string | null;
 }

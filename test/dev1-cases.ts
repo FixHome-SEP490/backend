@@ -825,6 +825,105 @@ export function registerDev1Cases(context: () => Context) {
       }
     });
 
+    it('lets cash through once an abandoned VNPay link is past expiry plus grace, and holds a late success for staff (bug 39, PO 01/11/2026)', async () => {
+      const f = await fixture('inspection_required'), db = context().db;
+      const { createHmac } = runtimeRequire('crypto');
+      const { ConfigService } = runtimeRequire('@nestjs/config');
+      const { FinanceService } = runtimeRequire('./dist/modules/finance/finance.service.js');
+      const finance = context().app.get(FinanceService);
+      // This private-schema suite skips the public CashPaymentIntents migration (its DDL, RLS and
+      // guard trigger are tested by cash-reputation.postgres.spec.ts). Give this disposable schema
+      // the same columns, checks and unique indexes so the cash-first HTTP path can run here.
+      await db.query(`CREATE TABLE IF NOT EXISTS cash_payment_intents (
+        id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+        scope_kind varchar(16) NOT NULL CHECK (scope_kind IN ('SOLO','VISIT_GROUP')),
+        scope_id uuid NOT NULL,
+        customer_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        technician_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        status varchar(16) NOT NULL CHECK (status IN ('pending','cancelled','received')),
+        gross_vnd bigint NOT NULL CHECK (gross_vnd > 0),
+        customer_due_vnd bigint NOT NULL CHECK (customer_due_vnd > 0 AND customer_due_vnd <= gross_vnd),
+        allocation_snapshot jsonb NOT NULL CHECK (jsonb_typeof(allocation_snapshot) = 'array'),
+        voucher_reservation_id uuid,
+        command_id uuid NOT NULL,
+        receipt_command_id uuid,
+        cancel_command_id uuid,
+        received_amount_vnd bigint CHECK (received_amount_vnd IS NULL OR received_amount_vnd > 0),
+        receipt_evidence_url text,
+        received_at timestamptz,
+        cash_settlement_id uuid REFERENCES cash_settlements(id) ON DELETE RESTRICT,
+        visit_group_payment_id uuid REFERENCES visit_group_payments(id) ON DELETE RESTRICT,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now())`);
+      await db.query('CREATE UNIQUE INDEX IF NOT EXISTS uq_cash_intent_customer_command ON cash_payment_intents(customer_id, command_id)');
+      await db.query("CREATE UNIQUE INDEX IF NOT EXISTS uq_cash_intent_pending_scope ON cash_payment_intents(scope_kind, scope_id) WHERE status = 'pending'");
+      // Cash-first is enabled on DEV; this test turns it on for this service instance only.
+      const cashFirst = vi.spyOn(finance as any, 'cashFirstEnabled').mockReturnValue(true);
+      process.env.VNPAY_HASH_SECRET ||= 'e2e-visit-secret';
+      const secret = context().app.get(ConfigService).get('VNPAY_HASH_SECRET') as string;
+      const signed = (params: Record<string, string>) => {
+        const query = Object.keys(params).sort().map((key) => `${key}=${encodeURIComponent(params[key]).replace(/%20/g, '+')}`).join('&');
+        return { ...params, vnp_SecureHash: createHmac('sha512', secret).update(Buffer.from(query, 'utf-8')).digest('hex') };
+      };
+      try {
+        const { order } = await accept(f), path = `/service-orders/${order.id}`;
+        await arrived(order.id, f.tech);
+        const quote = unwrap((await post(path + '/quotations', f.tech, { items: [{ type: 'labor', description: 'Repair labor', quantity: 1, unitPrice: 100000 }] }).expect(201)).body);
+        await post(`/quotations/${quote.id}/decision`, f.owner, { action: 'APPROVE' }).expect(200);
+        await post(path + '/start-repair', f.tech).expect(200);
+        await evidence(order.id, f.tech, 'after').expect(201);
+        await post(path + '/request-completion', f.tech).expect(200);
+        const invoice = unwrap((await get(path + '/invoice', f.owner).expect(200)).body);
+        const amount = Number(invoice.grandTotal);
+        // Attempts written straight into this test database; no VNPay call is made.
+        const open = (key: string, expiresAt: string | null) => db.query(
+          `INSERT INTO payments (invoice_id, purpose, amount, currency, mode, provider, status, idempotency_key, requested_by_user_id, requested_at, expires_at)
+           VALUES ($1, 'invoice', $2, 'VND', 'LIVE', 'vnpay', 'pending', $3, $4, now() - interval '45 minutes', ${expiresAt ?? 'NULL'})`,
+          [invoice.id, amount, key, f.owner.user.id]);
+        const attempt = async (key: string) => (await db.query('SELECT status, failure_code, provider_reference FROM payments WHERE idempotency_key = $1', [key]))[0];
+        const choose = () => post(`/finance/cash-intents/SOLO/${order.id}`, f.owner, { commandId: randomUUID() });
+
+        // An attempt from before vnp_ExpireDate existed keeps blocking: its expiry is never guessed.
+        await open('e2e39legacy', null);
+        const legacy = await choose();
+        expect(legacy.status, JSON.stringify(legacy.body)).toBe(409);
+        expect(JSON.stringify(legacy.body)).toContain('Có giao dịch thanh toán đang xử lý');
+        expect(await attempt('e2e39legacy')).toMatchObject({ status: 'pending', failure_code: null });
+        await db.query("UPDATE payments SET status = 'failed', failure_code = 'E2E_CLEARED' WHERE idempotency_key = 'e2e39legacy'");
+
+        // Expired 14 minutes ago: still inside the 15 minute grace, the same 409.
+        await open('e2e39abandoned', "now() - interval '14 minutes'");
+        expect((await choose()).status).toBe(409);
+        expect(await attempt('e2e39abandoned')).toMatchObject({ status: 'pending', failure_code: null });
+
+        // Expired 16 minutes ago: closed as expired in the same transaction, the cash choice goes through.
+        await db.query("UPDATE payments SET expires_at = now() - interval '16 minutes' WHERE idempotency_key = 'e2e39abandoned'");
+        const chosen = await choose();
+        expect(chosen.status, JSON.stringify(chosen.body)).toBe(200);
+        const intent = unwrap(chosen.body);
+        expect(intent).toMatchObject({ status: 'pending', customerDueVnd: amount });
+        expect(await attempt('e2e39abandoned')).toMatchObject({ status: 'cancelled', failure_code: 'VNPAY_URL_EXPIRED' });
+        const received = await post(`/finance/cash-intents/SOLO/${order.id}/received`, f.tech, { intentId: intent.id, commandId: randomUUID(), receivedAmountVnd: amount });
+        expect(received.status, JSON.stringify(received.body)).toBe(200);
+        expect((await db.query('SELECT payment_status FROM invoices WHERE id = $1', [invoice.id]))[0].payment_status).toBe('paid');
+
+        // VNPay reports success for the closed attempt after all: flagged and a support case, nothing paid twice.
+        const late = signed({ vnp_TxnRef: 'e2e39abandoned', vnp_Amount: String(amount * 100), vnp_ResponseCode: '00', vnp_TransactionStatus: '00', vnp_TransactionNo: '39000001' });
+        expect((await finance.handleVnpayIpn(late)).RspCode).toBe('02');
+        expect((await finance.handleVnpayIpn(late)).RspCode).toBe('02');
+        expect(await attempt('e2e39abandoned')).toMatchObject({ status: 'cancelled', failure_code: 'VNPAY_PAID_AFTER_EXPIRY', provider_reference: '39000001' });
+        const cases = await db.query("SELECT case_type, status, customer_id, technician_id FROM support_cases WHERE service_order_id = $1 AND case_type = 'other'", [order.id]);
+        expect(cases).toEqual([{ case_type: 'other', status: 'open', customer_id: f.owner.user.id, technician_id: f.tech.user.id }]);
+        // Only the cash receipt is a verified payment of this invoice; the late VNPay money is not.
+        expect(await db.query("SELECT provider FROM payments WHERE invoice_id = $1 AND status = 'verified'", [invoice.id])).toEqual([{ provider: null }]);
+        expect((await db.query('SELECT payment_status FROM invoices WHERE id = $1', [invoice.id]))[0].payment_status).toBe('paid');
+      } finally {
+        cashFirst.mockRestore();
+        // Leave the schema as the migrations made it, so the later revert and reapply case still owns it.
+        await db.query('DROP TABLE IF EXISTS cash_payment_intents');
+      }
+    });
+
     it('takes a firm-priced booking without words and asks for them when a technician quotes on site (PO 21/10/2026)', async () => {
       const f = await fixture();
       const silent = await post('/bookings', f.owner, { ...f.body, description: undefined });
