@@ -32,6 +32,7 @@ const OBJECT_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SUPABASE_STORAGE_API_PREFIX = '/storage/v1';
 const SUPABASE_OBJECT_SIGN_PREFIX = '/object/sign/';
 const SUPABASE_OBJECT_UPLOAD_SIGN_PREFIX = '/object/upload/sign/';
+const SUPABASE_OBJECT_INFO_PREFIX = '/object/info/';
 
 const KYC_UPLOAD_MIME_EXTENSIONS: Record<string, string> = {
   'image/jpeg': 'jpg',
@@ -154,6 +155,95 @@ export class KycStorageService {
       expiresIn,
       expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
     };
+  }
+
+  /**
+   * Whether the private object was really uploaded. A submission may only
+   * reference files that exist in the KYC bucket under the owner's own
+   * prefix: the prefix proves the owner, the existence proves the upload went
+   * through the signed upload URL (clients cannot write to the bucket any
+   * other way). Storage being unreachable is not a "no": it fails closed with
+   * 503 so nothing is saved on a guess.
+   */
+  async objectExists(
+    storageObjectPath: string,
+    ownerId: string,
+  ): Promise<boolean> {
+    this.validateObjectPath(storageObjectPath, ownerId);
+
+    const baseUrl = this.config.get<string>('SUPABASE_URL')?.trim();
+    const serviceRoleKey = this.config
+      .get<string>('SUPABASE_SERVICE_ROLE_KEY')
+      ?.trim();
+    if (!baseUrl || !serviceRoleKey) {
+      throw new ServiceUnavailableException(
+        'Private KYC storage is not configured',
+      );
+    }
+    let providerUrl: URL;
+    try {
+      providerUrl = new URL(baseUrl);
+    } catch {
+      throw new ServiceUnavailableException(
+        'Private KYC storage is not configured',
+      );
+    }
+    if (!['http:', 'https:'].includes(providerUrl.protocol)) {
+      throw new ServiceUnavailableException(
+        'Private KYC storage is not configured',
+      );
+    }
+
+    const encodedBucket = encodeURIComponent(this.getBucket());
+    const encodedPath = storageObjectPath
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+    const endpoint = `${providerUrl.origin}${SUPABASE_STORAGE_API_PREFIX}${SUPABASE_OBJECT_INFO_PREFIX}${encodedBucket}/${encodedPath}`;
+
+    let response: { status: number; data: unknown };
+    try {
+      response = await axios.get(endpoint, {
+        timeout: 5000,
+        validateStatus: () => true,
+        headers: {
+          apikey: serviceRoleKey,
+          Authorization: `Bearer ${serviceRoleKey}`,
+        },
+      });
+    } catch {
+      throw new ServiceUnavailableException(
+        'Private KYC storage could not be checked',
+      );
+    }
+
+    if (response.status === 200) {
+      const info = response.data as { name?: unknown; size?: unknown } | null;
+      return (
+        !!info &&
+        (info.name === undefined || info.name === storageObjectPath) &&
+        typeof info.size === 'number' &&
+        info.size > 0
+      );
+    }
+    // Supabase answers a missing object with 400 and a body saying 404 / NoSuchKey.
+    const body = (response.data ?? {}) as {
+      statusCode?: unknown;
+      error?: unknown;
+      code?: unknown;
+    };
+    if (
+      response.status === 404 ||
+      (response.status === 400 &&
+        (String(body.statusCode) === '404' ||
+          body.error === 'not_found' ||
+          body.code === 'NoSuchKey'))
+    ) {
+      return false;
+    }
+    throw new ServiceUnavailableException(
+      'Private KYC storage could not be checked',
+    );
   }
 
   async createSignedUploadUrl(
