@@ -71,6 +71,7 @@ describe('TechnicianVerificationsService', () => {
     };
     storageService = {
       validateObjectPath: vi.fn(),
+      objectExists: vi.fn().mockResolvedValue(true),
       createSignedAccess: vi.fn().mockResolvedValue({
         signedUrl: 'https://project.supabase.co/signed/kyc-document',
         expiresIn: 300,
@@ -253,6 +254,43 @@ describe('TechnicianVerificationsService', () => {
           ],
         }),
       ).rejects.toThrow(BadRequestException);
+    });
+
+    it('refuses a document path that was never uploaded and saves nothing', async () => {
+      verificationRepository.findOne.mockResolvedValue(null);
+      storageService.objectExists.mockImplementation(
+        async (path: string) => path !== 'kyc/tech-uuid-1/face-photo.jpg',
+      );
+
+      await expect(
+        verificationsService.submitVerification('tech-uuid-1', {
+          documents: validDocuments,
+        }),
+      ).rejects.toThrow('Không tìm thấy giấy tờ đã tải lên');
+      expect(storageService.objectExists).toHaveBeenCalledWith(
+        'kyc/tech-uuid-1/id-front.jpg',
+        'tech-uuid-1',
+      );
+      expect(verificationRepository.save).not.toHaveBeenCalled();
+      expect(documentRepository.save).not.toHaveBeenCalled();
+    });
+
+    it("refuses another user's path before asking storage", async () => {
+      verificationRepository.findOne.mockResolvedValue(null);
+      storageService.validateObjectPath.mockImplementation((path: string, owner: string) => {
+        if (!path.startsWith(`kyc/${owner}/`)) throw new BadRequestException('storageObjectPath must belong to the technician KYC prefix');
+      });
+
+      await expect(
+        verificationsService.submitVerification('tech-uuid-1', {
+          documents: [
+            { ...validDocuments[0], storageObjectPath: 'kyc/tech-uuid-2/id-front.jpg' },
+            validDocuments[1],
+          ],
+        }),
+      ).rejects.toThrow('technician KYC prefix');
+      expect(storageService.objectExists).not.toHaveBeenCalled();
+      expect(verificationRepository.save).not.toHaveBeenCalled();
     });
 
     it('keeps MIME and filename extension validation', async () => {

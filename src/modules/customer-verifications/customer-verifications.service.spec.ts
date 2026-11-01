@@ -84,6 +84,7 @@ describe('CustomerVerificationsService', () => {
   let notifications: { createNotification: ReturnType<typeof vi.fn> };
   let storage: any;
   let cccdTaken: boolean;
+  let uploaded: Set<string>;
   let service: CustomerVerificationsService;
 
   const statusMatch = (row: any, where: any) =>
@@ -93,6 +94,7 @@ describe('CustomerVerificationsService', () => {
     verifications = [];
     documents = [];
     cccdTaken = false;
+    uploaded = new Set(validBody().documents.map((d) => d.storageObjectPath));
     users = {
       [CUSTOMER_ID]: {
         id: CUSTOMER_ID, role: Role.CUSTOMER, status: AccountStatus.ACTIVE, isActive: true,
@@ -105,6 +107,11 @@ describe('CustomerVerificationsService', () => {
         const found = [...verifications].reverse().find((v) => list.some((w: any) => statusMatch(v, w)));
         return found ? { ...found, documents: documents.filter((d) => d.verificationId === found.id) } : null;
       }),
+      exists: vi.fn(async ({ where }: any) =>
+        verifications.some((v) =>
+          v.citizenIdNumber === where.citizenIdNumber &&
+          v.customerId !== where.customerId.value &&
+          where.status.value.includes(v.status))),
       create: vi.fn((v: any) => ({ ...v })),
       save: vi.fn(async (v: any) => {
         const row = { id: `ver-${verifications.length + 1}`, createdAt: new Date(), ...v };
@@ -146,6 +153,7 @@ describe('CustomerVerificationsService', () => {
         const parts = path.split('/');
         if (parts.length !== 3 || parts[0] !== 'kyc' || parts[1] !== owner) throw new BadRequestException('bad path');
       }),
+      objectExists: vi.fn(async (path: string) => uploaded.has(path)),
       createSignedUploadUrl: vi.fn(async () => ({ storageObjectPath: `kyc/${CUSTOMER_ID}/x.jpg` })),
       createSignedAccess: vi.fn(async () => ({ signedUrl: 'https://signed', expiresIn: 300, expiresAt: '' })),
     };
@@ -157,7 +165,7 @@ describe('CustomerVerificationsService', () => {
   const submit = (patch: object = {}) =>
     service.submit(CUSTOMER_ID, plainToInstance(SubmitCustomerVerificationDto, { ...validBody(), ...patch }));
 
-  it('submits PENDING, snapshots the details and writes them to the profile', async () => {
+  it('submits PENDING and snapshots the details without rewriting the profile', async () => {
     const state = await submit({ fullName: '  Nguyễn   Văn An ' });
     expect(state.status).toBe('pending');
     expect(verifications[0]).toMatchObject({
@@ -166,10 +174,56 @@ describe('CustomerVerificationsService', () => {
     });
     expect(documents.map((d) => d.documentType)).toEqual(['citizen_id_front', 'citizen_id_back']);
     expect(users[CUSTOMER_ID]).toMatchObject({
-      fullName: 'Nguyễn Văn An', dateOfBirth: '1995-06-15', gender: 'male',
-      citizenIdNumber: '079123456789', fullAddress: validBody().address,
+      fullName: 'Ten Cu', dateOfBirth: null, gender: null, citizenIdNumber: null, fullAddress: null,
+    });
+    // The form still prefills what the profile does not hold from the request.
+    expect(state.profile).toMatchObject({
+      fullName: 'Ten Cu', dateOfBirth: '1995-06-15', gender: 'male',
+      citizenIdNumber: '079123456789', address: validBody().address,
     });
     expect(audit.logWithManagerStrict).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'CUSTOMER_KYC_SUBMITTED' }));
+  });
+
+  it('refuses an image path that was never uploaded, saves nothing and leaves the profile alone', async () => {
+    const [front, back] = validBody().documents;
+    const ghost = `kyc/${CUSTOMER_ID}/00000000-0000-4000-8000-000000000000.jpg`;
+    await expect(submit({ documents: [front, { ...back, storageObjectPath: ghost, fileName: 'cccd-0.jpg', mimeType: 'image/jpeg' }] }))
+      .rejects.toThrow('Không tìm thấy ảnh CCCD đã tải lên');
+    expect(storage.objectExists).toHaveBeenCalledWith(ghost, CUSTOMER_ID);
+    expect(verifications).toHaveLength(0);
+    expect(documents).toHaveLength(0);
+    expect(users[CUSTOMER_ID]).toMatchObject({ fullName: 'Ten Cu', citizenIdNumber: null });
+  });
+
+  it("refuses another user's uploaded image without asking storage", async () => {
+    const [front, back] = validBody().documents;
+    const theirs = `kyc/${ADMIN_ID}/back.png`;
+    uploaded.add(theirs);
+    await expect(submit({ documents: [front, { ...back, storageObjectPath: theirs }] })).rejects.toThrow('không thuộc hồ sơ của bạn');
+    expect(storage.objectExists).not.toHaveBeenCalled();
+    expect(verifications).toHaveLength(0);
+  });
+
+  it('refuses a CCCD number another customer is still waiting to have reviewed', async () => {
+    verifications.push({ id: 'ver-other', customerId: 'other-customer', status: VerificationStatus.PENDING, citizenIdNumber: '079123456789' });
+    await expect(submit()).rejects.toThrow('đã được sử dụng');
+    verifications[0].status = VerificationStatus.REJECTED;
+    await expect(submit()).resolves.toMatchObject({ status: 'pending' });
+  });
+
+  it('a rejection leaves the profile exactly as it was before the request', async () => {
+    const before = { ...users[CUSTOMER_ID] };
+    await submit();
+    await service.reject('ver-1', ADMIN_ID, 'Ảnh CCCD bị mờ');
+    expect(users[CUSTOMER_ID]).toEqual(before);
+  });
+
+  it('approval is refused when the CCCD now belongs to another account', async () => {
+    await submit();
+    cccdTaken = true;
+    await expect(service.approve('ver-1', ADMIN_ID)).rejects.toThrow(ConflictException);
+    expect(verifications[0].status).toBe(VerificationStatus.PENDING);
+    expect(users[CUSTOMER_ID].citizenIdNumber).toBeNull();
   });
 
   it('needs exactly the front and the back of the card', async () => {
@@ -222,12 +276,15 @@ describe('CustomerVerificationsService', () => {
     await expect(submit()).rejects.toThrow(ForbiddenException);
   });
 
-  it('approval freezes the confirmed name, restores the checked details on the profile and notifies', async () => {
+  it('approval freezes the confirmed name, writes the checked details to the profile and notifies', async () => {
     await submit();
     users[CUSTOMER_ID].fullName = 'Sửa Trong Lúc Chờ';
     const view = await service.approve('ver-1', ADMIN_ID);
     expect(verifications[0]).toMatchObject({ status: 'verified', reviewedById: ADMIN_ID, verifiedFullName: 'Nguyễn Văn An' });
-    expect(users[CUSTOMER_ID].fullName).toBe('Nguyễn Văn An');
+    expect(users[CUSTOMER_ID]).toMatchObject({
+      fullName: 'Nguyễn Văn An', dateOfBirth: '1995-06-15', gender: 'male',
+      citizenIdNumber: '079123456789', fullAddress: validBody().address,
+    });
     expect(view.status).toBe('verified');
     expect(audit.logWithManagerStrict).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'CUSTOMER_KYC_APPROVED', actorRole: Role.ADMIN }));
     expect(notifications.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: CUSTOMER_ID, type: 'CUSTOMER_KYC_APPROVED' }));
