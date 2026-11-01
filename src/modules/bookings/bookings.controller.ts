@@ -204,7 +204,8 @@ export class BookingsController {
   ) {
     if (diagnostics === '1') {
       const result = await this.bookingsService.getCandidatesWithDiagnostics(id, req.user);
-      return { data: result.candidates, emptyReason: result.emptyReason };
+      // The reason rides in meta: the global envelope keeps only data, meta and message (bug 41).
+      return { data: result.candidates, meta: { emptyReason: result.emptyReason } };
     }
     const candidates = await this.bookingsService.getCandidates(id, req.user);
     return { data: candidates };
