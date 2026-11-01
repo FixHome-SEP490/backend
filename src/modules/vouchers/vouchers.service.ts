@@ -559,6 +559,13 @@ export class VouchersService implements OnModuleInit, OnModuleDestroy {
       const campaign = await manager.findOneBy(VoucherCampaign, { id: claim.campaignId });
       if (!campaign) this.unavailable();
       this.available(campaign, await this.now(manager));
+      // Preview must check the same unavailable quota as apply, without reserving or releasing anything.
+      // Unverified (even overdue) RESERVED holds remain unavailable until safely released.
+      const held = await manager.count(VoucherReservation, {
+        where: { campaignId: campaign.id, state: ReservationState.RESERVED },
+      });
+      if (campaign.redeemed + held >= campaign.quota)
+        throw new ConflictException('Ưu đãi đã hết lượt áp dụng.');
       const facts = await loadVoucherPreviewInvoices(manager, actor.id, scopeId);
       const policy = claim.policySnapshot;
       if (!facts.services.length || facts.services.some(service =>

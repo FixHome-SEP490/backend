@@ -17,11 +17,12 @@ import { BookingStatus, CheckInResult, PaymentStatus, Role, ServiceOrderStatus, 
 function fixture(stopped = 1, grouped = false) {
   const customer = { id: randomUUID(), role: Role.CUSTOMER };
   const technician = { id: randomUUID(), role: Role.TECHNICIAN };
-  const serviceId = randomUUID(); const addressId = randomUUID();
+  const serviceId = randomUUID(); const addressId = randomUUID(); const categoryId = randomUUID();
   const groupId = grouped ? randomUUID() : null;
   const rows: Record<string, any[]> = {
     User: [{ ...customer, bookingSuspendedUntil: null }, { ...technician }],
-    Service: [{ id: serviceId, name: 'Synthetic service', code: 'QA_FIXED', isActive: true,
+    ServiceCategory: [{ id: categoryId, isActive: true }],
+    Service: [{ id: serviceId, categoryId, name: 'Synthetic service', code: 'QA_FIXED', isActive: true,
       pricingMode: ServicePricingMode.FIXED_PRICE, fixedPrice: 199000, description: 'Fresh catalog scope' }],
     Address: [{ id: addressId, userId: customer.id, line1: 'Synthetic test address', province: 'Hồ Chí Minh', district: 'Quận 1', lat: 10.1, lng: 106.1 }],
     Booking: [], ServiceOrder: [], TechnicianAssignment: [], ArrivalCheckIn: [],
@@ -51,6 +52,8 @@ function fixture(stopped = 1, grouped = false) {
       : row[key] === value);
   const table = (entity: { name: string }) => rows[entity.name] ??= [];
   const manager: any = {
+    query: vi.fn(async (_sql: string, [id]: string[]) => rows.Service.filter(service => service.id === id && service.isActive
+      && rows.ServiceCategory.some(category => category.id === service.categoryId && category.isActive))),
     findOne: vi.fn(async (entity, options) => table(entity).find(row => matches(row, options?.where)) ?? null),
     findOneBy: vi.fn(async (entity, where) => table(entity).find(row => matches(row, where)) ?? null),
     find: vi.fn(async (entity, options) => table(entity).filter(row => matches(row, options?.where))
@@ -120,6 +123,14 @@ function fixture(stopped = 1, grouped = false) {
 describe('verified onsite interruption customer self-service', () => {
   beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-29T05:00:00Z')); });
   afterEach(() => vi.useRealTimers());
+
+  it.each([1, 2])('#32 paused category blocks real interruption confirmation for %i device(s)', async count => {
+    const h = fixture(count, count > 1); await h.stop();
+    h.rows.ServiceCategory[0].isActive = false;
+    const before = structuredClone(h.rows);
+    await expect(h.submit(h.body())).rejects.toMatchObject({ status: 404 });
+    expect(h.rows).toEqual(before);
+  });
 
   it('opens a read-only owned prefill while SM case and old paid service remain open', async () => {
     const h = fixture(); await h.stop(); const before = structuredClone(h.rows);

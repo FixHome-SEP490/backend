@@ -1,6 +1,7 @@
 import { BadRequestException, Inject, Injectable, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { Readable } from 'stream';
 import { randomUUID } from 'crypto';
+import { sanitizePrivateBookingPhoto } from './sanitize-private-booking-photo';
 import axios from 'axios';
 import { CLOUDINARY, PrivateVideoService, VideoTooLongError, splitPlan, withPlan } from '../../shared/cloudinary';
 import { BusinessException } from '../../common/exceptions/business.exception';
@@ -107,9 +108,11 @@ export class PrivateBookingPhotoStorage {
     const cld = this.getCloudinary();
 
     const publicId = `fixhome/booking-photos/${normalizedOwnerId}/${randomUUID()}`;
+    // Camera EXIF may contain GPS/location: only upload fully re-encoded pixels.
+    const sanitized = await sanitizePrivateBookingPhoto(file.buffer, file.mimetype as ImageMimeType);
 
     try {
-      await this.uploadToCloudinary(cld, file.buffer, {
+      await this.uploadToCloudinary(cld, sanitized, {
         public_id: publicId,
         resource_type: 'image',
         type: 'authenticated', // Private — requires signed URLs to access
@@ -156,7 +159,10 @@ export class PrivateBookingPhotoStorage {
         throw new Error('Invalid booking media response');
       }
 
-      return { buffer, mimeType };
+      return {
+        buffer: isVideo ? buffer : await sanitizePrivateBookingPhoto(buffer, mimeType as ImageMimeType),
+        mimeType,
+      };
     } catch {
       throw new ServiceUnavailableException('Private booking photo storage is unavailable');
     }
@@ -218,6 +224,7 @@ export class PrivateBookingPhotoStorage {
           resolve(result);
         },
       );
+      stream.once('error', reject);
       Readable.from(buffer).pipe(stream);
     });
   }

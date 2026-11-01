@@ -25,6 +25,9 @@ export interface OverrunReleaseCheck {
   block: OverrunReleaseBlock | null;
   /** Mã đơn thợ đang làm, để thợ và khách hiểu vì sao. */
   currentOrderCode: string | null;
+  /** Đơn thợ đang làm: app mở đúng biểu mẫu báo cáo; báo cáo có ảnh chỉ nhận khi đơn đó đang sửa. */
+  currentOrderId: string | null;
+  currentOrderStatus: ServiceOrderStatus | null;
   windowMinutes: number;
 }
 
@@ -35,8 +38,9 @@ export async function checkOverrunRelease(
   windowMinutes: number,
   now: Date = new Date(),
 ): Promise<OverrunReleaseCheck> {
-  const result = (block: OverrunReleaseBlock | null, currentOrderCode: string | null = null): OverrunReleaseCheck =>
-    ({ eligible: block === null, block, currentOrderCode, windowMinutes });
+  const result = (block: OverrunReleaseBlock | null, current: ServiceOrder | null = null): OverrunReleaseCheck =>
+    ({ eligible: block === null, block, currentOrderCode: current?.code ?? null, currentOrderId: current?.id ?? null,
+      currentOrderStatus: current?.status ?? null, windowMinutes });
 
   const assignment = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, technicianId, isActive: true });
   if (!assignment) return result('NOT_ASSIGNED');
@@ -50,7 +54,11 @@ export async function checkOverrunRelease(
   const candidates = others.length
     ? await manager.find(ServiceOrder, { where: { id: In(others.map(a => a.serviceOrderId)), status: In([ServiceOrderStatus.EN_ROUTE, ServiceOrderStatus.UNDER_REPAIR]) } })
     : [];
-  let current: ServiceOrder | null = candidates.find(o => o.status === ServiceOrderStatus.UNDER_REPAIR) ?? null;
+  // A technician may hold several orders under repair (a visit's devices, or ones already handed over). The job they are
+  // still on is the one not yet handed over, then the one touched last; never an arbitrary row.
+  const repairing = candidates.filter(o => o.status === ServiceOrderStatus.UNDER_REPAIR)
+    .sort((a, b) => Number(!!a.completionRequestedAt) - Number(!!b.completionRequestedAt) || +new Date(b.updatedAt) - +new Date(a.updatedAt));
+  let current: ServiceOrder | null = repairing[0] ?? null;
   if (!current) {
     for (const candidate of candidates) {
       if (await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: candidate.id, technicianId, result: CheckInResult.VALID })) {
@@ -63,6 +71,6 @@ export async function checkOverrunRelease(
 
   const booking = await manager.findOneBy(Booking, { id: order.bookingId });
   const start = booking?.preferredStartAt ? new Date(booking.preferredStartAt).getTime() : null;
-  if (start === null || start > now.getTime() + windowMinutes * 60_000) return result('NOT_STARTING_SOON', current.code);
-  return result(null, current.code);
+  if (start === null || start > now.getTime() + windowMinutes * 60_000) return result('NOT_STARTING_SOON', current);
+  return result(null, current);
 }

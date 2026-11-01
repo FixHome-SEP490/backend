@@ -82,7 +82,12 @@ describe('SupportCasesService own-case reads', () => {
       'supportCase.customerId = :actorId',
       { actorId: CUSTOMER_ID },
     );
-    expect(customer.queryBuilder.andWhere).toHaveBeenCalledTimes(2);
+    // status, order, and the exclusion of the manager-only delay report
+    expect(customer.queryBuilder.andWhere).toHaveBeenCalledTimes(3);
+    expect(customer.queryBuilder.andWhere).toHaveBeenCalledWith(
+      'supportCase.caseType <> :internalType',
+      { internalType: SupportCaseType.TECHNICIAN_DELAY },
+    );
 
     const technician = makeService();
     await technician.service.findMine(
@@ -107,6 +112,13 @@ describe('SupportCasesService own-case reads', () => {
     expect(result.data[0]).not.toHaveProperty('createdByUserId');
     expect(result.data[0]).not.toHaveProperty('resolutionCode');
     expect(result.data[0]).toMatchObject({ id: 'case-1', isUrgent: false });
+  });
+
+  it('never shows a technician delay report to its own parties as a support case', async () => {
+    const { service } = makeService(makeCase({ caseType: SupportCaseType.TECHNICIAN_DELAY, createdByUserId: TECHNICIAN_ID }));
+    for (const actor of [{ id: CUSTOMER_ID, role: Role.CUSTOMER }, { id: TECHNICIAN_ID, role: Role.TECHNICIAN }]) {
+      await expect(service.findMineById('case-1', actor)).rejects.toBeInstanceOf(NotFoundException);
+    }
   });
 
   it('answers 404 for a case that belongs to someone else or does not exist', async () => {

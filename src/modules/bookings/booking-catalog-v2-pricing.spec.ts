@@ -51,7 +51,8 @@ describe('Booking Catalog V2 persistence', () => {
     Object.assign(f.record, { pricingMode: 'fixed_price', fixedPrice: 175000, scopeDescription: 'Legacy scope' });
     const created = await f.instance.create(f.dto, { id: 'customer', role: 'customer' });
     expect(created).toMatchObject({ pricingModeSnapshot: 'fixed_price', fixedUnitPriceSnapshot: 175000, scopeSnapshot: 'Legacy scope', catalogV2PricingSnapshot: null });
-    expect(f.manager.query).not.toHaveBeenCalled();
+    expect(f.manager.query).toHaveBeenCalledTimes(1);
+    expect(f.manager.query.mock.calls[0][0]).toContain('FOR SHARE OF s, c');
     await expect(f.instance.create({ ...f.dto, selectedVariantCode: 'AC-02-01' } as never, { id: 'customer', role: 'customer' })).rejects.toThrow();
   });
 });

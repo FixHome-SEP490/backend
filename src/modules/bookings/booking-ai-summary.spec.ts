@@ -28,7 +28,7 @@ function fixture(session: Record<string, unknown> | null | Error) {
       return session;
     }),
   };
-  const manager = { queryRunner: { isTransactionActive: true }, getRepository: vi.fn(() => bookingRepo) };
+  const manager = { queryRunner: { isTransactionActive: true }, query: vi.fn(async () => [{ id: 'service-1' }]), getRepository: vi.fn(() => bookingRepo) };
   const dataSource = {
     query: vi.fn(),
     getRepository: vi.fn(() => sessionRepo),

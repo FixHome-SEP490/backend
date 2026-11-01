@@ -36,6 +36,7 @@ import {
   SupportCaseDetailDto,
   SupportCaseInvoiceContextDto,
   SupportCaseServiceOrderContextDto,
+  SupportCaseTechnicianDelayDto,
   SupportCaseSummaryDto,
   QuerySupportCasesDto,
   ResolveSupportCaseDto,
@@ -398,7 +399,9 @@ export class SupportCasesService {
     const limit = Math.min(query.limit ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
     const qb = this.supportCaseRepository
       .createQueryBuilder('supportCase')
-      .where(`supportCase.${ownerColumn} = :actorId`, { actorId: actor.id });
+      .where(`supportCase.${ownerColumn} = :actorId`, { actorId: actor.id })
+      // A technician's delay report is for the manager; customers get a notice and a choice instead, and older apps do not know the type.
+      .andWhere('supportCase.caseType <> :internalType', { internalType: SupportCaseType.TECHNICIAN_DELAY });
 
     if (query.status !== undefined) {
       qb.andWhere('supportCase.status = :status', { status: query.status });
@@ -423,7 +426,7 @@ export class SupportCasesService {
     const ownerColumn = this.ownerColumnFor(actor);
     const supportCase = await this.supportCaseRepository.findOneBy({ id });
     // Same 404 for missing and foreign cases so ids cannot be probed.
-    if (!supportCase || supportCase[ownerColumn] !== actor.id) {
+    if (!supportCase || supportCase[ownerColumn] !== actor.id || supportCase.caseType === SupportCaseType.TECHNICIAN_DELAY) {
       throw new NotFoundException(`Support case ${id} not found`);
     }
     return this.toMineDto(supportCase, actor);
@@ -1014,6 +1017,9 @@ export class SupportCasesService {
       serviceOrder: serviceOrder
         ? this.toServiceOrderContext(serviceOrder)
         : null,
+      technicianDelay: supportCase.caseType === SupportCaseType.TECHNICIAN_DELAY && serviceOrder
+        ? await this.toTechnicianDelay(supportCase, serviceOrder)
+        : null,
       invoice: invoice ? this.toInvoiceContext(invoice) : null,
       cashSettlement: cashSettlement
         ? this.toCashSettlementContext(cashSettlement)
@@ -1100,6 +1106,22 @@ export class SupportCasesService {
       status: booking.status,
       customerId: booking.customerId,
       serviceId: booking.serviceId,
+    };
+  }
+
+  private async toTechnicianDelay(supportCase: SupportCase, order: ServiceOrder): Promise<SupportCaseTechnicianDelayDto> {
+    const latest = order.delaySupportCaseId === supportCase.id;
+    const currentOrderId = latest ? (order.delayCurrentOrderId ?? null) : null;
+    const current = currentOrderId
+      ? await this.supportCaseRepository.manager.findOne(ServiceOrder, { where: { id: currentOrderId }, select: { id: true, code: true } })
+      : null;
+    return {
+      reasonCode: latest ? (order.delayReasonCode ?? null) : null,
+      delayMinutes: latest ? (order.delayNoticeMinutes ?? null) : null,
+      noticedAt: latest ? (order.delayNoticedAt ?? null) : null,
+      decision: latest ? (order.delayDecision ?? null) : null,
+      currentOrderId,
+      currentOrderCode: current?.code ?? null,
     };
   }
 

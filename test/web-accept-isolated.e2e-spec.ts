@@ -129,7 +129,12 @@ describe('WEB-ACCEPT isolated real HTTP/JWT/PostgreSQL (three synthetic actors)'
       await db!.getRepository('User').save({ id, email: `${id}@example.test`,
         fullName: `Synthetic ${role}`, passwordHash: 'synthetic-no-login', role,
         status: 'active', isActive: true, isEmailVerified: true });
-      if (role === 'technician') await db!.getRepository('TechnicianProfile').save({ userId: id });
+      if (role === 'technician') {
+        await db!.getRepository('TechnicianProfile').save({ userId: id });
+        // Synthetic balance in this E2E's private schema, as in the custody fixture;
+        // satisfy #42 without calling a top-up/payment provider or weakening eligibility.
+        await db!.getRepository('Wallet').save({ technicianId: id, balance: 1000000 });
+      }
       const token = jwt.sign({ sub: id, role }, { secret: process.env.JWT_ACCESS_SECRET!, algorithm: 'HS256', expiresIn: '15m' });
       return { id, role, token };
     };

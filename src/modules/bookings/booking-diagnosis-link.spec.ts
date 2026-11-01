@@ -34,6 +34,7 @@ function fixture() {
   const audit = { log: vi.fn(async () => undefined) };
   const manager = {
     queryRunner: { isTransactionActive: true },
+    query: vi.fn(async () => [{ id: 'service-1' }]),
     getRepository: vi.fn(() => bookingRepo),
   };
   const dataSource = {

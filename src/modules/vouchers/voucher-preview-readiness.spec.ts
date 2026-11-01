@@ -17,8 +17,8 @@ describe('voucher preview readiness signal', () => {
       minimumVnd: 0, categoryIds: [], serviceIds: [], components: ['LABOR', 'PARTS'] };
     const manager = { findOneBy: async (entity: unknown) => entity === VoucherClaim
       ? { id: claimId, customerId: customer.id, campaignId: 'campaign-1', redeemedAt: null, policySnapshot: policy }
-      : entity === VoucherCampaign ? { active: true, startsAt: new Date(Date.now() - 60000), endsAt: new Date(Date.now() + 60000) } : null,
-      query: async () => [{ now: new Date() }], save: vi.fn(),
+      : entity === VoucherCampaign ? { active: true, redeemed: 0, quota: 1, startsAt: new Date(Date.now() - 60000), endsAt: new Date(Date.now() + 60000) } : null,
+      count: vi.fn().mockResolvedValue(0), query: async () => [{ now: new Date() }], save: vi.fn(),
     };
     vi.mocked(loadVoucherPreviewInvoices).mockResolvedValue({
       invoices: [{ invoiceId: 'invoice-1', successful: true, originalGrossVnd: 100000,

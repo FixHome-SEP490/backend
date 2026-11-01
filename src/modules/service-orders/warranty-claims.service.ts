@@ -29,10 +29,6 @@ export class WarrantyClaimsService {
     private readonly dataSource: DataSource,
     @InjectRepository(WarrantyClaim)
     private readonly claimRepo: Repository<WarrantyClaim>,
-    @InjectRepository(WarrantyCoverage)
-    private readonly coverageRepo: Repository<WarrantyCoverage>,
-    @InjectRepository(TechnicianAssignment)
-    private readonly assignmentRepo: Repository<TechnicianAssignment>,
     private readonly supportCasesService: SupportCasesService,
     private readonly notifier: WarrantyNotifier,
   ) {}
@@ -50,41 +46,44 @@ export class WarrantyClaimsService {
       );
     }
 
-    const coverage = await this.coverageRepo.findOneBy({
-      id: dto.warrantyCoverageId,
-      serviceOrderId: orderId,
-    });
-    if (!coverage) {
-      throw new BusinessException(
-        ErrorCodes.NOT_FOUND,
-        'Không tìm thấy hạng mục bảo hành của đơn sửa chữa này.',
-      );
-    }
-    if (coverage.status === WarrantyStatus.VOIDED) {
-      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hạng mục này đã bị hủy bảo hành.');
-    }
+    const saved = await this.dataSource.transaction('READ COMMITTED', async (manager) => {
+      // Lock the parent even when no claim exists. READ COMMITTED lets a waiter
+      // see the winning claim in the subsequent query after acquiring this lock.
+      const coverage = await manager.getRepository(WarrantyCoverage).findOne({
+        where: { id: dto.warrantyCoverageId, serviceOrderId: orderId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!coverage) {
+        throw new BusinessException(
+          ErrorCodes.NOT_FOUND,
+          'Không tìm thấy hạng mục bảo hành của đơn sửa chữa này.',
+        );
+      }
+      if (coverage.status === WarrantyStatus.VOIDED) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hạng mục này đã bị hủy bảo hành.');
+      }
 
-    const openClaim = await this.claimRepo.findOne({
-      where: {
-        warrantyCoverageId: coverage.id,
-        status: In([...WARRANTY_CLAIM_ACTIVE_STATUSES]),
-      },
-    });
-    if (openClaim) {
-      throw new BusinessException(
-        ErrorCodes.CONFLICT,
-        'Hạng mục bảo hành này đang có một yêu cầu chưa xử lý xong.',
-      );
-    }
+      const claims = manager.getRepository(WarrantyClaim);
+      const openClaim = await claims.findOne({
+        where: {
+          warrantyCoverageId: coverage.id,
+          status: In([...WARRANTY_CLAIM_ACTIVE_STATUSES]),
+        },
+      });
+      if (openClaim) {
+        throw new BusinessException(
+          ErrorCodes.CONFLICT,
+          'Hạng mục bảo hành này đang có một yêu cầu chưa xử lý xong.',
+        );
+      }
 
-    // The technician who did the job handles the claim by default.
-    const assignment = await this.assignmentRepo.findOne({
-      where: { serviceOrderId: orderId },
-      order: { assignedAt: 'DESC' },
-    });
-    const now = new Date();
-    const saved = await this.claimRepo.save(
-      this.claimRepo.create({
+      // The technician who did the job handles the claim by default.
+      const assignment = await manager.getRepository(TechnicianAssignment).findOne({
+        where: { serviceOrderId: orderId },
+        order: { assignedAt: 'DESC' },
+      });
+      const now = new Date();
+      return claims.save(claims.create({
         serviceOrderId: orderId,
         warrantyCoverageId: coverage.id,
         customerId: customer.id,
@@ -95,9 +94,10 @@ export class WarrantyClaimsService {
         // Expiry is judged at submission time, not when the technician arrives.
         submittedAfterExpiry: new Date(coverage.expiresAt).getTime() <= now.getTime(),
         submittedAt: now,
-      }),
-    );
+      }));
+    });
 
+    // WarrantyNotifier is best-effort; notify only after the claim is committed.
     await this.notifier.toUser(
       saved.technicianId,
       'Yêu cầu bảo hành mới',

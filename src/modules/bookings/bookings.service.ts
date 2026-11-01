@@ -2,6 +2,7 @@
 import { andWhereTextMatches } from '../../shared/utils/list-search';
 import { createHash } from 'crypto';
 import { firstEligible } from './first-eligible';
+import { explainEmptyCandidates, type CandidateEmptyReason } from './candidate-empty-reason';
 import { displayRating } from '../technicians/technician-earnings';
 import { NotificationsService } from '../notifications/notifications.service';
 import {
@@ -276,6 +277,16 @@ export class BookingsService {
     const inTransaction = <T>(work: (manager: EntityManager) => Promise<T>): Promise<T> =>
       group ? work(group.manager) : this.dataSource.transaction(work);
     const saved = await inTransaction(async (manager) => {
+      // V2 resolves and locks both rows below; legacy services need the same
+      // authoritative gate, including rebooks and children in a visit transaction.
+      if (!catalogV2) {
+        const active = await manager.query(`
+          SELECT s.id FROM services s JOIN service_categories c ON c.id = s.category_id
+          WHERE s.id = $1 AND s.is_active = true AND c.is_active = true
+          FOR SHARE OF s, c
+        `, [service.id]);
+        if (active.length !== 1) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Dịch vụ chưa mở.');
+      }
       // Lock the active parent/category and tiers until the immutable snapshot is stored.
       const pricingPreview = catalogV2 ? await resolveCatalogV2Pricing(manager, service.id, dto, true) : null;
       const catalogV2PricingSnapshot = pricingPreview ? { ...pricingPreview, priceBinding: pricingPreview.bindingReady } : null;
@@ -644,6 +655,15 @@ export class BookingsService {
     actor: { id: string; role?: string },
     opts: { asVisit?: boolean } = {},
   ): Promise<TechnicianCandidate[]> {
+    return (await this.getCandidatesWithDiagnostics(bookingId, actor, opts)).candidates;
+  }
+
+  /** Optional coarse diagnostics; the legacy candidates API still returns a plain array. */
+  async getCandidatesWithDiagnostics(
+    bookingId: string,
+    actor: { id: string; role?: string },
+    opts: { asVisit?: boolean } = {},
+  ): Promise<{ candidates: TechnicianCandidate[]; emptyReason: CandidateEmptyReason | null }> {
     const isStaff = actor.role === Role.ADMIN || actor.role === Role.SERVICE_MANAGER;
     const booking = await this.bookingRepo.findOne({
       where: isStaff ? { id: bookingId } : { id: bookingId, customerId: actor.id },
@@ -697,12 +717,17 @@ export class BookingsService {
     const mode = booking.bookingMode === 'urgent' ? 'urgent' : 'scheduled';
     const gpsFreshMinutes = await this.configService.getInt('matching.gps_fresh_minutes', 15);
     const distanceByProfileId = new Map<string, number | null>();
+    let originUnknown = 0;
+    let coverageRejected = 0;
     const ranked = withSkill.filter((tp) => {
       const origin = technicianOrigin(mode, tp, addressByUserId.get(tp.userId), gpsFreshMinutes);
-      if (!origin) return false;
-      if (origin.source === 'address' && !servesArea(areasByProfile.get(tp.id) ?? [], booking)) return false;
+      if (!origin) { originUnknown++; return false; }
+      if (origin.source === 'address' && !servesArea(areasByProfile.get(tp.id) ?? [], booking)) {
+        coverageRejected++; return false;
+      }
       const distance = distanceToBooking(origin, booking);
-      if (distance == null || distance > Number(tp.serviceRadiusKm)) return false;
+      if (distance == null) { originUnknown++; return false; }
+      if (distance > Number(tp.serviceRadiusKm)) { coverageRejected++; return false; }
       distanceByProfileId.set(tp.id, distance);
       return true;
     });
@@ -730,9 +755,14 @@ export class BookingsService {
     // the ranking order, stopping as soon as 20 are eligible (was one technician at a time: 8-11 s).
     // ponytail: one bulk read for the whole ranked list; per-technician queries were ~16 round trips each.
     const bulk = ranked.length ? await loadEligibilityBulk(this.dataSource.manager, booking, ranked) : undefined;
+    const eligibilityReasons: string[] = [];
     const profiles = await firstEligible(
       ranked,
-      async (p) => (await technicianEligibility(this.dataSource.manager, p.userId, booking, undefined, { bulk })).eligible,
+      async (p) => {
+        const verdict = await technicianEligibility(this.dataSource.manager, p.userId, booking, undefined, { bulk });
+        if (!verdict.eligible) eligibilityReasons.push(verdict.reason ?? 'UNKNOWN');
+        return verdict.eligible;
+      },
       CANDIDATE_LIMIT,
       ELIGIBILITY_BATCH,
     );
@@ -763,7 +793,7 @@ export class BookingsService {
       }
     }
 
-    return profiles.map((tp) => {
+    const candidates = profiles.map((tp) => {
       const matchedSkill = tp.skills?.find((s) => s.serviceId === booking.serviceId);
       const counts = orderCountsByTech.get(tp.userId);
       const completedOrdersCount = counts ? counts.completed : 0;
@@ -794,6 +824,18 @@ export class BookingsService {
         completionRate,
       };
     });
+    return {
+      candidates,
+      emptyReason: explainEmptyCandidates({
+        results: candidates.length,
+        bookingHasCoordinates: booking.latitudeSnapshot != null && booking.longitudeSnapshot != null,
+        skilledProfiles: withSkill.length,
+        coverageRejected,
+        originUnknown,
+        eligibleForLocation: ranked.length,
+        eligibilityReasons,
+      }),
+    };
   }
 
   /**

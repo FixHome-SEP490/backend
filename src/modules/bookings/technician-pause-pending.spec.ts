@@ -20,6 +20,7 @@ function scenario() {
       if (entity.name === 'User') return user;
       if (entity.name === 'TechnicianProfile') return profile;
       if (entity.name === 'TechnicianSkill') return hasVerifiedSkill ? { id: 'verified-skill-1' } : null;
+      if (entity.name === 'Wallet') return { technicianId: user.id, balance: 200000 };
       if (entity.name === 'Address') return { lat: 10.77, lng: 106.7 };
       return null;
     }),

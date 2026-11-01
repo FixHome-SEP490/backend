@@ -64,6 +64,7 @@ function createBookingsService(serviceCode: string) {
     fixedPrice: 175000,
   };
   const transaction = vi.fn(async (callback: (manager: unknown) => Promise<unknown>) => callback({
+    query: vi.fn(async () => [{ id: serviceId }]),
     getRepository: (entity: unknown) => entity === Booking ? bookingRepository : mediaRepository,
   }));
   const service = Object.create(BookingsService.prototype) as BookingsService;

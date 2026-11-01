@@ -18,6 +18,9 @@ import {
 } from './dto/warranty-claim.dto';
 import { WarrantyClaimsController } from './warranty-claims.controller';
 import { WarrantyClaimsService } from './warranty-claims.service';
+import { WarrantyClaim } from './entities/warranty-claim.entity';
+import { WarrantyCoverage } from './entities/warranty-coverage.entity';
+import { TechnicianAssignment } from './entities/technician-assignment.entity';
 
 const CUSTOMER = { id: 'customer-1', role: Role.CUSTOMER };
 const ORDER_ID = 'order-1';
@@ -80,7 +83,7 @@ const makeService = (options: {
     manager: { transaction: vi.fn(async (cb: any) => cb({ getRepository: () => txRepo })) },
   };
   const coverageRepo = {
-    findOneBy: vi.fn().mockResolvedValue(
+    findOne: vi.fn().mockResolvedValue(
       'coverage' in options
         ? options.coverage
         : { id: COVERAGE_ID, serviceOrderId: ORDER_ID, status: WarrantyStatus.ACTIVE, expiresAt: FUTURE },
@@ -91,11 +94,20 @@ const makeService = (options: {
   };
   const supportCases = { openCase: vi.fn().mockResolvedValue({ id: 'case-9' }) };
   const notifier = { toUser: vi.fn().mockResolvedValue(undefined) };
+  const dataSource = {
+    manager,
+    transaction: vi.fn(async (_isolation: string, cb: any) => cb({
+      getRepository: (entity: unknown) => {
+        if (entity === WarrantyCoverage) return coverageRepo;
+        if (entity === WarrantyClaim) return claimRepo;
+        if (entity === TechnicianAssignment) return assignmentRepo;
+        throw new Error('Unexpected transaction repository');
+      },
+    })),
+  };
   const service = new WarrantyClaimsService(
-    { manager } as any,
+    dataSource as any,
     claimRepo as any,
-    coverageRepo as any,
-    assignmentRepo as any,
     supportCases as any,
     notifier as any,
   );
@@ -173,9 +185,9 @@ describe('WarrantyClaimsService.create', () => {
     await expect(missing.service.create(ORDER_ID, createDto(), CUSTOMER)).rejects.toMatchObject({
       response: { code: ErrorCodes.NOT_FOUND },
     });
-    expect(missing.coverageRepo.findOneBy).toHaveBeenCalledWith({
-      id: COVERAGE_ID,
-      serviceOrderId: ORDER_ID,
+    expect(missing.coverageRepo.findOne).toHaveBeenCalledWith({
+      where: { id: COVERAGE_ID, serviceOrderId: ORDER_ID },
+      lock: { mode: 'pessimistic_write' },
     });
 
     const voided = makeService({

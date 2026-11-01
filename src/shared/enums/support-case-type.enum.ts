@@ -14,4 +14,6 @@ export enum SupportCaseType {
   OTHER = 'other',
   /** Technician on site: the job is outside their skills, the manager sends someone else (PO 08/10/2026). */
   TECHNICIAN_REPLACEMENT = 'technician_replacement',
+  /** Technician still on another job reports the next order will be late or released (PO 31/10/2026); system-opened, the manager only reads it. */
+  TECHNICIAN_DELAY = 'technician_delay',
 }
