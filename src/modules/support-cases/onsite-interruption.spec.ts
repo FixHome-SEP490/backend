@@ -410,6 +410,39 @@ describe('platform-first verified onsite interruption', () => {
     expect(await h.stop()).toMatchObject({ workStopped: true });
   });
 
+  it('allows only the verified original technician a read-only UNKNOWN return summary when no custody exists', async () => {
+    vi.stubEnv('PART_RETURNS_TRACKING_ENABLED', 'true');
+    try {
+      const h = setup(); await h.stop();
+      h.rows.SupportCase[0].reason = 'Edited mutable case prose';
+      const custody = new PartCustodyService(h.dataSource as never);
+      const before = structuredClone(h.rows);
+      expect(await custody.byOrder(h.order.id, h.tech)).toEqual([{ orderId: h.order.id, receiptState: 'UNKNOWN', returnStatus: 'unknown' }]);
+      expect(h.rows).toEqual(before);
+      await expect(custody.byOrder(h.order.id, { id: randomUUID(), role: Role.TECHNICIAN })).rejects.toMatchObject({ status: 403 });
+      await expect(custody.byOrder(h.order.id, h.customer)).rejects.toMatchObject({ status: 403 });
+      h.rows.PartCustody = [{ serviceOrderId: h.order.id, technicianId: randomUUID() }];
+      await expect(custody.byOrder(h.order.id, h.tech)).rejects.toMatchObject({ status: 403 });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each(['missing_final', 'duplicate_final', 'wrong_actor', 'wrong_assignment', 'wrong_checkin', 'new_assignment', 'inactive_feature'])
+    ('does not grant historical part-return access with %s', async kind => {
+      vi.stubEnv('PART_RETURNS_TRACKING_ENABLED', 'true'); vi.stubEnv('P1_CUSTODY_ENABLED', 'false');
+      try {
+        const h = setup(); await h.stop();
+        const final = h.rows.AuditLog.find(row => row.action === ONSITE_STOP_ACTION);
+        if (kind === 'missing_final') h.rows.AuditLog = h.rows.AuditLog.filter(row => row !== final);
+        if (kind === 'duplicate_final') h.rows.AuditLog.push(structuredClone(final));
+        if (kind === 'wrong_actor') final.actorUserId = randomUUID();
+        if (kind === 'wrong_assignment') h.assignment.id = randomUUID();
+        if (kind === 'wrong_checkin') h.checkin.result = CheckInResult.OUT_OF_GEOFENCE;
+        if (kind === 'new_assignment') h.rows.TechnicianAssignment.push({ ...h.assignment, id: randomUUID(), technicianId: randomUUID(), isActive: true });
+        if (kind === 'inactive_feature') vi.stubEnv('PART_RETURNS_TRACKING_ENABLED', 'false');
+        await expect(new PartCustodyService(h.dataSource as never).byOrder(h.order.id, h.tech)).rejects.toMatchObject({ status: kind === 'inactive_feature' ? 503 : 403 });
+      } finally { vi.unstubAllEnvs(); }
+    });
+
   it('denies new quotes, additional costs and completion after release without financial writes', async () => {
     const h = setup(); await h.stop(); const before = structuredClone(h.rows);
     const quotes = Object.assign(Object.create(QuotationsService.prototype), { dataSource: h.dataSource }) as QuotationsService;
