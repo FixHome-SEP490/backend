@@ -93,9 +93,9 @@ export function registerDev1Cases(context: () => Context) {
         await f.create(); // still waiting for a technician: not a repair yet
         const vnDay = new Date(new Date(booking.preferredStartAt).getTime() + 7 * 3600000).toISOString().slice(0, 10);
         await post('/ai/chat/ask', f.owner, { question: 'máy lạnh không mát' }).expect(200);
-        expect(sent[0].pastJobs).toEqual([{ serviceVi: 'Repair fixture', date: vnDay }]);
+        expect(sent[0].pastJobs).toEqual([{ serviceVi: 'Repair fixture', date: vnDay, status: 'SCHEDULED' }]);
         await post('/ai/diagnoses', f.owner, { description: 'máy lạnh không mát' }).expect(200);
-        expect(sent[1].pastJobs).toEqual([{ serviceVi: 'Repair fixture', date: vnDay }]);
+        expect(sent[1].pastJobs).toEqual([{ serviceVi: 'Repair fixture', date: vnDay, status: 'SCHEDULED' }]);
         expect(JSON.stringify(sent[0])).not.toContain('1 Test Street');
         await post('/ai/chat/ask', f.outsider, { question: 'máy lạnh không mát' }).expect(200);
         expect(sent[2]).not.toHaveProperty('pastJobs');
@@ -2098,6 +2098,60 @@ export function registerDev1Cases(context: () => Context) {
         expect(wrong).toMatchObject({ source: 'chat', kind: 'fault', said: 'máy lạnh không mát', rejected: ['Thiếu gas, xì gas'], settledOn: ['Nghẹt đường thoát nước ngưng'] });
       } finally {
         spy.mockRestore();
+      }
+    });
+  });
+
+  describe('AI assistant diagnostic state (PO 01/11/2026)', () => {
+    // Real HTTP, JWT and Postgres; only the AI Service transport is replaced.
+    it('stores the state by version, sends it back, never lets an older one win, and answers a repeated message once', async () => {
+      const { AiDiagnosisService } = runtimeRequire('./dist/modules/ai-diagnosis/ai-diagnosis.service.js');
+      const { of } = runtimeRequire('rxjs');
+      const http = (context().app.get(AiDiagnosisService) as any).httpService;
+      const sessionId = `ai-${randomUUID()}`;
+      const state = (v: number) => ({ canonical: { schemaVersion: 1, stateVersion: v, sessionId }, engine: { schemaVersion: 1, conversation: { turn: v } } });
+      const reply = (v: number) => ({ sessionId, status: 'ok', suspectedFaults: [], recommendedServices: [], messageVi: `lượt ${v}`, diagnosticState: state(v), stateVersion: v });
+      // The third reply arrives out of order: an older version than the one stored.
+      const replies = [reply(1), reply(2), reply(1)];
+      const sent: Array<Record<string, any>> = [];
+      const spy = vi.spyOn(http, 'post').mockImplementation(((_url: string, body: Record<string, any>) => {
+        sent.push(body);
+        return of({ data: replies.shift() });
+      }) as any);
+      const post = (session: Session, body: object) =>
+        request(context().app.getHttpServer()).post('/api/v1/ai/diagnoses').set('Authorization', `Bearer ${session.accessToken}`).send(body);
+      const stored = async () =>
+        (await context().db.query('SELECT state_version, diagnostic_state FROM ai_chat_sessions WHERE session_id = $1', [sessionId]))[0];
+      try {
+        const owner = await context().register();
+        const first = unwrap((await post(owner, { description: 'Máy lạnh bị chảy nước và không lạnh.', clientMessageId: 'e2e-msg-0001' }).expect(200)).body);
+        expect(first.diagnosticState).toEqual(state(1).canonical);
+        expect(JSON.stringify(first)).not.toContain('"engine"');
+        expect((await stored()).state_version).toBe(1);
+
+        await post(owner, { description: 'Không.', sessionId, clientMessageId: 'e2e-msg-0002' }).expect(200);
+        expect(sent[1].diagnosticState).toEqual(state(1));
+        expect(await stored()).toMatchObject({ state_version: 2, diagnostic_state: state(2) });
+
+        await post(owner, { description: 'Bên phải dàn lạnh.', sessionId, clientMessageId: 'e2e-msg-0003' }).expect(200);
+        expect(await stored()).toMatchObject({ state_version: 2, diagnostic_state: state(2) });
+
+        const calls = spy.mock.calls.length;
+        const again = unwrap((await post(owner, { description: 'Không.', sessionId, clientMessageId: 'e2e-msg-0002' }).expect(200)).body);
+        expect(spy.mock.calls.length).toBe(calls);
+        expect(again).toMatchObject({ messageVi: 'lượt 2', repeated: true });
+
+        const intruder = await context().register();
+        await post(intruder, { description: 'xem trộm', sessionId, clientMessageId: 'e2e-msg-0002' }).expect(200);
+        expect(spy.mock.calls.length).toBe(calls + 1);
+        expect(sent[sent.length - 1].diagnosticState).toBeUndefined();
+
+        const turns = await context().db.query('SELECT route, status, state_version FROM ai_chat_turns WHERE session_id = $1 ORDER BY created_at', [sessionId]);
+        expect(turns.map((t: any) => t.state_version)).toEqual([1, 2, 1]);
+        await post(owner, { description: 'x', clientMessageId: 'bad id!' }).expect(400);
+      } finally {
+        spy.mockRestore();
+        await context().db.query('DELETE FROM ai_chat_turns WHERE session_id = $1', [sessionId]);
       }
     });
   });

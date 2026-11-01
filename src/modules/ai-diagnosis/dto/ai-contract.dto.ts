@@ -36,6 +36,8 @@ export const AI_MAX_DESCRIPTION = 2000;
 export const AI_MAX_QUESTION = 1000;
 export const AI_MAX_SESSION_ID = 64;
 export const AI_MAX_HINT = 64;
+/** A client message id: letters, digits, "-" and "_", 8 to 64 long (a UUID fits). */
+export const AI_CLIENT_MESSAGE_ID = /^[A-Za-z0-9_-]{8,64}$/;
 
 export class AnalyzeDto {
   @ApiProperty({
@@ -76,6 +78,16 @@ export class AnalyzeDto {
   @IsString()
   @MaxLength(AI_MAX_HINT)
   categoryHint?: string;
+
+  @ApiPropertyOptional({
+    description:
+      "The client's own id for this message. Sending the same message again with the same id returns the reply already given instead of diagnosing it twice.",
+    example: '7f9c2a4e-1b3d-4c5e-8f6a-0b1c2d3e4f5a',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(AI_CLIENT_MESSAGE_ID, { message: 'clientMessageId không hợp lệ' })
+  clientMessageId?: string;
 
   @ApiPropertyOptional({
     description:

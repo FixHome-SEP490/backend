@@ -16,8 +16,14 @@ export interface AiPastJob {
   serviceVi: string;
   deviceVi?: string;
   faultVi?: string;
-  /** Booked day in Vietnam, YYYY-MM-DD. */
+  /** Day in Vietnam, YYYY-MM-DD: the repair's day when COMPLETED, the appointment's otherwise. */
   date: string;
+  /**
+   * PO 01/11/2026: a job the technician had only accepted, its day still
+   * ahead, was told back as "anh/chị đã đặt" as if done. COMPLETED: the order
+   * was completed. SCHEDULED: accepted, not done yet.
+   */
+  status?: 'COMPLETED' | 'SCHEDULED';
 }
 
 /** Mirrors the AI Service contract: at most 5 jobs, fields bounded. */
@@ -29,6 +35,8 @@ export interface PastBookingRow {
   preferredStartAt?: Date | string | null;
   createdAt?: Date | string | null;
   aiSummary?: Pick<AiBookingSummary, 'deviceName' | 'suspectedFaults'> | null;
+  /** The service order of the booking, when it has one: done or not, and when. */
+  order?: { completed: boolean; completedAt?: Date | string | null } | null;
 }
 
 function clean(value: unknown, max: number): string | undefined {
@@ -51,9 +59,10 @@ export function pastJobsFromBookings(rows: PastBookingRow[]): AiPastJob[] {
   const jobs: AiPastJob[] = [];
   for (const row of rows) {
     const serviceVi = clean(row.serviceNameSnapshot, AI_PAST_JOBS_LIMITS.service) ?? clean(row.service?.name, AI_PAST_JOBS_LIMITS.service);
-    const date = vnDay(row.preferredStartAt) ?? vnDay(row.createdAt);
+    const completed = row.order?.completed === true;
+    const date = (completed ? vnDay(row.order?.completedAt) : null) ?? vnDay(row.preferredStartAt) ?? vnDay(row.createdAt);
     if (!serviceVi || !date) continue;
-    const job: AiPastJob = { serviceVi, date };
+    const job: AiPastJob = { serviceVi, date, status: completed ? 'COMPLETED' : 'SCHEDULED' };
     const deviceVi = clean(row.aiSummary?.deviceName, AI_PAST_JOBS_LIMITS.device);
     if (deviceVi) job.deviceVi = deviceVi;
     const fault = Array.isArray(row.aiSummary?.suspectedFaults) ? row.aiSummary?.suspectedFaults[0] : undefined;
