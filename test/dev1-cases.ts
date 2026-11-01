@@ -1714,6 +1714,31 @@ export function registerDev1Cases(context: () => Context) {
       expect(legacyLedger.map((t: any) => t.type)).toEqual(['ONLINE_EARNING']);
     });
 
+    it('reads a coverage past its end date as expired and still takes a claim on it (found 01/11/2026, TC-WAR-003)', async () => {
+      const f = await fixture(), db = context().db;
+      const { order, invoice } = await completedOrder(f);
+      await db.query('INSERT INTO customer_wallets (user_id, balance) VALUES ($1, $2)', [f.owner.user.id, 1000000]);
+      await post(`/invoices/${invoice.id}/pay-with-wallet`, f.owner).expect(200);
+      const path = `/service-orders/${order.id}/warranties`;
+      const [coverage] = unwrap((await get(path, f.owner).expect(200)).body);
+      expect(coverage.status).toBe('active');
+
+      await db.query("UPDATE warranty_coverages SET expires_at = now() - interval '1 day' WHERE id = $1", [coverage.id]);
+      for (const session of [f.owner, f.tech]) {
+        expect(unwrap((await get(path, session).expect(200)).body)).toEqual([expect.objectContaining({ id: coverage.id, status: 'expired' })]);
+      }
+      // Read only: the stored row is not rewritten by a GET.
+      expect((await db.query('SELECT status FROM warranty_coverages WHERE id = $1', [coverage.id]))[0].status).toBe('active');
+      // A claim after expiry is still saved, flagged for the manager (TC-WAR-003).
+      const claim = await post(`/service-orders/${order.id}/warranty-claims`, f.owner, { warrantyCoverageId: coverage.id, description: 'Vòi lại rỉ nước sau ba tháng' });
+      expect(claim.status, JSON.stringify(claim.body)).toBe(201);
+      expect(unwrap(claim.body)).toMatchObject({ status: 'submitted', submittedAfterExpiry: true });
+
+      // A voided coverage stays voided whatever its end date.
+      await db.query("UPDATE warranty_coverages SET status = 'voided' WHERE id = $1", [coverage.id]);
+      expect(unwrap((await get(path, f.owner).expect(200)).body)[0].status).toBe('voided');
+    });
+
     it('announces every committed change live to the people allowed to see it, and nothing that rolled back (PO 18/10/2026)', async () => {
       const f = await fixture(), db = context().db;
       const { MessagingGateway } = runtimeRequire('./dist/modules/messaging/messaging.gateway.js');
