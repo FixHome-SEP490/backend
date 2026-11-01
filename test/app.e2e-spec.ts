@@ -783,6 +783,64 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     expect(await count()).toBe(1);
   });
 
+  it('attaches skill evidence and issues certificates only from files really uploaded to the private bucket', async () => {
+    const tech = await provisionTechnician();
+    const other = await provisionTechnician();
+    const service = await createService((await createCategory()).id);
+    const [profile] = await db.query('SELECT id FROM technician_profiles WHERE user_id = $1', [tech.user.id]);
+    const [skill] = await db.query(
+      "INSERT INTO technician_skills (technician_id, service_id, listed_labor_price, verification_status) VALUES ($1, $2, 150, 'pending') RETURNING id",
+      [profile.id, service.id],
+    );
+    const [pending] = await db.query(
+      "INSERT INTO technician_skill_verifications (technician_skill_id, status) VALUES ($1, 'pending') RETURNING id",
+      [skill.id],
+    );
+    const base = `/api/v1/technicians/me/services/${service.id}/verification/documents`;
+    const issue = async (session: Session) =>
+      (await http().post(`${base}/upload-url`).set('Authorization', bearer(session))
+        .send({ mimeType: 'image/png' }).expect(201)).body.data.storageObjectPath as string;
+    const evidence = (storageObjectPath: string) =>
+      ({ storageObjectPath, fileName: 'chung-chi.png', fileSize: 2048, mimeType: 'image/png' });
+    const attach = (storageObjectPath: string) =>
+      http().post(base).set('Authorization', bearer(tech)).send(evidence(storageObjectPath));
+    const documents = async () =>
+      Number((await db.query('SELECT count(*)::int AS n FROM verification_documents WHERE skill_verification_id = $1', [pending.id]))[0].n);
+
+    // Invented path in the own folder.
+    const ghost = await attach(`kyc/${tech.user.id}/${randomUUID()}.png`).expect(400);
+    expect(JSON.stringify(ghost.body)).toContain('Không tìm thấy tệp chứng chỉ đã tải lên');
+    // Another technician's uploaded file.
+    const theirs = await issue(other);
+    kycBucket.add(theirs);
+    await attach(theirs).expect(400);
+    // Upload URL issued, nothing uploaded.
+    const mine = await issue(tech);
+    await attach(mine).expect(400);
+    expect(await documents()).toBe(0);
+
+    // After the real upload the evidence is attached.
+    kycBucket.add(mine);
+    const attached = (await attach(mine).expect(201)).body.data;
+    expect(attached.status).toBe('pending');
+    expect(await documents()).toBe(1);
+
+    // The certificate FixHome issues on approval follows the same rule.
+    const certificate = (
+      await http().post(`/api/v1/admin/technician-skill-verifications/${pending.id}/certificate-upload-url`)
+        .set('Authorization', bearer(admin)).send({ mimeType: 'image/png' }).expect(201)
+    ).body.data.storageObjectPath as string;
+    const approve = () =>
+      http().patch(`/api/v1/admin/technician-skill-verifications/${pending.id}/approve`)
+        .set('Authorization', bearer(admin)).send(evidence(certificate));
+    await approve().expect(400);
+    const [stillPending] = await db.query('SELECT status FROM technician_skill_verifications WHERE id = $1', [pending.id]);
+    expect(stillPending.status).toBe('pending');
+    kycBucket.add(certificate);
+    expect((await approve().expect(200)).body.data.status).toBe('verified');
+    expect(await documents()).toBe(2);
+  });
+
   it('allows one review only, stores reviewer/time, and exposes approval to Member 3', async () => {
     const tech = await provisionTechnician();
     const id = (await submit(tech).expect(201)).body.data.id;

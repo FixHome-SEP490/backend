@@ -364,6 +364,16 @@ export class VisitGroupsService {
   }
 
   /**
+   * The same list with the coarse reason it is empty, read the same way as a single
+   * booking's (GET /bookings/:id/technician-candidates?diagnostics=1), so the visit
+   * page can say the address is out of the service area instead of a bare empty list.
+   */
+  async candidatesWithDiagnostics(groupId: string, customer: Customer) {
+    await this.assertEnabled();
+    return this.bookingsService.getCandidatesWithDiagnostics(await this.leadBookingId(groupId, customer), customer, { asVisit: true });
+  }
+
+  /**
    * Invite one or two technicians for the whole visit, in priority order. The
    * invitation lives on the lead booking; Accept creates every device's order.
    */
