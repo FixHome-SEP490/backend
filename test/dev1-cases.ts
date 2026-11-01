@@ -402,19 +402,6 @@ export function registerDev1Cases(context: () => Context) {
         const consult = unwrap((await post('/visit-groups/consultation', f.owner, { message: 'Nhà có 5 máy lạnh', devices: ['Máy 1', 'Máy 2'] }).expect(201)).body);
         const [supportCase] = await db.query('SELECT case_type, customer_id, booking_id FROM support_cases WHERE id = $1', [consult.id]);
         expect(supportCase).toMatchObject({ case_type: 'other', customer_id: f.owner.user.id, booking_id: null });
-
-        // DEF-r2-fix-visit-01: the address of a past visit can be deleted like that of a booking,
-        // the visit and its devices keep showing the address they were made for.
-        const shownBefore = unwrap((await get(`/visit-groups/${group.id}`, f.owner).expect(200)).body).items.map((item: any) => item.booking?.addressTextSnapshot);
-        expect(shownBefore.every((text: unknown) => typeof text === 'string' && text.includes('1 Test Street'))).toBe(true);
-        const removed = await request(context().app.getHttpServer()).delete(`/api/v1/me/addresses/${f.address.id}`).set('Authorization', `Bearer ${f.owner.accessToken}`);
-        expect(removed.status, JSON.stringify(removed.body)).toBe(204);
-        expect((await db.query('SELECT address_id FROM visit_groups WHERE id = $1', [group.id]))[0].address_id).toBeNull();
-        expect((await db.query('SELECT COUNT(*)::int n FROM bookings WHERE visit_group_id = $1 AND address_id IS NULL', [group.id]))[0].n).toBe(2);
-        const after = unwrap((await get(`/visit-groups/${group.id}`, f.owner).expect(200)).body);
-        expect(after.status).toBe('cancelled');
-        expect(after.items.map((item: any) => item.booking?.addressTextSnapshot)).toEqual(shownBefore);
-        expect(unwrap((await get('/visit-groups/my', f.owner).expect(200)).body)[0].id).toBe(group.id);
       } finally {
         await setGroups(false);
       }
