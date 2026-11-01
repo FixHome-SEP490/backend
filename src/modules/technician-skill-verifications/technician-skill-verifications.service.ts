@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -24,6 +25,9 @@ import {
   toSkillVerificationResponse,
   toSkillVerificationResponseList,
 } from './technician-skill-verifications.mapper';
+
+export const SKILL_EVIDENCE_NOT_UPLOADED =
+  'Không tìm thấy tệp chứng chỉ đã tải lên. Vui lòng tải lại tệp rồi gửi.';
 
 const VERIFICATION_RELATIONS = [
   'technicianSkill',
@@ -82,6 +86,10 @@ export class TechnicianSkillVerificationsService {
         'This skill has no pending verification request to attach evidence to',
       );
     }
+    // The path proves the owner, the bucket proves the upload: a path that was
+    // never uploaded through the signed upload URL is refused before anything
+    // is saved (storage unreachable is a 503 from objectExists).
+    await this.assertUploaded(dto.storageObjectPath, technicianUserId);
 
     await this.documentRepo.save(
       this.documentRepo.create({
@@ -167,6 +175,18 @@ export class TechnicianSkillVerificationsService {
     reviewerId: string,
     dto: AttachSkillEvidenceDto,
   ): Promise<SkillVerificationResponseDto> {
+    // The issued certificate must be in the bucket too. Checked before the
+    // transaction so no database connection waits on the storage call.
+    const target = await this.verificationRepo.findOne({
+      where: { id },
+      relations: ['technicianSkill', 'technicianSkill.technician'],
+    });
+    if (!target) throw new NotFoundException('Skill verification request not found');
+    await this.assertUploaded(
+      dto.storageObjectPath,
+      target.technicianSkill.technician.userId,
+    );
+
     return this.verificationRepo.manager.transaction(async (manager) => {
       const verifications = manager.getRepository(TechnicianSkillVerification);
       const verification = await verifications.findOne({
@@ -273,6 +293,18 @@ export class TechnicianSkillVerificationsService {
       if (!updated) throw new NotFoundException('Skill verification request not found');
       return toSkillVerificationResponse(updated);
     });
+  }
+
+  private async assertUploaded(
+    storageObjectPath: string,
+    technicianUserId: string,
+  ): Promise<void> {
+    this.storageService.validateObjectPath(storageObjectPath, technicianUserId);
+    const exists = await this.storageService.objectExists(
+      storageObjectPath,
+      technicianUserId,
+    );
+    if (!exists) throw new BadRequestException(SKILL_EVIDENCE_NOT_UPLOADED);
   }
 
   async createCertificateUploadUrl(

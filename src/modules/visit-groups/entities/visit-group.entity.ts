@@ -16,8 +16,9 @@ export class VisitGroup extends BaseEntity {
   @Column({ name: 'customer_id', type: 'uuid' })
   customerId: string;
 
-  @Column({ name: 'address_id', type: 'uuid' })
-  addressId: string;
+  /** Null once the customer deletes the address; every device keeps its own address snapshot (DEF-r2-fix-visit-01). */
+  @Column({ name: 'address_id', type: 'uuid', nullable: true })
+  addressId: string | null;
 
   @Column({ type: 'varchar', length: 16, default: 'submitted' })
   status: VisitGroupStatus;
