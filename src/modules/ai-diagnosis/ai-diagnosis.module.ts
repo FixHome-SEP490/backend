@@ -8,11 +8,12 @@ import { AdminAiQualityController } from './admin-ai-quality.controller';
 import { AiDiagnosisService } from './ai-diagnosis.service';
 import { AiDiagnosis } from './entities/ai-diagnosis.entity';
 import { AiChatSession } from './entities/ai-chat-session.entity';
+import { AiChatTurn } from './entities/ai-chat-turn.entity';
 import { Service } from '../services/entities/service.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([AiDiagnosis, AiChatSession, Service]),
+    TypeOrmModule.forFeature([AiDiagnosis, AiChatSession, AiChatTurn, Service]),
     HttpModule.register({
       timeout: 30000,
     }),
