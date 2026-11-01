@@ -23,4 +23,16 @@ export class AiChatSession extends BaseEntity {
 
   @Column({ type: 'jsonb' })
   summary: AiChatSummaryState;
+
+  /**
+   * The AI Service's diagnostic state after the newest turn (PO 01/11/2026):
+   * `canonical` in a versioned schema, `engine` opaque to everyone but the AI
+   * Service. Sent back with the next message so a restarted AI Service carries
+   * on where it stopped. Only ever replaced by a higher `stateVersion`.
+   */
+  @Column({ name: 'diagnostic_state', type: 'jsonb', nullable: true })
+  diagnosticState?: Record<string, unknown> | null;
+
+  @Column({ name: 'state_version', type: 'int', default: 0 })
+  stateVersion: number;
 }

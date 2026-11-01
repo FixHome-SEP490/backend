@@ -101,7 +101,7 @@ describe('AI session recording', () => {
   it("sends a signed-in customer's own earlier repairs, and only theirs", async () => {
     const find = vi.fn().mockResolvedValue([BOOKING]);
     await withBookings(find).ask({ question: 'máy lạnh không mát' }, CUSTOMER);
-    expect(http.post.mock.calls[0][1].pastJobs).toEqual([{ serviceVi: 'Sửa điều hòa', deviceVi: 'Máy lạnh', date: '2026-08-03' }]);
+    expect(http.post.mock.calls[0][1].pastJobs).toEqual([{ serviceVi: 'Sửa điều hòa', deviceVi: 'Máy lạnh', date: '2026-08-03', status: 'SCHEDULED' }]);
     expect(find.mock.calls[0][1]).toMatchObject({ where: { customerId: 'customer-a', status: 'matched' }, take: 5 });
   });
 

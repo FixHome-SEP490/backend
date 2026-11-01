@@ -15,13 +15,13 @@ describe('past jobs for the AI', () => {
       } as any,
     ]);
     expect(jobs).toEqual([
-      { serviceVi: 'Sửa điều hòa không mát / chảy nước', deviceVi: 'Máy lạnh', faultVi: 'Thiếu gas, xì gas', date: '2026-08-03' },
+      { serviceVi: 'Sửa điều hòa không mát / chảy nước', deviceVi: 'Máy lạnh', faultVi: 'Thiếu gas, xì gas', date: '2026-08-03', status: 'SCHEDULED' },
     ]);
   });
 
   it('falls back to the service name and the booking day, and leaves out what is unknown', () => {
     expect(pastJobsFromBookings([{ service: { name: '  Sửa tủ lạnh  ' }, createdAt: new Date('2026-09-20T03:00:00Z'), aiSummary: null }])).toEqual([
-      { serviceVi: 'Sửa tủ lạnh', date: '2026-09-20' },
+      { serviceVi: 'Sửa tủ lạnh', date: '2026-09-20', status: 'SCHEDULED' },
     ]);
   });
 
@@ -36,5 +36,15 @@ describe('past jobs for the AI', () => {
     expect(job.serviceVi).toHaveLength(AI_PAST_JOBS_LIMITS.service);
     expect(job.deviceVi).toHaveLength(AI_PAST_JOBS_LIMITS.device);
     expect(job.faultVi).toHaveLength(AI_PAST_JOBS_LIMITS.fault);
+  });
+
+  it('tells a completed repair by its own day and an accepted one as scheduled (PO 01/11/2026)', () => {
+    const base = { serviceNameSnapshot: 'Vệ sinh điều hòa', preferredStartAt: '2026-10-31T02:00:00Z', createdAt: '2026-10-20T00:00:00Z' };
+    expect(pastJobsFromBookings([{ ...base, order: { completed: true, completedAt: '2026-10-31T09:00:00Z' } }])).toEqual([
+      { serviceVi: 'Vệ sinh điều hòa', date: '2026-10-31', status: 'COMPLETED' },
+    ]);
+    expect(pastJobsFromBookings([{ ...base, preferredStartAt: '2026-11-05T02:00:00Z', order: { completed: false } }])).toEqual([
+      { serviceVi: 'Vệ sinh điều hòa', date: '2026-11-05', status: 'SCHEDULED' },
+    ]);
   });
 });
