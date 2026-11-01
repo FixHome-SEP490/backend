@@ -502,6 +502,42 @@ export function registerDev1Cases(context: () => Context) {
       }
     });
 
+    it('tells the customer over HTTP why a visit has no technician, with the same reasons as one booking (bug 41)', async () => {
+      const f = await fixture(), db = context().db;
+      const { BusinessConfigService } = runtimeRequire('./dist/modules/system-config/business-config.service.js');
+      const setGroups = async (on: boolean) => {
+        await db.query(`UPDATE "system_configs" SET "value" = $1 WHERE "key" = 'visit_group.enabled'`, [String(on)]);
+        context().app.get(BusinessConfigService).invalidateCache();
+      };
+      const other = await save('Service', { categoryId: f.service.categoryId, name: 'Visit reason fixture', code: randomUUID(), pricingMode: 'fixed_price', fixedPrice: 150000, scopeDescription: 'Fixture scope', unit: 'job' });
+      const spareProfile = await db.getRepository('TechnicianProfile').findOneByOrFail({ userId: f.spare.user.id });
+      await save('TechnicianSkill', { technicianId: spareProfile.id, serviceId: other.id, listedLaborPrice: 100000, verificationStatus: 'verified' });
+      const day = new Date(Date.now() + 7 * 3600000 + 4 * 86400000).toISOString().slice(0, 10);
+      const items = [{ serviceId: f.service.id, description: 'Máy kêu to' }, { serviceId: other.id, description: 'Không lên nguồn' }];
+      const hanoi = await save('Address', { userId: f.owner.user.id, line1: '12 Phố Huế', district: 'Hai Bà Trưng', province: 'Hà Nội', lat: 21.0136, lng: 105.8512 });
+      try {
+        await setGroups(true);
+        const far = unwrap((await post('/visit-groups', f.owner, { addressId: hanoi.id, mode: 'scheduled', date: day, slot: 'afternoon', items }).expect(201)).body);
+        const diagnosed = await get(`/visit-groups/${far.id}/technician-candidates?diagnostics=1`, f.owner).expect(200);
+        expect(diagnosed.body).toMatchObject({ success: true, data: [], meta: { emptyReason: 'OUTSIDE_COVERAGE' } });
+        // Mobile reads the old shape: a plain list in data and nothing else.
+        const legacy = await get(`/visit-groups/${far.id}/technician-candidates`, f.owner).expect(200);
+        expect(legacy.body.data).toEqual([]);
+        expect(legacy.body).not.toHaveProperty('meta');
+        expect(legacy.body).not.toHaveProperty('emptyReason');
+        // Somebody else's visit is still refused.
+        expect((await get(`/visit-groups/${far.id}/technician-candidates?diagnostics=1`, f.outsider)).status).toBe(404);
+
+        // In the area the technician with both skills is listed and no reason is given.
+        const near = unwrap((await post('/visit-groups', f.owner, { addressId: f.address.id, mode: 'scheduled', date: day, slot: 'afternoon', items }).expect(201)).body);
+        const listed = await get(`/visit-groups/${near.id}/technician-candidates?diagnostics=1`, f.owner).expect(200);
+        expect(listed.body.data.map((c: any) => c.userId)).toEqual([f.spare.user.id]);
+        expect(listed.body.meta).toEqual({ emptyReason: null });
+      } finally {
+        await setGroups(false);
+      }
+    });
+
     it('moves, drops and cancels a held visit as one, never one device alone (PO 21/10/2026)', async () => {
       const f = await fixture(), db = context().db;
       const { BusinessConfigService } = runtimeRequire('./dist/modules/system-config/business-config.service.js');
