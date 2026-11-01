@@ -12,6 +12,7 @@ import * as bcrypt from 'bcrypt';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { registerDev1Cases } from './dev1-cases';
+import { installKycBucket, kycBucket, uploadedKyc } from './kyc-bucket';
 
 // Always use a new schema; never synchronize/drop the configured database.
 const schema = `member1_e2e_${randomUUID().replace(/-/g, '')}`;
@@ -33,14 +34,14 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
   let technician: Session;
   let admin: Session;
   let jwt: JwtService;
-  const documentFor = (technicianId: string) => ({
+  const documentFor = (technicianId: string) => uploadedKyc({
     documentType: 'citizen_id_front',
     storageObjectPath: `kyc/${technicianId}/id-front.jpg`,
     fileName: 'id-front.jpg',
     fileSize: 1024,
     mimeType: 'image/jpeg',
   });
-  const facePhotoFor = (technicianId: string) => ({
+  const facePhotoFor = (technicianId: string) => uploadedKyc({
     documentType: 'face_photo',
     storageObjectPath: `kyc/${technicianId}/face-photo.jpg`,
     fileName: 'face-photo.jpg',
@@ -238,6 +239,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     app.useLogger(false);
     configureApplication(app);
     await app.init();
+    installKycBucket(app);
     jwt = app.get(JwtService);
     customer = await register();
     technician = await provisionTechnician();
@@ -733,7 +735,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
   });
   it('accepts a face video instead of a face photo, as the web sends since 25/09/2026', async () => {
     const tech = await register('technician');
-    const video = { documentType: 'face_video', storageObjectPath: `kyc/${tech.user.id}/face.webm`, fileName: 'face-liveness.webm', fileSize: 2_000_000, mimeType: 'video/webm' };
+    const video = uploadedKyc({ documentType: 'face_video', storageObjectPath: `kyc/${tech.user.id}/face.webm`, fileName: 'face-liveness.webm', fileSize: 2_000_000, mimeType: 'video/webm' });
     const created = (await http().post('/api/v1/technicians/me/verification').set('Authorization', bearer(tech))
       .send({ documents: [documentFor(tech.user.id), video] }).expect(201)).body.data;
     const [stored] = await db.query("SELECT document_type, mime_type FROM verification_documents WHERE verification_id = $1 AND document_type = 'face_video'", [created.id]);
@@ -744,6 +746,41 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
       .send({ documents: [documentFor(other.user.id), { ...video, storageObjectPath: `kyc/${other.user.id}/face.webm`, fileName: 'face.png' }] }).expect(400);
     await http().post('/api/v1/technicians/me/verification/documents/upload-url').set('Authorization', bearer(other))
       .send({ mimeType: 'video/quicktime' }).expect(400);
+  });
+
+  it('accepts only documents this technician really uploaded (DEF-r2-mobile-01)', async () => {
+    const tech = await provisionTechnician();
+    const other = await provisionTechnician();
+    const send = (documents: unknown[]) =>
+      http().post('/api/v1/technicians/me/verification').set('Authorization', bearer(tech)).send({ documents });
+    const issue = async (session: Session) =>
+      (await http().post('/api/v1/technicians/me/verification/documents/upload-url').set('Authorization', bearer(session))
+        .send({ mimeType: 'image/jpeg' }).expect(201)).body.data.storageObjectPath as string;
+    const doc = (documentType: string, storageObjectPath: string) =>
+      ({ documentType, storageObjectPath, fileName: `${documentType}.jpg`, fileSize: 2048, mimeType: 'image/jpeg' });
+    const count = async () =>
+      Number((await db.query('SELECT count(*)::int AS n FROM technician_verifications WHERE technician_id = $1', [tech.user.id]))[0].n);
+
+    // A path in the technician's own folder that nothing was ever uploaded to.
+    const front = await issue(tech);
+    const face = await issue(tech);
+    kycBucket.add(face);
+    const ghost = await send([doc('citizen_id_front', `kyc/${tech.user.id}/${randomUUID()}.jpg`), doc('face_photo', face)]).expect(400);
+    expect(JSON.stringify(ghost.body)).toContain('Không tìm thấy giấy tờ đã tải lên');
+    // An upload URL was issued but the upload never happened.
+    await send([doc('citizen_id_front', front), doc('face_photo', face)]).expect(400);
+    // Another technician's file, even one that was uploaded.
+    const theirs = await issue(other);
+    kycBucket.add(theirs);
+    await send([doc('citizen_id_front', theirs), doc('face_photo', face)]).expect(400);
+    expect(await count()).toBe(0);
+    expect(Number((await db.query('SELECT count(*)::int AS n FROM verification_documents d JOIN technician_verifications v ON v.id = d.verification_id WHERE v.technician_id = $1', [tech.user.id]))[0].n)).toBe(0);
+
+    // The real upload of the front, then the same request goes through.
+    kycBucket.add(front);
+    const created = (await send([doc('citizen_id_front', front), doc('face_photo', face)]).expect(201)).body.data;
+    expect(created.status).toBe('pending');
+    expect(await count()).toBe(1);
   });
 
   it('allows one review only, stores reviewer/time, and exposes approval to Member 3', async () => {

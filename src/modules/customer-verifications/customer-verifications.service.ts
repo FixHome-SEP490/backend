@@ -8,7 +8,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Brackets, Repository } from 'typeorm';
+import { Brackets, In, Not, Repository } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import { PaginationMeta } from '../../shared/dto';
@@ -76,6 +76,11 @@ export interface CustomerKycState {
  * admin reviews, as for technicians (BRX-041). Once approved, the name and
  * date of birth on the profile are locked and the name is frozen on the row
  * for the bank account check.
+ *
+ * Both images must really be in the private KYC bucket under the customer's
+ * own prefix, put there through the signed upload URL. The submitted details
+ * stay on the verification row until the admin approves: only then do they
+ * become the profile, so a pending or rejected request never rewrites it.
  */
 @Injectable()
 export class CustomerVerificationsService {
@@ -107,6 +112,9 @@ export class CustomerVerificationsService {
       this.verificationRepo.manager.getRepository(User).findOne({ where: { id: customerId } }),
     ]);
     if (!user) throw new NotFoundException('Không tìm thấy tài khoản');
+    // The profile is not rewritten on submit, so a field the profile does not
+    // hold yet is prefilled from the last request (to resend after a rejection).
+    const last = verification && verification.status !== VerificationStatus.VERIFIED ? verification : null;
     return {
       status: kycStatusOf(verification),
       rejectionReason:
@@ -114,10 +122,12 @@ export class CustomerVerificationsService {
       verification: verification ? toCustomerVerificationView(verification) : null,
       profile: {
         fullName: user.fullName,
-        dateOfBirth: toIsoDate(user.dateOfBirth as unknown as string | Date | null),
-        gender: user.gender ?? null,
-        citizenIdNumber: user.citizenIdNumber ?? null,
-        address: user.fullAddress ?? null,
+        dateOfBirth:
+          toIsoDate(user.dateOfBirth as unknown as string | Date | null) ??
+          toIsoDate((last?.dateOfBirth ?? null) as unknown as string | Date | null),
+        gender: user.gender ?? last?.gender ?? null,
+        citizenIdNumber: user.citizenIdNumber ?? last?.citizenIdNumber ?? null,
+        address: user.fullAddress ?? last?.fullAddress ?? null,
       },
     };
   }
@@ -174,6 +184,7 @@ export class CustomerVerificationsService {
   async submit(customerId: string, dto: SubmitCustomerVerificationDto): Promise<CustomerKycState> {
     this.validateIdentity(dto);
     this.validateDocuments(customerId, dto);
+    await this.assertDocumentsUploaded(customerId, dto);
 
     const fullName = dto.fullName.trim().replace(/\s+/g, ' ');
     const address = dto.address.trim().replace(/\s+/g, ' ');
@@ -205,7 +216,18 @@ export class CustomerVerificationsService {
         .where('u.citizen_id_number = :cccd', { cccd: dto.citizenIdNumber })
         .andWhere('u.id <> :id', { id: customerId })
         .getExists();
-      if (taken) {
+      // The number may also sit on another customer's request still waiting
+      // for review, since the profile only takes it at approval.
+      const claimed =
+        taken ||
+        (await verifications.exists({
+          where: {
+            citizenIdNumber: dto.citizenIdNumber,
+            customerId: Not(customerId),
+            status: In([VerificationStatus.PENDING, VerificationStatus.VERIFIED]),
+          },
+        }));
+      if (claimed) {
         throw new BusinessException(
           ErrorCodes.VALIDATION_FAILED,
           'Số CCCD này đã được sử dụng bởi tài khoản khác.',
@@ -242,14 +264,8 @@ export class CustomerVerificationsService {
         ),
       );
 
-      // The details confirmed against the card become the profile (PO 14/10/2026).
-      await manager.getRepository(User).update(customerId, {
-        fullName,
-        dateOfBirth: dto.dateOfBirth as unknown as Date,
-        gender: dto.gender,
-        citizenIdNumber: dto.citizenIdNumber,
-        fullAddress: address,
-      });
+      // The profile is left as it is: the details become the profile only
+      // when the admin approves them (see review()).
 
       await this.auditLog.logWithManagerStrict(manager, {
         actorUserId: customerId,
@@ -385,6 +401,19 @@ export class CustomerVerificationsService {
         throw new NotFoundException('Không tìm thấy khách hàng của hồ sơ này');
       }
 
+      if (status === VerificationStatus.VERIFIED) {
+        // The profile takes the number only now, so check it is still free.
+        const taken = await manager
+          .getRepository(User)
+          .createQueryBuilder('u')
+          .where('u.citizen_id_number = :cccd', { cccd: verification.citizenIdNumber })
+          .andWhere('u.id <> :id', { id: customer.id })
+          .getExists();
+        if (taken) {
+          throw new ConflictException('Số CCCD của hồ sơ này đã thuộc về một tài khoản khác, không thể duyệt.');
+        }
+      }
+
       const now = new Date();
       await verifications.update(
         { id, status: VerificationStatus.PENDING },
@@ -482,7 +511,24 @@ export class CustomerVerificationsService {
     }
   }
 
-  /** Exactly the front and the back of the card, both uploaded by this customer. */
+  /**
+   * Every image must be in the private bucket already. The path check in
+   * validateDocuments proves it is this customer's prefix, this proves the
+   * file was uploaded there through the signed upload URL.
+   */
+  private async assertDocumentsUploaded(customerId: string, dto: SubmitCustomerVerificationDto): Promise<void> {
+    const present = await Promise.all(
+      dto.documents.map((doc) => this.storage.objectExists(doc.storageObjectPath, customerId)),
+    );
+    if (present.some((exists) => !exists)) {
+      throw new BusinessException(
+        ErrorCodes.VALIDATION_FAILED,
+        'Không tìm thấy ảnh CCCD đã tải lên. Vui lòng tải ảnh lên lại rồi gửi hồ sơ.',
+      );
+    }
+  }
+
+  /** Exactly the front and the back of the card, both under this customer's own prefix. */
   private validateDocuments(customerId: string, dto: SubmitCustomerVerificationDto): void {
     const documents = dto.documents ?? [];
     const types = documents.map((d) => d.documentType).sort();
