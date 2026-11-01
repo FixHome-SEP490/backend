@@ -44,12 +44,13 @@ const isTerminal = (item: VisitGroupReadItemStatus) =>
 
 /** Derive the parent row's status from its child lifecycle; VisitGroup.status is only a legacy submitted/cancelled marker. */
 export function deriveVisitGroupStatus(items: readonly VisitGroupReadItemStatus[]): VisitGroupReadStatus {
-  if (items.some((item) => item.orderStatus === 'under_repair')) return 'under_repair';
-  if (items.some((item) => item.orderStatus === 'en_route' && item.hasActiveAssignment)) return 'en_route';
-  if (items.some((item) => item.orderStatus === 'accepted' && item.hasActiveAssignment)) return 'accepted';
+  const active = items.filter(item => !isTerminal(item));
+  if (active.some((item) => item.orderStatus === 'under_repair')) return 'under_repair';
+  if (active.some((item) => item.orderStatus === 'en_route' && item.hasActiveAssignment)) return 'en_route';
+  if (active.some((item) => item.orderStatus === 'accepted' && item.hasActiveAssignment)) return 'accepted';
   if (
-    items.some((item) => item.bookingStatus === 'closed') ||
-    items.some((item) => ['accepted', 'en_route'].includes(item.orderStatus ?? '') && !item.hasActiveAssignment)
+    active.some((item) => item.bookingStatus === 'closed') ||
+    active.some((item) => ['accepted', 'en_route'].includes(item.orderStatus ?? '') && !item.hasActiveAssignment)
   ) return 'no_technician';
 
   if (items.length && items.every(isTerminal)) {
@@ -62,30 +63,33 @@ export function deriveVisitGroupStatus(items: readonly VisitGroupReadItemStatus[
     return 'mixed';
   }
 
-  if (items.some((item) => item.bookingStatus === 'matching')) return 'matching';
-  if (items.some((item) => item.bookingStatus === 'submitted')) return 'submitted';
+  if (active.some((item) => item.bookingStatus === 'matching')) return 'matching';
+  if (active.some((item) => item.bookingStatus === 'submitted')) return 'submitted';
   return 'no_technician';
 }
 
 /** Parameter-free, fixed SQL expression used to filter parent rows before COUNT/OFFSET/LIMIT. */
 export function visitGroupStatusSql(groupAlias = 'vg'): string {
+  const activeChild = "vgi.outcome IS NULL AND (vo.status IS NULL OR vo.status NOT IN ('completed', 'cancelled')) AND vb.status <> 'cancelled'";
   const childExists = (condition: string) => `EXISTS (
     SELECT 1 FROM visit_group_items vgi
     JOIN bookings vb ON vb.id = vgi.booking_id
     LEFT JOIN service_orders vo ON vo.booking_id = vb.id
     WHERE vgi.group_id = ${groupAlias}.id AND (${condition})
   )`;
+  // A NULL predicate is not a proven match (notably a completed order without outcome).
   const childrenExcept = (condition: string) => `EXISTS (
     SELECT 1 FROM visit_group_items vgi
     JOIN bookings vb ON vb.id = vgi.booking_id
     LEFT JOIN service_orders vo ON vo.booking_id = vb.id
-    WHERE vgi.group_id = ${groupAlias}.id AND NOT (${condition})
+    WHERE vgi.group_id = ${groupAlias}.id AND (${condition}) IS NOT TRUE
   )`;
   const hasActiveOrder = (status: string) => `EXISTS (
     SELECT 1 FROM visit_group_items vgi
     JOIN service_orders vo ON vo.booking_id = vgi.booking_id
     JOIN technician_assignments vta ON vta.service_order_id = vo.id AND vta.is_active = true
-    WHERE vgi.group_id = ${groupAlias}.id AND vo.status = '${status}'
+    JOIN bookings vb ON vb.id = vgi.booking_id
+    WHERE vgi.group_id = ${groupAlias}.id AND ${activeChild} AND vo.status = '${status}'
   )`;
   const hasChildren = childExists('true');
   const allTerminal = `${hasChildren} AND NOT ${childrenExcept("vgi.outcome IS NOT NULL OR vo.status IN ('completed', 'cancelled') OR vb.status = 'cancelled'")}`;
@@ -95,17 +99,17 @@ export function visitGroupStatusSql(groupAlias = 'vg'): string {
   const allSucceeded = `${hasChildren} AND NOT ${childrenExcept("vgi.outcome = 'succeeded' OR (vgi.outcome IS NULL AND vo.status = 'completed')")}`;
 
   return `CASE
-    WHEN ${childExists("vo.status = 'under_repair'")} THEN 'under_repair'
+    WHEN ${childExists(`${activeChild} AND vo.status = 'under_repair'`)} THEN 'under_repair'
     WHEN ${hasActiveOrder('en_route')} THEN 'en_route'
     WHEN ${hasActiveOrder('accepted')} THEN 'accepted'
-    WHEN ${childExists("vb.status = 'closed' OR (vo.status IN ('accepted', 'en_route') AND NOT EXISTS (SELECT 1 FROM technician_assignments vta WHERE vta.service_order_id = vo.id AND vta.is_active = true))")} THEN 'no_technician'
+    WHEN ${childExists(`${activeChild} AND (vb.status = 'closed' OR (vo.status IN ('accepted', 'en_route') AND NOT EXISTS (SELECT 1 FROM technician_assignments vta WHERE vta.service_order_id = vo.id AND vta.is_active = true)))`)} THEN 'no_technician'
     WHEN ${allTerminal} AND ${allCancelled} THEN 'cancelled'
     WHEN ${allTerminal} AND ${allFailed} THEN 'failed'
     WHEN ${allTerminal} AND ${allQuoteDeclined} THEN 'quote_declined'
     WHEN ${allTerminal} AND ${allSucceeded} THEN 'completed'
     WHEN ${allTerminal} THEN 'mixed'
-    WHEN ${childExists("vb.status = 'matching'")} THEN 'matching'
-    WHEN ${childExists("vb.status = 'submitted'")} THEN 'submitted'
+    WHEN ${childExists(`${activeChild} AND vb.status = 'matching'`)} THEN 'matching'
+    WHEN ${childExists(`${activeChild} AND vb.status = 'submitted'`)} THEN 'submitted'
     ELSE 'no_technician'
   END`;
 }

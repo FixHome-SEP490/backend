@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-01 22:41 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/address-strict-text-coords
+> Cập nhật lần cuối: 2026-11-02 01:00 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-qa-seven-issues-be-20261102
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -93,6 +93,8 @@ Ba điều không đổi giữa các repo:
 Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức của nhóm). Mâu thuẫn giữa code và tài liệu thì ghi vào mục 8 và hỏi PO, không tự quyết.
 
 ## 3. Trạng thái hiện tại
+
+QA demo A/B/C (source, 02/11/2026): ảnh `ADDITIONAL` riêng tư được tải ở `EN_ROUTE` sau check-in VALID của lần phân công active hiện tại; giữ guard dừng, completion, MIME, giới hạn và hai lần kiểm dưới khóa. Thợ gốc sau STOP đã xác minh được đọc summary trả kho `UNKNOWN` khi đơn không có custody; không suy ra đã trả. VisitGroup bỏ child có outcome/terminal khỏi trạng thái đang làm trong TS và SQL, giữ trạng thái sibling active; toàn bộ interrupted hoặc completed + interrupted là `mixed`; predicate SQL NULL không được coi là outcome đã xác nhận. 9 spec/287 test, lint (5 cảnh báo có sẵn), typecheck/build PASS; smoke TS/SQL SQLite trong bộ nhớ 1.200 tổ hợp PASS, không thay bằng chứng PostgreSQL. Thêm `test/visit-group-status.e2e-spec.ts` với 7 ca SELECT-only CTE cho PostgreSQL localhost, chưa chạy. Không migration/dependency mới, không ghi DB dùng chung; PostgreSQL/runtime/Web-Mobile/full suite NOT VERIFIED.
 
 Group no-show/unreachable (source, 01/11/2026): contact attempt lưu AuditLog theo giờ server, notification khách cùng transaction; đủ hai lần gọi cách 300 giây và chờ 600 giây từ lần gọi đầu mới được dừng nhóm. Một command nhóm dùng một transaction, receipt/case riêng từng child và correlation chung; giữ completed/paid/completion-requested/terminal, chặn trạng thái tiền không rõ và receipt xung đột. Không đổi enum ServiceOrder, tiền, vật tư hoặc tự phạt. Rebook nhận subset 1–3 nguồn đã dừng, loại sibling active, không cần SM đóng case. Không migration/dependency mới, không ghi shared DEV DB. Contract và giới hạn: `docs/GROUP-STOP-API-CONTRACT.md`; PostgreSQL/Web/Mobile/runtime NOT VERIFIED.
 
@@ -213,6 +215,8 @@ Kiểu modular monolith: mỗi module `controller → service → TypeORM reposi
 Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ success: false, statusCode, error: { code, message, details? }, timestamp, path }`.
 
 ## 5. Hợp đồng với repo khác
+
+- QA demo A/B/C: `POST /service-orders/:id/evidence` với `type=additional` nhận thêm `EN_ROUTE` khi check-in VALID thuộc lần phân công active hiện tại, không bắt buộc ảnh BEFORE/face để báo không thể tiếp tục; trình tự BEFORE/face và hành vi `UNDER_REPAIR` giữ nguyên. `GET /service-orders/:id/part-returns` chỉ mở thêm cho thợ gốc có strict receipt STOP + assignment/check-in hợp lệ khi không có custody nào: `data: [{ orderId, receiptState: 'UNKNOWN', returnStatus: 'unknown' }]`, không trả số lượng, ID linh kiện, thông tin khách/thợ hoặc kết luận clear. Không dùng summary này để khai/nhận trả; SM vẫn nhận vật lý thủ công. Feature chưa mở vẫn 503; chỉ có custody thợ khác vẫn 403; mixed custody chỉ trả dòng của chính thợ theo ACL cũ. Web phải nhận nhánh UNKNOWN trước khi tính tổng, không ép trường thiếu thành 0; adapter hiện tại chỉ khai báo custody record nên cần phối hợp consumer/context riêng. Mobile source hiện chỉ upload BEFORE/AFTER, chưa thấy consumer part-returns; adoption/runtime NOT VERIFIED. VisitGroup giữ enum hiện có, TS/SQL loại trạng thái lịch sử của child terminal khỏi ưu tiên active, không đổi order/finance.
 
 - Group stop additive: thợ `GET /visit-groups/:id/contact-readiness?selectedOrderId=...`, `POST .../contact-attempt {commandId,selectedOrderId,kind: CALL_ATTEMPT|IN_APP_NOTIFICATION}`, `POST .../cannot-continue {commandId,selectedOrderId,reasonClass,reasonCode,reason,photoEvidenceIds?}`; absence/unreachable chỉ qua lệnh nhóm, không qua child. Readiness lấy giờ server, gọi chỉ ghi attempt, không chứng minh kết nối. SM/Admin `GET .../stop-incidents`; list/detail hỗ trợ có `groupIncident` để gom case theo command nhóm. Draft interruption nhận `sourceBookingIds` phân cách dấu phẩy; confirm dùng `items` subset có anchor, giữ khóa/unique source/replay cũ. Giữ mọi nghĩa vụ tiền/vật tư. DTO/response/lỗi và consumer instructions: `docs/GROUP-STOP-API-CONTRACT.md`. Đã đọc Web adapter đang triển khai, không sửa consumer; Mobile adoption/runtime và liên repo NOT VERIFIED.
 
@@ -353,6 +357,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 8. Việc đang dở và rủi ro đã biết
 
+- QA demo A/B/C: chưa chạy authenticated HTTP, provider upload, PostgreSQL lock/concurrency/filter SQL, Docker/health hoặc Web/Mobile thiết bị thật; không kết nối DB dùng chung. Coordinator cần tích hợp Web nhánh UNKNOWN của part-returns (không coi là clear), đồng bộ context consumer/docs và restart backend trước runtime QA. Không commit/push/PR/merge/deploy trong task source writer này.
+
 - Group stop: chỉ kiểm source với persistence doubles, không chứng minh PostgreSQL lock scheduling/RLS/trigger hay shared DEV schema bằng unit. Không chạy DB E2E, migration/seed, server riêng hoặc Docker/health trong task này. Invoice ở child unfinished hoặc tiền không rõ trả 409, receipt gián đoạn xung đột cũng chặn cả lượt để SM kiểm tra; không cố chữa tiền. Consumer cần dùng child disposition, correlation staff và giữ command khi kết quả không rõ. Coordinator review rồi restart Backend sau tích hợp được phép trước runtime QA; Web/Mobile/authenticated runtime NOT VERIFIED. Không commit/push/PR/merge/deploy.
 
 - PR #173 CI run `41011245514`: 34 E2E FAIL (33 tại shortlist 409, 1 candidate VisitGroup rỗng); AI/history và conversation dừng ở helper Accept trước assertion riêng. Fixture DEV1 và WEB-ACCEPT thiếu ví thợ theo guard #42. Commit `6c69f00` seed Wallet tổng hợp 1.000.000 ₫ theo fixture custody, đúng User ID và schema E2E riêng; không gọi nạp ví/provider, không đổi guard/config/migration hoặc assertion. Run `41012366451` trên PostgreSQL 16 CI PASS: E2E 100 passed/34 skipped, unit 2798 passed/58 skipped; lint/typecheck/build/audit và hai gate PostgreSQL voucher/cash-reputation PASS. Không còn lỗi trong 100 E2E đã chạy; các harness opt-in vẫn chưa được chứng minh bởi suite này. Docker/PostgreSQL local và Web/Mobile runtime NOT VERIFIED; không dùng DB chung hoặc deploy (deploy job skipped).
@@ -395,6 +401,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-02 01:00 (UTC+7) | foxonworld | foxonworld/fixhome-qa-seven-issues-be-20261102 | Sửa upload onsite ADDITIONAL, quyền đọc UNKNOWN trả kho sau STOP và projection trạng thái VisitGroup; giữ nghĩa vụ cũ và ghi giới hạn consumer/runtime.
 - 2026-11-01 22:41 (UTC+7) | ToanAltF4 | fix/address-strict-text-coords | Địa chỉ lưu bắt buộc đủ cặp lat, lng hợp lệ và chữ địa chỉ sạch, từ chối emoji, ký tự vô hình, điều khiển, thẻ HTML với câu tiếng Việt (lỗi 29, PO 01/11/2026)
 - 2026-11-01 21:56 (UTC+7) | foxonworld | foxonworld/fixhome-group-stop-be-20261101 | Thêm contact evidence bền vững, group stop nguyên tử/idempotent, staff correlation và rebook subset; giữ nghĩa vụ cũ và giới hạn PostgreSQL/runtime.
 - 2026-11-01 21:25 (UTC+7) | ToanAltF4 | feat/ai-diagnostic-state | Lưu trạng thái chẩn đoán AI có version, bảng ai_chat_turns chống tin lặp, pastJobs có trạng thái COMPLETED/SCHEDULED
@@ -433,5 +440,4 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-27 21:04 (UTC+7) | foxonworld | foxonworld/fixhome-t21-f3-wallet-only-20261027 | Implement owner-approved F3 wallet-only refund independent of settled original rail; keep provider/cash payment evidence, gross-net ledger, cash subsidy reversal, full quota recovery and refund duplication guard.
 - 2026-10-27 18:20 (UTC+7) | foxonworld | foxonworld/fixhome-t21-final-merge-post-toan-20261027 | Cập nhật T2.1 funded rails có guard động, CASH tech lookup, giới hạn refund F3 và F4 chưa apply; runtime chưa kiểm chứng.
 - 2026-10-26 21:40 (UTC+7) | ToanAltF4 | feat/public-part-prices | GET /parts/prices công khai cho AI tính giá ước tính
-- 2026-10-26 18:49 (UTC+7) | ToanAltF4 | feat/ai-pushback-feedback | Tự ghi lần khách nói trợ lý sai từ customerDisagreed của AI Service; ai-quality trả thêm source, kind, said, rejected, settledOn
 - 2026-10-26 14:30 (UTC+7) | foxonworld | foxonworld/fixhome-t2-integration-20261026 | Ghi T2 R-BE/Voucher, GENERAL browse, admin grant và cấu hình bù tự động; migration chưa chạy, cổng tiền còn khóa.
