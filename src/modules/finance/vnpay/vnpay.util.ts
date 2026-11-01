@@ -11,6 +11,40 @@ export interface VnpayBuildUrlInput {
   returnUrl: string;
   ipAddr: string;
   createdAt?: Date;
+  /** Stored on the attempt and sent as vnp_ExpireDate; VNPay refuses to pay the URL after it. */
+  expiresAt?: Date | null;
+}
+
+/**
+ * PO 01/11/2026 (bug 39): a payment URL is payable for 15 minutes after vnp_CreateDate.
+ * Without vnp_ExpireDate an abandoned attempt stayed open forever and blocked cash.
+ */
+export const VNPAY_URL_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * How long after vnp_ExpireDate an attempt still counts as in flight. VNPay sends the IPN of a
+ * payment made just before the expiry within seconds and retries a failed delivery for a few
+ * minutes, so 15 more minutes lets that IPN land first; only then may cash close the attempt.
+ */
+export const VNPAY_EXPIRY_GRACE_MS = 15 * 60 * 1000;
+
+/** failure_code of an attempt closed because its URL expired and the customer chose another rail. */
+export const VNPAY_URL_EXPIRED = 'VNPAY_URL_EXPIRED';
+/** failure_code once a signed success IPN arrived for an attempt already closed as expired. */
+export const VNPAY_PAID_AFTER_EXPIRY = 'VNPAY_PAID_AFTER_EXPIRY';
+
+export function vnpayExpiry(createdAt: Date): Date {
+  return new Date(createdAt.getTime() + VNPAY_URL_TTL_MS);
+}
+
+/**
+ * True only when the stored expiry plus the grace has passed. An attempt without a stored
+ * expiry (opened before vnp_ExpireDate existed) is never guessed abandoned.
+ */
+export function isAbandonedVnpayAttempt(expiresAt: Date | string | null | undefined, now: Date): boolean {
+  if (!expiresAt) return false;
+  const expiry = new Date(expiresAt).getTime();
+  return Number.isFinite(expiry) && now.getTime() >= expiry + VNPAY_EXPIRY_GRACE_MS;
 }
 
 function sortedQueryString(params: Record<string, string>): string {
@@ -48,6 +82,8 @@ export function buildPaymentUrl(input: VnpayBuildUrlInput): string {
     vnp_IpAddr: input.ipAddr,
     vnp_CreateDate: formatVnpayDate(input.createdAt ?? new Date()),
   };
+  // Signed with the other fields; VNPay 2.1.0 reads it as GMT+7 yyyyMMddHHmmss like vnp_CreateDate.
+  if (input.expiresAt) params.vnp_ExpireDate = formatVnpayDate(input.expiresAt);
   const secureHash = sign(params, input.hashSecret);
   return `${input.paymentUrl}?${sortedQueryString(params)}&vnp_SecureHash=${secureHash}`;
 }
