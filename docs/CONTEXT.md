@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-01 18:33 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/candidates-empty-reason-envelope
+> Cập nhật lần cuối: 2026-11-01 19:13 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/warranty-expired-status
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -180,7 +180,7 @@ Nhánh `fix/order-timing-and-matching`: luật quá giờ hẹn BRX-063 (cảnh 
 
 ### Hoàn tất đơn
 
-Đơn sang COMPLETED ở bước đến sau cùng trong ba bước: khách xác nhận công việc, tiền mặt được xác nhận (khách hoặc quản lý xử lý tranh chấp) và thanh toán online được xác minh. Cả ba đường gọi `applyOrderCompletionEffects` (`service-orders/order-completion-effects.ts`) trong cùng transaction: bắt đầu bảo hành cho dòng hoá đơn đủ điều kiện và ghi thông báo ORDER_COMPLETED cho khách và kỹ thuật viên (`notifications/order-completed-notice.ts`). Thông báo chỉ nhắc bảo hành khi có dòng bảo hành thật. Case tiền mặt chỉ chốt tiền khi quản lý xử lý với mã `CASH_SETTLEMENT_CONFIRMED_BY_MANAGER`.
+Đơn sang COMPLETED ở bước đến sau cùng trong ba bước: khách xác nhận công việc, tiền mặt được xác nhận (khách hoặc quản lý xử lý tranh chấp) và thanh toán online được xác minh. Cả ba đường gọi `applyOrderCompletionEffects` (`service-orders/order-completion-effects.ts`) trong cùng transaction: bắt đầu bảo hành cho dòng hoá đơn đủ điều kiện và ghi thông báo ORDER_COMPLETED cho khách và kỹ thuật viên (`notifications/order-completed-notice.ts`). Thông báo chỉ nhắc bảo hành khi có dòng bảo hành thật. Case tiền mặt chỉ chốt tiền khi quản lý xử lý với mã `CASH_SETTLEMENT_CONFIRMED_BY_MANAGER`. Bảo hành lưu `active` lúc hoàn tất và không có bước nào ghi lại; `GET /service-orders/:id/warranties` trả trạng thái đang có hiệu lực (`effectiveWarrantyStatus` ở `service-orders/warranty-coverage-status.ts`): `active` đã qua `expires_at` thì trả `expired`, `voided` giữ nguyên, không ghi DB khi đọc. Yêu cầu bảo hành sau hạn vẫn được nhận, lưu `submitted` với `submitted_after_expiry = true` (lỗi tìm thấy 01/11/2026 ở TC-WAR-003).
 
 ### Tác vụ nền
 
@@ -382,6 +382,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
+- 2026-11-01 19:13 (UTC+7) | ToanAltF4 | fix/warranty-expired-status | GET /service-orders/:id/warranties trả expired cho bảo hành active đã qua expires_at, tính khi đọc, không ghi DB; yêu cầu bảo hành sau hạn vẫn lưu submitted với submitted_after_expiry (lỗi tìm thấy 01/11 ở TC-WAR-003).
 - 2026-11-01 18:33 (UTC+7) | ToanAltF4 | fix/candidates-empty-reason-envelope | Lý do danh sách thợ rỗng chuyển vào meta.emptyReason để tới được client, thợ không có vị trí không còn che OUTSIDE_COVERAGE, danh sách lượt nhiều thiết bị trả arrivedAt từng máy
 - 2026-11-01 18:10 (UTC+7) | ToanAltF4 | fix/audit-actor-uuid-filter | Lọc theo id người dùng (actorUserId nhật ký, userId strike, technicianId yêu cầu linh kiện và bảo hành, assignedManagerId hỗ trợ, userId thông báo) nhận mọi UUID dạng chuẩn 8-4-4-4-12, kể cả id seed kiểu a0000000-0000-0000-0000-000000000001 mà @IsUUID() từ chối (lỗi 31). Chuỗi tự do vẫn trả 400.
 - 2026-10-31 17:58 (UTC+7) | Hgnv11 | dev | Danh sách lượt nhiều thiết bị của kỹ thuật viên (assigned-page) không còn ẩn cả lượt khi một máy bị khách từ chối báo giá (quote_declined, phân công đã tắt) trong lúc máy còn lại vẫn đang sửa.
@@ -421,4 +422,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-23 22:36 (UTC+7) | foxonworld | foxonworld/fixhome-v53-part-return-notify-20261023 | Khai trả mới ghi PART_RETURN_DECLARED cho quản lý dịch vụ đang hoạt động trong cùng transaction, chống trùng khi replay và giữ bước xác nhận nhận hàng riêng; PostgreSQL/socket/Web runtime NOT VERIFIED.
 - 2026-10-23 22:27 (UTC+7) | ToanAltF4 | fix/db-connection-crash | Sửa sập backend trên AWS 23/10: pool kết nối mỗi instance giới hạn DATABASE_POOL_MAX (mặc định 5, trả kết nối rảnh sau 10 s) vì pooler session Supabase chỉ có 15 cho cả dự án; promise bị reject không ai bắt chỉ ghi log, không tắt process (trước đó mỗi thông báo lỗi làm container chết và khởi động lại)
 - 2026-10-23 19:02 (UTC+7) | ToanAltF4 | fix/tech-parts-bugs | Sửa lỗi BUG DETECTOR 10 và 14: hàng chờ hoàn trả của quản lý xếp dòng đã khai trả chờ nhận lên đầu; không nhận linh kiện mua ngoài cho báo giá/chi phí phát sinh mới; khách duyệt chi phí phát sinh thì chỉ tạo yêu cầu kho cho phần thợ chưa giữ (trừ phần đã khai trả); phần linh kiện của báo giá nhận dư được dùng và tính tiền cho chi phí phát sinh thiếu hàng (mỗi nguồn vẫn giữ phần của mình, hoá đơn không phụ thuộc thứ tự)
-- 2026-10-23 14:51 (UTC+7) | Hgnv11 | dev | Cho kỹ thuật viên sửa số lượng đã dùng của linh kiện cả giảm lẫn tăng cho tới khi hóa đơn được tạo hoặc yêu cầu hoàn tất được gửi (trước đây chỉ được tăng, ghi nhầm không sửa lại được); số mới vẫn không vượt phần chưa được quản lý nhận lại và không làm tổng khai trả vượt phần còn lại

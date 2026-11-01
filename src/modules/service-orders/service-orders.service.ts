@@ -83,6 +83,7 @@ import {
 import type { EntityManager } from 'typeorm';
 import { OrderEvidenceStorage, EvidenceFile, evidenceStampText } from '../media/order-evidence-storage.service';
 import { expireAdditionalCosts } from './expire-additional-costs';
+import { effectiveWarrantyStatus } from './warranty-coverage-status';
 import { authorizeOrder } from './order-access';
 import { assertNoOnsiteInterruption, ONSITE_INTERRUPTION_ACTION, ONSITE_STOP_ACTION, verifiedOnsiteInterruption } from './onsite-interruption';
 import { loadOnsiteStopFinance } from './onsite-stop-finance';
@@ -1489,7 +1490,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Each coverage says what it covers: the labor or the part on the invoice line it came
-   * from, so a customer can tell which item to claim.
+   * from, so a customer can tell which item to claim. The status is the one in force now: an
+   * active coverage past its end date reads as expired (found 01/11/2026).
    */
   async getWarranties(orderId: string, actor: { id: string; role: string }): Promise<WarrantyCoverageView[]> {
     await authorizeOrder(this.dataSource.manager, orderId, actor);
@@ -1500,9 +1502,10 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     const itemIds = coverages.map(c => c.invoiceItemId).filter((id): id is string => !!id);
     const items = itemIds.length ? await this.dataSource.manager.findBy(InvoiceItem, { id: In(itemIds) }) : [];
     const byId = new Map(items.map(item => [item.id, item]));
+    const now = new Date();
     return coverages.map(coverage => {
       const item = coverage.invoiceItemId ? byId.get(coverage.invoiceItemId) : undefined;
-      return { ...coverage, itemType: item?.type ?? null, itemDescription: item?.description ?? null };
+      return { ...coverage, status: effectiveWarrantyStatus(coverage, now), itemType: item?.type ?? null, itemDescription: item?.description ?? null };
     });
   }
 
