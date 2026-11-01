@@ -426,6 +426,17 @@ describe('VNPay return goes back to the web that started the payment', () => {
     expect(new URL(paymentUrl).searchParams.get('vnp_CreateDate')).toBe('20261018235959');
     expect(new URL(paymentUrl).searchParams.get('vnp_CreateDate')).toBe(formatVnpayDate(requestedAt));
   });
+
+  it('stores the expiry on the attempt and sends it as vnp_ExpireDate 15 minutes later (PO 01/11/2026)', async () => {
+    const setup = setupTopUp();
+    setup.paymentRepository.save = vi.fn(async (value: Record<string, unknown>) => ({ id: 'pay-1', ...value }));
+    const { paymentUrl } = await setup.service.createWalletTopUpVnpayUrl('cust-1', 100000, '127.0.0.1', 'IDEMP_2', 'web', 'customer');
+    const saved = (setup.paymentRepository.save as ReturnType<typeof vi.fn>).mock.calls[0][0] as { requestedAt: Date; expiresAt: Date };
+    expect(+saved.expiresAt - +saved.requestedAt).toBe(15 * 60 * 1000);
+    const params = new URL(paymentUrl).searchParams;
+    expect(params.get('vnp_CreateDate')).toBe(formatVnpayDate(saved.requestedAt));
+    expect(params.get('vnp_ExpireDate')).toBe(formatVnpayDate(saved.expiresAt));
+  });
 });
 
 describe('Dues follow the invoice formula', () => {
