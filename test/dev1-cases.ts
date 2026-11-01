@@ -6,6 +6,7 @@ import { createRequire } from 'module';
 import { resolve } from 'path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { NO_DEPARTURE_CANCEL_REASON } from '../src/modules/service-orders/no-departure';
+import { kycBucket } from './kyc-bucket';
 
 type Session = { accessToken: string; user: { id: string } };
 type Context = { app: INestApplication; db: DataSource; register: () => Promise<Session>; provisionTechnician: () => Promise<Session> };
@@ -1374,16 +1375,36 @@ export function registerDev1Cases(context: () => Context) {
         expectStatus(await put('/customer/wallet/bank-account', customer, { bankBin: '970436', accountNumber: '0123456789', accountName: 'NGUYEN VAN KHACH' }), 422);
         expect(createPayout).not.toHaveBeenCalled();
 
-        // Submit KYC: card front and back only, details as on the card.
+        // Submit KYC: card front and back only, details as on the card, both
+        // images through the private upload flow (upload URL, then the upload).
         const cccd = String(Date.now()).slice(-12);
+        const issue = async () => unwrap((await post('/customer/verification/upload-url', customer, { mimeType: 'image/jpeg' }).expect(200)).body).storageObjectPath as string;
+        const [frontPath, backPath] = [await issue(), await issue()];
+        expect(frontPath).toMatch(new RegExp(`^kyc/${customer.user.id}/[0-9a-f-]{36}[.]jpg$`));
         const kyc = {
           fullName: 'Nguyễn Văn Khách', dateOfBirth: '1990-05-20', gender: 'male', citizenIdNumber: cccd,
           address: '12 Nguyễn Trãi, Phường Bến Thành, TP. Hồ Chí Minh',
           documents: [
-            { documentType: 'citizen_id_front', storageObjectPath: `kyc/${customer.user.id}/front.jpg`, fileName: 'mat-truoc.jpg', fileSize: 2048, mimeType: 'image/jpeg' },
-            { documentType: 'citizen_id_back', storageObjectPath: `kyc/${customer.user.id}/back.jpg`, fileName: 'mat-sau.jpg', fileSize: 2048, mimeType: 'image/jpeg' },
+            { documentType: 'citizen_id_front', storageObjectPath: frontPath, fileName: 'mat-truoc.jpg', fileSize: 2048, mimeType: 'image/jpeg' },
+            { documentType: 'citizen_id_back', storageObjectPath: backPath, fileName: 'mat-sau.jpg', fileSize: 2048, mimeType: 'image/jpeg' },
           ],
         };
+        const profileOf = async () => (await db.query('SELECT full_name, date_of_birth::text AS dob, gender, citizen_id_number, full_address FROM users WHERE id = $1', [customer.user.id]))[0];
+        const profileBefore = await profileOf();
+        const kycCount = async () => Number((await db.query('SELECT count(*)::int AS n FROM customer_verifications WHERE customer_id = $1', [customer.user.id]))[0].n);
+        // DEF-r2-mobile-01: paths nothing was uploaded to are refused and the profile is not touched.
+        const ghost = await post('/customer/verification', customer, { ...kyc, documents: [{ ...kyc.documents[0], storageObjectPath: `kyc/${customer.user.id}/00000000-0000-4000-8000-000000000000.jpg` }, { ...kyc.documents[1], storageObjectPath: `kyc/${customer.user.id}/00000000-0000-4000-8000-000000000001.jpg` }] });
+        expectStatus(ghost, 422);
+        expect(JSON.stringify(ghost.body)).toContain('Không tìm thấy ảnh CCCD đã tải lên');
+        expectStatus(await post('/customer/verification', customer, kyc), 422); // upload URLs issued, nothing uploaded yet
+        kycBucket.add(frontPath);
+        expectStatus(await post('/customer/verification', customer, kyc), 422); // the back is still missing
+        const othersUpload = `kyc/${admin.user.id}/${randomUUID()}.jpg`;
+        kycBucket.add(othersUpload);
+        expectStatus(await post('/customer/verification', customer, { ...kyc, documents: [kyc.documents[0], { ...kyc.documents[1], storageObjectPath: othersUpload }] }), 422);
+        expect(await kycCount()).toBe(0);
+        expect(await profileOf()).toEqual(profileBefore);
+        kycBucket.add(backPath);
         expectStatus(await post('/customer/verification', customer, { ...kyc, fullName: 'Khách 😀' }), 400);
         expectStatus(await post('/customer/verification', customer, { ...kyc, citizenIdNumber: '12345' }), 400);
         expectStatus(await post('/customer/verification', customer, { ...kyc, documents: [kyc.documents[0], { ...kyc.documents[1], mimeType: 'application/pdf', fileName: 'mat-sau.pdf' }] }), 400);
@@ -1391,8 +1412,9 @@ export function registerDev1Cases(context: () => Context) {
         expectStatus(await post('/customer/verification', customer, { ...kyc, documents: [kyc.documents[0]] }), 400);
         const submitted = unwrap((await post('/customer/verification', customer, kyc).expect(201)).body);
         expect(submitted).toMatchObject({ status: 'pending', verification: { fullName: 'Nguyễn Văn Khách', citizenIdNumber: cccd, dateOfBirth: '1990-05-20' } });
-        const [profile] = await db.query('SELECT full_name, date_of_birth::text AS dob, gender, citizen_id_number, full_address FROM users WHERE id = $1', [customer.user.id]);
-        expect(profile).toMatchObject({ full_name: 'Nguyễn Văn Khách', dob: '1990-05-20', gender: 'male', citizen_id_number: cccd, full_address: kyc.address });
+        // Pending: the details wait on the request, the profile only takes them at approval.
+        expect(await profileOf()).toEqual(profileBefore);
+        expect(submitted.profile).toMatchObject({ citizenIdNumber: cccd, dateOfBirth: '1990-05-20', gender: 'male', address: kyc.address });
         denied(await post('/customer/verification', customer, kyc));
         // Pending: still no withdrawal.
         const pending = await post('/customer/wallet/withdrawals', customer, { amount: 50000 });
@@ -1414,6 +1436,7 @@ export function registerDev1Cases(context: () => Context) {
         });
         expectStatus(await patch(`/admin/customer-verifications/${id}/reject`, admin, { rejectionReason: 'abc' }), 400);
         expect(unwrap((await patch(`/admin/customer-verifications/${id}/approve`, admin).expect(200)).body)).toMatchObject({ status: 'verified', verifiedFullName: 'Nguyễn Văn Khách' });
+        expect(await profileOf()).toMatchObject({ full_name: 'Nguyễn Văn Khách', dob: '1990-05-20', gender: 'male', citizen_id_number: cccd, full_address: kyc.address });
         denied(await patch(`/admin/customer-verifications/${id}/approve`, admin));
         const [decision] = await db.query("SELECT actor_user_id FROM audit_logs WHERE action = 'CUSTOMER_KYC_APPROVED' AND resource_id = $1", [id]);
         expect(decision.actor_user_id).toBe(admin.user.id);
@@ -1712,6 +1735,31 @@ export function registerDev1Cases(context: () => Context) {
       expect(settledLegacy.settled).toBeGreaterThanOrEqual(1);
       const legacyLedger = await db.query("SELECT t.type FROM wallet_transactions t WHERE t.reference_id = $1", [legacy.order.id]);
       expect(legacyLedger.map((t: any) => t.type)).toEqual(['ONLINE_EARNING']);
+    });
+
+    it('reads a coverage past its end date as expired and still takes a claim on it (found 01/11/2026, TC-WAR-003)', async () => {
+      const f = await fixture(), db = context().db;
+      const { order, invoice } = await completedOrder(f);
+      await db.query('INSERT INTO customer_wallets (user_id, balance) VALUES ($1, $2)', [f.owner.user.id, 1000000]);
+      await post(`/invoices/${invoice.id}/pay-with-wallet`, f.owner).expect(200);
+      const path = `/service-orders/${order.id}/warranties`;
+      const [coverage] = unwrap((await get(path, f.owner).expect(200)).body);
+      expect(coverage.status).toBe('active');
+
+      await db.query("UPDATE warranty_coverages SET expires_at = now() - interval '1 day' WHERE id = $1", [coverage.id]);
+      for (const session of [f.owner, f.tech]) {
+        expect(unwrap((await get(path, session).expect(200)).body)).toEqual([expect.objectContaining({ id: coverage.id, status: 'expired' })]);
+      }
+      // Read only: the stored row is not rewritten by a GET.
+      expect((await db.query('SELECT status FROM warranty_coverages WHERE id = $1', [coverage.id]))[0].status).toBe('active');
+      // A claim after expiry is still saved, flagged for the manager (TC-WAR-003).
+      const claim = await post(`/service-orders/${order.id}/warranty-claims`, f.owner, { warrantyCoverageId: coverage.id, description: 'Vòi lại rỉ nước sau ba tháng' });
+      expect(claim.status, JSON.stringify(claim.body)).toBe(201);
+      expect(unwrap(claim.body)).toMatchObject({ status: 'submitted', submittedAfterExpiry: true });
+
+      // A voided coverage stays voided whatever its end date.
+      await db.query("UPDATE warranty_coverages SET status = 'voided' WHERE id = $1", [coverage.id]);
+      expect(unwrap((await get(path, f.owner).expect(200)).body)[0].status).toBe('voided');
     });
 
     it('announces every committed change live to the people allowed to see it, and nothing that rolled back (PO 18/10/2026)', async () => {

@@ -81,6 +81,18 @@ export class TechnicianVerificationsService {
           'Document extension does not match MIME type',
         );
     }
+    // The path proves the owner, the bucket proves the upload: a path that was
+    // never uploaded through the signed upload URL is refused before anything
+    // is saved.
+    const present = await Promise.all(
+      dto.documents.map((doc) =>
+        this.storageService.objectExists(doc.storageObjectPath, technicianId),
+      ),
+    );
+    if (present.some((exists) => !exists))
+      throw new BadRequestException(
+        'Không tìm thấy giấy tờ đã tải lên. Vui lòng tải lại ảnh hoặc video rồi gửi hồ sơ.',
+      );
     const verification = await this.verificationRepository.manager.transaction(async (manager) => {
       const technician = await manager
         .getRepository(User)
