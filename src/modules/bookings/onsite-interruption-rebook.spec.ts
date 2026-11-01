@@ -276,12 +276,37 @@ describe('verified onsite interruption customer self-service', () => {
     await expect(h.submit(h.body())).rejects.toThrow(); expect(h.rows.Booking).toHaveLength(1);
   });
 
-  it('rejects a missing/extra sibling or a different source case after prefill', async () => {
+  it('accepts a selected subset and rejects an extra sibling or a different source case', async () => {
     const h = fixture(2, true); await h.stop(); const dto = h.body();
-    await expect(h.submit({ ...dto, items: dto.items.slice(0, 1) })).rejects.toThrow();
     await expect(h.submit({ ...dto, items: [...dto.items, { sourceBookingId: h.rows.Booking[2].id, sourceCaseId: randomUUID() }] })).rejects.toThrow();
     await expect(h.submit({ ...dto, items: dto.items.map(item => ({ ...item, sourceCaseId: randomUUID() })) })).rejects.toThrow();
-    expect(h.rows.Booking).toHaveLength(3);
+    expect(await h.submit({ ...dto, items: dto.items.slice(0, 1) })).toMatchObject({ targetKind: 'booking' });
+    expect(h.rows.Booking).toHaveLength(4);
+  });
+
+  it.each([1, 2])('rebooks %s of three stopped devices independently and leaves the rest reusable', async count => {
+    const h = fixture(3, true); await h.stop();
+    const dto = h.body(); dto.items = dto.items.slice(0, count);
+    const oldOrders = structuredClone(h.rows.ServiceOrder);
+    const draft = await h.bookings.interruptionDraft(h.anchorId, h.customer, dto.items.map(item => item.sourceBookingId));
+    expect(draft.items).toHaveLength(count);
+    const [first, replay] = await Promise.all([h.submit(dto), h.submit(dto)]);
+    expect(replay).toEqual(first); expect(first.items).toHaveLength(count);
+    expect(h.rows.Booking).toHaveLength(3 + count); expect(h.rows.InterruptionRebookSource).toHaveLength(count);
+    expect(h.rows.ServiceOrder).toEqual(oldOrders);
+    const remaining = h.rows.Booking[count].id;
+    const remainingDraft = await h.bookings.interruptionDraft(remaining, h.customer, [remaining]);
+    const next = { ...h.body(), idempotencyKey: `other-${randomUUID()}`, items: remainingDraft.items.map(item => ({ sourceBookingId: item.sourceBookingId, sourceCaseId: item.sourceCaseId })) };
+    expect((await h.submit(next, h.customer, remaining)).items).toHaveLength(1);
+  });
+
+  it('excludes still-active group siblings even if they have an unfinished interruption receipt', async () => {
+    const h = fixture(2, true); await h.stop();
+    const siblingId = h.rows.Booking[1].id;
+    h.rows.VisitGroupItem[1].outcome = null;
+    const draft = await h.bookings.interruptionDraft(h.anchorId, h.customer);
+    expect(draft.items.map(item => item.sourceBookingId)).toEqual([h.anchorId]);
+    await expect(h.bookings.interruptionDraft(h.anchorId, h.customer, [h.anchorId, siblingId])).rejects.toThrow();
   });
 
   it('does not grant manager-close authority to a group child with no interrupted outcome', async () => {

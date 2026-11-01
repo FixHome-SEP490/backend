@@ -37,10 +37,23 @@ export class TechnicianReportService {
   /** Atomic operational stop; old financial and physical obligations remain historical truth. */
   async cannotContinue(orderId: string, input: CannotContinueDto, actor: SupportCaseActor) {
     if (actor.role !== Role.TECHNICIAN) throw new ForbiddenException('Technician role required');
+    if (['customer_absent', 'customer_unreachable'].includes(input?.reasonCode)) {
+      throw new BadRequestException('Lý do này cần ghi nhận liên hệ và dừng cả lượt sửa chữa.');
+    }
+    return this.dataSource.transaction(manager => this.stopWithinTransaction(manager, orderId, input, actor));
+  }
+
+  /** Internal use only: group caller owns the ambient transaction and evidence gate. */
+  async stopWithinTransaction(manager: EntityManager, orderId: string, input: CannotContinueDto,
+    actor: SupportCaseActor, groupCommandId?: string) {
+    if (actor.role !== Role.TECHNICIAN) throw new ForbiddenException('Technician role required');
+    if (!groupCommandId && ['customer_absent', 'customer_unreachable'].includes(input?.reasonCode)) {
+      throw new BadRequestException('Cần dùng lệnh dừng cả lượt sửa chữa.');
+    }
     const request = onsiteInterruptionRequest(input);
     const fingerprint = onsiteInterruptionFingerprint(orderId, actor.id, request);
     try {
-      return await this.dataSource.transaction(async manager => {
+      return await (async () => {
         // Historical identity permits exact replay after release, never new work.
         const ref = await manager.findOneBy(ServiceOrder, { id: orderId });
         const owned = ref && await manager.findOneBy(TechnicianAssignment, {
@@ -128,24 +141,27 @@ export class TechnicianReportService {
           after: { version: 1, serviceOutcome: 'VERIFIED_INTERRUPTION_RECORDED',
             incidentId: incident.id, sourceBookingId: booking.id, customerId: booking.customerId,
             sourceVisitGroupId: booking.visitGroupId ?? null, serviceOrderStatus: order.status,
-            assignmentId: assignment.id, checkInId: checkin.id, fingerprint, request },
+            assignmentId: assignment.id, checkInId: checkin.id, fingerprint, request,
+            ...(groupCommandId ? { groupCommandId } : {}) },
         });
         const proof = await verifiedOnsiteInterruption(manager, order, booking);
         if (!proof) throw new ConflictException('Không xác minh được nguồn gián đoạn.');
         await this.finalizeStop(manager, order, booking, proof, actor);
-        const staff = await manager.find(User, { where: {
-          role: In([Role.SERVICE_MANAGER, Role.ADMIN]), status: AccountStatus.ACTIVE, isActive: true,
-        }, select: { id: true } });
-        await manager.insert(Notification, [
-          { userId: booking.customerId, title: 'Công việc sửa chữa đã dừng',
-            message: 'Bạn có thể tự đặt lịch mới. Báo giá, thanh toán và linh kiện của đơn cũ được giữ để đối soát riêng.',
-            type: ONSITE_INTERRUPTION_ACTION, referenceType: 'SUPPORT_CASE', referenceId: incident.id, isRead: false },
-          ...staff.map(user => ({ userId: user.id, title: 'Gián đoạn sửa chữa cần đối soát',
-            message: 'Đã ghi nhận kỹ thuật viên không thể tiếp tục tại nhà khách. Kiểm tra nghĩa vụ đơn cũ; trả linh kiện vẫn cần quản lý xác nhận thực nhận.',
-            type: ONSITE_INTERRUPTION_ACTION, referenceType: 'SUPPORT_CASE', referenceId: incident.id, isRead: false })),
-        ]);
+        if (!groupCommandId) {
+          const staff = await manager.find(User, { where: {
+            role: In([Role.SERVICE_MANAGER, Role.ADMIN]), status: AccountStatus.ACTIVE, isActive: true,
+          }, select: { id: true } });
+          await manager.insert(Notification, [
+            { userId: booking.customerId, title: 'Công việc sửa chữa đã dừng',
+              message: 'Bạn có thể tự đặt lịch mới. Báo giá, thanh toán và linh kiện của đơn cũ được giữ để đối soát riêng.',
+              type: ONSITE_INTERRUPTION_ACTION, referenceType: 'SUPPORT_CASE', referenceId: incident.id, isRead: false },
+            ...staff.map(user => ({ userId: user.id, title: 'Gián đoạn sửa chữa cần đối soát',
+              message: 'Đã ghi nhận kỹ thuật viên không thể tiếp tục tại nhà khách. Kiểm tra nghĩa vụ đơn cũ; trả linh kiện vẫn cần quản lý xác nhận thực nhận.',
+              type: ONSITE_INTERRUPTION_ACTION, referenceType: 'SUPPORT_CASE', referenceId: incident.id, isRead: false })),
+          ]);
+        }
         return onsiteContinuationResult(order, booking, incident.id, true);
-      });
+      })();
     } catch (error) {
       // The existing unique command index serializes cross-order UUID reuse.
       if ((error as { code?: string })?.code === '23505') throw new ConflictException('Mã lệnh đã được sử dụng.');

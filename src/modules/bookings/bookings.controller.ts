@@ -20,6 +20,7 @@ import { ModuleRef } from '@nestjs/core';
 import { VisitGroupsService } from '../visit-groups/visit-groups.service';
 import { RepairFailureRebookDto } from './dto/repair-failure-rebook.dto';
 import { InterruptionRebookDto } from './dto/interruption-rebook.dto';
+import { InterruptionDraftQueryDto } from './dto/interruption-draft-query.dto';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiOkResponse } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 import { sendVideoStream } from '../../shared/cloudinary';
@@ -307,8 +308,8 @@ export class BookingsController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Customer: read a verified onsite or manager-closed interruption draft' })
   async interruptionDraft(@Param('id', ParseUUIDPipe) id: string,
-    @Req() req: { user: { id: string; role: string } }) {
-    return { data: await this.bookingsService.interruptionDraft(id, req.user) };
+    @Req() req: { user: { id: string; role: string } }, @Query() query: InterruptionDraftQueryDto) {
+    return { data: await this.bookingsService.interruptionDraft(id, req.user, query.sourceBookingIds) };
   }
 
   @Post(':id/interruption-rebook')
