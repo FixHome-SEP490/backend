@@ -120,6 +120,33 @@ export function registerDev1Cases(context: () => Context) {
       denied(await post(`/bookings/${b.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.tech.user.id] }));
     });
 
+    it('tells the customer over HTTP that an address outside every technician area is out of coverage (bug 41)', async () => {
+      const f = await fixture(), db = context().db;
+      // A verified technician with the skill but no work address is never matched anywhere; it must not hide the reason.
+      const unplaced = await context().provisionTechnician();
+      const unplacedProfile = await db.getRepository('TechnicianProfile').findOneByOrFail({ userId: unplaced.user.id });
+      await db.getRepository('TechnicianProfile').update(unplacedProfile.id, { verificationStatus: 'verified', isAvailable: true });
+      await save('TechnicianSkill', { technicianId: unplacedProfile.id, serviceId: f.service.id, listedLaborPrice: 100000, verificationStatus: 'verified' });
+      const hanoi = await save('Address', { userId: f.owner.user.id, line1: '12 Phố Huế', district: 'Hai Bà Trưng', province: 'Hà Nội', lat: 21.0136, lng: 105.8512 });
+      const far = unwrap((await post('/bookings', f.owner, { ...f.body, addressId: hanoi.id }).expect(201)).body);
+
+      const diagnosed = await get(`/bookings/${far.id}/technician-candidates?diagnostics=1`, f.owner).expect(200);
+      expect(diagnosed.body).toMatchObject({ success: true, data: [], meta: { emptyReason: 'OUTSIDE_COVERAGE' } });
+      // Mobile reads the old shape: a plain list in data and nothing else.
+      const legacy = await get(`/bookings/${far.id}/technician-candidates`, f.owner).expect(200);
+      expect(legacy.body.data).toEqual([]);
+      expect(legacy.body).not.toHaveProperty('meta');
+      expect(legacy.body).not.toHaveProperty('emptyReason');
+
+      // In the area the list is filled and no reason is given.
+      const near = await f.create();
+      const listed = await get(`/bookings/${near.id}/technician-candidates?diagnostics=1`, f.owner).expect(200);
+      expect(listed.body.data.map((c: any) => c.userId).sort()).toEqual([f.tech.user.id, f.spare.user.id].sort());
+      expect(listed.body.meta).toEqual({ emptyReason: null });
+      // Somebody else's booking is still refused before any technician is read.
+      denied(await get(`/bookings/${far.id}/technician-candidates?diagnostics=1`, f.outsider));
+    });
+
     it('reads a technician profile with each relation in its own query, complete and without duplicates (PO 14/10/2026)', async () => {
       const f = await fixture();
       const profile = await context().db.getRepository('TechnicianProfile').findOneByOrFail({ userId: f.tech.user.id });
@@ -567,8 +594,17 @@ export function registerDev1Cases(context: () => Context) {
         // One trip, one check-in, one face for the whole visit.
         await post(`/service-orders/${one.id}/en-route`, f.tech).expect(200);
         expect((await orderOf(second)).status).toBe('en_route');
+        const listedDevices = async (path: string, session: typeof f.tech) =>
+          unwrap((await get(path, session).expect(200)).body).find((row: any) => row.id === group.id).items;
+        expect((await listedDevices('/visit-groups/assigned-page', f.tech)).map((item: any) => item.arrivedAt)).toEqual([null, null]);
         expect(unwrap((await post(`/service-orders/${one.id}/check-in`, f.tech, { lat: 10.77, lng: 106.69, accuracyMeters: 5 }).expect(200)).body).result).toBe('valid');
         expect((await db.query("SELECT COUNT(*)::int n FROM arrival_check_ins WHERE service_order_id = $1 AND result = 'valid'", [two.id]))[0].n).toBe(1);
+        // Bug 17: both devices read as arrived on both lists, while every order keeps its own state.
+        for (const [path, session] of [['/visit-groups/assigned-page', f.tech], ['/visit-groups/my-page', f.owner]] as const) {
+          const devices = await listedDevices(path, session);
+          expect(devices.map((item: any) => item.orderStatus)).toEqual(['en_route', 'en_route']);
+          expect(devices.every((item: any) => typeof item.arrivedAt === 'string' && !Number.isNaN(Date.parse(item.arrivedAt)))).toBe(true);
+        }
         await evidence(one.id, f.tech, 'checkin_face').expect(201);
         await evidence(two.id, f.tech, 'before').expect(201);
         await evidence(one.id, f.tech, 'before').expect(201);

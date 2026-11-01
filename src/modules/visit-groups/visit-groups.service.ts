@@ -290,12 +290,19 @@ export class VisitGroupsService {
         so.code AS "orderCode",
         so.status AS "orderStatus",
         (ta.id IS NOT NULL) AS "hasActiveAssignment",
-        ${assignedAddressProjection} AS "assignedAddressSnapshot"
+        ${assignedAddressProjection} AS "assignedAddressSnapshot",
+        -- One valid check-in covers every device of the visit, but each order stays EN_ROUTE
+        -- until its own repair starts; the lists show "arrived" from this (bug 17).
+        (
+          SELECT MIN(ac.checked_in_at)
+          FROM arrival_check_ins ac
+          WHERE ac.service_order_id = so.id AND ac.technician_id = ta.technician_id AND ac.result = 'valid'
+        ) AS "arrivedAt"
       FROM visit_group_items vgi
       JOIN bookings vb ON vb.id = vgi.booking_id
       LEFT JOIN service_orders so ON so.booking_id = vb.id
       LEFT JOIN LATERAL (
-        SELECT ta.id
+        SELECT ta.id, ta.technician_id
         FROM technician_assignments ta
         WHERE ta.service_order_id = so.id AND ta.is_active = true ${assignmentJoin}
         LIMIT 1
@@ -317,6 +324,7 @@ export class VisitGroupsService {
       orderStatus: string | null;
       hasActiveAssignment: boolean;
       assignedAddressSnapshot: string | null;
+      arrivedAt: Date | null;
     }>;
 
     const byGroup = new Map<string, typeof rows>();
