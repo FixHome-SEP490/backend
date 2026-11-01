@@ -22,6 +22,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { FulfillmentMethod, PartUsageStatus, PartRequestStatus, PartRequestType } from '../../../shared/enums';
+import { IsCanonicalUuid } from '../../../shared/validation/uuid.validators';
 
 // ── Technician: Create Part Request ──
 
@@ -161,7 +162,7 @@ export class QueryPartRequestsDto {
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsUUID()
+  @IsCanonicalUuid()
   technicianId?: string;
 
   @ApiPropertyOptional({ default: 1 })

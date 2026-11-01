@@ -1,10 +1,11 @@
-import { ArrayMaxSize, IsArray, IsBoolean, IsEnum, IsIn, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsBoolean, IsEnum, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { CsvToArray } from '../../../shared/utils/list-search';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { PageSizeQueryDto } from '../../../shared/dto/page-size-query.dto';
 import { ServiceOrderStatus } from '../../../shared/enums';
 import { REPAIR_STAGES, type RepairStage } from '../../../shared/utils/customer-activity-stage';
+import { IsCanonicalUuid } from '../../../shared/validation/uuid.validators';
 
 export class OrderListQueryDto extends PageSizeQueryDto {
   @ApiPropertyOptional({ enum: ServiceOrderStatus })
@@ -46,6 +47,6 @@ export class OrderBoardQueryDto extends OrderListQueryDto {}
 export class StrikeListQueryDto extends PageSizeQueryDto {
   @ApiPropertyOptional({ format: 'uuid' })
   @IsOptional()
-  @IsUUID()
+  @IsCanonicalUuid()
   userId?: string;
 }
