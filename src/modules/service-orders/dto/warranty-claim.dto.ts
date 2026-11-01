@@ -28,6 +28,7 @@ import {
   WarrantyInspectionResult,
   WarrantyNotCoveredReason,
 } from '../../../shared/enums';
+import { IsCanonicalUuid } from '../../../shared/validation/uuid.validators';
 
 export const WARRANTY_CLAIM_MIN_TEXT_LENGTH = 10;
 export const WARRANTY_CLAIM_MAX_TEXT_LENGTH = 2000;
@@ -275,13 +276,13 @@ export class QueryWarrantyClaimsDto extends PaginationDto {
 
   @ApiPropertyOptional({ format: 'uuid' })
   @IsOptional()
-  @IsUUID('4')
+  @IsCanonicalUuid()
   technicianId?: string;
 }
 
 export class AssignWarrantyClaimDto {
   @ApiProperty({ format: 'uuid' })
-  @IsUUID('4')
+  @IsCanonicalUuid()
   technicianId: string;
 }
 

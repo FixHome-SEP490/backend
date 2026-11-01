@@ -3,10 +3,10 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsOptional,
   IsString,
-  IsUUID,
   MaxLength,
 } from 'class-validator';
 import { PaginationDto } from '../../../shared/dto';
+import { IsCanonicalUuid } from '../../../shared/validation/uuid.validators';
 
 export class QueryAuditLogDto extends PaginationDto {
   @ApiPropertyOptional({
@@ -23,7 +23,7 @@ export class QueryAuditLogDto extends PaginationDto {
     example: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
   })
   @IsOptional()
-  @IsUUID()
+  @IsCanonicalUuid()
   actorUserId?: string;
 
   @ApiPropertyOptional({

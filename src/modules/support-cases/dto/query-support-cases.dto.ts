@@ -4,6 +4,7 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 import { PaginationDto } from '../../../shared/dto';
 import { SupportCaseStatus, SupportCaseType } from '../../../shared/enums';
 import { SUPPORT_CASE_MAX_SEARCH_LENGTH } from '../support-case.constants';
+import { IsCanonicalUuid } from '../../../shared/validation/uuid.validators';
 
 const trimString = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim() : value;
@@ -31,7 +32,7 @@ export class QuerySupportCasesDto extends PaginationDto {
 
   @ApiPropertyOptional({ format: 'uuid', nullable: true })
   @IsOptional()
-  @IsUUID('4')
+  @IsCanonicalUuid()
   assignedManagerId?: string;
 
   @ApiPropertyOptional({ enum: ['newest', 'priority'], default: 'newest' })

@@ -1,10 +1,11 @@
 // src/modules/notifications/dto/create-notification.dto.ts
 import { IsNotEmpty, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsCanonicalUuid } from '../../../shared/validation/uuid.validators';
 
 export class CreateNotificationDto {
   @ApiProperty({ description: 'Target user ID' })
-  @IsUUID()
+  @IsCanonicalUuid()
   userId: string;
 
   @ApiProperty({ description: 'Notification title' })

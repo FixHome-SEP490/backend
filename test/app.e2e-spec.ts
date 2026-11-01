@@ -533,6 +533,55 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
       .set('Authorization', bearer(admin))
       .expect(200);
   });
+  it('filters the audit log and strikes by a seeded account id whose version nibble is 0', async () => {
+    // Shared database seed accounts look like a0000000-0000-0000-0000-000000000001 (bug 31).
+    const legacyId = `a0000000-0000-0000-0000-${randomUUID().replace(/-/g, '').slice(0, 12)}`;
+    const otherId = randomUUID();
+    await db.query(
+      `INSERT INTO users (id,email,password_hash,full_name,role,status) VALUES ($1,$2,'unused-hash','Seed Admin Legacy','admin','active')`,
+      [legacyId, `${randomUUID()}@example.test`],
+    );
+    await db.query(
+      `INSERT INTO audit_logs (actor_user_id, actor_role, action, resource_type, resource_id) VALUES ($1,'admin','CONFIG_UPDATE','system_config','legacy-actor-check'), ($2,'admin','CONFIG_UPDATE','system_config','other-actor-check')`,
+      [legacyId, otherId],
+    );
+    const filtered = await http()
+      .get('/api/v1/admin/audit-logs')
+      .query({ page: 1, limit: 10, actorUserId: legacyId })
+      .set('Authorization', bearer(admin))
+      .expect(200);
+    expect(filtered.body.meta.total).toBe(1);
+    expect(filtered.body.data).toHaveLength(1);
+    expect(filtered.body.data[0]).toMatchObject({ actorUserId: legacyId, resourceId: 'legacy-actor-check' });
+    await http()
+      .get('/api/v1/admin/audit-logs')
+      .query({ actorUserId: legacyId.toUpperCase() })
+      .set('Authorization', bearer(admin))
+      .expect(200);
+    for (const bad of [legacyId.slice(0, 20), `${legacyId}0`, legacyId.replace(/-/g, ''), 'admin', `${legacyId}' OR '1'='1`]) {
+      const response = await http()
+        .get('/api/v1/admin/audit-logs')
+        .query({ actorUserId: bad })
+        .set('Authorization', bearer(admin))
+        .expect(400);
+      expect(response.body.error.details).toContain('actorUserId must be a UUID');
+    }
+    await http()
+      .get('/api/v1/strikes')
+      .query({ userId: legacyId })
+      .set('Authorization', bearer(admin))
+      .expect(200);
+    await http()
+      .get('/api/v1/strikes')
+      .query({ userId: 'not-a-user-id' })
+      .set('Authorization', bearer(admin))
+      .expect(400);
+    await http()
+      .get('/api/v1/admin/audit-logs')
+      .query({ actorUserId: legacyId })
+      .set('Authorization', bearer(customer))
+      .expect(403);
+  });
   it('updates only own permitted fields and rejects system fields/null names', async () => {
     await http()
       .patch('/api/v1/users/me')
