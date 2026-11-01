@@ -1023,8 +1023,8 @@ export class BookingsService {
     return buildRepairFailureDraft(this.dataSource.manager, bookingId, customer);
   }
 
-  async interruptionDraft(bookingId: string, customer: { id: string; role: string }) {
-    return buildInterruptionDraft(this.dataSource.manager, bookingId, customer);
+  async interruptionDraft(bookingId: string, customer: { id: string; role: string }, selectedSourceBookingIds?: string[]) {
+    return buildInterruptionDraft(this.dataSource.manager, bookingId, customer, false, selectedSourceBookingIds);
   }
 
   async confirmInterruptionRebook(
@@ -1074,7 +1074,7 @@ export class BookingsService {
       if (anchor.visitGroupId) {
         await manager.findOne(VisitGroup, { where: { id: anchor.visitGroupId, customerId: customer.id }, lock: { mode: 'pessimistic_write' } });
       }
-      const draft = await buildInterruptionDraft(manager, anchorId, customer, true);
+      const draft = await buildInterruptionDraft(manager, anchorId, customer, true, dto.items.map(item => item.sourceBookingId));
       const expected = new Map(draft.items.map(item => [item.sourceBookingId, item]));
       if (expected.size !== dto.items.length || dto.items.some(item => expected.get(item.sourceBookingId)?.sourceCaseId !== item.sourceCaseId)) {
         throw new ForbiddenException('Interrupted order sources do not match');

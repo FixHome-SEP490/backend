@@ -19,7 +19,7 @@ export const ONSITE_STOP_ACTION = 'TECHNICIAN_ONSITE_STOP_FINALIZED';
 export function onsiteInterruptionRequest(input: CannotContinueDto) {
   const photos = input?.photoEvidenceIds ?? [];
   if (!input || !isUUID(input.commandId, '4') || !reasonMatchesClass(input.reasonClass, input.reasonCode)
-    || [TechnicianReportReasonCode.CUSTOMER_ABSENT, TechnicianReportReasonCode.CUSTOMER_CANCELLED].includes(input.reasonCode)
+    || input.reasonCode === TechnicianReportReasonCode.CUSTOMER_CANCELLED
     || typeof input.reason !== 'string' || input.reason.trim().length < 10 || input.reason.trim().length > 2000
     || !Array.isArray(photos) || photos.length > 3 || photos.some(id => typeof id !== 'string' || !isUUID(id, '4'))
     || new Set(photos.map(id => id.toLowerCase())).size !== photos.length) {

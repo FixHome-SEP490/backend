@@ -15,6 +15,7 @@ export enum TechnicianReportReasonCode {
   NO_COMPATIBLE_PART = 'no_compatible_part',
   WARRANTY_OR_WORKSHOP = 'manufacturer_warranty_or_workshop',
   CUSTOMER_ABSENT = 'customer_absent',
+  CUSTOMER_UNREACHABLE = 'customer_unreachable',
   CUSTOMER_CANCELLED = 'customer_cancelled',
   AMBIGUOUS = 'dispute_or_other',
 }

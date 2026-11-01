@@ -14,16 +14,20 @@ import { hasOnsiteInterruption, ONSITE_INTERRUPTION_ACTION, verifiedOnsiteInterr
 const deny = (): never => { throw new ForbiddenException('Interrupted order not found or access denied'); };
 
 /** Manager-close sources and strict onsite receipts share the existing fresh-booking confirmation. */
-export async function buildInterruptionDraft(manager: EntityManager, anchorId: string, actor: { id: string; role: string }, lockSources = false) {
+export async function buildInterruptionDraft(manager: EntityManager, anchorId: string, actor: { id: string; role: string }, lockSources = false, selectedSourceBookingIds?: string[]) {
   if (actor.role !== Role.CUSTOMER) deny();
   const anchor = await manager.findOneBy(Booking, { id: anchorId, customerId: actor.id });
   if (!anchor || ![BookingStatus.CANCELLED, BookingStatus.MATCHED].includes(anchor.status)) deny();
   const groupItems = anchor.visitGroupId
     ? await manager.find(VisitGroupItem, { where: { groupId: anchor.visitGroupId }, order: { sequence: 'ASC' } }) : [];
   if (anchor.visitGroupId && !groupItems.some(item => item.bookingId === anchorId)) deny();
-  const candidates = anchor.visitGroupId ? groupItems.filter(item => item.outcome === 'interrupted' || item.outcome == null).map(item => item.bookingId) : [anchor.id];
+  const candidates = anchor.visitGroupId ? groupItems.filter(item => item.outcome === 'interrupted').map(item => item.bookingId) : [anchor.id];
+  if (selectedSourceBookingIds && (!selectedSourceBookingIds.length || selectedSourceBookingIds.length > 3 ||
+    new Set(selectedSourceBookingIds).size !== selectedSourceBookingIds.length || !selectedSourceBookingIds.includes(anchorId) ||
+    selectedSourceBookingIds.some(id => !candidates.includes(id)))) deny();
   const sourceIds: string[] = [];
   for (const sourceId of candidates) {
+    if (selectedSourceBookingIds && !selectedSourceBookingIds.includes(sourceId)) continue;
     if (!await manager.findOneBy(InterruptionRebookSource, { sourceBookingId: sourceId })) sourceIds.push(sourceId);
   }
   if (!sourceIds.includes(anchorId)) deny();
@@ -45,7 +49,7 @@ export async function buildInterruptionDraft(manager: EntityManager, anchorId: s
     if (receipts.length || await hasOnsiteInterruption(manager, order.id)) {
       // A damaged onsite receipt must never fall back to manager case prose.
       const proof = await verifiedOnsiteInterruption(manager, order, booking);
-      if (!proof || booking.quantity !== 1) deny();
+      if (!proof || booking.quantity !== 1 || (booking.visitGroupId && !proof.workStopped)) deny();
       sourceCase = proof.incident;
     } else {
       // Open unaffected siblings are not sources. Completed/failed siblings were
@@ -68,6 +72,7 @@ export async function buildInterruptionDraft(manager: EntityManager, anchorId: s
       quantity: 1, photos: [], previousTechnicianId: sourceCase.technicianId });
   }
   if (!items.some(item => item.sourceBookingId === anchorId)) deny();
+  if (selectedSourceBookingIds && items.length !== selectedSourceBookingIds.length) deny();
   const address = anchor.addressId && await manager.findOneBy(Address, { id: anchor.addressId, userId: actor.id });
   return { sourceVisitGroupId: anchor.visitGroupId ?? null, targetKind: items.length === 1 ? 'booking' as const : 'visit_group' as const,
     address: { id: address ? anchor.addressId : null, text: address ? [address.line1, address.ward, address.district, address.province].filter(Boolean).join(', ') : null },
