@@ -8,6 +8,7 @@ import { AuditLogService } from '../audit-log/audit-log.service';
 import { TechnicianReportService } from '../support-cases/technician-report.service';
 import { QuotationsService } from '../quotations/quotations.service';
 import { ServiceOrdersService } from '../service-orders/service-orders.service';
+import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { Booking } from './entities/booking.entity';
 import { User } from '../users/entities/user.entity';
 import { Service } from '../services/entities/service.entity';
@@ -15,6 +16,7 @@ import { Address } from '../users/entities/address.entity';
 import { VisitGroup } from '../visit-groups/entities/visit-group.entity';
 import { Quotation } from '../quotations/entities/quotation.entity';
 import { InterruptionRebook, InterruptionRebookSource } from './entities/interruption-rebook.entity';
+import { InterruptionRebookDto } from './dto/interruption-rebook.dto';
 // @ts-ignore Vitest transforms this eager glob; the backend runtime compiles as CommonJS.
 const entityModules = import.meta.glob('../../**/*.entity.ts', { eager: true });
 
@@ -50,15 +52,17 @@ describe.skipIf(!allowed)('verified onsite interruption PostgreSQL transactions'
       auditLogService: audit, partRequestsService: {} as never,
     }) as QuotationsService;
     orders = Object.assign(Object.create(ServiceOrdersService.prototype), {
-      dataSource, configService: config, auditLogService: audit,
+      dataSource, orderRepo: dataSource.getRepository(ServiceOrder), configService: config, auditLogService: audit,
     }) as ServiceOrdersService;
   });
   afterAll(async () => { if (dataSource?.isInitialized) await dataSource.destroy(); });
 
-  async function fixture(options: { status?: string; quote?: boolean; evidence?: boolean } = {}) {
+  async function fixture(options: { status?: string; quote?: boolean; evidence?: boolean; grouped?: boolean } = {}) {
     const customerId = randomUUID(); const technicianId = randomUUID();
     const categoryId = randomUUID(); const serviceId = randomUUID(); const addressId = randomUUID();
     const bookingId = randomUUID(); const orderId = randomUUID();
+    const groupId = options.grouped ? randomUUID() : null;
+    const children = [{ bookingId, orderId }, ...(groupId ? [{ bookingId: randomUUID(), orderId: randomUUID() }] : [])];
     const status = options.status ?? 'under_repair';
     await dataSource.query(`INSERT INTO users (id,email,password_hash,full_name,role) VALUES ($1,$2,'qa','QA customer','customer'),($3,$4,'qa','QA technician','technician')`,
       [customerId, `${customerId}@qa.invalid`, technicianId, `${technicianId}@qa.invalid`]);
@@ -67,18 +71,22 @@ describe.skipIf(!allowed)('verified onsite interruption PostgreSQL transactions'
       [serviceId, categoryId, `QA-${serviceId}`]);
     await dataSource.query(`INSERT INTO addresses (id,user_id,line1,district,province,lat,lng) VALUES ($1,$2,'QA address','Quận 1','Hồ Chí Minh',10.1,106.1)`,
       [addressId, customerId]);
-    await dataSource.query(`INSERT INTO bookings (id,customer_id,service_id,address_id,description,status,booking_mode,slot,quantity,pricing_mode_snapshot,fixed_unit_price_snapshot,preferred_start_at,preferred_end_at) VALUES ($1,$2,$3,$4,'Old device','matched','scheduled','afternoon',1,'fixed_price',199000,'2030-10-29T06:00:00Z','2030-10-29T10:00:00Z')`,
-      [bookingId, customerId, serviceId, addressId]);
-    await dataSource.query(`INSERT INTO service_orders (id,booking_id,code,status,payment_status,labor_total,parts_total,grand_total) VALUES ($1,$2,$3,$4,'unpaid',199000,0,199000)`,
-      [orderId, bookingId, `QA-${orderId}`, status]);
-    await dataSource.query(`INSERT INTO technician_assignments (service_order_id,technician_id,is_active,assigned_at) VALUES ($1,$2,true,now() - interval '2 hours')`,
-      [orderId, technicianId]);
-    await dataSource.query(`INSERT INTO arrival_check_ins (service_order_id,technician_id,lat,lng,accuracy_meters,result,checked_in_at) VALUES ($1,$2,10.1,106.1,5,'valid',now() - interval '1 hour')`,
-      [orderId, technicianId]);
-    if (options.evidence) await dataSource.query(`INSERT INTO repair_evidences (service_order_id,uploader_id,type,media_url,mime_type) VALUES ($1,$2,'after','https://qa.invalid/after.jpg','image/jpeg')`,
-      [orderId, technicianId]);
-    if (options.quote) await dataSource.query(`INSERT INTO quotations (id,service_order_id,technician_id,status,sent_at) VALUES ($1,$2,$3,'sent',now())`,
-      [randomUUID(), orderId, technicianId]);
+    if (groupId) await dataSource.query(`INSERT INTO visit_groups (id,customer_id,address_id,booking_mode,slot,preferred_start_at,preferred_end_at) VALUES ($1,$2,$3,'scheduled','afternoon','2030-10-29T06:00:00Z','2030-10-29T10:00:00Z')`, [groupId, customerId, addressId]);
+    for (const [index, { bookingId, orderId }] of children.entries()) {
+      await dataSource.query(`INSERT INTO bookings (id,customer_id,service_id,address_id,description,status,booking_mode,slot,quantity,pricing_mode_snapshot,fixed_unit_price_snapshot,preferred_start_at,preferred_end_at,visit_group_id) VALUES ($1,$2,$3,$4,'Old device','matched','scheduled','afternoon',1,'fixed_price',199000,'2030-10-29T06:00:00Z','2030-10-29T10:00:00Z',$5)`,
+        [bookingId, customerId, serviceId, addressId, groupId]);
+      if (groupId) await dataSource.query(`INSERT INTO visit_group_items (group_id,booking_id,service_id,sequence) VALUES ($1,$2,$3,$4)`, [groupId, bookingId, serviceId, index + 1]);
+      await dataSource.query(`INSERT INTO service_orders (id,booking_id,code,status,payment_status,labor_total,parts_total,grand_total) VALUES ($1,$2,$3,$4,'unpaid',199000,0,199000)`,
+        [orderId, bookingId, `QA-${orderId}`, status]);
+      await dataSource.query(`INSERT INTO technician_assignments (service_order_id,technician_id,is_active,assigned_at) VALUES ($1,$2,true,now() - interval '2 hours')`,
+        [orderId, technicianId]);
+      await dataSource.query(`INSERT INTO arrival_check_ins (service_order_id,technician_id,lat,lng,accuracy_meters,result,checked_in_at) VALUES ($1,$2,10.1,106.1,5,'valid',now() - interval '1 hour')`,
+        [orderId, technicianId]);
+      if (options.evidence) await dataSource.query(`INSERT INTO repair_evidences (service_order_id,uploader_id,type,media_url,mime_type) VALUES ($1,$2,'after','https://qa.invalid/after.jpg','image/jpeg')`,
+        [orderId, technicianId]);
+      if (options.quote) await dataSource.query(`INSERT INTO quotations (id,service_order_id,technician_id,status,sent_at) VALUES ($1,$2,$3,'sent',now())`,
+        [randomUUID(), orderId, technicianId]);
+    }
     const request = { commandId: randomUUID(), reasonClass: 'technician_skill_gap', reasonCode: 'skill_gap',
       reason: 'Synthetic onsite inability to complete repair', photoEvidenceIds: [] as string[] };
     const technician = { id: technicianId, role: 'technician' };
@@ -89,15 +97,16 @@ describe.skipIf(!allowed)('verified onsite interruption PostgreSQL transactions'
       return { idempotencyKey: `qa-onsite-${randomUUID()}`, addressId, date: '2030-10-30', slot: 'afternoon' as const,
         items: [{ sourceBookingId: bookingId, sourceCaseId: caseRows[0].id }] };
     };
-    const confirm = async (body?: { idempotencyKey: string; addressId: string; date: string; slot: string; items: Array<{ sourceBookingId: string; sourceCaseId: string }> }, anchor = bookingId) => {
+    const confirm = async (body?: InterruptionRebookDto, anchor = bookingId) => {
       const input = body ?? await confirmBody();
       return bookings.confirmInterruptionRebook(anchor, input as never, customer,
         (dto, owner, manager) => (Object.assign(Object.create(VisitGroupsService.prototype), {
-          dataSource, bookingsService: bookings,
+          dataSource, bookingsService: bookings, config: { getString: async () => 'true' },
+          auditLogService: new AuditLogService({} as never),
         }) as VisitGroupsService).create(dto, owner, manager));
     };
     return { customerId, technicianId, serviceId, addressId, bookingId, orderId, request, customer, technician,
-      cannotContinue, confirm, confirmBody };
+      cannotContinue, confirm, confirmBody, groupId, children };
   }
 
   const settle = async <T>(pending: Promise<T>) => {
@@ -106,6 +115,68 @@ describe.skipIf(!allowed)('verified onsite interruption PostgreSQL transactions'
   };
   const noDeadlock = (...results: Array<{ error?: { code?: string } }>) =>
     expect(results.map(result => result.error?.code)).not.toEqual(expect.arrayContaining(['40P01', '40P02']));
+
+  it.each([false, true])('confirms urgent sources atomically and preserves original orders (group: %s)', async grouped => {
+    const f = await fixture({ grouped });
+    for (const child of f.children) await reports.cannotContinue(child.orderId,
+      { ...f.request, commandId: randomUUID() } as never, f.technician);
+    const original = await dataSource.getRepository(ServiceOrder).findBy({ bookingId: f.bookingId });
+    const draft = await bookings.interruptionDraft(f.bookingId, f.customer);
+    const body: InterruptionRebookDto = { idempotencyKey: randomUUID(), addressId: f.addressId, mode: 'urgent',
+      items: draft.items.map(item => ({ sourceBookingId: item.sourceBookingId, sourceCaseId: item.sourceCaseId })) };
+    const [first, replay] = await Promise.all([f.confirm(body), f.confirm(body)]);
+    expect(replay).toEqual(first);
+    const targets = await Promise.all(first.items.map(item => dataSource.getRepository(Booking).findOneByOrFail({ id: item.bookingId })));
+    for (const target of targets) {
+      expect(target.bookingMode).toBe('urgent'); expect(target.slot).toBeNull();
+      expect(+target.preferredEndAt - +target.preferredStartAt).toBe(120 * 60000);
+      expect(target.preferredStartAt).toEqual(targets[0].preferredStartAt);
+      expect(Number(target.fixedUnitPriceSnapshot)).toBe(199000);
+    }
+    expect(await dataSource.getRepository(InterruptionRebook).countBy({ customerId: f.customerId })).toBe(1);
+    const receipt = await dataSource.getRepository(InterruptionRebook).findOneByOrFail({ customerId: f.customerId });
+    expect(receipt.sourceCount).toBe(f.children.length);
+    expect(await dataSource.getRepository(InterruptionRebookSource).countBy({ rebookId: receipt.id })).toBe(f.children.length);
+    if (first.visitGroupId) {
+      const group = await dataSource.getRepository(VisitGroup).findOneByOrFail({ id: first.visitGroupId });
+      expect(group.bookingMode).toBe('urgent'); expect(group.preferredStartAt).toEqual(targets[0].preferredStartAt);
+    }
+    expect(await dataSource.getRepository(Booking).countBy({ customerId: f.customerId })).toBe(f.children.length * 2);
+    expect(await dataSource.getRepository(ServiceOrder).findBy({ bookingId: f.bookingId })).toEqual(original);
+    await expect(f.confirm({ ...body, date: '2030-10-30' })).rejects.toThrow();
+  }, 20000);
+
+  it.each([false, true])('lists withdrawn assignments after reassignment without changing accepted orders (group: %s)', async grouped => {
+    const f = await fixture({ grouped, status: 'accepted' }); const other = await fixture();
+    for (const child of f.children) await dataSource.query(`UPDATE technician_assignments SET is_active=false,unassigned_at=now(),unassign_reason='Synthetic withdrawal' WHERE service_order_id=$1 AND technician_id=$2`, [child.orderId, f.technicianId]);
+    await dataSource.query(`INSERT INTO technician_assignments (service_order_id,technician_id,is_active) VALUES ($1,$2,true)`, [f.orderId, other.technicianId]);
+    const first = await orders.findMyOrders(f.technicianId, 'technician', { history: 'withdrawn', page: 1, limit: 1 });
+    expect(first.total).toBe(f.children.length);
+    expect(first.data).toHaveLength(1); expect(first.data[0]).toMatchObject({ status: 'accepted', historical: true });
+    const second = await orders.findMyOrders(f.technicianId, 'technician', { history: 'withdrawn', page: 2, limit: 1 });
+    if (grouped) expect(second.data[0].id).not.toBe(first.data[0].id); else expect(second.data).toEqual([]);
+    expect(JSON.stringify([...first.data, ...second.data])).not.toMatch(/bookingId|customer|address|phone|destination|grandTotal|technicianId/i);
+    expect(await orders.findMyOrders(other.technicianId, 'technician', { history: 'withdrawn' })).toEqual({ data: [], total: 0 });
+    expect((await dataSource.getRepository(ServiceOrder).findOneByOrFail({ id: f.orderId })).status).toBe('accepted');
+  }, 20000);
+
+  it('reads only own inactive SOLO/group assignments, including STOP with an active sibling, without DB writes', async () => {
+    const solo = await fixture(); const group = await fixture({ grouped: true });
+    await solo.cannotContinue(); await group.cannotContinue();
+    // Include another inactive assignment to the same order: COUNT/page must remain unique.
+    await dataSource.query(`INSERT INTO technician_assignments (service_order_id,technician_id,is_active,assigned_at,unassigned_at) VALUES ($1,$2,false,now() - interval '4 hours',now() - interval '3 hours')`, [solo.orderId, solo.technicianId]);
+    for (const f of [solo, group]) {
+      const before = await dataSource.getRepository(ServiceOrder).findBy({ id: f.orderId });
+      const page = await orders.findMyOrders(f.technicianId, 'technician', { history: 'withdrawn', page: 1, limit: 1 });
+      expect(page.total).toBe(1); expect(page.data).toHaveLength(1);
+      expect(page.data[0]).toMatchObject({ id: f.orderId, status: 'under_repair', historical: true, workStopped: true });
+      expect(JSON.stringify(page.data)).not.toMatch(/bookingId|customer|address|phone|destination|grandTotal|technicianId/i);
+      expect(await orders.findMyOrders(f.technicianId, 'technician', { history: 'withdrawn', page: 2, limit: 1 })).toEqual({ data: [], total: 1 });
+      expect(await dataSource.getRepository(ServiceOrder).findBy({ id: f.orderId })).toEqual(before);
+    }
+    expect(await orders.findMyOrders(randomUUID(), 'technician', { history: 'withdrawn' })).toEqual({ data: [], total: 0 });
+    await expect(orders.findMyOrders(solo.customerId, 'customer', { history: 'withdrawn' })).rejects.toThrow();
+  }, 20000);
 
   it('serializes the same command into one incident and one strict receipt', async () => {
     const f = await fixture();

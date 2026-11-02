@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { BookingsService } from './bookings.service';
 import { BookingStatus, Role, ServiceOrderStatus, SupportCaseStatus } from '../../shared/enums';
@@ -52,6 +52,12 @@ describe('confirmed interruption rebook', () => {
     expect(h.create).toHaveBeenCalledTimes(1);
     expect(h.rows.InterruptionRebook).toHaveLength(1);
     expect(h.rows.InterruptionRebookSource).toHaveLength(1);
+    expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ mode: 'scheduled', date: h.dto.date, slot: h.dto.slot }), h.customer, expect.anything());
+    // The pre-extension fingerprint excludes an omitted mode. Old receipts remain replayable.
+    const legacyFingerprint = createHash('sha256').update(JSON.stringify({ addressId: h.dto.addressId,
+      date: h.dto.date, idempotencyKey: h.dto.idempotencyKey,
+      items: [{ sourceBookingId: h.sourceBookingId, sourceCaseId: h.sourceCaseId }], slot: h.dto.slot })).digest('hex');
+    expect(h.rows.InterruptionRebook[0].requestFingerprint).toBe(legacyFingerprint);
   });
 
   it('rejects changed command payload and a second key for an already consumed source', async () => {
