@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-02 10:21 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-rebook-voucher-history-be-20261102
+> Cập nhật lần cuối: 2026-11-02 14:24 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-rebook-voucher-history-be-20261102
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -218,6 +218,8 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 5. Hợp đồng với repo khác
 
+- CORS expose thêm header `Date` để Web đọc giờ phản hồi cho countdown voucher qua origin khác; giữ origin, credentials và methods hiện có. Không thay TTL, tiền, schema hoặc nghiệp vụ voucher; browser cross-origin runtime NOT VERIFIED.
+
 - `POST /bookings/:id/interruption-rebook`: `mode` tùy chọn `scheduled|urgent`; bỏ mode giữ scheduled cũ, cần `date,slot`. Urgent bắt buộc bỏ cả date/slot (kể cả null), dùng cửa sổ tới ngay và giá hiện tại của `create/createGroup`. Giữ `items[].sourceBookingId/sourceCaseId`, ownership, unique consumption và transaction receipt. Fingerprint giữ payload legacy khi mode vắng, có mode thì ghi vào fingerprint; retry phải giữ nguyên payload/key, không đổi mode hay tạo key mới khi chưa rõ kết quả. Không chuyển tiền, voucher hoặc vật tư từ đơn cũ.
 - `GET /service-orders/my?history=withdrawn&page=1&pageSize=20`: chỉ TECHNICIAN có `order:read_related`, truy vấn theo chính user JWT. Trả đơn từng có assignment inactive của thợ và hiện không còn assignment active của chính thợ trên đơn đó; gồm SOLO và child nhóm, không suy từ ServiceOrder CANCELLED. Không kết hợp status/statuses khác rỗng, stage hoặc `excludeVisitGroups=true`; lỗi trả validation. Search chỉ theo mã đơn; phân trang/sort ổn định `createdAt DESC,id DESC`, không đếm trùng assignment. Payload giữ allowlist `id,code,status,createdAt,completedAt,cancelledAt,historical`; STOP chỉ thêm `workStopped,operationalDisposition` khi receipt khớp đúng assignment, proof hỏng trả requires-review. Không trả booking/customer ID, địa chỉ, liên hệ, GPS, media, ghi chú, tiền hoặc sibling đang làm. Nhánh này không chạy sweep/ghi dữ liệu; bỏ history giữ list cũ và `/repair-history` giữ DTO terminal cũ. Web cần request riêng cho tab lịch sử và không gửi excludeVisitGroups=true; cập nhật context Web/Mobile/docs trong PR consumer, adoption/runtime NOT VERIFIED.
 
@@ -408,6 +410,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-02 14:24 (UTC+7) | foxonworld | foxonworld/fixhome-rebook-voucher-history-be-20261102 | Expose header Date qua CORS cho đồng hồ voucher Web, giữ chính sách origin/credentials/methods.
 - 2026-11-02 10:21 (UTC+7) | foxonworld | foxonworld/fixhome-rebook-voucher-history-be-20261102 | Thêm urgent interruption opt-in và lịch sử thợ inactive gồm child nhóm, giữ receipt/PII/tiền cũ, ghi hợp đồng consumer và giới hạn PostgreSQL/runtime.
 - 2026-11-02 01:00 (UTC+7) | foxonworld | foxonworld/fixhome-qa-seven-issues-be-20261102 | Sửa upload onsite ADDITIONAL, quyền đọc UNKNOWN trả kho sau STOP và projection trạng thái VisitGroup; giữ nghĩa vụ cũ và ghi giới hạn consumer/runtime.
 - 2026-11-01 22:41 (UTC+7) | ToanAltF4 | fix/address-strict-text-coords | Địa chỉ lưu bắt buộc đủ cặp lat, lng hợp lệ và chữ địa chỉ sạch, từ chối emoji, ký tự vô hình, điều khiển, thẻ HTML với câu tiếng Việt (lỗi 29, PO 01/11/2026)
@@ -447,4 +450,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-27 22:11 (UTC+7) | ToanAltF4 | feat/parts-gas-electrical | Thêm 52 linh kiện: 36 mã điện/đèn V3 và 16 mã phổ biến theo giá thị trường (nạp gas, magie, hút mùi, giá treo tivi, sen)
 - 2026-10-27 21:04 (UTC+7) | foxonworld | foxonworld/fixhome-t21-f3-wallet-only-20261027 | Implement owner-approved F3 wallet-only refund independent of settled original rail; keep provider/cash payment evidence, gross-net ledger, cash subsidy reversal, full quota recovery and refund duplication guard.
 - 2026-10-27 18:20 (UTC+7) | foxonworld | foxonworld/fixhome-t21-final-merge-post-toan-20261027 | Cập nhật T2.1 funded rails có guard động, CASH tech lookup, giới hạn refund F3 và F4 chưa apply; runtime chưa kiểm chứng.
-- 2026-10-26 21:40 (UTC+7) | ToanAltF4 | feat/public-part-prices | GET /parts/prices công khai cho AI tính giá ước tính
