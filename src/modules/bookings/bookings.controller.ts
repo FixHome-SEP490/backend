@@ -20,6 +20,7 @@ import { ModuleRef } from '@nestjs/core';
 import { VisitGroupsService } from '../visit-groups/visit-groups.service';
 import { RepairFailureRebookDto } from './dto/repair-failure-rebook.dto';
 import { InterruptionRebookDto } from './dto/interruption-rebook.dto';
+import { InterruptionDraftQueryDto } from './dto/interruption-draft-query.dto';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiOkResponse } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 import { sendVideoStream } from '../../shared/cloudinary';
@@ -204,7 +205,8 @@ export class BookingsController {
   ) {
     if (diagnostics === '1') {
       const result = await this.bookingsService.getCandidatesWithDiagnostics(id, req.user);
-      return { data: result.candidates, emptyReason: result.emptyReason };
+      // The reason rides in meta: the global envelope keeps only data, meta and message (bug 41).
+      return { data: result.candidates, meta: { emptyReason: result.emptyReason } };
     }
     const candidates = await this.bookingsService.getCandidates(id, req.user);
     return { data: candidates };
@@ -306,8 +308,8 @@ export class BookingsController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Customer: read a verified onsite or manager-closed interruption draft' })
   async interruptionDraft(@Param('id', ParseUUIDPipe) id: string,
-    @Req() req: { user: { id: string; role: string } }) {
-    return { data: await this.bookingsService.interruptionDraft(id, req.user) };
+    @Req() req: { user: { id: string; role: string } }, @Query() query: InterruptionDraftQueryDto) {
+    return { data: await this.bookingsService.interruptionDraft(id, req.user, query.sourceBookingIds) };
   }
 
   @Post(':id/interruption-rebook')

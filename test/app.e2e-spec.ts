@@ -12,6 +12,7 @@ import * as bcrypt from 'bcrypt';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { registerDev1Cases } from './dev1-cases';
+import { installKycBucket, kycBucket, uploadedKyc } from './kyc-bucket';
 
 // Always use a new schema; never synchronize/drop the configured database.
 const schema = `member1_e2e_${randomUUID().replace(/-/g, '')}`;
@@ -33,14 +34,14 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
   let technician: Session;
   let admin: Session;
   let jwt: JwtService;
-  const documentFor = (technicianId: string) => ({
+  const documentFor = (technicianId: string) => uploadedKyc({
     documentType: 'citizen_id_front',
     storageObjectPath: `kyc/${technicianId}/id-front.jpg`,
     fileName: 'id-front.jpg',
     fileSize: 1024,
     mimeType: 'image/jpeg',
   });
-  const facePhotoFor = (technicianId: string) => ({
+  const facePhotoFor = (technicianId: string) => uploadedKyc({
     documentType: 'face_photo',
     storageObjectPath: `kyc/${technicianId}/face-photo.jpg`,
     fileName: 'face-photo.jpg',
@@ -238,6 +239,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     app.useLogger(false);
     configureApplication(app);
     await app.init();
+    installKycBucket(app);
     jwt = app.get(JwtService);
     customer = await register();
     technician = await provisionTechnician();
@@ -533,6 +535,55 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
       .set('Authorization', bearer(admin))
       .expect(200);
   });
+  it('filters the audit log and strikes by a seeded account id whose version nibble is 0', async () => {
+    // Shared database seed accounts look like a0000000-0000-0000-0000-000000000001 (bug 31).
+    const legacyId = `a0000000-0000-0000-0000-${randomUUID().replace(/-/g, '').slice(0, 12)}`;
+    const otherId = randomUUID();
+    await db.query(
+      `INSERT INTO users (id,email,password_hash,full_name,role,status) VALUES ($1,$2,'unused-hash','Seed Admin Legacy','admin','active')`,
+      [legacyId, `${randomUUID()}@example.test`],
+    );
+    await db.query(
+      `INSERT INTO audit_logs (actor_user_id, actor_role, action, resource_type, resource_id) VALUES ($1,'admin','CONFIG_UPDATE','system_config','legacy-actor-check'), ($2,'admin','CONFIG_UPDATE','system_config','other-actor-check')`,
+      [legacyId, otherId],
+    );
+    const filtered = await http()
+      .get('/api/v1/admin/audit-logs')
+      .query({ page: 1, limit: 10, actorUserId: legacyId })
+      .set('Authorization', bearer(admin))
+      .expect(200);
+    expect(filtered.body.meta.total).toBe(1);
+    expect(filtered.body.data).toHaveLength(1);
+    expect(filtered.body.data[0]).toMatchObject({ actorUserId: legacyId, resourceId: 'legacy-actor-check' });
+    await http()
+      .get('/api/v1/admin/audit-logs')
+      .query({ actorUserId: legacyId.toUpperCase() })
+      .set('Authorization', bearer(admin))
+      .expect(200);
+    for (const bad of [legacyId.slice(0, 20), `${legacyId}0`, legacyId.replace(/-/g, ''), 'admin', `${legacyId}' OR '1'='1`]) {
+      const response = await http()
+        .get('/api/v1/admin/audit-logs')
+        .query({ actorUserId: bad })
+        .set('Authorization', bearer(admin))
+        .expect(400);
+      expect(response.body.error.details).toContain('actorUserId must be a UUID');
+    }
+    await http()
+      .get('/api/v1/strikes')
+      .query({ userId: legacyId })
+      .set('Authorization', bearer(admin))
+      .expect(200);
+    await http()
+      .get('/api/v1/strikes')
+      .query({ userId: 'not-a-user-id' })
+      .set('Authorization', bearer(admin))
+      .expect(400);
+    await http()
+      .get('/api/v1/admin/audit-logs')
+      .query({ actorUserId: legacyId })
+      .set('Authorization', bearer(customer))
+      .expect(403);
+  });
   it('updates only own permitted fields and rejects system fields/null names', async () => {
     await http()
       .patch('/api/v1/users/me')
@@ -684,7 +735,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
   });
   it('accepts a face video instead of a face photo, as the web sends since 25/09/2026', async () => {
     const tech = await register('technician');
-    const video = { documentType: 'face_video', storageObjectPath: `kyc/${tech.user.id}/face.webm`, fileName: 'face-liveness.webm', fileSize: 2_000_000, mimeType: 'video/webm' };
+    const video = uploadedKyc({ documentType: 'face_video', storageObjectPath: `kyc/${tech.user.id}/face.webm`, fileName: 'face-liveness.webm', fileSize: 2_000_000, mimeType: 'video/webm' });
     const created = (await http().post('/api/v1/technicians/me/verification').set('Authorization', bearer(tech))
       .send({ documents: [documentFor(tech.user.id), video] }).expect(201)).body.data;
     const [stored] = await db.query("SELECT document_type, mime_type FROM verification_documents WHERE verification_id = $1 AND document_type = 'face_video'", [created.id]);
@@ -695,6 +746,99 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
       .send({ documents: [documentFor(other.user.id), { ...video, storageObjectPath: `kyc/${other.user.id}/face.webm`, fileName: 'face.png' }] }).expect(400);
     await http().post('/api/v1/technicians/me/verification/documents/upload-url').set('Authorization', bearer(other))
       .send({ mimeType: 'video/quicktime' }).expect(400);
+  });
+
+  it('accepts only documents this technician really uploaded (DEF-r2-mobile-01)', async () => {
+    const tech = await provisionTechnician();
+    const other = await provisionTechnician();
+    const send = (documents: unknown[]) =>
+      http().post('/api/v1/technicians/me/verification').set('Authorization', bearer(tech)).send({ documents });
+    const issue = async (session: Session) =>
+      (await http().post('/api/v1/technicians/me/verification/documents/upload-url').set('Authorization', bearer(session))
+        .send({ mimeType: 'image/jpeg' }).expect(201)).body.data.storageObjectPath as string;
+    const doc = (documentType: string, storageObjectPath: string) =>
+      ({ documentType, storageObjectPath, fileName: `${documentType}.jpg`, fileSize: 2048, mimeType: 'image/jpeg' });
+    const count = async () =>
+      Number((await db.query('SELECT count(*)::int AS n FROM technician_verifications WHERE technician_id = $1', [tech.user.id]))[0].n);
+
+    // A path in the technician's own folder that nothing was ever uploaded to.
+    const front = await issue(tech);
+    const face = await issue(tech);
+    kycBucket.add(face);
+    const ghost = await send([doc('citizen_id_front', `kyc/${tech.user.id}/${randomUUID()}.jpg`), doc('face_photo', face)]).expect(400);
+    expect(JSON.stringify(ghost.body)).toContain('Không tìm thấy giấy tờ đã tải lên');
+    // An upload URL was issued but the upload never happened.
+    await send([doc('citizen_id_front', front), doc('face_photo', face)]).expect(400);
+    // Another technician's file, even one that was uploaded.
+    const theirs = await issue(other);
+    kycBucket.add(theirs);
+    await send([doc('citizen_id_front', theirs), doc('face_photo', face)]).expect(400);
+    expect(await count()).toBe(0);
+    expect(Number((await db.query('SELECT count(*)::int AS n FROM verification_documents d JOIN technician_verifications v ON v.id = d.verification_id WHERE v.technician_id = $1', [tech.user.id]))[0].n)).toBe(0);
+
+    // The real upload of the front, then the same request goes through.
+    kycBucket.add(front);
+    const created = (await send([doc('citizen_id_front', front), doc('face_photo', face)]).expect(201)).body.data;
+    expect(created.status).toBe('pending');
+    expect(await count()).toBe(1);
+  });
+
+  it('attaches skill evidence and issues certificates only from files really uploaded to the private bucket', async () => {
+    const tech = await provisionTechnician();
+    const other = await provisionTechnician();
+    const service = await createService((await createCategory()).id);
+    const [profile] = await db.query('SELECT id FROM technician_profiles WHERE user_id = $1', [tech.user.id]);
+    const [skill] = await db.query(
+      "INSERT INTO technician_skills (technician_id, service_id, listed_labor_price, verification_status) VALUES ($1, $2, 150, 'pending') RETURNING id",
+      [profile.id, service.id],
+    );
+    const [pending] = await db.query(
+      "INSERT INTO technician_skill_verifications (technician_skill_id, status) VALUES ($1, 'pending') RETURNING id",
+      [skill.id],
+    );
+    const base = `/api/v1/technicians/me/services/${service.id}/verification/documents`;
+    const issue = async (session: Session) =>
+      (await http().post(`${base}/upload-url`).set('Authorization', bearer(session))
+        .send({ mimeType: 'image/png' }).expect(201)).body.data.storageObjectPath as string;
+    const evidence = (storageObjectPath: string) =>
+      ({ storageObjectPath, fileName: 'chung-chi.png', fileSize: 2048, mimeType: 'image/png' });
+    const attach = (storageObjectPath: string) =>
+      http().post(base).set('Authorization', bearer(tech)).send(evidence(storageObjectPath));
+    const documents = async () =>
+      Number((await db.query('SELECT count(*)::int AS n FROM verification_documents WHERE skill_verification_id = $1', [pending.id]))[0].n);
+
+    // Invented path in the own folder.
+    const ghost = await attach(`kyc/${tech.user.id}/${randomUUID()}.png`).expect(400);
+    expect(JSON.stringify(ghost.body)).toContain('Không tìm thấy tệp chứng chỉ đã tải lên');
+    // Another technician's uploaded file.
+    const theirs = await issue(other);
+    kycBucket.add(theirs);
+    await attach(theirs).expect(400);
+    // Upload URL issued, nothing uploaded.
+    const mine = await issue(tech);
+    await attach(mine).expect(400);
+    expect(await documents()).toBe(0);
+
+    // After the real upload the evidence is attached.
+    kycBucket.add(mine);
+    const attached = (await attach(mine).expect(201)).body.data;
+    expect(attached.status).toBe('pending');
+    expect(await documents()).toBe(1);
+
+    // The certificate FixHome issues on approval follows the same rule.
+    const certificate = (
+      await http().post(`/api/v1/admin/technician-skill-verifications/${pending.id}/certificate-upload-url`)
+        .set('Authorization', bearer(admin)).send({ mimeType: 'image/png' }).expect(201)
+    ).body.data.storageObjectPath as string;
+    const approve = () =>
+      http().patch(`/api/v1/admin/technician-skill-verifications/${pending.id}/approve`)
+        .set('Authorization', bearer(admin)).send(evidence(certificate));
+    await approve().expect(400);
+    const [stillPending] = await db.query('SELECT status FROM technician_skill_verifications WHERE id = $1', [pending.id]);
+    expect(stillPending.status).toBe('pending');
+    kycBucket.add(certificate);
+    expect((await approve().expect(200)).body.data.status).toBe('verified');
+    expect(await documents()).toBe(2);
   });
 
   it('allows one review only, stores reviewer/time, and exposes approval to Member 3', async () => {

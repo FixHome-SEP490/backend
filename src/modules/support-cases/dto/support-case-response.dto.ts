@@ -113,6 +113,8 @@ export class SupportCaseCashSettlementContextDto {
 }
 
 export class SupportCaseSummaryDto {
+  @ApiPropertyOptional({ nullable: true, description: 'Shared logical visit incident; group queue rows by commandId' })
+  groupIncident?: { groupId: string; commandId: string; incidentPath: string; childCaseIds: string[]; financialFollowupRequired: true } | null;
   @ApiProperty({ enum: ['NOT_RECORDED', 'DECISION_RECORDED', 'DOMAIN_ACTION_EXECUTED', 'EXECUTION_NOT_VERIFIED', 'ESCALATED_ADMIN'],
     description: 'A recorded decision does not execute a price, warranty, refund or sanction command; list entries conservatively leave specialized execution unverified' })
   resolutionExecutionKind: 'NOT_RECORDED' | 'DECISION_RECORDED' | 'DOMAIN_ACTION_EXECUTED' | 'EXECUTION_NOT_VERIFIED' | 'ESCALATED_ADMIN';

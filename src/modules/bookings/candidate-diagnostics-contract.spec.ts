@@ -70,7 +70,7 @@ describe('BUG #41 — Booking candidates original API contract and diagnostics',
     const request = { user: customer };
     expect(await controller.getCandidates('booking-1', request)).toEqual({ data: [profile] });
     expect(await controller.getCandidates('booking-1', request, '1')).toEqual({
-      data: [profile], emptyReason: null,
+      data: [profile], meta: { emptyReason: null },
     });
     expect(search.getCandidates).toHaveBeenCalledTimes(1);
     expect(search.getCandidatesWithDiagnostics).toHaveBeenCalledTimes(1);

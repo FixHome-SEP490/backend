@@ -1,4 +1,5 @@
 import { CustomerWalletService } from '../customer-wallet/customer-wallet.service';
+import { groupStopCorrelations } from './group-stop-read';
 import { isUUID } from 'class-validator';
 import { AuditLog } from '../audit-log/entities/audit-log.entity';
 import {
@@ -519,8 +520,9 @@ export class SupportCasesService {
     qb.skip((page - 1) * limit).take(limit);
 
     const [cases, total] = await qb.getManyAndCount();
+    const correlations = await groupStopCorrelations(this.supportCaseRepository.manager, cases);
     return {
-      data: cases.map((supportCase) => this.toSummaryDto(supportCase)),
+      data: cases.map((supportCase) => ({ ...this.toSummaryDto(supportCase), groupIncident: correlations.get(supportCase.id) ?? null })),
       total,
     };
   }
@@ -531,7 +533,9 @@ export class SupportCasesService {
       throw new NotFoundException(`Support case ${id} not found`);
     }
 
-    return this.toDetailDto(supportCase);
+    const detail = await this.toDetailDto(supportCase);
+    const correlations = await groupStopCorrelations(this.supportCaseRepository.manager, [supportCase]);
+    return { ...detail, groupIncident: correlations.get(supportCase.id) ?? null };
   }
 
   async resolveCase(

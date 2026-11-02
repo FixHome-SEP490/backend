@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { describe, expect, it, vi } from 'vitest';
 import { ForbiddenException } from '@nestjs/common';
 import { VisitGroupsService } from './visit-groups.service';
+import { VisitGroupsController } from './visit-groups.controller';
 import { VisitGroup } from './entities/visit-group.entity';
 import { VisitGroupItem } from './entities/visit-group-item.entity';
 import { Booking } from '../bookings/entities/booking.entity';
@@ -36,6 +37,7 @@ function harness(config: Record<string, string> = { 'visit_group.enabled': 'true
       return { id: `booking-${created}`, serviceId: dto.serviceId, preferredStartAt: new Date(start.getTime() + created), preferredEndAt: end, bookingMode: 'scheduled', slot: 'afternoon' };
     }),
     getCandidates: vi.fn(async () => []),
+    getCandidatesWithDiagnostics: vi.fn(async () => ({ candidates: [], emptyReason: 'OUTSIDE_COVERAGE' })),
     reschedule: vi.fn(async () => ({})),
   };
   const businessConfig = { getString: vi.fn(async (key: string, fallback: string) => config[key] ?? fallback) };
@@ -133,6 +135,35 @@ describe('VisitGroupsService matching', () => {
     await h.service.shortlist('group-1', ['tech-1'], customer);
     expect(h.invitations.createShortlist).toHaveBeenCalledWith('booking-lead', ['tech-1'], customer, { asVisit: true });
     expect(h.itemRepo.findOne).toHaveBeenCalledWith({ where: { groupId: 'group-1' }, order: { sequence: 'ASC' } });
+  });
+
+  it('explains an empty visit list with the same reason logic as a single booking, on the lead booking', async () => {
+    const h = harness();
+    h.groupRepo.findOneBy.mockResolvedValue({ id: 'group-1', status: 'submitted' });
+    expect(await h.service.candidatesWithDiagnostics('group-1', customer)).toEqual({ candidates: [], emptyReason: 'OUTSIDE_COVERAGE' });
+    expect(h.bookingsService.getCandidatesWithDiagnostics).toHaveBeenCalledWith('booking-lead', customer, { asVisit: true });
+    // Another customer's visit is refused before any technician is read.
+    const other = harness();
+    await expect(other.service.candidatesWithDiagnostics('group-1', customer)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'OWNERSHIP_DENIED' }) });
+    expect(other.bookingsService.getCandidatesWithDiagnostics).not.toHaveBeenCalled();
+    const off = harness({ 'visit_group.enabled': 'false' });
+    off.groupRepo.findOneBy.mockResolvedValue({ id: 'group-1', status: 'submitted' });
+    await expect(off.service.candidatesWithDiagnostics('group-1', customer)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'FEATURE_DISABLED' }) });
+  });
+
+  it('adds meta.emptyReason only when diagnostics=1 is asked, mobile keeps the plain list', async () => {
+    const profile = { technicianId: 'profile-1', userId: 'tech-1' };
+    const visitGroups = {
+      candidates: vi.fn(async () => [profile]),
+      candidatesWithDiagnostics: vi.fn(async () => ({ candidates: [profile], emptyReason: null })),
+    };
+    const controller = Object.assign(Object.create(VisitGroupsController.prototype), { visitGroups }) as VisitGroupsController;
+    const request = { user: customer };
+    expect(await controller.candidates('group-1', request)).toEqual({ data: [profile] });
+    expect(await controller.candidates('group-1', request, 'true')).toEqual({ data: [profile] });
+    expect(await controller.candidates('group-1', request, '1')).toEqual({ data: [profile], meta: { emptyReason: null } });
+    expect(visitGroups.candidates).toHaveBeenCalledTimes(2);
+    expect(visitGroups.candidatesWithDiagnostics).toHaveBeenCalledTimes(1);
   });
 
   it('matches nothing for another customer, a cancelled visit or while the feature is off', async () => {

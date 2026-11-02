@@ -83,8 +83,9 @@ import {
 import type { EntityManager } from 'typeorm';
 import { OrderEvidenceStorage, EvidenceFile, evidenceStampText } from '../media/order-evidence-storage.service';
 import { expireAdditionalCosts } from './expire-additional-costs';
+import { effectiveWarrantyStatus } from './warranty-coverage-status';
 import { authorizeOrder } from './order-access';
-import { assertNoOnsiteInterruption, ONSITE_INTERRUPTION_ACTION, ONSITE_STOP_ACTION, verifiedOnsiteInterruption } from './onsite-interruption';
+import { assertNoOnsiteInterruption, ONSITE_INTERRUPTION_ACTION, ONSITE_STOP_ACTION, validAssignmentCheckIn, verifiedOnsiteInterruption } from './onsite-interruption';
 import { loadOnsiteStopFinance } from './onsite-stop-finance';
 import { groupSiblings, mirrorGroupStatus, recordVisitOutcome, refuseLoneGroupedBookingAction } from '../bookings/visit-group-guard';
 import { REPAIR_FAILURE_REASONS, type RepairFailedDto } from './dto/repair-failed.dto';
@@ -1357,14 +1358,22 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     this.evidenceStorage.validate(file);
     if (body.deferAutoStart === true && body.type !== EvidenceType.BEFORE) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'deferAutoStart is only supported for BEFORE evidence');
     if (body.capturedAt && new Date(body.capturedAt) > new Date()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Evidence timestamp cannot be in the future');
-    // Check-in face and the before photo belong to the arrival (EN_ROUTE); the rest to the repair.
+    // ADDITIONAL also supports reporting an onsite interruption before repair starts.
     const atArrival = body.type === EvidenceType.BEFORE || body.type === EvidenceType.CHECKIN_FACE;
     const expected = atArrival ? ServiceOrderStatus.EN_ROUTE : ServiceOrderStatus.UNDER_REPAIR;
     const max = await this.configService.getInt('evidence.max_count_per_type', 20);
     const checkEligible = async (manager: EntityManager): Promise<void> => {
       const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
-      if (order.status !== expected || order.completionRequestedAt) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Evidence timing is invalid');
-      if (atArrival && !await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, result: CheckInResult.VALID })) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Valid arrival required before BEFORE evidence');
+      const additionalAtArrival = body.type === EvidenceType.ADDITIONAL && order.status === ServiceOrderStatus.EN_ROUTE;
+      if ((order.status !== expected && !additionalAtArrival) || order.completionRequestedAt) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Evidence timing is invalid');
+      if (atArrival || additionalAtArrival) {
+        const checkin = await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, result: CheckInResult.VALID });
+        if (!checkin) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Valid arrival required before BEFORE evidence');
+        if (additionalAtArrival) {
+          const assignment = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: orderId, technicianId: actor.id, isActive: true });
+          if (!assignment || !validAssignmentCheckIn(assignment, checkin)) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Valid arrival required for the current assignment');
+        }
+      }
       // PO 11/10/2026: check-in is the GPS fix plus the technician's face; the product photo comes after.
       if (body.type === EvidenceType.BEFORE && !await manager.findOneBy(RepairEvidence, { serviceOrderId: orderId, uploaderId: actor.id, type: EvidenceType.CHECKIN_FACE })) {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chụp ảnh khuôn mặt check-in trước khi chụp ảnh máy');
@@ -1489,7 +1498,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Each coverage says what it covers: the labor or the part on the invoice line it came
-   * from, so a customer can tell which item to claim.
+   * from, so a customer can tell which item to claim. The status is the one in force now: an
+   * active coverage past its end date reads as expired (found 01/11/2026).
    */
   async getWarranties(orderId: string, actor: { id: string; role: string }): Promise<WarrantyCoverageView[]> {
     await authorizeOrder(this.dataSource.manager, orderId, actor);
@@ -1500,9 +1510,10 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     const itemIds = coverages.map(c => c.invoiceItemId).filter((id): id is string => !!id);
     const items = itemIds.length ? await this.dataSource.manager.findBy(InvoiceItem, { id: In(itemIds) }) : [];
     const byId = new Map(items.map(item => [item.id, item]));
+    const now = new Date();
     return coverages.map(coverage => {
       const item = coverage.invoiceItemId ? byId.get(coverage.invoiceItemId) : undefined;
-      return { ...coverage, itemType: item?.type ?? null, itemDescription: item?.description ?? null };
+      return { ...coverage, status: effectiveWarrantyStatus(coverage, now), itemType: item?.type ?? null, itemDescription: item?.description ?? null };
     });
   }
 

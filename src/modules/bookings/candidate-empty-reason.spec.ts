@@ -11,8 +11,15 @@ describe('BUG #41 — conservative empty candidate diagnostics', () => {
   it('labels actual known coverage rejection, not a calendar problem', () =>
     expect(explainEmptyCandidates(scenario())).toBe('OUTSIDE_COVERAGE'));
 
-  it('never presumes coverage when even one profile has unknown origin', () =>
-    expect(explainEmptyCandidates(scenario({ originUnknown: 1, coverageRejected: 1 }))).toBe('UNAVAILABLE'));
+  it('ignores profiles with no known origin, they are never matched for any address', () =>
+    expect(explainEmptyCandidates(scenario({ skilledProfiles: 7, originUnknown: 5, coverageRejected: 2 }))).toBe('OUTSIDE_COVERAGE'));
+
+  it('never presumes coverage when no located profile was refused for coverage', () =>
+    expect(explainEmptyCandidates(scenario({ originUnknown: 2, coverageRejected: 0 }))).toBe('UNAVAILABLE'));
+
+  it('never presumes coverage when a located profile passed the area check', () =>
+    expect(explainEmptyCandidates(scenario({ skilledProfiles: 3, originUnknown: 1, coverageRejected: 1, eligibleForLocation: 1,
+      eligibilityReasons: ['Minimum wallet balance is required to accept new jobs'] }))).toBe('UNAVAILABLE'));
 
   it('labels missing customer-confirmed coordinates before technician coverage', () =>
     expect(explainEmptyCandidates(scenario({ bookingHasCoordinates: false }))).toBe('BOOKING_LOCATION_MISSING'));

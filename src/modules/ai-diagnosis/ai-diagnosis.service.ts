@@ -1,12 +1,13 @@
 // src/modules/ai-diagnosis/ai-diagnosis.service.ts
 import { Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { MoreThan, Repository } from 'typeorm';
+import { In, MoreThan, Repository } from 'typeorm';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom, timeout } from 'rxjs';
 import { AiDiagnosis } from './entities/ai-diagnosis.entity';
 import { AiChatSession } from './entities/ai-chat-session.entity';
+import { AiChatTurn } from './entities/ai-chat-turn.entity';
 import {
   AiTurnInput,
   addDisagreement,
@@ -78,6 +79,8 @@ export class AiDiagnosisService {
     private readonly configService: ConfigService,
     @Optional() @InjectRepository(AiChatSession)
     private readonly sessionRepo?: Repository<AiChatSession>,
+    @Optional() @InjectRepository(AiChatTurn)
+    private readonly turnRepo?: Repository<AiChatTurn>,
   ) {
     const configured =
       this.configService.get<string>('AI_SERVICE_URL') || 'http://localhost:8000';
@@ -133,6 +136,8 @@ export class AiDiagnosisService {
         throw new NotFoundException('Booking not found');
       }
     }
+    const repeated = await this.repeatedTurn(dto.sessionId, dto.clientMessageId, actor);
+    if (repeated) return repeated;
     const startedAt = Date.now();
     const images = (dto.images || []).slice(0, AI_MAX_IMAGES);
 
@@ -146,7 +151,7 @@ export class AiDiagnosisService {
           sessionId: dto.sessionId,
           categoryHint: dto.categoryHint,
         },
-        await this.contextFor(dto.sessionId, actor),
+        await this.contextFor(dto.sessionId, actor, true),
       );
     } catch (error) {
       this.logger.warn(`AI analyze unavailable: ${this.reason(error)}`);
@@ -154,10 +159,12 @@ export class AiDiagnosisService {
     }
 
     const latencyMs = Date.now() - startedAt;
-    const enriched = await this.attachServiceIds(payload);
-    await this.persistIfBooked(dto, enriched, latencyMs);
-    await this.recordTurn(actor, { text: dto.description, photoCount: images.length }, enriched, dto.sessionId);
-    return { ...enriched, aiAvailable: true, latencyMs };
+    const { reply, state, stateVersion } = splitState(await this.attachServiceIds(payload));
+    await this.persistIfBooked(dto, reply, latencyMs);
+    await this.recordTurn(actor, { text: dto.description, photoCount: images.length }, reply, dto.sessionId, state, stateVersion);
+    const result = { ...reply, aiAvailable: true, latencyMs };
+    await this.recordTurnRow('analyze', result, dto.clientMessageId, stateVersion, latencyMs);
+    return result;
   }
 
   // ------------------------------------------------------------------- ask
@@ -191,7 +198,7 @@ export class AiDiagnosisService {
   private async postToAi(
     path: string,
     body: Record<string, unknown>,
-    context: { history?: string[]; pastJobs?: AiPastJob[] },
+    context: { history?: string[]; pastJobs?: AiPastJob[]; diagnosticState?: Record<string, unknown> | null },
   ): Promise<Record<string, unknown>> {
     const send = async (payload: Record<string, unknown>) => {
       const response = await firstValueFrom(
@@ -204,6 +211,7 @@ export class AiDiagnosisService {
     const extras: Record<string, unknown> = {};
     if (context.history?.length) extras.history = context.history;
     if (context.pastJobs?.length) extras.pastJobs = context.pastJobs;
+    if (context.diagnosticState) extras.diagnosticState = context.diagnosticState;
     if (!Object.keys(extras).length) return send(body);
     try {
       return await send({ ...body, ...extras });
@@ -217,9 +225,84 @@ export class AiDiagnosisService {
   private async contextFor(
     sessionId: string | undefined,
     actor?: { id: string; role: string },
-  ): Promise<{ history: string[]; pastJobs: AiPastJob[] }> {
-    const [history, pastJobs] = await Promise.all([this.historyFor(sessionId, actor), this.pastJobsFor(actor)]);
-    return { history, pastJobs };
+    withState = false,
+  ): Promise<{ history: string[]; pastJobs: AiPastJob[]; diagnosticState?: Record<string, unknown> | null }> {
+    const [row, pastJobs] = await Promise.all([this.ownSession(sessionId, actor), this.pastJobsFor(actor)]);
+    const history = row ? historyFromSummary(row.summary) : [];
+    return { history, pastJobs, diagnosticState: withState ? row?.diagnosticState ?? null : undefined };
+  }
+
+  /**
+   * The stored session this id names, if this caller may continue it: nothing
+   * for a session another customer holds, nothing when it cannot be read.
+   */
+  private async ownSession(
+    sessionId: string | undefined,
+    actor?: { id: string; role: string },
+  ): Promise<AiChatSession | null> {
+    const id = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (!this.sessionRepo || !id || id.length > 128) return null;
+    try {
+      const row = await this.sessionRepo.findOneBy({ sessionId: id });
+      if (!row) return null;
+      const customerId = actor?.role === Role.CUSTOMER ? actor.id : null;
+      if (row.customerId && row.customerId !== customerId) return null;
+      return row;
+    } catch (error) {
+      this.logger.warn(`AI session not read: ${this.reason(error)}`);
+      return null;
+    }
+  }
+
+  /**
+   * The reply already given to this very message (PO 01/11/2026): a retry on a
+   * weak connection or a double tap must not diagnose the same words twice and
+   * move the conversation on by two turns.
+   */
+  private async repeatedTurn(
+    sessionId: string | undefined,
+    clientMessageId: string | undefined,
+    actor?: { id: string; role: string },
+  ): Promise<Record<string, unknown> | null> {
+    if (!this.turnRepo || !clientMessageId) return null;
+    try {
+      const where = sessionId ? { clientMessageId, sessionId } : { clientMessageId };
+      const turn = await this.turnRepo.findOne({ where, order: { createdAt: 'DESC' } });
+      if (!turn?.response) return null;
+      if (!(await this.ownSession(turn.sessionId, actor))) return null;
+      return { ...turn.response, repeated: true };
+    } catch (error) {
+      this.logger.warn(`AI turn lookup failed: ${this.reason(error)}`);
+      return null;
+    }
+  }
+
+  /** One row per answered message, for repeats and for measuring the assistant. */
+  private async recordTurnRow(
+    route: 'analyze' | 'ask',
+    result: Record<string, unknown>,
+    clientMessageId: string | undefined,
+    stateVersion: number | null,
+    latencyMs: number,
+  ): Promise<void> {
+    const sessionId = typeof result.sessionId === 'string' ? result.sessionId.trim() : '';
+    if (!this.turnRepo || !sessionId || sessionId.length > 128) return;
+    const info = (result.modelInfo ?? {}) as Record<string, unknown>;
+    try {
+      await this.turnRepo.insert({
+        sessionId,
+        clientMessageId: clientMessageId ?? null,
+        route,
+        status: typeof result.status === 'string' ? result.status.slice(0, 32) : 'ok',
+        stateVersion,
+        latencyMs,
+        model: typeof info.vlm === 'string' ? info.vlm.slice(0, 160) : null,
+        kbVersion: typeof info.knowledgeBaseVersion === 'string' ? info.knowledgeBaseVersion.slice(0, 40) : null,
+        response: result,
+      });
+    } catch (error) {
+      this.logger.warn(`AI turn not recorded: ${this.reason(error)}`);
+    }
   }
 
   /**
@@ -237,35 +320,27 @@ export class AiDiagnosisService {
         order: { createdAt: 'DESC' },
         take: AI_PAST_JOBS_LIMITS.jobs,
       });
-      return pastJobsFromBookings(rows);
+      // Whether each was repaired yet, from its service order: an accepted job
+      // still ahead is told as scheduled, never as done.
+      const orders = rows.length
+        ? await this.diagnosisRepo.manager.find(ServiceOrder, {
+          where: { bookingId: In(rows.map((r) => r.id)) },
+          select: { bookingId: true, status: true, completedAt: true },
+        })
+        : [];
+      const byBooking = new Map(orders.map((o) => [o.bookingId, o]));
+      return pastJobsFromBookings(rows.map((row) => {
+        const order = byBooking.get(row.id);
+        return Object.assign(row, {
+          order: order ? { completed: order.status === ServiceOrderStatus.COMPLETED, completedAt: order.completedAt } : null,
+        });
+      }));
     } catch (error) {
       this.logger.warn(`Past bookings not read for the AI: ${this.reason(error)}`);
       return [];
     }
   }
 
-  /**
-   * What the customer said earlier in this session, from this server's own
-   * record. Nothing for a session another customer holds, and nothing when the
-   * record cannot be read: history only helps, so it never fails a turn.
-   */
-  private async historyFor(
-    sessionId: string | undefined,
-    actor?: { id: string; role: string },
-  ): Promise<string[]> {
-    const id = typeof sessionId === 'string' ? sessionId.trim() : '';
-    if (!this.sessionRepo || !id || id.length > 128) return [];
-    try {
-      const row = await this.sessionRepo.findOneBy({ sessionId: id });
-      if (!row) return [];
-      const customerId = actor?.role === Role.CUSTOMER ? actor.id : null;
-      if (row.customerId && row.customerId !== customerId) return [];
-      return historyFromSummary(row.summary);
-    } catch (error) {
-      this.logger.warn(`AI session history not read: ${this.reason(error)}`);
-      return [];
-    }
-  }
 
   // -------------------------------------------------------------- feedback
 
@@ -366,6 +441,8 @@ export class AiDiagnosisService {
     input: AiTurnInput,
     reply: Record<string, unknown>,
     requestedSessionId?: string,
+    state: Record<string, unknown> | null = null,
+    stateVersion: number | null = null,
   ): Promise<void> {
     const sessionId = typeof reply.sessionId === 'string' ? reply.sessionId.trim() : '';
     if (!this.sessionRepo || !sessionId || sessionId.length > 128) return;
@@ -391,7 +468,20 @@ export class AiDiagnosisService {
       if (existing) {
         await this.sessionRepo.update(existing.id, { summary, customerId: existing.customerId ?? customerId });
       } else {
-        await this.sessionRepo.insert({ sessionId, customerId, summary });
+        await this.sessionRepo.insert({
+          sessionId, customerId, summary,
+          ...(state && stateVersion ? { diagnosticState: state, stateVersion } : {}),
+        });
+      }
+      if (existing && state && stateVersion) {
+        // Only over an older version: two messages answered out of order must
+        // not leave the earlier state on record.
+        await this.sessionRepo
+          .createQueryBuilder()
+          .update(AiChatSession)
+          .set({ diagnosticState: state, stateVersion })
+          .where('id = :id AND state_version < :version', { id: existing.id, version: stateVersion })
+          .execute();
       }
     } catch (error) {
       this.logger.warn(`AI session summary not recorded: ${this.reason(error)}`);
@@ -650,4 +740,30 @@ export class AiDiagnosisService {
     }
     return String(error);
   }
+}
+
+/**
+ * The AI Service's reply split three ways: the whole diagnostic state and its
+ * version, kept here and sent back next turn, and the reply for the client,
+ * which carries only the state's `canonical` part. The `engine` part is the AI
+ * Service's own record and goes to nobody else.
+ */
+export function splitState(payload: Record<string, unknown>): {
+  reply: Record<string, unknown>;
+  state: Record<string, unknown> | null;
+  stateVersion: number | null;
+} {
+  const { diagnosticState, stateVersion, ...rest } = payload as Record<string, unknown> & {
+    diagnosticState?: unknown;
+    stateVersion?: unknown;
+  };
+  const state =
+    diagnosticState && typeof diagnosticState === 'object' && !Array.isArray(diagnosticState)
+      ? (diagnosticState as Record<string, unknown>)
+      : null;
+  const version =
+    typeof stateVersion === 'number' && Number.isInteger(stateVersion) && stateVersion > 0 ? stateVersion : null;
+  if (!state || !version) return { reply: rest, state: null, stateVersion: null };
+  const canonical = state.canonical && typeof state.canonical === 'object' ? state.canonical : null;
+  return { reply: { ...rest, diagnosticState: canonical, stateVersion: version }, state, stateVersion: version };
 }

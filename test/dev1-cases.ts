@@ -6,6 +6,7 @@ import { createRequire } from 'module';
 import { resolve } from 'path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { NO_DEPARTURE_CANCEL_REASON } from '../src/modules/service-orders/no-departure';
+import { kycBucket } from './kyc-bucket';
 
 type Session = { accessToken: string; user: { id: string } };
 type Context = { app: INestApplication; db: DataSource; register: () => Promise<Session>; provisionTechnician: () => Promise<Session> };
@@ -92,9 +93,9 @@ export function registerDev1Cases(context: () => Context) {
         await f.create(); // still waiting for a technician: not a repair yet
         const vnDay = new Date(new Date(booking.preferredStartAt).getTime() + 7 * 3600000).toISOString().slice(0, 10);
         await post('/ai/chat/ask', f.owner, { question: 'máy lạnh không mát' }).expect(200);
-        expect(sent[0].pastJobs).toEqual([{ serviceVi: 'Repair fixture', date: vnDay }]);
+        expect(sent[0].pastJobs).toEqual([{ serviceVi: 'Repair fixture', date: vnDay, status: 'SCHEDULED' }]);
         await post('/ai/diagnoses', f.owner, { description: 'máy lạnh không mát' }).expect(200);
-        expect(sent[1].pastJobs).toEqual([{ serviceVi: 'Repair fixture', date: vnDay }]);
+        expect(sent[1].pastJobs).toEqual([{ serviceVi: 'Repair fixture', date: vnDay, status: 'SCHEDULED' }]);
         expect(JSON.stringify(sent[0])).not.toContain('1 Test Street');
         await post('/ai/chat/ask', f.outsider, { question: 'máy lạnh không mát' }).expect(200);
         expect(sent[2]).not.toHaveProperty('pastJobs');
@@ -118,6 +119,33 @@ export function registerDev1Cases(context: () => Context) {
       expect(read.addressTextSnapshot).toContain('1 Test Street');
       denied(await get(`/bookings/${b.id}`, f.outsider));
       denied(await post(`/bookings/${b.id}/shortlist`, f.owner, { technicianIds: [f.tech.user.id, f.tech.user.id] }));
+    });
+
+    it('tells the customer over HTTP that an address outside every technician area is out of coverage (bug 41)', async () => {
+      const f = await fixture(), db = context().db;
+      // A verified technician with the skill but no work address is never matched anywhere; it must not hide the reason.
+      const unplaced = await context().provisionTechnician();
+      const unplacedProfile = await db.getRepository('TechnicianProfile').findOneByOrFail({ userId: unplaced.user.id });
+      await db.getRepository('TechnicianProfile').update(unplacedProfile.id, { verificationStatus: 'verified', isAvailable: true });
+      await save('TechnicianSkill', { technicianId: unplacedProfile.id, serviceId: f.service.id, listedLaborPrice: 100000, verificationStatus: 'verified' });
+      const hanoi = await save('Address', { userId: f.owner.user.id, line1: '12 Phố Huế', district: 'Hai Bà Trưng', province: 'Hà Nội', lat: 21.0136, lng: 105.8512 });
+      const far = unwrap((await post('/bookings', f.owner, { ...f.body, addressId: hanoi.id }).expect(201)).body);
+
+      const diagnosed = await get(`/bookings/${far.id}/technician-candidates?diagnostics=1`, f.owner).expect(200);
+      expect(diagnosed.body).toMatchObject({ success: true, data: [], meta: { emptyReason: 'OUTSIDE_COVERAGE' } });
+      // Mobile reads the old shape: a plain list in data and nothing else.
+      const legacy = await get(`/bookings/${far.id}/technician-candidates`, f.owner).expect(200);
+      expect(legacy.body.data).toEqual([]);
+      expect(legacy.body).not.toHaveProperty('meta');
+      expect(legacy.body).not.toHaveProperty('emptyReason');
+
+      // In the area the list is filled and no reason is given.
+      const near = await f.create();
+      const listed = await get(`/bookings/${near.id}/technician-candidates?diagnostics=1`, f.owner).expect(200);
+      expect(listed.body.data.map((c: any) => c.userId).sort()).toEqual([f.tech.user.id, f.spare.user.id].sort());
+      expect(listed.body.meta).toEqual({ emptyReason: null });
+      // Somebody else's booking is still refused before any technician is read.
+      denied(await get(`/bookings/${far.id}/technician-candidates?diagnostics=1`, f.outsider));
     });
 
     it('reads a technician profile with each relation in its own query, complete and without duplicates (PO 14/10/2026)', async () => {
@@ -475,6 +503,42 @@ export function registerDev1Cases(context: () => Context) {
       }
     });
 
+    it('tells the customer over HTTP why a visit has no technician, with the same reasons as one booking (bug 41)', async () => {
+      const f = await fixture(), db = context().db;
+      const { BusinessConfigService } = runtimeRequire('./dist/modules/system-config/business-config.service.js');
+      const setGroups = async (on: boolean) => {
+        await db.query(`UPDATE "system_configs" SET "value" = $1 WHERE "key" = 'visit_group.enabled'`, [String(on)]);
+        context().app.get(BusinessConfigService).invalidateCache();
+      };
+      const other = await save('Service', { categoryId: f.service.categoryId, name: 'Visit reason fixture', code: randomUUID(), pricingMode: 'fixed_price', fixedPrice: 150000, scopeDescription: 'Fixture scope', unit: 'job' });
+      const spareProfile = await db.getRepository('TechnicianProfile').findOneByOrFail({ userId: f.spare.user.id });
+      await save('TechnicianSkill', { technicianId: spareProfile.id, serviceId: other.id, listedLaborPrice: 100000, verificationStatus: 'verified' });
+      const day = new Date(Date.now() + 7 * 3600000 + 4 * 86400000).toISOString().slice(0, 10);
+      const items = [{ serviceId: f.service.id, description: 'Máy kêu to' }, { serviceId: other.id, description: 'Không lên nguồn' }];
+      const hanoi = await save('Address', { userId: f.owner.user.id, line1: '12 Phố Huế', district: 'Hai Bà Trưng', province: 'Hà Nội', lat: 21.0136, lng: 105.8512 });
+      try {
+        await setGroups(true);
+        const far = unwrap((await post('/visit-groups', f.owner, { addressId: hanoi.id, mode: 'scheduled', date: day, slot: 'afternoon', items }).expect(201)).body);
+        const diagnosed = await get(`/visit-groups/${far.id}/technician-candidates?diagnostics=1`, f.owner).expect(200);
+        expect(diagnosed.body).toMatchObject({ success: true, data: [], meta: { emptyReason: 'OUTSIDE_COVERAGE' } });
+        // Mobile reads the old shape: a plain list in data and nothing else.
+        const legacy = await get(`/visit-groups/${far.id}/technician-candidates`, f.owner).expect(200);
+        expect(legacy.body.data).toEqual([]);
+        expect(legacy.body).not.toHaveProperty('meta');
+        expect(legacy.body).not.toHaveProperty('emptyReason');
+        // Somebody else's visit is still refused.
+        expect((await get(`/visit-groups/${far.id}/technician-candidates?diagnostics=1`, f.outsider)).status).toBe(404);
+
+        // In the area the technician with both skills is listed and no reason is given.
+        const near = unwrap((await post('/visit-groups', f.owner, { addressId: f.address.id, mode: 'scheduled', date: day, slot: 'afternoon', items }).expect(201)).body);
+        const listed = await get(`/visit-groups/${near.id}/technician-candidates?diagnostics=1`, f.owner).expect(200);
+        expect(listed.body.data.map((c: any) => c.userId)).toEqual([f.spare.user.id]);
+        expect(listed.body.meta).toEqual({ emptyReason: null });
+      } finally {
+        await setGroups(false);
+      }
+    });
+
     it('moves, drops and cancels a held visit as one, never one device alone (PO 21/10/2026)', async () => {
       const f = await fixture(), db = context().db;
       const { BusinessConfigService } = runtimeRequire('./dist/modules/system-config/business-config.service.js');
@@ -567,8 +631,17 @@ export function registerDev1Cases(context: () => Context) {
         // One trip, one check-in, one face for the whole visit.
         await post(`/service-orders/${one.id}/en-route`, f.tech).expect(200);
         expect((await orderOf(second)).status).toBe('en_route');
+        const listedDevices = async (path: string, session: typeof f.tech) =>
+          unwrap((await get(path, session).expect(200)).body).find((row: any) => row.id === group.id).items;
+        expect((await listedDevices('/visit-groups/assigned-page', f.tech)).map((item: any) => item.arrivedAt)).toEqual([null, null]);
         expect(unwrap((await post(`/service-orders/${one.id}/check-in`, f.tech, { lat: 10.77, lng: 106.69, accuracyMeters: 5 }).expect(200)).body).result).toBe('valid');
         expect((await db.query("SELECT COUNT(*)::int n FROM arrival_check_ins WHERE service_order_id = $1 AND result = 'valid'", [two.id]))[0].n).toBe(1);
+        // Bug 17: both devices read as arrived on both lists, while every order keeps its own state.
+        for (const [path, session] of [['/visit-groups/assigned-page', f.tech], ['/visit-groups/my-page', f.owner]] as const) {
+          const devices = await listedDevices(path, session);
+          expect(devices.map((item: any) => item.orderStatus)).toEqual(['en_route', 'en_route']);
+          expect(devices.every((item: any) => typeof item.arrivedAt === 'string' && !Number.isNaN(Date.parse(item.arrivedAt)))).toBe(true);
+        }
         await evidence(one.id, f.tech, 'checkin_face').expect(201);
         await evidence(two.id, f.tech, 'before').expect(201);
         await evidence(one.id, f.tech, 'before').expect(201);
@@ -736,6 +809,105 @@ export function registerDev1Cases(context: () => Context) {
         expect((await db.query("SELECT COUNT(*)::int n FROM payments WHERE invoice_id = ANY($1) AND status = 'verified'", [split.map((s: any) => s.invoiceId)]))[0].n).toBe(2);
       } finally {
         await setVisitGroups(false);
+      }
+    });
+
+    it('lets cash through once an abandoned VNPay link is past expiry plus grace, and holds a late success for staff (bug 39, PO 01/11/2026)', async () => {
+      const f = await fixture('inspection_required'), db = context().db;
+      const { createHmac } = runtimeRequire('crypto');
+      const { ConfigService } = runtimeRequire('@nestjs/config');
+      const { FinanceService } = runtimeRequire('./dist/modules/finance/finance.service.js');
+      const finance = context().app.get(FinanceService);
+      // This private-schema suite skips the public CashPaymentIntents migration (its DDL, RLS and
+      // guard trigger are tested by cash-reputation.postgres.spec.ts). Give this disposable schema
+      // the same columns, checks and unique indexes so the cash-first HTTP path can run here.
+      await db.query(`CREATE TABLE IF NOT EXISTS cash_payment_intents (
+        id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+        scope_kind varchar(16) NOT NULL CHECK (scope_kind IN ('SOLO','VISIT_GROUP')),
+        scope_id uuid NOT NULL,
+        customer_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        technician_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        status varchar(16) NOT NULL CHECK (status IN ('pending','cancelled','received')),
+        gross_vnd bigint NOT NULL CHECK (gross_vnd > 0),
+        customer_due_vnd bigint NOT NULL CHECK (customer_due_vnd > 0 AND customer_due_vnd <= gross_vnd),
+        allocation_snapshot jsonb NOT NULL CHECK (jsonb_typeof(allocation_snapshot) = 'array'),
+        voucher_reservation_id uuid,
+        command_id uuid NOT NULL,
+        receipt_command_id uuid,
+        cancel_command_id uuid,
+        received_amount_vnd bigint CHECK (received_amount_vnd IS NULL OR received_amount_vnd > 0),
+        receipt_evidence_url text,
+        received_at timestamptz,
+        cash_settlement_id uuid REFERENCES cash_settlements(id) ON DELETE RESTRICT,
+        visit_group_payment_id uuid REFERENCES visit_group_payments(id) ON DELETE RESTRICT,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now())`);
+      await db.query('CREATE UNIQUE INDEX IF NOT EXISTS uq_cash_intent_customer_command ON cash_payment_intents(customer_id, command_id)');
+      await db.query("CREATE UNIQUE INDEX IF NOT EXISTS uq_cash_intent_pending_scope ON cash_payment_intents(scope_kind, scope_id) WHERE status = 'pending'");
+      // Cash-first is enabled on DEV; this test turns it on for this service instance only.
+      const cashFirst = vi.spyOn(finance as any, 'cashFirstEnabled').mockReturnValue(true);
+      process.env.VNPAY_HASH_SECRET ||= 'e2e-visit-secret';
+      const secret = context().app.get(ConfigService).get('VNPAY_HASH_SECRET') as string;
+      const signed = (params: Record<string, string>) => {
+        const query = Object.keys(params).sort().map((key) => `${key}=${encodeURIComponent(params[key]).replace(/%20/g, '+')}`).join('&');
+        return { ...params, vnp_SecureHash: createHmac('sha512', secret).update(Buffer.from(query, 'utf-8')).digest('hex') };
+      };
+      try {
+        const { order } = await accept(f), path = `/service-orders/${order.id}`;
+        await arrived(order.id, f.tech);
+        const quote = unwrap((await post(path + '/quotations', f.tech, { items: [{ type: 'labor', description: 'Repair labor', quantity: 1, unitPrice: 100000 }] }).expect(201)).body);
+        await post(`/quotations/${quote.id}/decision`, f.owner, { action: 'APPROVE' }).expect(200);
+        await post(path + '/start-repair', f.tech).expect(200);
+        await evidence(order.id, f.tech, 'after').expect(201);
+        await post(path + '/request-completion', f.tech).expect(200);
+        const invoice = unwrap((await get(path + '/invoice', f.owner).expect(200)).body);
+        const amount = Number(invoice.grandTotal);
+        // Attempts written straight into this test database; no VNPay call is made.
+        const open = (key: string, expiresAt: string | null) => db.query(
+          `INSERT INTO payments (invoice_id, purpose, amount, currency, mode, provider, status, idempotency_key, requested_by_user_id, requested_at, expires_at)
+           VALUES ($1, 'invoice', $2, 'VND', 'LIVE', 'vnpay', 'pending', $3, $4, now() - interval '45 minutes', ${expiresAt ?? 'NULL'})`,
+          [invoice.id, amount, key, f.owner.user.id]);
+        const attempt = async (key: string) => (await db.query('SELECT status, failure_code, provider_reference FROM payments WHERE idempotency_key = $1', [key]))[0];
+        const choose = () => post(`/finance/cash-intents/SOLO/${order.id}`, f.owner, { commandId: randomUUID() });
+
+        // An attempt from before vnp_ExpireDate existed keeps blocking: its expiry is never guessed.
+        await open('e2e39legacy', null);
+        const legacy = await choose();
+        expect(legacy.status, JSON.stringify(legacy.body)).toBe(409);
+        expect(JSON.stringify(legacy.body)).toContain('Có giao dịch thanh toán đang xử lý');
+        expect(await attempt('e2e39legacy')).toMatchObject({ status: 'pending', failure_code: null });
+        await db.query("UPDATE payments SET status = 'failed', failure_code = 'E2E_CLEARED' WHERE idempotency_key = 'e2e39legacy'");
+
+        // Expired 14 minutes ago: still inside the 15 minute grace, the same 409.
+        await open('e2e39abandoned', "now() - interval '14 minutes'");
+        expect((await choose()).status).toBe(409);
+        expect(await attempt('e2e39abandoned')).toMatchObject({ status: 'pending', failure_code: null });
+
+        // Expired 16 minutes ago: closed as expired in the same transaction, the cash choice goes through.
+        await db.query("UPDATE payments SET expires_at = now() - interval '16 minutes' WHERE idempotency_key = 'e2e39abandoned'");
+        const chosen = await choose();
+        expect(chosen.status, JSON.stringify(chosen.body)).toBe(200);
+        const intent = unwrap(chosen.body);
+        expect(intent).toMatchObject({ status: 'pending', customerDueVnd: amount });
+        expect(await attempt('e2e39abandoned')).toMatchObject({ status: 'cancelled', failure_code: 'VNPAY_URL_EXPIRED' });
+        const received = await post(`/finance/cash-intents/SOLO/${order.id}/received`, f.tech, { intentId: intent.id, commandId: randomUUID(), receivedAmountVnd: amount });
+        expect(received.status, JSON.stringify(received.body)).toBe(200);
+        expect((await db.query('SELECT payment_status FROM invoices WHERE id = $1', [invoice.id]))[0].payment_status).toBe('paid');
+
+        // VNPay reports success for the closed attempt after all: flagged and a support case, nothing paid twice.
+        const late = signed({ vnp_TxnRef: 'e2e39abandoned', vnp_Amount: String(amount * 100), vnp_ResponseCode: '00', vnp_TransactionStatus: '00', vnp_TransactionNo: '39000001' });
+        expect((await finance.handleVnpayIpn(late)).RspCode).toBe('02');
+        expect((await finance.handleVnpayIpn(late)).RspCode).toBe('02');
+        expect(await attempt('e2e39abandoned')).toMatchObject({ status: 'cancelled', failure_code: 'VNPAY_PAID_AFTER_EXPIRY', provider_reference: '39000001' });
+        const cases = await db.query("SELECT case_type, status, customer_id, technician_id FROM support_cases WHERE service_order_id = $1 AND case_type = 'other'", [order.id]);
+        expect(cases).toEqual([{ case_type: 'other', status: 'open', customer_id: f.owner.user.id, technician_id: f.tech.user.id }]);
+        // Only the cash receipt is a verified payment of this invoice; the late VNPay money is not.
+        expect(await db.query("SELECT provider FROM payments WHERE invoice_id = $1 AND status = 'verified'", [invoice.id])).toEqual([{ provider: null }]);
+        expect((await db.query('SELECT payment_status FROM invoices WHERE id = $1', [invoice.id]))[0].payment_status).toBe('paid');
+      } finally {
+        cashFirst.mockRestore();
+        // Leave the schema as the migrations made it, so the later revert and reapply case still owns it.
+        await db.query('DROP TABLE IF EXISTS cash_payment_intents');
       }
     });
 
@@ -1338,16 +1510,36 @@ export function registerDev1Cases(context: () => Context) {
         expectStatus(await put('/customer/wallet/bank-account', customer, { bankBin: '970436', accountNumber: '0123456789', accountName: 'NGUYEN VAN KHACH' }), 422);
         expect(createPayout).not.toHaveBeenCalled();
 
-        // Submit KYC: card front and back only, details as on the card.
+        // Submit KYC: card front and back only, details as on the card, both
+        // images through the private upload flow (upload URL, then the upload).
         const cccd = String(Date.now()).slice(-12);
+        const issue = async () => unwrap((await post('/customer/verification/upload-url', customer, { mimeType: 'image/jpeg' }).expect(200)).body).storageObjectPath as string;
+        const [frontPath, backPath] = [await issue(), await issue()];
+        expect(frontPath).toMatch(new RegExp(`^kyc/${customer.user.id}/[0-9a-f-]{36}[.]jpg$`));
         const kyc = {
           fullName: 'Nguyễn Văn Khách', dateOfBirth: '1990-05-20', gender: 'male', citizenIdNumber: cccd,
           address: '12 Nguyễn Trãi, Phường Bến Thành, TP. Hồ Chí Minh',
           documents: [
-            { documentType: 'citizen_id_front', storageObjectPath: `kyc/${customer.user.id}/front.jpg`, fileName: 'mat-truoc.jpg', fileSize: 2048, mimeType: 'image/jpeg' },
-            { documentType: 'citizen_id_back', storageObjectPath: `kyc/${customer.user.id}/back.jpg`, fileName: 'mat-sau.jpg', fileSize: 2048, mimeType: 'image/jpeg' },
+            { documentType: 'citizen_id_front', storageObjectPath: frontPath, fileName: 'mat-truoc.jpg', fileSize: 2048, mimeType: 'image/jpeg' },
+            { documentType: 'citizen_id_back', storageObjectPath: backPath, fileName: 'mat-sau.jpg', fileSize: 2048, mimeType: 'image/jpeg' },
           ],
         };
+        const profileOf = async () => (await db.query('SELECT full_name, date_of_birth::text AS dob, gender, citizen_id_number, full_address FROM users WHERE id = $1', [customer.user.id]))[0];
+        const profileBefore = await profileOf();
+        const kycCount = async () => Number((await db.query('SELECT count(*)::int AS n FROM customer_verifications WHERE customer_id = $1', [customer.user.id]))[0].n);
+        // DEF-r2-mobile-01: paths nothing was uploaded to are refused and the profile is not touched.
+        const ghost = await post('/customer/verification', customer, { ...kyc, documents: [{ ...kyc.documents[0], storageObjectPath: `kyc/${customer.user.id}/00000000-0000-4000-8000-000000000000.jpg` }, { ...kyc.documents[1], storageObjectPath: `kyc/${customer.user.id}/00000000-0000-4000-8000-000000000001.jpg` }] });
+        expectStatus(ghost, 422);
+        expect(JSON.stringify(ghost.body)).toContain('Không tìm thấy ảnh CCCD đã tải lên');
+        expectStatus(await post('/customer/verification', customer, kyc), 422); // upload URLs issued, nothing uploaded yet
+        kycBucket.add(frontPath);
+        expectStatus(await post('/customer/verification', customer, kyc), 422); // the back is still missing
+        const othersUpload = `kyc/${admin.user.id}/${randomUUID()}.jpg`;
+        kycBucket.add(othersUpload);
+        expectStatus(await post('/customer/verification', customer, { ...kyc, documents: [kyc.documents[0], { ...kyc.documents[1], storageObjectPath: othersUpload }] }), 422);
+        expect(await kycCount()).toBe(0);
+        expect(await profileOf()).toEqual(profileBefore);
+        kycBucket.add(backPath);
         expectStatus(await post('/customer/verification', customer, { ...kyc, fullName: 'Khách 😀' }), 400);
         expectStatus(await post('/customer/verification', customer, { ...kyc, citizenIdNumber: '12345' }), 400);
         expectStatus(await post('/customer/verification', customer, { ...kyc, documents: [kyc.documents[0], { ...kyc.documents[1], mimeType: 'application/pdf', fileName: 'mat-sau.pdf' }] }), 400);
@@ -1355,8 +1547,9 @@ export function registerDev1Cases(context: () => Context) {
         expectStatus(await post('/customer/verification', customer, { ...kyc, documents: [kyc.documents[0]] }), 400);
         const submitted = unwrap((await post('/customer/verification', customer, kyc).expect(201)).body);
         expect(submitted).toMatchObject({ status: 'pending', verification: { fullName: 'Nguyễn Văn Khách', citizenIdNumber: cccd, dateOfBirth: '1990-05-20' } });
-        const [profile] = await db.query('SELECT full_name, date_of_birth::text AS dob, gender, citizen_id_number, full_address FROM users WHERE id = $1', [customer.user.id]);
-        expect(profile).toMatchObject({ full_name: 'Nguyễn Văn Khách', dob: '1990-05-20', gender: 'male', citizen_id_number: cccd, full_address: kyc.address });
+        // Pending: the details wait on the request, the profile only takes them at approval.
+        expect(await profileOf()).toEqual(profileBefore);
+        expect(submitted.profile).toMatchObject({ citizenIdNumber: cccd, dateOfBirth: '1990-05-20', gender: 'male', address: kyc.address });
         denied(await post('/customer/verification', customer, kyc));
         // Pending: still no withdrawal.
         const pending = await post('/customer/wallet/withdrawals', customer, { amount: 50000 });
@@ -1378,6 +1571,7 @@ export function registerDev1Cases(context: () => Context) {
         });
         expectStatus(await patch(`/admin/customer-verifications/${id}/reject`, admin, { rejectionReason: 'abc' }), 400);
         expect(unwrap((await patch(`/admin/customer-verifications/${id}/approve`, admin).expect(200)).body)).toMatchObject({ status: 'verified', verifiedFullName: 'Nguyễn Văn Khách' });
+        expect(await profileOf()).toMatchObject({ full_name: 'Nguyễn Văn Khách', dob: '1990-05-20', gender: 'male', citizen_id_number: cccd, full_address: kyc.address });
         denied(await patch(`/admin/customer-verifications/${id}/approve`, admin));
         const [decision] = await db.query("SELECT actor_user_id FROM audit_logs WHERE action = 'CUSTOMER_KYC_APPROVED' AND resource_id = $1", [id]);
         expect(decision.actor_user_id).toBe(admin.user.id);
@@ -1678,6 +1872,31 @@ export function registerDev1Cases(context: () => Context) {
       expect(legacyLedger.map((t: any) => t.type)).toEqual(['ONLINE_EARNING']);
     });
 
+    it('reads a coverage past its end date as expired and still takes a claim on it (found 01/11/2026, TC-WAR-003)', async () => {
+      const f = await fixture(), db = context().db;
+      const { order, invoice } = await completedOrder(f);
+      await db.query('INSERT INTO customer_wallets (user_id, balance) VALUES ($1, $2)', [f.owner.user.id, 1000000]);
+      await post(`/invoices/${invoice.id}/pay-with-wallet`, f.owner).expect(200);
+      const path = `/service-orders/${order.id}/warranties`;
+      const [coverage] = unwrap((await get(path, f.owner).expect(200)).body);
+      expect(coverage.status).toBe('active');
+
+      await db.query("UPDATE warranty_coverages SET expires_at = now() - interval '1 day' WHERE id = $1", [coverage.id]);
+      for (const session of [f.owner, f.tech]) {
+        expect(unwrap((await get(path, session).expect(200)).body)).toEqual([expect.objectContaining({ id: coverage.id, status: 'expired' })]);
+      }
+      // Read only: the stored row is not rewritten by a GET.
+      expect((await db.query('SELECT status FROM warranty_coverages WHERE id = $1', [coverage.id]))[0].status).toBe('active');
+      // A claim after expiry is still saved, flagged for the manager (TC-WAR-003).
+      const claim = await post(`/service-orders/${order.id}/warranty-claims`, f.owner, { warrantyCoverageId: coverage.id, description: 'Vòi lại rỉ nước sau ba tháng' });
+      expect(claim.status, JSON.stringify(claim.body)).toBe(201);
+      expect(unwrap(claim.body)).toMatchObject({ status: 'submitted', submittedAfterExpiry: true });
+
+      // A voided coverage stays voided whatever its end date.
+      await db.query("UPDATE warranty_coverages SET status = 'voided' WHERE id = $1", [coverage.id]);
+      expect(unwrap((await get(path, f.owner).expect(200)).body)[0].status).toBe('voided');
+    });
+
     it('announces every committed change live to the people allowed to see it, and nothing that rolled back (PO 18/10/2026)', async () => {
       const f = await fixture(), db = context().db;
       const { MessagingGateway } = runtimeRequire('./dist/modules/messaging/messaging.gateway.js');
@@ -1883,6 +2102,60 @@ export function registerDev1Cases(context: () => Context) {
     });
   });
 
+  describe('AI assistant diagnostic state (PO 01/11/2026)', () => {
+    // Real HTTP, JWT and Postgres; only the AI Service transport is replaced.
+    it('stores the state by version, sends it back, never lets an older one win, and answers a repeated message once', async () => {
+      const { AiDiagnosisService } = runtimeRequire('./dist/modules/ai-diagnosis/ai-diagnosis.service.js');
+      const { of } = runtimeRequire('rxjs');
+      const http = (context().app.get(AiDiagnosisService) as any).httpService;
+      const sessionId = `ai-${randomUUID()}`;
+      const state = (v: number) => ({ canonical: { schemaVersion: 1, stateVersion: v, sessionId }, engine: { schemaVersion: 1, conversation: { turn: v } } });
+      const reply = (v: number) => ({ sessionId, status: 'ok', suspectedFaults: [], recommendedServices: [], messageVi: `lượt ${v}`, diagnosticState: state(v), stateVersion: v });
+      // The third reply arrives out of order: an older version than the one stored.
+      const replies = [reply(1), reply(2), reply(1)];
+      const sent: Array<Record<string, any>> = [];
+      const spy = vi.spyOn(http, 'post').mockImplementation(((_url: string, body: Record<string, any>) => {
+        sent.push(body);
+        return of({ data: replies.shift() });
+      }) as any);
+      const post = (session: Session, body: object) =>
+        request(context().app.getHttpServer()).post('/api/v1/ai/diagnoses').set('Authorization', `Bearer ${session.accessToken}`).send(body);
+      const stored = async () =>
+        (await context().db.query('SELECT state_version, diagnostic_state FROM ai_chat_sessions WHERE session_id = $1', [sessionId]))[0];
+      try {
+        const owner = await context().register();
+        const first = unwrap((await post(owner, { description: 'Máy lạnh bị chảy nước và không lạnh.', clientMessageId: 'e2e-msg-0001' }).expect(200)).body);
+        expect(first.diagnosticState).toEqual(state(1).canonical);
+        expect(JSON.stringify(first)).not.toContain('"engine"');
+        expect((await stored()).state_version).toBe(1);
+
+        await post(owner, { description: 'Không.', sessionId, clientMessageId: 'e2e-msg-0002' }).expect(200);
+        expect(sent[1].diagnosticState).toEqual(state(1));
+        expect(await stored()).toMatchObject({ state_version: 2, diagnostic_state: state(2) });
+
+        await post(owner, { description: 'Bên phải dàn lạnh.', sessionId, clientMessageId: 'e2e-msg-0003' }).expect(200);
+        expect(await stored()).toMatchObject({ state_version: 2, diagnostic_state: state(2) });
+
+        const calls = spy.mock.calls.length;
+        const again = unwrap((await post(owner, { description: 'Không.', sessionId, clientMessageId: 'e2e-msg-0002' }).expect(200)).body);
+        expect(spy.mock.calls.length).toBe(calls);
+        expect(again).toMatchObject({ messageVi: 'lượt 2', repeated: true });
+
+        const intruder = await context().register();
+        await post(intruder, { description: 'xem trộm', sessionId, clientMessageId: 'e2e-msg-0002' }).expect(200);
+        expect(spy.mock.calls.length).toBe(calls + 1);
+        expect(sent[sent.length - 1].diagnosticState).toBeUndefined();
+
+        const turns = await context().db.query('SELECT route, status, state_version FROM ai_chat_turns WHERE session_id = $1 ORDER BY created_at', [sessionId]);
+        expect(turns.map((t: any) => t.state_version)).toEqual([1, 2, 1]);
+        await post(owner, { description: 'x', clientMessageId: 'bad id!' }).expect(400);
+      } finally {
+        spy.mockRestore();
+        await context().db.query('DELETE FROM ai_chat_turns WHERE session_id = $1', [sessionId]);
+      }
+    });
+  });
+
   describe('AI assistant keeps the conversation across a lost AI session', () => {
     // Real HTTP, JWT and Postgres; only the AI Service transport is replaced, so
     // what is checked is what the backend sends and records.
@@ -1928,6 +2201,74 @@ export function registerDev1Cases(context: () => Context) {
       } finally {
         spy.mockRestore();
       }
+    });
+  });
+
+  describe('saved address needs a map pin and plain address text (PO 01/11/2026, bug 29)', () => {
+    const api = () => request(context().app.getHttpServer());
+    const as = (session: Session) => ({
+      post: (body: object) => api().post('/api/v1/me/addresses').set('Authorization', `Bearer ${session.accessToken}`).send(body),
+      patch: (id: string, body: object) => api().patch(`/api/v1/me/addresses/${id}`).set('Authorization', `Bearer ${session.accessToken}`).send(body),
+    });
+    const rows = async (userId: string) => (await context().db.query('SELECT label, line1, lat, lng FROM addresses WHERE user_id = $1 ORDER BY created_at', [userId])) as Array<{ label: string; line1: string; lat: string | null; lng: string | null }>;
+    const base = { label: 'Nhà riêng', line1: '12 Tân Trào, Phường Tân Phú', district: 'Quận 7', province: 'TP. Hồ Chí Minh', lat: 10.7296, lng: 106.7215 };
+    const refused = (response: request.Response) => {
+      expect(response.status, JSON.stringify(response.body)).toBe(400);
+      expect(response.body.error.code).toBe('VALIDATION_FAILED');
+      return (response.body.error.details as string[]).join(' ');
+    };
+
+    it('refuses an address with a missing or half coordinate pair and saves nothing', async () => {
+      const customer = await context().register();
+      const noPin = { label: base.label, line1: base.line1, district: base.district, province: base.province };
+      for (const body of [noPin, { ...noPin, lat: 10.73 }, { ...noPin, lng: 106.72 }, { ...noPin, lat: null, lng: null }, { ...base, lat: 91 }, { ...base, lng: '106.72' }]) {
+        const message = refused(await as(customer).post(body));
+        expect(message).toMatch(/Vui lòng chọn vị trí trên bản đồ|Vĩ độ phải là số|Kinh độ phải là số/);
+      }
+      expect(await rows(customer.user.id)).toHaveLength(0);
+
+      const saved = unwrap((await as(customer).post(base).expect(201)).body);
+      expect(saved).toMatchObject({ line1: base.line1, lat: base.lat, lng: base.lng, isDefault: true });
+    });
+
+    it('refuses emoji, invisible and control characters and markup in every text field, keeps Vietnamese', async () => {
+      const customer = await context().register();
+      const bad = ['Nhà 🏠', 'Nhà 👩‍👩‍👧‍👦', '12 Tân\u200BTrào', '12 Tân\u200DTrào', '\uFEFF12 Tân Trào', '12 Tân\u202ETrào', '12\u0000 Tân Trào', '12 Tân\nTrào', '<img src=x onerror=alert(1)>', "<script>alert('x')</script>"];
+      for (const field of ['label', 'line1', 'ward', 'district', 'province']) {
+        for (const text of bad) {
+          const response = await as(customer).post({ ...base, [field]: text });
+          expect(response.status, `${field} ${JSON.stringify(text)} ${JSON.stringify(response.body)}`).toBe(400);
+          expect(refused(response)).toMatch(/chỉ được chứa chữ, số, khoảng trắng/);
+        }
+      }
+      expect(refused(await as(customer).post({ ...base, line1: 'Nhà '.repeat(500) }))).toBe('Địa chỉ cụ thể tối đa 255 ký tự.');
+      expect(await rows(customer.user.id)).toHaveLength(0);
+
+      const good = unwrap((await as(customer).post({ ...base, label: '  Nhà   bố mẹ ', line1: 'Số 5 (cạnh chợ), Hẻm 12/3B, Lô B-12 #05' }).expect(201)).body);
+      expect(good).toMatchObject({ label: 'Nhà bố mẹ', line1: 'Số 5 (cạnh chợ), Hẻm 12/3B, Lô B-12 #05' });
+
+      const edit = await as(customer).patch(good.id, { label: 'Nhà 😀' });
+      expect(refused(edit)).toMatch(/^Tên gợi nhớ chỉ được chứa/);
+      expect((await rows(customer.user.id))[0].label).toBe('Nhà bố mẹ');
+    });
+
+    it('makes a PATCH that moves the address resend both coordinates and an old unpinned address get pinned first', async () => {
+      const customer = await context().register();
+      const saved = unwrap((await as(customer).post(base).expect(201)).body);
+      refused(await as(customer).patch(saved.id, { line1: '45 Nguyễn Huệ' }));
+      refused(await as(customer).patch(saved.id, { lat: null, lng: null }));
+      unwrap((await as(customer).patch(saved.id, { label: 'Công ty' }).expect(200)).body);
+      const moved = unwrap((await as(customer).patch(saved.id, { line1: '45 Nguyễn Huệ', lat: 10.7743, lng: 106.7038 }).expect(200)).body);
+      expect(moved).toMatchObject({ label: 'Công ty', line1: '45 Nguyễn Huệ', lat: 10.7743, lng: 106.7038 });
+
+      // An address saved before the rule, without a pin, still reads back; any change waits for a pin.
+      const legacy = await context().db.getRepository('Address').save({ userId: customer.user.id, line1: '1 Đường Cũ', district: 'Quận 1', province: 'TP. Hồ Chí Minh' });
+      const list = unwrap((await api().get('/api/v1/me/addresses').set('Authorization', `Bearer ${customer.accessToken}`).expect(200)).body);
+      expect(list.find((a: { id: string }) => a.id === legacy.id)).toMatchObject({ line1: '1 Đường Cũ', lat: null, lng: null });
+      const blocked = await as(customer).patch(legacy.id, { isDefault: true });
+      expect(blocked.status).toBe(400);
+      expect(blocked.body.error).toMatchObject({ code: 'ADDRESS_LOCATION_REQUIRED', message: 'Vui lòng chọn vị trí trên bản đồ. Địa chỉ cần có đủ vĩ độ và kinh độ.' });
+      unwrap((await as(customer).patch(legacy.id, { line1: '1 Đường Cũ', lat: 10.776, lng: 106.7 }).expect(200)).body);
     });
   });
 }

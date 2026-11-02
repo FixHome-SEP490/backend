@@ -358,4 +358,58 @@ describe('KycStorageService', () => {
       ).rejects.toThrow(ServiceUnavailableException);
     });
   });
+
+  describe('objectExists', () => {
+    const path = 'kyc/tech-uuid-1/5c1f0a52-3f2e-4a43-9a5e-2a7b1d1c9e10.jpg';
+
+    it('asks the private bucket for the exact object with the service role', async () => {
+      const get = vi.spyOn(axios, 'get').mockResolvedValue({
+        status: 200,
+        data: { name: path, size: 13838, content_type: 'image/jpeg' },
+      } as never);
+
+      await expect(storage.objectExists(path, 'tech-uuid-1')).resolves.toBe(true);
+      expect(get).toHaveBeenCalledWith(
+        `https://project.supabase.co/storage/v1/object/info/kyc-private/${path}`,
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: `Bearer ${serviceRoleKey}` }),
+        }),
+      );
+    });
+
+    it('reads a missing object as not uploaded', async () => {
+      vi.spyOn(axios, 'get').mockResolvedValue({
+        status: 400,
+        data: { statusCode: '404', error: 'not_found', message: 'Object not found', code: 'NoSuchKey' },
+      } as never);
+      await expect(storage.objectExists(path, 'tech-uuid-1')).resolves.toBe(false);
+    });
+
+    it('reads an empty object as not uploaded', async () => {
+      vi.spyOn(axios, 'get').mockResolvedValue({ status: 200, data: { name: path, size: 0 } } as never);
+      await expect(storage.objectExists(path, 'tech-uuid-1')).resolves.toBe(false);
+    });
+
+    it("never asks storage about another owner's path", async () => {
+      const get = vi.spyOn(axios, 'get');
+      await expect(
+        storage.objectExists('kyc/tech-uuid-2/id.jpg', 'tech-uuid-1'),
+      ).rejects.toThrow(BadRequestException);
+      expect(get).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when storage errors or answers something else', async () => {
+      vi.spyOn(axios, 'get').mockRejectedValueOnce(new Error('timeout'));
+      await expect(storage.objectExists(path, 'tech-uuid-1')).rejects.toThrow(ServiceUnavailableException);
+      vi.spyOn(axios, 'get').mockResolvedValueOnce({ status: 500, data: {} } as never);
+      await expect(storage.objectExists(path, 'tech-uuid-1')).rejects.toThrow(ServiceUnavailableException);
+      vi.spyOn(axios, 'get').mockResolvedValueOnce({ status: 400, data: { statusCode: '403', error: 'Unauthorized' } } as never);
+      await expect(storage.objectExists(path, 'tech-uuid-1')).rejects.toThrow(ServiceUnavailableException);
+    });
+
+    it('fails closed when provider credentials are unavailable', async () => {
+      const unconfigured = new KycStorageService({ get: () => undefined } as any);
+      await expect(unconfigured.objectExists(path, 'tech-uuid-1')).rejects.toThrow(ServiceUnavailableException);
+    });
+  });
 });

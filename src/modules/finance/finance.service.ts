@@ -57,7 +57,10 @@ import {
 } from './dto';
 import { PaymentVerificationPort, PAYMENT_VERIFICATION_PORT } from './payment-verification.port';
 import { SupportCasesService } from '../support-cases/support-cases.service';
-import { buildPaymentUrl, buildQueryDrRequest, verifySignature, withWebOrigin } from './vnpay/vnpay.util';
+import {
+  buildPaymentUrl, buildQueryDrRequest, isAbandonedVnpayAttempt, verifySignature, vnpayExpiry, withWebOrigin,
+  VNPAY_EXPIRY_GRACE_MS, VNPAY_PAID_AFTER_EXPIRY, VNPAY_URL_EXPIRED,
+} from './vnpay/vnpay.util';
 import { loadVisitCharge, sameAllocations, type VisitCharge } from './visit-charge';
 import { VisitGroup } from '../visit-groups/entities/visit-group.entity';
 import { VisitGroupPayment } from '../visit-groups/entities/visit-group-payment.entity';
@@ -268,6 +271,7 @@ export class FinanceService {
           throw new BusinessException(ErrorCodes.CONFLICT, 'Kỹ thuật viên của lượt sửa không nhất quán.');
         }
         technicianId = assignments[0];
+        await this.closeAbandonedVisitVnpayAttempts(manager, scopeId, actor);
         const previous = await manager.find(VisitGroupPayment, { where: { visitGroupId: scopeId } });
         if (previous.some(row => row.rail === 'cash' || row.status === 'verified' || row.status === 'pending')) {
           throw new BusinessException(ErrorCodes.CONFLICT, 'Lượt sửa có thanh toán đang xử lý.');
@@ -278,6 +282,7 @@ export class FinanceService {
       }
       if (!input.voucherReservationId) await this.assertLegacyCollectionAllowed(manager, scopeId);
       const invoiceIds = allocations.map(item => item.invoiceId);
+      await this.closeAbandonedVnpayAttempts(manager, invoiceIds, actor);
       const attempts = await manager.find(Payment, { where: { invoiceId: In(invoiceIds), purpose: PaymentPurpose.INVOICE } });
       if (attempts.some(row => row.status === PaymentAttemptStatus.PENDING || row.status === PaymentAttemptStatus.VERIFIED)) {
         throw new BusinessException(ErrorCodes.CONFLICT, 'Có giao dịch thanh toán đang xử lý. Vui lòng kiểm tra lại.');
@@ -382,6 +387,7 @@ export class FinanceService {
         assertCashReceiptMatchesIntent(intent, actor.id, input.receivedAmountVnd, allocations);
         if (!intent.voucherReservationId) await this.assertLegacyCollectionAllowed(manager, scopeId);
         const invoiceIds = allocations.map(item => item.invoiceId);
+        await this.closeAbandonedVnpayAttempts(manager, invoiceIds, actor);
         const attempts = await manager.find(Payment, { where: { invoiceId: In(invoiceIds), purpose: PaymentPurpose.INVOICE } });
         if (attempts.some(row => row.status === PaymentAttemptStatus.PENDING || row.status === PaymentAttemptStatus.VERIFIED)) {
           throw new BusinessException(ErrorCodes.CONFLICT, 'Có thanh toán khác chưa ngã ngũ. Vui lòng kiểm tra lại.');
@@ -391,6 +397,7 @@ export class FinanceService {
             throw new BusinessException(ErrorCodes.CONFLICT, 'Đã có khai báo tiền mặt khác.');
           }
         } else {
+          await this.closeAbandonedVisitVnpayAttempts(manager, scopeId, actor);
           const otherPayments = await manager.find(VisitGroupPayment, { where: { visitGroupId: scopeId } });
           if (otherPayments.some(row => row.rail === 'cash' || row.status === 'pending' || row.status === 'verified')) {
             throw new BusinessException(ErrorCodes.CONFLICT, 'Lượt sửa có thanh toán khác đang xử lý.');
@@ -900,10 +907,12 @@ export class FinanceService {
           amount, currency: 'VND', mode: PaymentMode.LIVE, provider: 'vnpay',
           status: PaymentAttemptStatus.PENDING, idempotencyKey: txnRef,
           requestedByUserId: actor.id, failureCode: null, requestedAt: now, verifiedAt: null,
+          expiresAt: vnpayExpiry(now),
         }))
         : await manager.save(VisitGroupPayment, manager.create(VisitGroupPayment, {
           visitGroupId: scopeId, rail: 'vnpay', status: 'pending', amount, allocations,
           idempotencyKey: txnRef, requestedByUserId: actor.id, requestedAt: now,
+          expiresAt: vnpayExpiry(now),
         }));
       await this.bindVoucherPaymentAfterRecord(manager, { reservationId, rail: 'VNPAY',
         sourceId: saved.id, customerId: actor.id, scopeId, scopeKind });
@@ -913,7 +922,7 @@ export class FinanceService {
       amount: Number(payment.amount), txnRef: payment.idempotencyKey,
       orderInfo: `Thanh toan ${scopeKind === 'SOLO' ? 'hoa don' : 'luot sua'} ${scopeOrInvoiceId}${platform === 'mobile' ? ' mobile' : ''}`,
       returnUrl: platform === 'web' ? withWebOrigin(returnUrl, webOrigin) : returnUrl,
-      ipAddr, createdAt: payment.requestedAt }) };
+      ipAddr, createdAt: payment.requestedAt, expiresAt: payment.expiresAt }) };
   }
 
   async createVnpayPaymentUrl(
@@ -984,6 +993,7 @@ export class FinanceService {
       await this.assertNoActiveCashIntent(manager, 'SOLO', order.id);
       await this.assertNewCollectionAllowed(manager, order.id);
       const txnRef = randomUUID().replace(/-/g, '');
+      const requestedAt = new Date();
       const created = paymentRepository.create({
         invoiceId: invoice.id,
         commissionDueId: null,
@@ -996,8 +1006,9 @@ export class FinanceService {
         idempotencyKey: txnRef,
         requestedByUserId: actor.id,
         failureCode: null,
-        requestedAt: new Date(),
+        requestedAt,
         verifiedAt: null,
+        expiresAt: vnpayExpiry(requestedAt),
       });
       return paymentRepository.save(created);
     });
@@ -1018,6 +1029,8 @@ export class FinanceService {
         // here could fall in the next second, and then a payment whose IPN never arrived stayed
         // unpaid (and the technician uncredited) although the customer had paid (PO 18/10/2026).
         createdAt: payment.requestedAt,
+        // VNPay stops taking payment after this (PO 01/11/2026); the attempt keeps the same value.
+        expiresAt: payment.expiresAt,
       }),
     };
   }
@@ -1070,6 +1083,7 @@ export class FinanceService {
         return existing;
       }
 
+      const requestedAt = new Date();
       const created = paymentRepository.create({
         invoiceId: null,
         commissionDueId: null,
@@ -1082,8 +1096,9 @@ export class FinanceService {
         idempotencyKey: txnRef,
         requestedByUserId: technicianId,
         failureCode: null,
-        requestedAt: new Date(),
+        requestedAt,
         verifiedAt: null,
+        expiresAt: vnpayExpiry(requestedAt),
       });
       return paymentRepository.save(created);
     });
@@ -1107,6 +1122,7 @@ export class FinanceService {
         ipAddr: ipAddr || '127.0.0.1',
         // querydr finds a transaction by the create date it was opened with.
         createdAt: payment.requestedAt,
+        expiresAt: payment.expiresAt,
       }),
     };
   }
@@ -1139,6 +1155,9 @@ export class FinanceService {
     }
     const fundedLink = await this.findOptionalVoucherPaymentLink({ paymentId: payment.id });
     if (fundedLink) return this.handleVoucherVnpayIpn(fundedLink.reservationId, query);
+    if (payment.status !== PaymentAttemptStatus.PENDING && this.closedAsExpired(payment.failureCode)) {
+      return this.holdLateVnpayPayment('payment', payment.id, query);
+    }
     if (payment.status !== PaymentAttemptStatus.PENDING) {
       return { RspCode: '02', Message: 'Order already confirmed' };
     }
@@ -3013,9 +3032,11 @@ export class FinanceService {
       await this.assertNoActiveCashIntent(manager, 'VISIT_GROUP', groupId);
       if (charge.total < 5000) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'VNPay chỉ áp dụng từ 5.000 ₫. Vui lòng chọn ví hoặc tiền mặt.');
       await this.assertNewCollectionAllowed(manager, groupId, 'VISIT_GROUP');
+      const requestedAt = new Date();
       return manager.save(VisitGroupPayment, manager.create(VisitGroupPayment, {
         visitGroupId: groupId, rail: 'vnpay', status: 'pending', amount: charge.total, allocations: charge.allocations,
-        idempotencyKey: randomUUID().replace(/-/g, ''), requestedByUserId: actor.id, requestedAt: new Date(),
+        idempotencyKey: randomUUID().replace(/-/g, ''), requestedByUserId: actor.id, requestedAt,
+        expiresAt: vnpayExpiry(requestedAt),
       }));
     });
     return {
@@ -3029,6 +3050,7 @@ export class FinanceService {
         returnUrl: platform === 'web' ? withWebOrigin(returnUrl, webOrigin) : returnUrl,
         ipAddr,
         createdAt: payment.requestedAt,
+        expiresAt: payment.expiresAt,
       }),
     };
   }
@@ -3155,6 +3177,9 @@ export class FinanceService {
     if (!payment) return { RspCode: '01', Message: 'Order not found' };
     const fundedLink = await this.findOptionalVoucherPaymentLink({ visitGroupPaymentId: payment.id });
     if (fundedLink) return this.handleVoucherVnpayIpn(fundedLink.reservationId, query);
+    if (payment.status !== 'pending' && this.closedAsExpired(payment.failureCode)) {
+      return this.holdLateVnpayPayment('visit_group_payment', payment.id, query);
+    }
     if (payment.status !== 'pending') return { RspCode: '02', Message: 'Order already confirmed' };
     const vnpAmount = Number(query.vnp_Amount) / 100;
     if (!Number.isSafeInteger(vnpAmount) || vnpAmount !== Number(payment.amount)) return { RspCode: '04', Message: 'Invalid amount' };
@@ -3269,6 +3294,120 @@ export class FinanceService {
     if (charge.waiting > 0) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Còn thiết bị đang sửa, thanh toán khi mọi thiết bị đã có kết quả.');
     if (!charge.ready) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Lượt sửa này không có khoản nào cần thanh toán.');
     return charge;
+  }
+
+  private closedAsExpired(code: string | null | undefined): boolean {
+    return code === VNPAY_URL_EXPIRED || code === VNPAY_PAID_AFTER_EXPIRY;
+  }
+
+  /**
+   * Bug 39 (PO 01/11/2026): a VNPay attempt whose URL expired more than VNPAY_EXPIRY_GRACE_MS ago
+   * can no longer be paid, so it stops blocking another rail. Runs inside the caller's transaction:
+   * the invoice rows and then each attempt row are locked, the attempt is re-read under its lock and
+   * only then closed as CANCELLED with failure_code VNPAY_URL_EXPIRED. An attempt without a stored
+   * expiry, or one funded by a voucher (its own provider ledger), is left open and keeps blocking.
+   */
+  private async closeAbandonedVnpayAttempts(manager: EntityManager, invoiceIds: string[], actor: FinanceActor,
+    now = new Date()): Promise<void> {
+    if (!invoiceIds.length) return;
+    const candidates = await manager.find(Payment, { where: {
+      invoiceId: In(invoiceIds), purpose: PaymentPurpose.INVOICE, provider: 'vnpay', status: PaymentAttemptStatus.PENDING,
+    } });
+    const abandoned = (candidates ?? []).filter(row => isAbandonedVnpayAttempt(row.expiresAt, now));
+    if (!abandoned.length) return;
+    for (const invoiceId of [...new Set(abandoned.map(row => row.invoiceId!))].sort()) {
+      await manager.findOne(Invoice, { where: { id: invoiceId }, lock: { mode: 'pessimistic_write' } });
+    }
+    for (const candidate of abandoned) {
+      if (await manager.findOne(VoucherPaymentLink, { where: { paymentId: candidate.id } })) continue;
+      const current = await manager.findOne(Payment, { where: { id: candidate.id }, lock: { mode: 'pessimistic_write' } });
+      if (!current || current.status !== PaymentAttemptStatus.PENDING || !isAbandonedVnpayAttempt(current.expiresAt, now)) continue;
+      current.status = PaymentAttemptStatus.CANCELLED;
+      current.failureCode = VNPAY_URL_EXPIRED;
+      await manager.save(Payment, current);
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role,
+        action: 'PAYMENT_URL_EXPIRED', resourceType: 'payment', resourceId: current.id,
+        after: { status: current.status, failureCode: VNPAY_URL_EXPIRED, expiresAt: current.expiresAt,
+          graceMinutes: VNPAY_EXPIRY_GRACE_MS / 60000 } });
+    }
+  }
+
+  /** The visit form of closeAbandonedVnpayAttempts; the caller already holds the VisitGroup lock. */
+  private async closeAbandonedVisitVnpayAttempts(manager: EntityManager, groupId: string, actor: FinanceActor,
+    now = new Date()): Promise<void> {
+    const candidates = await manager.find(VisitGroupPayment, { where: { visitGroupId: groupId, rail: 'vnpay', status: 'pending' } });
+    for (const candidate of (candidates ?? []).filter(row => isAbandonedVnpayAttempt(row.expiresAt, now))) {
+      if (await manager.findOne(VoucherPaymentLink, { where: { visitGroupPaymentId: candidate.id } })) continue;
+      const current = await manager.findOne(VisitGroupPayment, { where: { id: candidate.id }, lock: { mode: 'pessimistic_write' } });
+      if (!current || current.status !== 'pending' || !isAbandonedVnpayAttempt(current.expiresAt, now)) continue;
+      current.status = 'cancelled';
+      current.failureCode = VNPAY_URL_EXPIRED;
+      await manager.save(VisitGroupPayment, current);
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role,
+        action: 'PAYMENT_URL_EXPIRED', resourceType: 'visit_group_payment', resourceId: current.id,
+        after: { status: current.status, failureCode: VNPAY_URL_EXPIRED, expiresAt: current.expiresAt,
+          graceMinutes: VNPAY_EXPIRY_GRACE_MS / 60000 } });
+    }
+  }
+
+  /**
+   * A signed IPN for an attempt we closed as expired. A failure changes nothing. A success means
+   * VNPay may hold the customer's money while no invoice was paid by it, so the attempt is flagged
+   * VNPAY_PAID_AFTER_EXPIRY with the provider reference and a support case is opened for staff to
+   * reconcile or refund; nothing is marked paid automatically. Replays find the flag and do nothing.
+   * Answers 02 like any other attempt that is no longer pending.
+   */
+  private async holdLateVnpayPayment(kind: 'payment' | 'visit_group_payment', attemptId: string,
+    query: Record<string, string>): Promise<{ RspCode: string; Message: string }> {
+    const already = { RspCode: '02', Message: 'Order already confirmed' };
+    if (query.vnp_ResponseCode !== '00' || query.vnp_TransactionStatus !== '00') return already;
+    const vnpAmount = Number(query.vnp_Amount) / 100;
+    const providerReference = (query.vnp_TransactionNo || query.vnp_TxnRef).slice(0, 255);
+    return this.dataSource.transaction(async (manager) => {
+      const current = kind === 'payment'
+        ? await manager.findOne(Payment, { where: { id: attemptId }, lock: { mode: 'pessimistic_write' } })
+        : await manager.findOne(VisitGroupPayment, { where: { id: attemptId }, lock: { mode: 'pessimistic_write' } });
+      if (!current || current.failureCode !== VNPAY_URL_EXPIRED) return already;
+      if (!Number.isSafeInteger(vnpAmount) || vnpAmount !== Number(current.amount)) {
+        return { RspCode: '04', Message: 'Invalid amount' };
+      }
+      let serviceOrderId: string | null = null;
+      let invoicePaid: string | null = null;
+      if (kind === 'visit_group_payment') {
+        const visit = current as VisitGroupPayment;
+        serviceOrderId = visit.allocations?.[0]?.serviceOrderId ?? null;
+        await manager.update(VisitGroupPayment, { id: visit.id }, { failureCode: VNPAY_PAID_AFTER_EXPIRY, providerReference });
+      } else {
+        const payment = current as Payment;
+        const invoice = payment.invoiceId ? await manager.findOne(Invoice, { where: { id: payment.invoiceId } }) : null;
+        serviceOrderId = invoice?.serviceOrderId ?? null;
+        invoicePaid = invoice?.paymentStatus ?? null;
+        await manager.update(Payment, { id: payment.id }, { failureCode: VNPAY_PAID_AFTER_EXPIRY, providerReference });
+      }
+      const order = serviceOrderId ? await manager.findOne(ServiceOrder, { where: { id: serviceOrderId } }) : null;
+      const booking = order ? await manager.findOne(Booking, { where: { id: order.bookingId } }) : null;
+      const assignment = order ? await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: order.id, isActive: true } }) : null;
+      await this.supportCasesService.openCase({
+        caseType: SupportCaseType.OTHER,
+        reason: 'VNPay reported a successful payment for a payment link that had already expired and was closed',
+        description: [
+          `VNPay transaction ${providerReference}, reference ${query.vnp_TxnRef}, amount ${vnpAmount} VND`,
+          `attempt ${kind} ${current.id} closed as ${VNPAY_URL_EXPIRED} after its link expired`,
+          invoicePaid ? `invoice payment status at callback: ${invoicePaid}` : null,
+          'The invoice was not marked paid by this callback. Check the order and refund or apply the money.',
+        ].filter(Boolean).join('. '),
+        bookingId: booking?.id ?? null,
+        serviceOrderId: order?.id ?? null,
+        customerId: booking?.customerId ?? current.requestedByUserId ?? null,
+        technicianId: assignment?.technicianId ?? null,
+        createdByUserId: null,
+      }, manager);
+      await this.auditLogService.logWithManager(manager, { actorUserId: current.requestedByUserId, actorRole: Role.CUSTOMER,
+        action: 'VNPAY_PAID_AFTER_EXPIRY', resourceType: kind, resourceId: current.id,
+        after: { amount: vnpAmount, providerReference, serviceOrderId: order?.id ?? null } });
+      this.logger.warn(`VNPay success for expired ${kind} ${current.id}; held for staff reconciliation`);
+      return already;
+    });
   }
 
   private async cancelOpenVisitPayments(manager: EntityManager, groupId: string, code: string, exceptId?: string): Promise<void> {

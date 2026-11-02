@@ -1,5 +1,6 @@
 // src/modules/users/addresses.service.ts
 import {
+  BadRequestException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -8,6 +9,7 @@ import { Repository } from 'typeorm';
 import { Address } from './entities/address.entity';
 import { CreateAddressDto, UpdateAddressDto } from './dto/address.dto';
 import { resolveServiceArea } from '../../shared/utils/administrative-areas';
+import { ADDRESS_LOCATION_REQUIRED } from '../../shared/validation/address.validators';
 
 @Injectable()
 export class AddressesService {
@@ -68,6 +70,16 @@ export class AddressesService {
     dto: UpdateAddressDto,
   ): Promise<Address> {
     const address = await this.findOne(userId, id);
+
+    // PO 01/11/2026 (bug 29): a saved address always keeps both coordinates. A PATCH
+    // that leaves the location alone is fine only when the stored row already has
+    // them, so an old address without a pin must be pinned on the map before any
+    // other change is saved. The DTO already demands the pair when location changes.
+    const lat = dto.lat ?? address.lat;
+    const lng = dto.lng ?? address.lng;
+    if (lat == null || lng == null) {
+      throw new BadRequestException({ message: ADDRESS_LOCATION_REQUIRED, code: 'ADDRESS_LOCATION_REQUIRED' });
+    }
 
     if (dto.isDefault) {
       await this.clearDefault(userId);

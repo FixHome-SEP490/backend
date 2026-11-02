@@ -5,6 +5,7 @@ import { NotFoundException } from '@nestjs/common';
 import { AddressesService } from './addresses.service';
 import { UpdateAddressDto } from './dto/address.dto';
 import { Address } from './entities/address.entity';
+import { ADDRESS_LOCATION_REQUIRED } from '../../shared/validation/address.validators';
 
 describe('AddressesService', () => {
   let service: AddressesService;
@@ -73,10 +74,12 @@ describe('AddressesService', () => {
         line1: '456 Le Loi',
         district: 'Quan 1',
         province: 'TP. Ho Chi Minh',
+        lat: 10.7769,
+        lng: 106.7009,
       });
       expect(result.isDefault).toBe(true);
-      expect(result.lat).toBeUndefined();
-      expect(result.lng).toBeUndefined();
+      expect(result.lat).toBe(10.7769);
+      expect(result.lng).toBe(106.7009);
       expect(repo.save).toHaveBeenCalled();
     });
 
@@ -86,6 +89,8 @@ describe('AddressesService', () => {
         line1: '789 Tran Hung Dao',
         district: 'Quan 5',
         province: 'TP. Ho Chi Minh',
+        lat: 10.7769,
+        lng: 106.7009,
         isDefault: true,
       });
       expect(repo.update).toHaveBeenCalledWith(
@@ -107,16 +112,18 @@ describe('AddressesService', () => {
       expect(result.lng).toBe(106.7009);
     });
 
-    it('preserves Vietnamese, emoji, and HTML-like address text as text', async () => {
-      const line1 = "Căn hộ 🏠, 12 Đường Lê Lợi <script>alert('x')</script>";
+    it('stores Vietnamese address text as sent (the DTO already refused emoji and markup)', async () => {
+      const line1 = 'Căn hộ 12, Đường Lê Lợi (cạnh chợ)';
       const result = await service.create('user-uuid-1', {
-        label: 'Nhà ở 🏠',
+        label: 'Nhà ở',
         line1,
         district: 'Quận 1',
         province: 'Thành phố Hồ Chí Minh',
+        lat: 10.7769,
+        lng: 106.7009,
       });
 
-      expect(result.label).toBe('Nhà ở 🏠');
+      expect(result.label).toBe('Nhà ở');
       expect(result.line1).toBe(line1);
     });
   });
@@ -133,6 +140,32 @@ describe('AddressesService', () => {
       expect(result.line1).toBe('456 Đường Lê Lợi');
       expect(result.lat).toBe(10.7769);
       expect(result.lng).toBe(106.7009);
+    });
+
+    it('refuses any change to an old address without coordinates until it is pinned (bug 29)', async () => {
+      repo.findOne.mockResolvedValue({ ...mockAddress, lat: null, lng: null } as unknown as Address);
+
+      await expect(
+        service.update('user-uuid-1', 'addr-uuid-1', { label: 'Công ty' } as UpdateAddressDto),
+      ).rejects.toMatchObject({ status: 400, response: { message: ADDRESS_LOCATION_REQUIRED, code: 'ADDRESS_LOCATION_REQUIRED' } });
+      expect(repo.save).not.toHaveBeenCalled();
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it('pins an old address without coordinates when the PATCH sends both', async () => {
+      repo.findOne.mockResolvedValue({ ...mockAddress, lat: null, lng: null } as unknown as Address);
+
+      const result = await service.update('user-uuid-1', 'addr-uuid-1', { line1: '12 Tân Trào', lat: 10.73, lng: 106.72 } as UpdateAddressDto);
+
+      expect(result).toMatchObject({ line1: '12 Tân Trào', lat: 10.73, lng: 106.72 });
+    });
+
+    it('lets a rename keep the stored coordinates', async () => {
+      repo.findOne.mockResolvedValue({ ...mockAddress } as Address);
+
+      const result = await service.update('user-uuid-1', 'addr-uuid-1', { label: 'Công ty' } as UpdateAddressDto);
+
+      expect(result).toMatchObject({ label: 'Công ty', lat: 10.7769, lng: 106.7009 });
     });
 
     it('does not update an address outside the requesting user scope', async () => {

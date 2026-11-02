@@ -250,6 +250,20 @@ describe('VisitGroupsService parent paging', () => {
     expect(deriveVisitGroupStatus([child(1, { outcome: 'succeeded', orderStatus: 'completed' })])).toBe('completed');
   });
 
+  it.each([
+    { statuses: ['under_repair', 'under_repair'], outcomes: [null, 'interrupted'], expected: 'under_repair' },
+    { statuses: ['under_repair', 'en_route'], outcomes: ['interrupted', null], expected: 'en_route' },
+    { statuses: ['under_repair', 'accepted'], outcomes: ['interrupted', null], expected: 'accepted' },
+    { statuses: ['under_repair', 'en_route'], outcomes: ['interrupted', 'interrupted'], expected: 'mixed' },
+    { statuses: ['completed', 'under_repair'], outcomes: ['succeeded', 'interrupted'], expected: 'mixed' },
+    { statuses: ['completed', 'under_repair'], outcomes: [null, 'interrupted'], expected: 'mixed' },
+    { statuses: ['under_repair', 'under_repair'], outcomes: ['failed', 'failed'], expected: 'failed' },
+  ])('ignores historical order states for terminal outcomes: $outcomes/$statuses', ({ statuses, outcomes, expected }) => {
+    expect(deriveVisitGroupStatus(statuses.map((orderStatus, i) => child(i + 1, {
+      orderStatus, outcome: outcomes[i], hasActiveAssignment: outcomes[i] == null,
+    })))).toBe(expected);
+  });
+
   it('keeps an interrupted child visible with two continuing devices', async () => {
     const h = harness([parent], 1, [
       child(1, { outcome: 'interrupted', orderStatus: 'cancelled', bookingStatus: 'cancelled', hasActiveAssignment: false }),

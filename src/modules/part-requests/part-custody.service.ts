@@ -9,6 +9,8 @@ import { MAX_PAGE_SIZE } from '../../shared/constants';
 import { Notification } from '../notifications/entities/notification.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
+import { Booking } from '../bookings/entities/booking.entity';
+import { verifiedOnsiteInterruption } from '../service-orders/onsite-interruption';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { User } from '../users/entities/user.entity';
 import { PartCustody, PartCustodyEntry } from './entities/part-custody.entity';
@@ -102,7 +104,15 @@ export class PartCustodyService {
     if (actor.role === Role.SERVICE_MANAGER) return rows.map(row => this.view(row));
     const owned = rows.filter(row => row.technicianId === actor.id);
     if (rows.length && !owned.length) throw new ForbiddenException('Bạn không có quyền xem nội dung này.');
-    if (!rows.length && !await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: orderId, technicianId: actor.id, isActive: true } })) throw new ForbiddenException();
+    if (!rows.length && !await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: orderId, technicianId: actor.id, isActive: true } })) {
+      const order = await manager.findOneBy(ServiceOrder, { id: orderId });
+      const booking = order && await manager.findOneBy(Booking, { id: order.bookingId });
+      const proof = order && booking && await verifiedOnsiteInterruption(manager, order, booking);
+      if (!proof?.workStopped || proof.assignment.technicianId !== actor.id) throw new ForbiddenException();
+      // Absence of custody is not proof of warehouse return (including legacy handovers).
+      // This grants no mutation authority and exposes no other technician's records.
+      return [{ orderId, receiptState: 'UNKNOWN', returnStatus: 'unknown' }];
+    }
     return owned.map(row => this.view(row));
   }
 
