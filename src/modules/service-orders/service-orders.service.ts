@@ -438,8 +438,16 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   async findMyOrders(
     userId: string,
     role: string,
-    options: { page?: number; limit?: number; status?: ServiceOrderStatus; statuses?: ServiceOrderStatus[]; search?: string; stage?: RepairStage; excludeVisitGroups?: boolean },
+    options: { page?: number; limit?: number; status?: ServiceOrderStatus; statuses?: ServiceOrderStatus[]; search?: string; stage?: RepairStage; excludeVisitGroups?: boolean; history?: 'withdrawn' },
   ): Promise<{ data: (ServiceOrder | HistoricalOrderSummary)[]; total: number }> {
+    if (options.history !== undefined) {
+      if (role !== Role.TECHNICIAN) throw new ForbiddenException('Technician history access denied');
+      if (options.history !== 'withdrawn' || options.status !== undefined || options.statuses?.length ||
+          options.stage !== undefined || options.excludeVisitGroups) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Không kết hợp lịch sử đã rời đơn với bộ lọc trạng thái hoặc loại lượt sửa.');
+      }
+      return this.findWithdrawnOrders(userId, options);
+    }
     await this.cancelOverdueOrders();
     const page = options.page || 1;
     const limit = Math.min(options.limit || 20, 100);
@@ -487,6 +495,31 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       })),
       total,
     };
+  }
+
+  /** No lazy sweep, current customer search or full-order presentation in this history view. */
+  private async findWithdrawnOrders(userId: string, options: { page?: number; limit?: number; search?: string }) {
+    const page = options.page || 1;
+    const limit = Math.min(options.limit || 20, 100);
+    // EXISTS avoids duplicate orders/counts after multiple assignments to the same technician.
+    const qb = this.orderRepo.createQueryBuilder('o').where(`EXISTS (
+      SELECT 1 FROM technician_assignments ta
+      WHERE ta.service_order_id = o.id AND ta.technician_id = :userId AND ta.is_active = false
+    ) AND NOT EXISTS (
+      SELECT 1 FROM technician_assignments ta
+      WHERE ta.service_order_id = o.id AND ta.technician_id = :userId AND ta.is_active = true
+    )`, { userId });
+    andWhereTextMatches(qb, ['o.code'], options.search);
+    qb.orderBy('o.createdAt', 'DESC').addOrderBy('o.id', 'DESC').skip((page - 1) * limit).take(limit);
+    const [orders, total] = await qb.getManyAndCount();
+    const data = await Promise.all(orders.map(async order => {
+      const assignment = await this.dataSource.manager.findOne(TechnicianAssignment, {
+        where: { serviceOrderId: order.id, technicianId: userId, isActive: false },
+        order: { assignedAt: 'DESC', id: 'DESC' },
+      });
+      return this.presentHistoricalOrder(order, assignment);
+    }));
+    return { data, total };
   }
 
   async findById(
@@ -620,8 +653,9 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     if (assignment?.unassignReason !== ONSITE_STOP_ACTION) return summary;
     const booking = await this.dataSource.manager.findOneBy(Booking, { id: order.bookingId });
     const proof = booking && await verifiedOnsiteInterruption(this.dataSource.manager, order, booking);
-    return Object.assign(summary, { workStopped: !!proof?.workStopped,
-      operationalDisposition: proof?.workStopped ? 'STOPPED' : 'STOP_REQUIRES_REVIEW' });
+    const stopped = !!proof?.workStopped && proof.assignment.id === assignment.id;
+    return Object.assign(summary, { workStopped: stopped,
+      operationalDisposition: stopped ? 'STOPPED' : 'STOP_REQUIRES_REVIEW' });
   }
 
   async enRoute(

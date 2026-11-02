@@ -10,6 +10,7 @@ import { RepairFailureVoucherEvidence } from '../vouchers/repair-failure-voucher
 import { technicianEligibility } from './technician-eligibility';
 import { QuotationsService } from '../quotations/quotations.service';
 import { TechnicianAssignmentService } from '../technician-assignment/technician-assignment.service';
+import { ServiceOrdersService } from '../service-orders/service-orders.service';
 import { BookingStatus, CheckInResult, PaymentStatus, Role, ServiceOrderStatus, ServicePricingMode } from '../../shared/enums';
 
 /** Real command, proof, draft, confirmation, Booking.create and VisitGroup.create.
@@ -121,6 +122,64 @@ function fixture(stopped = 1, grouped = false) {
 }
 
 describe('verified onsite interruption customer self-service', () => {
+  it.each([false, true])('projects STOP history only when the receipt matches the historical assignment (forged: %s)', async forged => {
+    const h = fixture(1, true); await h.stop();
+    if (forged) h.rows.TechnicianAssignment.unshift({ ...h.rows.TechnicianAssignment[0], id: randomUUID() });
+    const qb: any = {};
+    for (const method of ['where', 'andWhere', 'orderBy', 'addOrderBy', 'skip', 'take']) qb[method] = () => qb;
+    qb.getManyAndCount = async () => [[h.rows.ServiceOrder[0]], 1];
+    const service = Object.assign(Object.create(ServiceOrdersService.prototype), {
+      dataSource: { manager: h.manager }, orderRepo: { createQueryBuilder: () => qb },
+      cancelOverdueOrders: vi.fn(() => { throw new Error('History must not sweep'); }),
+    }) as ServiceOrdersService;
+    const result = await service.findMyOrders(h.technician.id, Role.TECHNICIAN, { history: 'withdrawn' });
+    expect(result.data[0]).toMatchObject({ id: h.orderId, status: ServiceOrderStatus.UNDER_REPAIR,
+      historical: true, workStopped: !forged, operationalDisposition: forged ? 'STOP_REQUIRES_REVIEW' : 'STOPPED' });
+    expect(JSON.stringify(result)).not.toMatch(/bookingId|technicianId|customer|address|phone|grandTotal|destination/i);
+  });
+
+  it.each([1, 2, 3])('rebooks %i stopped device(s) urgently with the normal window, fresh price and one receipt', async count => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-29T16:30:00Z'));
+    const h = fixture(count, count > 1); await h.stop();
+    h.rows.CashSettlement = [{ id: randomUUID(), serviceOrderId: h.orderId, declaredAmount: 199000 }];
+    h.rows.PartRequest = [{ id: randomUUID(), serviceOrderId: h.orderId, quantity: 2 }];
+    const old = structuredClone(h.rows);
+    const { date: _date, slot: _slot, ...body } = h.body();
+    const dto = { ...body, mode: 'urgent' };
+    const result = await h.submit(dto);
+    const targets = h.rows.Booking.slice(old.Booking.length);
+    expect(targets).toHaveLength(count);
+    for (const target of targets) {
+      expect(target).toMatchObject({ bookingMode: 'urgent', slot: null, quantity: 1,
+        fixedUnitPriceSnapshot: 199000, status: BookingStatus.SUBMITTED });
+      expect(target.preferredStartAt).toEqual(new Date('2026-10-29T16:30:00Z'));
+      expect(target.preferredEndAt).toEqual(new Date('2026-10-29T18:30:00Z'));
+    }
+    expect(h.rows.InterruptionRebook[0].sourceCount).toBe(count);
+    expect(h.rows.InterruptionRebookSource).toHaveLength(count);
+    expect(h.rows.InterruptionRebookSource.every(s => s.previousTechnicianId === h.technician.id)).toBe(true);
+    expect(h.rows.Booking.slice(0, old.Booking.length)).toEqual(old.Booking);
+    for (const table of ['ServiceOrder', 'CashSettlement', 'PartRequest', 'TechnicianAssignment']) expect(h.rows[table]).toEqual(old[table]);
+    vi.advanceTimersByTime(60000);
+    expect(await h.submit(dto)).toEqual(result);
+    expect(h.rows.Booking).toHaveLength(old.Booking.length + count);
+    await expect(h.submit({ ...dto, mode: 'scheduled', date: '2030-10-29', slot: 'afternoon' })).rejects.toThrow();
+    await expect(h.submit({ ...dto, idempotencyKey: randomUUID() })).rejects.toThrow();
+  });
+
+  it.each([
+    { mode: 'urgent', date: '2030-10-29', slot: 'afternoon' },
+    { mode: 'urgent', date: null }, { mode: 'urgent', slot: null },
+    { mode: 'invalid', date: '2030-10-29', slot: 'afternoon' },
+  ])('rejects contradictory schedule at the service boundary without writes: %j', async schedule => {
+    const h = fixture(); await h.stop();
+    const before = structuredClone(h.rows);
+    const { date: _date, slot: _slot, ...body } = h.body();
+    await expect(h.submit({ ...body, ...schedule })).rejects.toThrow();
+    expect(h.rows).toEqual(before);
+  });
+
   beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-29T05:00:00Z')); });
   afterEach(() => vi.useRealTimers());
 
