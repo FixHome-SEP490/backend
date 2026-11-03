@@ -44,6 +44,14 @@ export class MyOrderListQueryDto extends OrderListQueryDto {
 
 export class OrderBoardQueryDto extends OrderListQueryDto {}
 
+/** Only /service-orders/my accepts this opt-in; repair-history keeps its terminal contract. */
+export class MyOrdersQueryDto extends MyOrderListQueryDto {
+  @ApiPropertyOptional({ enum: ['withdrawn'], description: 'Technician only: own inactive assignments, including visit-group children. PII-free summaries; cannot combine with status, stage or excludeVisitGroups=true. Search matches order code only.' })
+  @IsOptional()
+  @IsIn(['withdrawn'])
+  history?: 'withdrawn';
+}
+
 export class StrikeListQueryDto extends PageSizeQueryDto {
   @ApiPropertyOptional({ format: 'uuid' })
   @IsOptional()

@@ -162,6 +162,7 @@ export function configureApplication(
     origin: allowedOrigins,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
     credentials: true,
+    exposedHeaders: ['Date'],
   });
 
   // Global prefix (exclude health endpoints for direct platform/monitoring access)

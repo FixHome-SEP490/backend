@@ -73,7 +73,7 @@ import { RepairFailureRebookDto } from './dto/repair-failure-rebook.dto';
 import type { CreateVisitGroupDto } from '../visit-groups/visit-group.dto';
 import { buildInterruptionDraft } from './interruption-draft';
 import { InterruptionRebook, InterruptionRebookSource } from './entities/interruption-rebook.entity';
-import { InterruptionRebookDto } from './dto/interruption-rebook.dto';
+import { InterruptionRebookDto, validInterruptionRebookSchedule } from './dto/interruption-rebook.dto';
 
 export interface TechnicianCandidate {
   technicianId: string;
@@ -1033,7 +1033,7 @@ export class BookingsService {
   ) {
     if (customer.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
     if (!dto || !/^[A-Za-z0-9_-]{8,128}$/.test(dto.idempotencyKey ?? '') || !isUUID(dto.addressId)
-      || !/^\d{4}-\d{2}-\d{2}$/.test(dto.date ?? '') || !Object.prototype.hasOwnProperty.call(BOOKING_SLOTS, dto.slot)
+      || !validInterruptionRebookSchedule(dto)
       || !Array.isArray(dto.items) || dto.items.length < 1 || dto.items.length > 3
       || dto.items.some(item => !isUUID(item?.sourceBookingId) || !isUUID(item?.sourceCaseId))
       || new Set(dto.items.map(item => item.sourceBookingId)).size !== dto.items.length) {
@@ -1091,12 +1091,14 @@ export class BookingsService {
       });
       let targetVisitGroupId: string | null = null;
       let targetBookingIds: string[];
+      const schedule = dto.mode === 'urgent' ? { mode: 'urgent' as const }
+        : { mode: 'scheduled' as const, date: dto.date, slot: dto.slot };
       if (targetItems.length === 1) {
-        const child = await this.create({ ...targetItems[0], addressId: dto.addressId, mode: 'scheduled', date: dto.date,
-          slot: dto.slot, customerNote: dto.customerNote ?? draft.customerNote ?? undefined, quantity: 1 }, customer, { manager, visitGroupId: null });
+        const child = await this.create({ ...targetItems[0], addressId: dto.addressId, ...schedule,
+          customerNote: dto.customerNote ?? draft.customerNote ?? undefined, quantity: 1 }, customer, { manager, visitGroupId: null });
         targetBookingIds = [child.id];
       } else {
-        const group = await createGroup({ addressId: dto.addressId, mode: 'scheduled', date: dto.date, slot: dto.slot,
+        const group = await createGroup({ addressId: dto.addressId, ...schedule,
           customerNote: dto.customerNote ?? draft.customerNote ?? undefined, items: targetItems }, customer, manager);
         targetVisitGroupId = group.id;
         targetBookingIds = group.items.map(item => item.booking?.id).filter((id): id is string => !!id);
