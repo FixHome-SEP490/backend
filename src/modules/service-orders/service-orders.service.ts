@@ -21,6 +21,7 @@ import { RepairEvidence } from './entities/repair-evidence.entity';
 import { Cancellation } from './entities/cancellation.entity';
 import { CancellationStrike } from './entities/cancellation-strike.entity';
 import { Invoice } from './entities/invoice.entity';
+import { computeInvoiceFinancialComponents } from '../finance/shipping-finance.policy';
 import { InvoiceItem } from './entities/invoice-item.entity';
 import { WarrantyCoverage } from './entities/warranty-coverage.entity';
 import { applyOrderCompletionEffects } from './order-completion-effects';
@@ -2113,13 +2114,20 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     const shippingFee = additionalCosts.reduce((sum, cost) => sum + (
       requests.some(r => r.additionalCostId === cost.id && r.receivedAt && r.fulfillmentMethod === 'delivery' && ['received', 'completed'].includes(r.status))
         ? Number(cost.shippingFee || 0) : 0), 0);
-    const grandTotal = laborTotal + partsTotal + technicianPartWarrantyFeeTotal + shippingFee;
 
     // Spec v1.4 BRX-026: Platform commission is 10% on Final Labor Total. 0% on parts. Rate snapshotted.
     const commissionBase = 'LABOR';
     const commissionRateSnapshot = (await this.configService.getInt('commission.rate_bps', 1000)) / 10000;
     if (commissionRateSnapshot < 0 || commissionRateSnapshot > 1) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid commission configuration');
     const commissionAmount = Math.round(laborTotal * commissionRateSnapshot);
+
+    // W3 cutover is deliberately closed: new invoices explicitly freeze LEGACY.
+    // No ENV flag may reinterpret approved costs or historical invoices.
+    const shippingPolicyVersion = 'LEGACY_100_0' as const;
+    const financial = computeInvoiceFinancialComponents({ policyVersion: shippingPolicyVersion,
+      laborTotal, commissionAmount, fixHomePartsTotal, technicianPartsTotal,
+      technicianPartWarrantyFeeTotal, shippingFee, knownLaborDeductions: 0 });
+    const { grandTotal, customerShippingShare, technicianShippingShare } = financial;
 
     // Create invoice
     const invoice = manager.create(Invoice, {
@@ -2130,6 +2138,9 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       technicianPartsTotal,
       technicianPartWarrantyFeeTotal,
       shippingFee,
+      shippingPolicyVersion,
+      customerShippingShare,
+      technicianShippingShare,
       grandTotal,
       commissionBase,
       commissionRateSnapshot,

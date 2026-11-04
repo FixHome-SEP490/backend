@@ -1,4 +1,5 @@
 import type { Invoice } from '../service-orders/entities/invoice.entity';
+import { assertShippingFinancialCutoverAllowed } from '../finance/invoice-shipping-snapshot';
 import type { InvoiceItem } from '../service-orders/entities/invoice-item.entity';
 import type { VoucherFundingInvoiceFacts } from './voucher-funding.types';
 import { ConflictException } from '@nestjs/common';
@@ -20,6 +21,7 @@ export function frozenVoucherInvoiceFacts(
   items: readonly InvoiceItem[],
   approvedParts: ReadonlyMap<string, VoucherApprovedPartSource>,
 ): VoucherFundingInvoiceFacts {
+  assertShippingFinancialCutoverAllowed(invoice);
   const vnd = (value: unknown): number => {
     const amount = Number(value);
     if (!Number.isSafeInteger(amount) || amount < 0 || value === null || value === undefined || value === '') {

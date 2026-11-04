@@ -29,6 +29,7 @@ import { TechnicianAssignment } from '../service-orders/entities/technician-assi
 import { CashSettlement } from '../service-orders/entities/cash-settlement.entity';
 import { CommissionDue } from '../service-orders/entities/commission-due.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
+import { assertShippingFinancialCutoverAllowed } from './invoice-shipping-snapshot';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { ServiceOrderStateMachine } from '../service-orders/service-order-state-machine';
 import { OrderStatusHistory } from '../service-orders/entities/order-status-history.entity';
@@ -807,6 +808,7 @@ export class FinanceService {
         throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hóa đơn 0 ₫ cần được xác nhận miễn phí.');
       }
       await this.assertNoActiveCashIntent(manager, 'SOLO', order.id);
+      assertShippingFinancialCutoverAllowed(invoice);
       await this.assertNewCollectionAllowed(manager, order.id);
 
       const payment = paymentRepository.create({
@@ -991,6 +993,7 @@ export class FinanceService {
         throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'VNPay chỉ áp dụng cho hóa đơn từ 5.000 ₫. Vui lòng chọn ví hoặc tiền mặt.');
       }
       await this.assertNoActiveCashIntent(manager, 'SOLO', order.id);
+      assertShippingFinancialCutoverAllowed(invoice);
       await this.assertNewCollectionAllowed(manager, order.id);
       const txnRef = randomUUID().replace(/-/g, '');
       const requestedAt = new Date();
@@ -2367,6 +2370,7 @@ export class FinanceService {
    * settled into their wallet. The caller holds the invoice row lock.
    */
   private async markInvoicePaidOnline(manager: EntityManager, invoice: Invoice, payerUserId: string, now: Date): Promise<void> {
+    assertShippingFinancialCutoverAllowed(invoice);
     if (this.requireWholeVnd(invoice.grandTotal, 'Invoice amount') <= 0) {
       throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hóa đơn 0 ₫ cần được xác nhận miễn phí.');
     }
@@ -2416,6 +2420,7 @@ export class FinanceService {
 
   /** Read-only reconciliation of a zero snapshot. Never repairs or replaces a persisted invoice. */
   private async assertNoChargeIntegrity(manager: EntityManager, invoice: Invoice, order: ServiceOrder, booking: Booking): Promise<void> {
+    assertShippingFinancialCutoverAllowed(invoice);
     const fail = () => { throw new BusinessException(ErrorCodes.CONFLICT, 'Hóa đơn chưa khớp chi phí đã duyệt. Vui lòng liên hệ FixHome để kiểm tra.'); };
     for (const value of [invoice.grandTotal, invoice.laborTotal, invoice.partsTotal, invoice.fixHomePartsTotal,
       invoice.technicianPartsTotal, invoice.technicianPartWarrantyFeeTotal, invoice.shippingFee, invoice.commissionAmount]) {
@@ -2700,6 +2705,7 @@ export class FinanceService {
       }
       const amount = this.requireWholeVnd(invoice.grandTotal, 'Invoice amount');
       if (amount <= 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hoá đơn không có số tiền cần thanh toán');
+      assertShippingFinancialCutoverAllowed(invoice);
       await this.assertNoActiveCashIntent(manager, 'SOLO', order.id);
       await this.assertNewCollectionAllowed(manager, order.id);
       const now = new Date();
@@ -2753,6 +2759,7 @@ export class FinanceService {
     manager: EntityManager,
     params: { order: ServiceOrder; invoice: Invoice; settlement: CashSettlement; actor: FinanceActor; now: Date; collectedAmount?: number },
   ): Promise<void> {
+    assertShippingFinancialCutoverAllowed(params.invoice);
     if (this.requireWholeVnd(params.invoice.grandTotal, 'Invoice amount') <= 0) {
       throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hóa đơn 0 ₫ cần được khách hàng xác nhận miễn phí.');
     }
@@ -2847,6 +2854,7 @@ export class FinanceService {
     settlement: CashSettlement | null,
     now: Date,
   ): Promise<void> {
+    assertShippingFinancialCutoverAllowed(invoice);
     const commissionDueRepository = manager.getRepository(CommissionDue);
     const platformDueRepository = manager.getRepository(PlatformDue);
     const laborTotal = this.requireWholeVnd(invoice.laborTotal, 'Labor total');
