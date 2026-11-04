@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-04 12:09 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-review2-p1-group5-backend-20261104
+> Cập nhật lần cuối: 2026-11-04 13:00 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-review2-p2-booking-draft-be-20261104
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -93,6 +93,8 @@ Ba điều không đổi giữa các repo:
 Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức của nhóm). Mâu thuẫn giữa code và tài liệu thì ghi vào mục 8 và hỏi PO, không tự quyết.
 
 ## 3. Trạng thái hiện tại
+
+P2 bản nháp đặt lịch thủ công (source, 04/11/2026): thêm module `booking-drafts`, một row active/customer, hết hạn 30 ngày từ PUT chủ động thành công; GET không gia hạn, không autosave hoặc giỏ hàng. Snapshot phẳng allowlist, tối đa 5 item, metadata `kind/savedDeviceCount/quantity/step` có giới hạn; không lưu URL, giá cache, địa chỉ đầy đủ hoặc transcript AI. Địa chỉ là tham chiếu đúng chủ; GET/PUT loại upload không còn khả dụng, giữ nguyên TTL media 2 giờ. Submit dùng create solo/nhóm hiện có và quota max2, khóa customer trước draft; target, receipt riêng bất biến và consume draft cùng transaction. Retry A sau lưu B trả kết quả A. Migration tiến `1793379600002-BookingDrafts` CHƯA CHẠY; PostgreSQL/HTTP/runtime/Web NOT VERIFIED. Không sửa Mobile/AI-service, không ghi DB chung, commit/push/merge/deploy trong task writer.
 
 P0-1A giới hạn tốc độ (source, 04/11/2026): bucket theo rủi ro, lưu trong tiến trình, bảo vệ tạo lịch đơn/nhóm, tư vấn, khởi tạo thanh toán, upload media, sửa tin nhắn và sự kiện typing/mời gọi Socket.IO đã xác thực. Sau auth dùng ID người dùng; HTTP ẩn danh dùng `req.ip`, guard không tự đọc `X-Forwarded-For`; kết quả qua proxy phụ thuộc cấu hình chưa kiểm chứng. HTTP vượt ngưỡng trả 429 và `Retry-After`; giữ throttling Auth/AI riêng, miễn trừ VNPay IPN đã ký. Ngưỡng DEV pilot: tạo lịch 20/10 phút, tư vấn 10/giờ, thanh toán 30/phút, media 30/phút (video 6/giờ), tin nhắn 60/phút (attachment 12/phút), typing 60/10 giây, mời gọi 10/phút. Không migration, dependency hay biến môi trường mới. Cấu hình proxy tin cậy và topology replica CHƯA KIỂM CHỨNG; limiter in-memory chỉ có hiệu lực trong từng tiến trình, chưa phải chính sách production.
 
@@ -215,6 +217,8 @@ Phase A được giữ và bổ sung validation phân biệt command, audit quy�
 
 ## 4. Kiến trúc và thư mục chính
 
+- `src/modules/booking-drafts/`: controller → service → entities cho draft active và submit receipt riêng; imports BookingsModule + VisitGroupsModule, không thêm phụ thuộc ngược. Migration `1793379600002-BookingDrafts` thêm hai bảng private có RLS và trigger receipt bất biến, down từ chối khi còn dữ liệu.
+
 Kiểu modular monolith: mỗi module `controller → service → TypeORM repository/entity`, DTO dùng `class-validator`, `ValidationPipe` toàn cục bật `whitelist` và `forbidNonWhitelisted`.
 
 - `src/modules/`: 29 module. Quan trọng nhất: `auth`, `users`, `bookings` (booking, shortlist, lời mời, điều kiện nhận việc), `service-orders` (state machine, check-in, bằng chứng, hoá đơn, tiền mặt, huỷ, vi phạm, bảo hành), `quotations`, `part-requests`, `finance` (VNPay, Payment, PlatformDue), `wallet` (ví, nạp, rút, quyết toán), `technician-assignment`, `messaging` (chat, Socket.IO, gọi thoại), `ai-diagnosis` (proxy tới `ai-service`), `support-cases`, `notifications`, `system-config`, `rbac`, `audit-log`, `technician-verifications` (KYC), `media` (Cloudinary).
@@ -226,6 +230,8 @@ Kiểu modular monolith: mỗi module `controller → service → TypeORM reposi
 Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ success: false, statusCode, error: { code, message, details? }, timestamp, path }`.
 
 ## 5. Hợp đồng với repo khác
+
+- P2 Backend + Web: JWT CUSTOMER dùng GET/PUT/DELETE `/booking-drafts/current` và POST `/booking-drafts/:draftId/submit`. GET trả `data:null|{id,version,expiresAt,snapshot}`; PUT nhận `{snapshot,expectedVersion:number|null}`; DELETE trả `{deleted}`. Submit nhận `{expectedVersion,operationKey:UUIDv4,request:{kind:'booking'|'visit_group',data:CreateBookingDto|CreateVisitGroupDto}}`, trả `{kind,bookingId,visitGroupId}`. Snapshot canonical phẳng có `items`, `addressId`, `mode/date/slot` cùng metadata bounded; không nhận shape UI lồng `activeDevice/extraDevices/schedule/selectedAddressId`. `selectedVariantCode:null` được bỏ key. Contract và giới hạn đầy đủ: `docs/BOOKING-DRAFT-API-CONTRACT.md`. Web giữ đúng payload/version/key khi retry; upload bị bỏ cần tải lại. Version/expiry/fingerprint conflict trả 409, PUT/DELETE dùng bucket riêng 60/phút, submit dùng bucket tạo lịch. API create thường giữ nguyên. Consumer adoption và runtime NOT VERIFIED; Mobile/AI nằm ngoài phạm vi owner.
 
 - B2 solo additive: thợ có `order:read_related` dùng `GET /service-orders/:id/contact-readiness` (no-store), `POST /service-orders/:id/contact-attempt {commandId: UUID v4, kind: CALL_ATTEMPT|IN_APP_NOTIFICATION}` và `POST /service-orders/:id/cannot-continue` với DTO cũ, reasonClass `non_technician_exception`, reasonCode `customer_absent|customer_unreachable`. Không gửi customer/user/order ID trong body, thời gian client hoặc cờ tự xác nhận notice; global DTO từ chối field lạ. Readiness trả `contactCount,notificationSent,callsSpaced,nextCallAt,nextEligibleAt,serverNow,ready`; contact thêm `evidenceId,recordedAt,callConnectionVerified:false` (không chứng minh cuộc gọi kết nối). Notice `SOLO_CONTACT_ATTEMPT` trỏ `SERVICE_ORDER`; stop trả receipt/continuation T1/T8 cũ, không tự phạt/thu/hoàn tiền, không chờ SM phân lỗi. Thiếu liên hệ trả 409 `SOLO_CONTACT_NOT_READY`; đơn nhóm phải dùng group endpoint, correlation nhóm không cho phép bỏ preflight solo. Cùng command/payload stop trả receipt cũ kể cả sau hết hạn; đổi payload, receipt thiếu hoặc bằng chứng mất/hỏng trả conflict. Contact replay chỉ trong scope còn active/eligible; không kiểm preferredEndAt đối với đơn MATCHED đã onsite, không áp thời lượng sửa tối đa. Rebook đi qua T2 và quota B1 max2 hiện có, không ngoại lệ suất thứ ba. Web/Mobile/docs consumer và runtime NOT VERIFIED; Lead phối hợp adoption trong PR riêng, không sửa repo tiêu thụ ở B2.
 
@@ -319,6 +325,8 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 7. Quyết định đã chốt
 
+- Owner P2 04/11/2026: đúng một bản nháp thủ công/account, khôi phục khác thiết bị, hết hạn sau 30 ngày từ lần lưu chủ động thành công; không giỏ hàng, nhiều draft hoặc autosave. Save không tạo Booking/ServiceOrder/invitation/payment, claim ảnh hoặc dùng quota. Receipt submit tách khỏi draft, có mốc giữ tối thiểu 30 ngày từ submit và không prune trong P2; lưu/xóa/hết hạn draft mới không xóa receipt cũ. Không nới TTL ảnh 2 giờ. Chỉ Backend + Web; không sửa Mobile/AI-service.
+
 - Owner 04/11/2026: tối đa hai logical visits pending/unaccepted/customer kể cả recovery/rebook; không ngoại lệ suất thứ ba. B2 solo no-show dùng trạng thái đơn/assignment/check-in và liên hệ hiện tại, không từ chối đơn MATCHED onsite chỉ vì đã qua giờ kết thúc lịch hẹn; không giới hạn thời lượng sửa. Mọi chuyển từ không được đếm sang pending dùng chung khóa User khách trước Booking/group/order/technician. Nhả thợ không đồng nghĩa quy lỗi khách; trách nhiệm/phí/strike mới chỉ sau SM review, chính sách khách tự hủy cũ giữ nguyên.
 
 - Owner 01/11/2026: khách vắng/không liên lạc được cần check-in lần phân công hiện tại, hai call attempt cách ít nhất 5 phút, một notification trong nền tảng và chờ 10 phút từ call đầu theo giờ server. Một command dừng mọi child đủ điều kiện, giữ child completed/paid/completion-requested và lịch sử; không tự quy lỗi, phạt, thu hay hoàn tiền. Khách tự chọn subset thiết bị dừng để đặt lịch/giá mới, mỗi nguồn dùng một lần và không cần SM gate; một sự cố nhóm có case con riêng. SM xử lý vận hành/tiền/nhận vật tư, Admin xem và giữ quyền quyết định trách nhiệm hiện có. Chi tiết source: `docs/GROUP-STOP-API-CONTRACT.md`.
@@ -379,6 +387,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 8. Việc đang dở và rủi ro đã biết
 
+- P2 source writer: migration `1793379600002-BookingDrafts` chưa chạy; PostgreSQL row locks/concurrency/rollback, RLS server role, authenticated HTTP, Docker/health và Web restore/reupload/runtime NOT VERIFIED. Ca PostgreSQL đã nối vào harness CI `test/app.e2e-spec.ts`, writer không chạy DB E2E hoặc dựng server/DB riêng. Lead review rồi kiểm CI PostgreSQL, migrate DB thật và release theo thứ tự; cần restart Backend trước runtime QA. Không dependency/env mới, không sửa Web/Mobile/AI hoặc phát hành từ writer. Hợp đồng canonical: `docs/BOOKING-DRAFT-API-CONTRACT.md`.
+
 - P1 VisitGroup max 5 (source writer only, branch `foxonworld/fixhome-review2-p1-group5-backend-20261104`): Backend guards, DTOs, stop/rebook và migration tiến hỗ trợ sequence 1–5 cùng group `source_count` 2–5; hai rebook CHECK giữ nguyên solo count 1/null target. Down từ chối nếu còn sequence hoặc group count >3. Failed-repair rebook vẫn yêu cầu full set; interruption giữ subset contract; logic thanh toán nhóm không đổi. Migration `1793379600001-VisitGroupDeviceLimitFive` CHƯA CHẠY. Lead phải áp dụng migration trước khi bật hoặc công bố nhóm 4/5, rồi xác nhận Web/Mobile/AI consumer tương thích; các consumer, PostgreSQL, shared DEV và runtime NOT VERIFIED. Ảnh bằng chứng giữ nguyên cap 3. Không ghi DB dùng chung, không push/merge/deploy.
 
 - P0-1A chỉ mới được kiểm ở source/test; ngưỡng pilot chỉnh tại `src/common/rate-limit/risk-rate-limit.ts`, chưa được duyệt cho production. Limiter lưu in-memory theo từng Backend process, không đồng bộ replica và mất trạng thái khi restart; topology và trusted-proxy CHƯA KIỂM CHỨNG. Không ghi DB dùng chung, không migration/dependency/biến môi trường mới. Chờ Lead review và gate CI/release; sau release cần restart Backend và smoke test DEV có auth cho tạo lịch, khởi tạo thanh toán, ghi media/tin nhắn và Socket.IO. Runtime, proxy và consumer repo khác CHƯA KIỂM CHỨNG; writer branch không push/merge/deploy.
@@ -432,12 +442,11 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-04 13:00 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p2-booking-draft-be-20261104 | Thêm P2 draft thủ công 30 ngày, snapshot canonical phẳng và receipt submit nguyên tử; ghi gate CI PostgreSQL và Lead migration/release chưa kiểm chứng.
 - 2026-11-04 12:09 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p1-group5-backend-20261104 | P1 Group5 cập nhật ba CHECK, stop/rebook 5 máy; áp dụng forward migration một lần trên PostgreSQL shared dev, xác minh ledger và constraint SQL, Backend/Web release còn chờ CI.
 - 2026-11-04 10:25 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p0-solo-noshow-20261104 | B2 solo contact/readiness và stop nguyên tử, giữ evidence/replay; giới hạn API liên hệ/dừng đơn thử nghiệm DEV và chặn thông báo trùng, không tự phạt khách.
 - 2026-11-04 09:45 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p0-security-20261104 | Thêm P0-1A risk throttling theo actor/IP cho route rủi ro và socket; ghi DEV ceilings cùng giới hạn in-memory/runtime chưa kiểm chứng.
-
 - 2026-11-04 09:29 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p0-quota-noshow-20261104 | Ghi quota hai lượt pending nguyên tử, retry/nhả thợ ở cap, contract 409 và blocker solo no-show/PostgreSQL.
-
 - 2026-11-02 14:24 (UTC+7) | foxonworld | foxonworld/fixhome-rebook-voucher-history-be-20261102 | Expose header Date qua CORS cho đồng hồ voucher Web, giữ chính sách origin/credentials/methods.
 - 2026-11-02 10:21 (UTC+7) | foxonworld | foxonworld/fixhome-rebook-voucher-history-be-20261102 | Thêm urgent interruption opt-in và lịch sử thợ inactive gồm child nhóm, giữ receipt/PII/tiền cũ, ghi hợp đồng consumer và giới hạn PostgreSQL/runtime.
 - 2026-11-02 01:00 (UTC+7) | foxonworld | foxonworld/fixhome-qa-seven-issues-be-20261102 | Sửa upload onsite ADDITIONAL, quyền đọc UNKNOWN trả kho sau STOP và projection trạng thái VisitGroup; giữ nghĩa vụ cũ và ghi giới hạn consumer/runtime.
@@ -473,4 +482,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-29 01:08 (UTC+7) | foxonworld | foxonworld/fixhome-cash-reputation-core-20261029 | Ghi cash-first có cờ cutover, case thợ typed/SM review, hai migration cộng thêm và gate PostgreSQL/Web/Mobile chưa kiểm chứng.
 - 2026-10-28 23:50 (UTC+7) | Hgnv11 | dev | Dòng danh sách lượt nhiều thiết bị có thêm `addressSummary`; chưa chạy test backend ở máy này.
 - 2026-10-28 14:25 (UTC+7) | foxonworld | foxonworld/fixhome-p0-replace-core-20261028 | Khôi phục xử lý case thợ báo tại EN_ROUTE, chặn case xung đột và ghi cổng kiểm migration cô lập.
-- 2026-10-28 13:56 (UTC+7) | foxonworld | foxonworld/fixhome-p0-replace-core-20261028 | Ghi hợp đồng P0/P1 dừng sửa, đổi thợ và đặt lại sau gián đoạn; migration cộng thêm, guard VisitGroup và rủi ro PostgreSQL/Web chưa kiểm chứng.
