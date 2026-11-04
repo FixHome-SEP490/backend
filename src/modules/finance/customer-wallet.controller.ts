@@ -13,6 +13,7 @@ import { CustomerWalletService } from '../customer-wallet/customer-wallet.servic
 import { CustomerWithdrawalPayoutService } from '../wallet/customer-withdrawal-payout.service';
 import { FinanceService } from './finance.service';
 import { NoChargeInvoiceResponseDto } from './dto';
+import { RiskLimit } from '../../common/rate-limit/risk-rate-limit';
 
 type Req = { user: { id: string; role: string }; ip?: string; headers?: Record<string, string> };
 
@@ -47,6 +48,7 @@ export class CustomerWalletController {
   }
 
   @Post('customer/wallet/top-up')
+  @RiskLimit('user-payment-init')
   @HttpCode(HttpStatus.OK)
   @RequirePermission('invoice:pay_own')
   @ApiOperation({ summary: 'Customer: start a VNPay top-up (10.000 - 50.000.000 ₫)' })
@@ -64,6 +66,7 @@ export class CustomerWalletController {
   }
 
   @Post('invoices/:id/pay-with-wallet')
+  @RiskLimit('user-payment-init')
   @HttpCode(HttpStatus.OK)
   @RequirePermission('invoice:pay_own')
   @ApiOperation({ summary: 'Customer: pay the whole invoice from the wallet balance' })

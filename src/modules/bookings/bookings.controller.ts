@@ -35,6 +35,7 @@ import { AttachBookingMediaDto, CreateBookingDto, ScheduleBookingDto, RebookDto,
 import { ReasonDto } from '../service-orders/order-command.dto';
 import { toBookingInvitationResponse, toBookingMediaResponse, toBookingResponse } from './booking-privacy.dto';
 import { BookingPrivateMediaContentService } from './booking-private-media-content.service';
+import { RiskLimit } from '../../common/rate-limit/risk-rate-limit';
 
 @ApiTags('Bookings')
 @Controller('bookings')
@@ -47,6 +48,7 @@ export class BookingsController {
   ) {}
 
   @Post()
+  @RiskLimit('booking-create')
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('booking:create')
   @ApiBearerAuth()
@@ -275,7 +277,7 @@ export class BookingsController {
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('booking:read_own')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Customer: read an owned failed-repair draft', description: 'Includes only failed children with verified incidents. One failed child creates a standalone booking; two or three create one new visit group. Original photos are read references, never upload claim IDs.' })
+  @ApiOperation({ summary: 'Customer: read an owned failed-repair draft', description: 'Includes only failed children with verified incidents. One failed child creates a standalone booking; two to five create one new visit group. Group failed-repair rebooking requires the full set. Original photos are read references, never upload claim IDs.' })
   async repairFailureDraft(
     @Param('id', ParseUUIDPipe) id: string,
     @Req() req: { user: { id: string; role: string } },

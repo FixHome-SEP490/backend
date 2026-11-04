@@ -14,6 +14,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../shared/enums';
 import { VisitGroupAssignedPageQueryDto, VisitGroupMyPageQueryDto } from './visit-group-page.dto';
+import { RiskLimit } from '../../common/rate-limit/risk-rate-limit';
 
 type AuthedRequest = { user: { id: string; role: string } };
 
@@ -35,13 +36,15 @@ export class VisitGroupsController {
   }
 
   @Post()
+  @RiskLimit('booking-create')
   @RequirePermission('booking:create')
-  @ApiOperation({ summary: 'Customer: book 1 to 3 physical devices in one visit', description: 'Creates one child Booking (quantity 1) per device in one transaction, sharing address and arrival session. A fourth device is refused with VISIT_GROUP_DEVICE_LIMIT (422); the hotline comes from GET /visit-groups/contact. 403 FEATURE_DISABLED while visit_group.enabled is not true.' })
+  @ApiOperation({ summary: 'Customer: book 1 to 5 physical devices in one visit', description: 'Creates one child Booking (quantity 1) per device in one transaction, sharing address and arrival session. A sixth device is refused with VISIT_GROUP_DEVICE_LIMIT (422); the hotline comes from GET /visit-groups/contact. 403 FEATURE_DISABLED while visit_group.enabled is not true.' })
   async create(@Body() dto: CreateVisitGroupDto, @Req() req: AuthedRequest) {
     return { data: await this.visitGroups.create(dto, req.user) };
   }
 
   @Post('consultation')
+  @RiskLimit('booking-consultation')
   @RequirePermission('booking:create')
   @ApiOperation({ summary: 'Customer: ask for help with more devices than one visit takes', description: 'Opens a support case for the service managers; returns it with the hotline.' })
   async consultation(@Body() dto: VisitGroupConsultationDto, @Req() req: AuthedRequest) {
@@ -133,6 +136,7 @@ export class VisitGroupsController {
   }
 
   @Post(':id/checkout/wallet')
+  @RiskLimit('user-payment-init')
   @RequirePermission('invoice:pay_own')
   @ApiOperation({ summary: 'Customer: pay the whole visit with one wallet debit' })
   async payWithWallet(@Param('id', ParseUUIDPipe) id: string, @Req() req: AuthedRequest) {
@@ -140,6 +144,7 @@ export class VisitGroupsController {
   }
 
   @Post(':id/checkout/vnpay')
+  @RiskLimit('user-payment-init')
   @RequirePermission('invoice:pay_own')
   @ApiOperation({ summary: 'Customer: one VNPay transaction for the whole visit', description: 'The IPN splits it over the repaired devices\' invoices frozen at this call.' })
   async payWithVnpay(

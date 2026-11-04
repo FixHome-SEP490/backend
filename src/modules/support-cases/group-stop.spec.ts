@@ -17,12 +17,12 @@ describe('group stop transaction (persistence double, not PostgreSQL race proof)
   beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-01T02:00:00Z')); });
   afterEach(() => vi.useRealTimers());
 
-  function setup() {
+  function setup(deviceCount = 3) {
     const h = groupFixture();
     const groupId = randomUUID();
     h.rows.VisitGroup = [{ id: groupId, customerId: h.customer.id }];
     h.rows.VisitGroupItem = [];
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < deviceCount; i++) {
       const booking = i === 0 ? h.booking : { ...h.booking, id: randomUUID() };
       booking.visitGroupId = groupId;
       const order = i === 0 ? h.order : { ...h.order, id: randomUUID(), bookingId: booking.id };
@@ -55,6 +55,29 @@ describe('group stop transaction (persistence double, not PostgreSQL race proof)
     const restarted = new GroupStopService(h.dataSource as never, new AuditLogService({} as never), h.service);
     expect(await restarted.readiness(h.groupId, h.order.id, h.tech)).toMatchObject({ contactCount: 1, notificationSent: true, ready: false });
     await expect(h.contact('CALL_ATTEMPT', notifyCommand)).rejects.toThrow();
+  });
+
+  it.each([
+    ['customer_absent', 4], ['customer_absent', 5],
+    ['customer_unreachable', 4], ['customer_unreachable', 5],
+  ])('stops all %i children once for %s, with separate cases and one logical grouped notification', async (reasonCode, deviceCount) => {
+    const h = setup(deviceCount); await h.qualify();
+    h.input.reasonCode = reasonCode as GroupStopDto['reasonCode'];
+    const before = structuredClone(h.rows.ServiceOrder);
+    const results = await Promise.all([h.stopGroup(), h.stopGroup()]);
+    expect(results[1]).toEqual(results[0]); expect((results[0] as any).stopped).toHaveLength(deviceCount);
+    expect(h.rows.SupportCase).toHaveLength(deviceCount); expect(new Set(h.rows.SupportCase.map(c => c.interruptionCommandId)).size).toBe(deviceCount);
+    expect(h.rows.TechnicianAssignment.every(a => a.isActive === false)).toBe(true);
+    expect(h.rows.VisitGroupItem.every(i => i.outcome === 'interrupted')).toBe(true);
+    expect(h.rows.ServiceOrder).toEqual(before);
+    expect(h.rows.AuditLog.filter(l => l.action === GROUP_STOP)).toHaveLength(1);
+    expect(h.rows.Notification.filter(n => n.type === GROUP_STOP)).toHaveLength(3);
+    const correlations = await groupStopCorrelations(h.manager, h.rows.SupportCase);
+    expect(correlations.size).toBe(deviceCount);
+    expect(new Set([...correlations.values()].map(c => c.commandId)).size).toBe(1);
+    expect([...correlations.values()][0].childCaseIds).toHaveLength(deviceCount);
+    await expect(h.stopGroup({ ...h.input, reason: 'Changed content in replay' })).rejects.toThrow();
+    expect(await h.group.incidents(h.groupId, { id: randomUUID(), role: Role.ADMIN })).toHaveLength(1);
   });
 
   it.each(['customer_absent', 'customer_unreachable'])('stops three children once for %s, with separate cases and one logical grouped notification', async reasonCode => {
@@ -120,6 +143,27 @@ describe('group stop transaction (persistence double, not PostgreSQL race proof)
     expect(h.rows.TechnicianAssignment[2].isActive).toBe(true);
   });
 
+  it('preserves one paid child and stops the four unfinished children of a five-child group', async () => {
+    const h = setup(5);
+    const paid = h.rows.ServiceOrder[4];
+    paid.status = ServiceOrderStatus.COMPLETED;
+    paid.paymentStatus = PaymentStatus.PAID;
+    paid.completionRequestedAt = new Date();
+    h.rows.Invoice = [{ id: randomUUID(), serviceOrderId: paid.id, grandTotal: 777000 }];
+    const paidBefore = structuredClone(paid);
+    await h.qualify();
+
+    const result: any = await h.stopGroup();
+    expect(result.stopped).toHaveLength(4);
+    expect(result.preserved).toHaveLength(1);
+    expect(result.preserved[0]).toMatchObject({ orderId: paid.id, disposition: 'PRESERVED', financialFollowupRequired: true });
+    expect(h.rows.ServiceOrder.find(order => order.id === paid.id)).toEqual(paidBefore);
+    expect(h.rows.VisitGroupItem[4].outcome).toBeNull();
+    expect(h.rows.TechnicianAssignment[4].isActive).toBe(true);
+    expect(h.rows.TechnicianAssignment.slice(0, 4).every(assignment => assignment.isActive === false)).toBe(true);
+    expect(h.rows.SupportCase).toHaveLength(4);
+  });
+
   it.each(['no_calls', 'one_call', '299_seconds', '599_seconds', 'no_notification', 'deleted_notification', 'new_assignment', 'missing_checkin', 'inactive_child', 'preexisting_receipt', 'unknown_finance'])('fails closed: %s', async state => {
     const h = setup();
     if (state !== 'no_calls') await h.contact('CALL_ATTEMPT');
@@ -148,6 +192,29 @@ describe('group stop transaction (persistence double, not PostgreSQL race proof)
       return insert(entity, value);
     });
     await expect(h.stopGroup()).rejects.toThrow('storage failed'); expect(h.rows).toEqual(before);
+  });
+
+  it('rolls back a five-child stop after a later unfinished child fails, preserving the paid sibling', async () => {
+    const h = setup(5);
+    const paid = h.rows.ServiceOrder[4];
+    paid.status = ServiceOrderStatus.COMPLETED;
+    paid.paymentStatus = PaymentStatus.PAID;
+    paid.completionRequestedAt = new Date();
+    h.rows.Invoice = [{ id: randomUUID(), serviceOrderId: paid.id, grandTotal: 777000 }];
+    await h.qualify();
+    const before = structuredClone(h.rows);
+    const insert = h.manager.insert.getMockImplementation();
+    let childReceipts = 0;
+    h.manager.insert.mockImplementation(async (entity: any, value: any) => {
+      if (value?.action === 'TECHNICIAN_ONSITE_STOP_FINALIZED' && ++childReceipts === 2) {
+        throw new Error('second child receipt unavailable');
+      }
+      return insert(entity, value);
+    });
+
+    await expect(h.stopGroup()).rejects.toThrow('second child receipt unavailable');
+    expect(childReceipts).toBe(2);
+    expect(h.rows).toEqual(before);
   });
 
   it('rejects actor mismatch, stale checkin, and client evidence timestamps', async () => {

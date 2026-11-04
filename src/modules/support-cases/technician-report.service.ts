@@ -25,6 +25,9 @@ import {
   validAssignmentCheckIn, verifiedOnsiteInterruption,
 } from '../service-orders/onsite-interruption';
 import { buildInterruptionDraft } from '../bookings/interruption-draft';
+import { soloContactEvidence } from '../service-orders/onsite-contact';
+import { SoloContactAttemptDto } from './dto/solo-contact.dto';
+import { assertSoloContactEligible, recordSoloContact, soloContactScope } from './solo-contact';
 
 @Injectable()
 export class TechnicianReportService {
@@ -37,19 +40,25 @@ export class TechnicianReportService {
   /** Atomic operational stop; old financial and physical obligations remain historical truth. */
   async cannotContinue(orderId: string, input: CannotContinueDto, actor: SupportCaseActor) {
     if (actor.role !== Role.TECHNICIAN) throw new ForbiddenException('Technician role required');
-    if (['customer_absent', 'customer_unreachable'].includes(input?.reasonCode)) {
-      throw new BadRequestException('Lý do này cần ghi nhận liên hệ và dừng cả lượt sửa chữa.');
-    }
     return this.dataSource.transaction(manager => this.stopWithinTransaction(manager, orderId, input, actor));
   }
 
-  /** Internal use only: group caller owns the ambient transaction and evidence gate. */
+  async contactReadiness(orderId: string, actor: SupportCaseActor) {
+    return this.dataSource.transaction(async manager => {
+      const current = await soloContactScope(manager, orderId, actor);
+      return (await soloContactEvidence(manager, current, actor)).readiness;
+    });
+  }
+
+  async contactAttempt(orderId: string, input: SoloContactAttemptDto, actor: SupportCaseActor) {
+    return this.dataSource.transaction(manager => recordSoloContact(manager, orderId, input, actor));
+  }
+
+  /** Group caller owns group evidence; solo no-show always verifies its own evidence here. */
   async stopWithinTransaction(manager: EntityManager, orderId: string, input: CannotContinueDto,
     actor: SupportCaseActor, groupCommandId?: string) {
     if (actor.role !== Role.TECHNICIAN) throw new ForbiddenException('Technician role required');
-    if (!groupCommandId && ['customer_absent', 'customer_unreachable'].includes(input?.reasonCode)) {
-      throw new BadRequestException('Cần dùng lệnh dừng cả lượt sửa chữa.');
-    }
+    const noShow = ['customer_absent', 'customer_unreachable'].includes(input?.reasonCode);
     const request = onsiteInterruptionRequest(input);
     const fingerprint = onsiteInterruptionFingerprint(orderId, actor.id, request);
     try {
@@ -62,6 +71,11 @@ export class TechnicianReportService {
         if (!ref || !owned) throw new NotFoundException('Không tìm thấy đơn sửa chữa.');
         const bookingRef = await manager.findOneBy(Booking, { id: ref.bookingId });
         if (!bookingRef) throw new ConflictException('Đơn không có lịch hẹn hợp lệ.');
+        // A correlation string is never authority for a standalone order.
+        if (groupCommandId && !bookingRef.visitGroupId) throw new ConflictException('Lệnh nhóm không áp dụng cho đơn riêng lẻ.');
+        if (noShow && bookingRef.visitGroupId && !groupCommandId) {
+          throw new BadRequestException('Cần dùng lệnh dừng cả lượt sửa chữa.');
+        }
         // Match the existing manager/group lock hierarchy: lead booking -> group
         // -> affected booking -> order -> assignment. No sibling outcome is written.
         if (bookingRef.visitGroupId) {
@@ -88,6 +102,13 @@ export class TechnicianReportService {
           if (!prior || prior.incident.technicianId !== actor.id || prior.fingerprint !== fingerprint) {
             throw new ConflictException('Gián đoạn đã được ghi nhận với lệnh hoặc nội dung khác.');
           }
+          if ((prior.receipt.after?.groupCommandId ?? null) !== (groupCommandId ?? null)) {
+            throw new ConflictException('Lệnh dừng không khớp phạm vi đã ghi nhận.');
+          }
+          // This command is atomic; a partial historical receipt requires review.
+          if (noShow && !groupCommandId && !prior.workStopped) {
+            throw new ConflictException('Biên nhận dừng sửa chưa đầy đủ; cần quản lý kiểm tra.');
+          }
           if (!prior.workStopped) await this.finalizeStop(manager, order, booking, prior, actor);
           return onsiteContinuationResult(order, booking, prior.incident.id, true);
         }
@@ -109,6 +130,14 @@ export class TechnicianReportService {
         }, order: { checkedInAt: 'DESC' } });
         const checkin = checkins.find(item => validAssignmentCheckIn(assignment, item));
         if (!checkin) throw new ConflictException('Cần check-in hợp lệ của lần phân công hiện tại tại nhà khách.');
+        let contactEvidenceIds: string[] | undefined;
+        if (noShow && !groupCommandId) {
+          await assertSoloContactEligible(manager, order, booking);
+          const evidence = await soloContactEvidence(manager, { order, booking, assignment, checkin }, actor);
+          if (!evidence.readiness.ready) throw new ConflictException({ code: 'SOLO_CONTACT_NOT_READY',
+            message: 'Cần hai lần gọi cách nhau ít nhất 5 phút, gửi thông báo và chờ đủ 10 phút từ lần gọi đầu.' });
+          contactEvidenceIds = evidence.rows.map(row => row.id);
+        }
         if (booking.visitGroupId) {
           const item = await manager.findOneBy(VisitGroupItem, { groupId: booking.visitGroupId, bookingId: booking.id });
           if (!item || item.outcome != null) throw new ConflictException('Thiết bị đã có kết quả hoặc không thuộc lượt sửa.');
@@ -142,6 +171,7 @@ export class TechnicianReportService {
             incidentId: incident.id, sourceBookingId: booking.id, customerId: booking.customerId,
             sourceVisitGroupId: booking.visitGroupId ?? null, serviceOrderStatus: order.status,
             assignmentId: assignment.id, checkInId: checkin.id, fingerprint, request,
+            ...(contactEvidenceIds ? { contactEvidenceIds } : {}),
             ...(groupCommandId ? { groupCommandId } : {}) },
         });
         const proof = await verifiedOnsiteInterruption(manager, order, booking);

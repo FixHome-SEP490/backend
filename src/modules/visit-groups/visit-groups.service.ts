@@ -7,6 +7,7 @@ import { BookingStatus, Role, SupportCaseType } from '../../shared/enums';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { BookingsService } from '../bookings/bookings.service';
 import { InvitationsService } from '../bookings/invitations.service';
+import { checkPendingVisitQuota, lockPendingVisitCustomer } from '../bookings/pending-visit-quota';
 import { ScheduleBookingDto } from '../bookings/booking.dto';
 import { ServiceOrdersService } from '../service-orders/service-orders.service';
 import { Booking } from '../bookings/entities/booking.entity';
@@ -29,7 +30,7 @@ export const VISIT_GROUP_ENABLED_KEY = 'visit_group.enabled';
 export const SUPPORT_HOTLINE_KEY = 'support.hotline';
 
 /**
- * Up to three physical devices booked in one visit (PO 21/10/2026). The group is
+ * Up to five physical devices booked in one visit (PO 04/11/2026). The group is
  * a thin envelope: each device becomes a normal child Booking (quantity 1)
  * through BookingsService.create, inside one transaction, so the device rules
  * (price variant, description, photos, address) are the ones every booking uses.
@@ -59,7 +60,7 @@ export class VisitGroupsService {
     if (dto.items.length > VISIT_GROUP_DEVICE_LIMIT) {
       throw new BusinessException(
         ErrorCodes.VISIT_GROUP_DEVICE_LIMIT,
-        // PO 21/10/2026: the screen locks adding at the limit and says so; no hotline, no "contact us".
+        // PO 04/11/2026: requests over five use the existing hotline/manual consultation path.
         `Mỗi lần đặt được tối đa ${VISIT_GROUP_DEVICE_LIMIT} thiết bị.`,
         { limit: VISIT_GROUP_DEVICE_LIMIT, hotline: await this.hotline() },
       );
@@ -72,6 +73,13 @@ export class VisitGroupsService {
     let groupId: string;
     try {
       const createInManager = async (manager: EntityManager) => {
+        await lockPendingVisitCustomer(manager, customer.id);
+        // Recheck after the shared lock: a same-key request may have committed while we waited.
+        if (dto.idempotencyKey) {
+          const earlier = await manager.findOneBy(VisitGroup, { customerId: customer.id, idempotencyKey: dto.idempotencyKey });
+          if (earlier) return earlier.id;
+        }
+        await checkPendingVisitQuota(manager, customer.id);
         const group = await manager.save(manager.create(VisitGroup, {
           customerId: customer.id,
           addressId: dto.addressId,

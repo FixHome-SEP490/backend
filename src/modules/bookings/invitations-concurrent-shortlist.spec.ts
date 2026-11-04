@@ -1,3 +1,4 @@
+import { stubPendingVisitQuota } from '../../../test/helpers/pending-visit-quota.fixture';
 // Exercises the real createShortlist -> activateNextInvitation transaction with fake persistence only.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BookingStatus, InvitationStatus, Role } from '../../shared/enums';
@@ -28,6 +29,7 @@ function scenario(status: BookingStatus = BookingStatus.SUBMITTED) {
       Object.assign(invite, patch);
     }),
   };
+  stubPendingVisitQuota(manager);
   const audit = { logWithManager: vi.fn(async () => undefined) };
   const messaging = { ensureConversation: vi.fn(async () => undefined) };
   const service = new InvitationsService(

@@ -1,4 +1,5 @@
 import { plainToInstance } from 'class-transformer';
+import { stubPendingVisitQuota } from '../helpers/pending-visit-quota.fixture';
 import { validate } from 'class-validator';
 import { describe, expect, it, vi } from 'vitest';
 import { deriveCatalogV2VariantResolution, validateCatalogV2DeviceAttributesForBooking } from '../../src/database/catalog-v2/catalog-v2-device-attributes';
@@ -63,10 +64,12 @@ function createBookingsService(serviceCode: string) {
     pricingMode: ServicePricingMode.FIXED_PRICE,
     fixedPrice: 175000,
   };
-  const transaction = vi.fn(async (callback: (manager: unknown) => Promise<unknown>) => callback({
+  const manager = {
     query: vi.fn(async () => [{ id: serviceId }]),
     getRepository: (entity: unknown) => entity === Booking ? bookingRepository : mediaRepository,
-  }));
+  };
+  stubPendingVisitQuota(manager);
+  const transaction = vi.fn(async (callback: (manager: unknown) => Promise<unknown>) => callback(manager));
   const service = Object.create(BookingsService.prototype) as BookingsService;
   Object.assign(service as unknown as Record<string, unknown>, {
     userRepo: { findOneBy: vi.fn(async () => ({ id: customerId, bookingSuspendedUntil: null })) },

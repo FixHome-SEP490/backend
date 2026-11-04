@@ -10,7 +10,7 @@ import { VisitGroupItem } from './entities/visit-group-item.entity';
 import { VisitGroupsController } from './visit-groups.controller';
 import { VisitGroupsService } from './visit-groups.service';
 
-/** Up to three devices in one visit (PO 21/10/2026). Off until visit_group.enabled is true. */
+/** Up to five devices in one visit (PO 04/11/2026). Off until visit_group.enabled is true. */
 @Module({
   imports: [TypeOrmModule.forFeature([VisitGroup, VisitGroupItem, VisitGroupPayment]), BookingsModule, SupportCasesModule, ServiceOrdersModule, FinanceModule],
   controllers: [VisitGroupsController],

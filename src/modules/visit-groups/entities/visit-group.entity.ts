@@ -6,7 +6,7 @@ export const VISIT_GROUP_STATUSES = ['submitted', 'cancelled'] as const;
 export type VisitGroupStatus = (typeof VISIT_GROUP_STATUSES)[number];
 
 /**
- * One visit for up to three physical devices of one customer (PO 21/10/2026):
+ * One visit for up to five physical devices of one customer (PO 04/11/2026):
  * one address, one arrival session, one technician, one payment. Every device
  * is its own child Booking (quantity 1); the group only holds them together.
  */

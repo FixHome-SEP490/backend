@@ -134,7 +134,7 @@ export class Booking extends BaseEntity {
   @Column({ name: 'catalog_v2_pricing_snapshot', type: 'jsonb', nullable: true })
   catalogV2PricingSnapshot?: CatalogV2BookingPricingSnapshot | null;
 
-  /** Set when this booking is one device of a VisitGroup (PO 21/10/2026, up to three devices in one visit). */
+  /** Set when this booking is one device of a VisitGroup (PO 04/11/2026, up to five devices in one visit). */
   @Column({ name: 'visit_group_id', type: 'uuid', nullable: true })
   visitGroupId?: string | null;
 

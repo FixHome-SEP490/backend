@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { groupServiceIds, groupSiblings, mirrorGroupStatus, visitDevicesOf } from './visit-group-guard';
 import { toTechnicianInvitationPreview } from './booking-privacy.dto';
 import { BookingStatus } from '../../shared/enums';
+import { technicianEligibility } from './technician-eligibility';
 
 // PO 21/10/2026: one technician with every skill takes the whole visit; matching
 // runs on the lead booking and the other devices follow it.
@@ -22,8 +23,40 @@ describe('visit group matching helpers', () => {
   });
 
   it('asks a visit for every distinct service of its devices', async () => {
-    const m = manager({ bookings: [{ serviceId: 'svc-a' }, { serviceId: 'svc-b' }, { serviceId: 'svc-a' }] });
-    expect(await groupServiceIds(m as never, { serviceId: 'svc-a', visitGroupId: 'g-1' })).toEqual(['svc-a', 'svc-b']);
+    const m = manager({ bookings: [
+      { serviceId: 'svc-a' }, { serviceId: 'svc-b' }, { serviceId: 'svc-c' },
+      { serviceId: 'svc-d' }, { serviceId: 'svc-e' }, { serviceId: 'svc-a' },
+    ] });
+    expect(await groupServiceIds(m as never, { serviceId: 'svc-a', visitGroupId: 'g-1' }))
+      .toEqual(['svc-a', 'svc-b', 'svc-c', 'svc-d', 'svc-e']);
+  });
+
+  it('requires one technician to hold all five service skills for a visit', async () => {
+    const serviceIds = ['svc-a', 'svc-b', 'svc-c', 'svc-d', 'svc-e'];
+    const checkedSkills: string[] = [];
+    const queryBuilder = {
+      innerJoin() { return this; },
+      where() { return this; },
+      getCount: async () => 0,
+    };
+    const db: any = {
+      createQueryBuilder: () => queryBuilder,
+      count: async () => 0,
+      find: async (entity: { name: string }) => entity.name === 'Booking'
+        ? serviceIds.slice(1).map(serviceId => ({ id: serviceId, serviceId })) : [],
+      findOneBy: async (entity: { name: string }, where: { serviceId?: string }) => {
+        if (entity.name === 'User') return { id: 'tech-1', role: 'technician', status: 'active' };
+        if (entity.name === 'TechnicianProfile') return { id: 'profile-1', userId: 'tech-1', verificationStatus: 'verified', isAvailable: true };
+        if (entity.name === 'TechnicianSkill') {
+          checkedSkills.push(where.serviceId!);
+          return where.serviceId === 'svc-e' ? null : { serviceId: where.serviceId };
+        }
+        return null;
+      },
+    };
+    const eligibility = await technicianEligibility(db, 'tech-1', { id: 'lead', serviceId: 'svc-a', visitGroupId: 'group-1' } as never);
+    expect(eligibility).toEqual({ eligible: false, reason: 'Service is not offered or not yet verified' });
+    expect(checkedSkills).toEqual(serviceIds);
   });
 
   it('moves the other devices to the lead booking status', async () => {

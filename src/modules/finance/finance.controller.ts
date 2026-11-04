@@ -35,6 +35,7 @@ import {
   VoucherReservationDto,
 } from './dto';
 import { FinanceService } from './finance.service';
+import { RiskLimit } from '../../common/rate-limit/risk-rate-limit';
 
 @ApiTags('Finance')
 @Controller('finance')
@@ -117,6 +118,7 @@ export class FundedFinanceController {
   }
 
   @Post('solo/:id/wallet')
+  @RiskLimit('user-payment-init')
   @HttpCode(HttpStatus.OK)
   @Roles(Role.CUSTOMER)
   @RequirePermission('invoice:pay_own')
@@ -127,6 +129,7 @@ export class FundedFinanceController {
   }
 
   @Post('solo/:id/vnpay')
+  @RiskLimit('user-payment-init')
   @HttpCode(HttpStatus.OK)
   @Roles(Role.CUSTOMER)
   @RequirePermission('invoice:pay_own')
@@ -170,6 +173,7 @@ export class FundedFinanceController {
   }
 
   @Post('visit-groups/:id/wallet')
+  @RiskLimit('user-payment-init')
   @HttpCode(HttpStatus.OK)
   @Roles(Role.CUSTOMER)
   @RequirePermission('invoice:pay_own')
@@ -180,6 +184,7 @@ export class FundedFinanceController {
   }
 
   @Post('visit-groups/:id/vnpay')
+  @RiskLimit('user-payment-init')
   @HttpCode(HttpStatus.OK)
   @Roles(Role.CUSTOMER)
   @RequirePermission('invoice:pay_own')

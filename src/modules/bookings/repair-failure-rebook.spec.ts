@@ -1,3 +1,4 @@
+import { stubPendingVisitQuota } from '../../../test/helpers/pending-visit-quota.fixture';
 import 'reflect-metadata';
 import { describe, expect, it, vi } from 'vitest';
 import { BookingsService } from './bookings.service';
@@ -8,12 +9,12 @@ import { AuditLogService } from '../audit-log/audit-log.service';
 import { Role, ServiceOrderStatus, BookingStatus, SupportCaseType } from '../../shared/enums';
 import { CATALOG_V2_APPROVED_FIXED_TIERS as tiers } from '../../database/catalog-v2/catalog-v2-approved-price-tiers';
 
-function fixture(count = 1, grouped = count > 1) {
+function fixture(count = 1, grouped = count > 1, groupSize = Math.max(3, count)) {
   const customer = { id: randomUUID(), role: Role.CUSTOMER };
   const addressId = randomUUID();
   const serviceId = randomUUID();
   const groupId = grouped ? randomUUID() : null;
-  const sources = Array.from({ length: grouped ? 3 : count }, (_, i) => ({ id: randomUUID(), customerId: customer.id, serviceId, visitGroupId: groupId,
+  const sources = Array.from({ length: grouped ? groupSize : count }, (_, i) => ({ id: randomUUID(), customerId: customer.id, serviceId, visitGroupId: groupId,
     status: i < count ? BookingStatus.CANCELLED : BookingStatus.MATCHED, addressId, quantity: 1, description: `Synthetic device ${i}`, deviceAttributesSnapshot: { acMounting: 'wall', acHorsepower: 'up_to_1_5' },
     catalogV2PricingSnapshot: { selectedVariant: { variantCode: 'AC-02-01', laborPriceVnd: 1 } }, fixedUnitPriceSnapshot: 1, slot: 'morning', customerNote: 'Synthetic note',
   }));
@@ -48,6 +49,7 @@ function fixture(count = 1, grouped = count > 1) {
     update: vi.fn(async (entity, where, value) => { table(entity).filter(row => matches(row, typeof where === 'string' ? { id: where } : where)).forEach(row => Object.assign(row, value)); return { affected: 1 }; }),
     query: vi.fn(async (sql: string) => sql.includes('JOIN service_categories') ? [{ code: 'AC-02' }] : variants),
   };
+  stubPendingVisitQuota(manager);
   manager.getRepository = (entity: any) => ({
     create: (value: any) => manager.create(entity, value), save: (value: any) => manager.save(entity, value),
     find: (options: any) => manager.find(entity, options), findOneBy: (where: any) => manager.findOneBy(entity, where),
@@ -99,6 +101,19 @@ describe('final repair-failure confirmation', () => {
     expect(f.rows.Booking.slice(3).every(b => count === 1 ? b.visitGroupId === null : b.visitGroupId === result.visitGroupId)).toBe(true);
     expect(f.rows.BookingInvitation ?? []).toHaveLength(0);
     expect(f.rows.Invoice ?? []).toHaveLength(0);
+  });
+
+  it('rebooks all five failed children together and rejects a four-child subset', async () => {
+    const f = fixture(5, true, 5);
+    await expect(f.confirm({ ...f.dto, items: f.dto.items.slice(0, 4) })).rejects.toThrow();
+    expect(f.rows.Booking).toHaveLength(5);
+
+    const result = await f.confirm();
+    expect(result.targetKind).toBe('visit_group');
+    expect(result.items).toHaveLength(5);
+    expect(f.rows.Booking).toHaveLength(10);
+    expect(f.rows.VisitGroupItem.filter(item => item.groupId === result.visitGroupId)).toHaveLength(5);
+    expect(f.rows.RepairFailureRebookSource).toHaveLength(5);
   });
 
   it('handles a solo failure and returns the identical result for concurrent double click/retry', async () => {

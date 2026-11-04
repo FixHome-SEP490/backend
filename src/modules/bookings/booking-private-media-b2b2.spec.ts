@@ -1,3 +1,4 @@
+import { stubPendingVisitQuota } from '../../../test/helpers/pending-visit-quota.fixture';
 import 'reflect-metadata';
 import { validateSync } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
@@ -96,6 +97,7 @@ function makeTransactionFixture(seeds: UploadSeed[] = []) {
       return { affected: 1 };
     }),
   };
+  stubPendingVisitQuota(manager);
   const dataSource = {
     manager: {},
     query: vi.fn(async () => []),

@@ -1,14 +1,18 @@
+import { stubPendingVisitQuota } from '../../../test/helpers/pending-visit-quota.fixture';
 import 'reflect-metadata';
 import { describe, expect, it, vi } from 'vitest';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
 import { ForbiddenException } from '@nestjs/common';
 import { VisitGroupsService } from './visit-groups.service';
 import { VisitGroupsController } from './visit-groups.controller';
+import { CreateVisitGroupDto } from './visit-group.dto';
 import { VisitGroup } from './entities/visit-group.entity';
 import { VisitGroupItem } from './entities/visit-group-item.entity';
 import { Booking } from '../bookings/entities/booking.entity';
 import { refuseLoneGroupedBookingAction } from '../bookings/visit-group-guard';
 
-// PO 21/10/2026: up to three physical devices in one visit, each its own child
+// PO 04/11/2026: up to five physical devices in one visit, each its own child
 // booking (quantity 1), all written in one transaction.
 const customer = { id: 'customer-1', role: 'customer' };
 const item = (serviceId = 'service-a') => ({ serviceId, deviceLabel: 'Máy lạnh phòng ngủ' });
@@ -18,11 +22,13 @@ const end = new Date('2030-10-22T11:00:00Z');
 function harness(config: Record<string, string> = { 'visit_group.enabled': 'true', 'support.hotline': '1900 0000' }) {
   let created = 0;
   const manager = {
+    findOneBy: vi.fn(async () => null),
     create: vi.fn((_entity: unknown, data: object) => ({ ...data })),
     save: vi.fn(async (value: object) => ({ id: 'group-1', ...value })),
     insert: vi.fn(async () => undefined),
     update: vi.fn(async () => undefined),
   };
+  stubPendingVisitQuota(manager);
   const dataSource = {
     transaction: vi.fn(async (work: (m: typeof manager) => Promise<unknown>) => work(manager)),
     getRepository: vi.fn(() => ({ find: vi.fn(async () => []), findBy: vi.fn(async () => []) })),
@@ -78,10 +84,16 @@ describe('VisitGroupsService.create', () => {
     expect(groupWindow[2].preferredStartAt.getTime()).toBe(start.getTime() + 1);
   });
 
-  it('refuses a fourth device by stating the limit only, before writing anything', async () => {
+  it('keeps the typed six-device limit error in the service after DTO validation', async () => {
+    const addressId = '12345678-1234-4234-8234-123456789012';
+    const serviceId = '22345678-1234-4234-8234-123456789012';
+    const five = plainToInstance(CreateVisitGroupDto, { addressId, items: Array.from({ length: 5 }, () => ({ serviceId })) });
+    const six = plainToInstance(CreateVisitGroupDto, { addressId, items: Array.from({ length: 6 }, () => ({ serviceId })) });
+    expect(await validate(five)).toHaveLength(0);
+    expect(await validate(six)).toHaveLength(0);
     const h = harness();
-    await expect(h.service.create(dto([item(), item(), item(), item()]), customer)).rejects.toMatchObject({
-      response: expect.objectContaining({ code: 'VISIT_GROUP_DEVICE_LIMIT', message: 'Mỗi lần đặt được tối đa 3 thiết bị.' }),
+    await expect(h.service.create(six, customer)).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'VISIT_GROUP_DEVICE_LIMIT', message: 'Mỗi lần đặt được tối đa 5 thiết bị.', details: expect.objectContaining({ limit: 5 }) }),
     });
     expect(h.dataSource.transaction).not.toHaveBeenCalled();
   });
@@ -90,6 +102,20 @@ describe('VisitGroupsService.create', () => {
     const h = harness();
     await h.service.create(dto([item('a'), item('b'), item('c')]), customer);
     expect(h.bookingsService.create).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([4, 5])('creates %i devices in one transaction with one sequence per child', async count => {
+    const h = harness();
+    await h.service.create(dto(Array.from({ length: count }, (_, index) => item(`service-${index + 1}`))), customer);
+    expect(h.dataSource.transaction).toHaveBeenCalledOnce();
+    expect(h.bookingsService.create).toHaveBeenCalledTimes(count);
+    for (const [childDto] of h.bookingsService.create.mock.calls as unknown as Array<[{ addressId: string; mode: string; date: string; slot: string; quantity: number }]>) {
+      expect(childDto).toMatchObject({ addressId: 'address-1', mode: 'scheduled', date: '2030-10-22', slot: 'afternoon', quantity: 1 });
+    }
+    const groupWindow = h.manager.update.mock.calls.find(call => (call as unknown as [unknown])[0] === VisitGroup) as unknown as [unknown, string, { bookingMode: string; slot: string }];
+    expect(groupWindow[2]).toMatchObject({ bookingMode: 'scheduled', slot: 'afternoon' });
+    expect(h.manager.insert.mock.calls.map(call => (call as unknown as [unknown, { sequence: number }])[1].sequence))
+      .toEqual(Array.from({ length: count }, (_, index) => index + 1));
   });
 
   it('stays closed while the feature is off', async () => {
@@ -113,14 +139,15 @@ describe('VisitGroupsService.create', () => {
 
   it('reports a null hotline while none is configured', async () => {
     const h = harness({ 'visit_group.enabled': 'true' });
-    expect(await h.service.contact()).toEqual({ enabled: true, deviceLimit: 3, hotline: null });
+    expect(await h.service.contact()).toEqual({ enabled: true, deviceLimit: 5, hotline: null });
   });
 
-  it('opens a support case for a consultation, without a booking', async () => {
+  it('routes six-device requests to manual SM consultation without creating a booking', async () => {
     const h = harness();
-    const result = await h.service.requestConsultation({ message: 'Nhà có 5 máy lạnh', devices: ['Máy lạnh 1', ' '] }, customer);
+    const result = await h.service.requestConsultation({ message: 'Nhà có 6 máy lạnh', devices: ['Máy lạnh 1', 'Máy lạnh 2'] }, customer);
     expect(h.supportCases.openCase).toHaveBeenCalledWith(expect.objectContaining({
-      caseType: 'other', customerId: 'customer-1', description: 'Nhà có 5 máy lạnh\nThiết bị: Máy lạnh 1',
+      caseType: 'other', customerId: 'customer-1', reason: 'Tư vấn đặt từ 6 thiết bị trở lên',
+      description: 'Nhà có 6 máy lạnh\nThiết bị: Máy lạnh 1; Máy lạnh 2',
     }));
     expect(result).toEqual({ id: 'case-1', status: 'open', hotline: '1900 0000' });
   });

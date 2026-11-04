@@ -1,3 +1,4 @@
+import { stubPendingVisitQuota } from '../../../test/helpers/pending-visit-quota.fixture';
 import { createHash, randomUUID } from 'crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { BookingsService } from './bookings.service';
@@ -33,6 +34,7 @@ function setup() {
     }),
     insert: vi.fn(async (entity: { name: string }, value: Record<string, unknown>) => { rows[entity.name].push({ id: randomUUID(), ...value }); }),
   };
+  stubPendingVisitQuota(manager);
   const create = vi.fn(async () => ({ id: targetBookingId }));
   const service = Object.assign(Object.create(BookingsService.prototype), {
     dataSource: { manager, transaction: (fn: (m: typeof manager) => unknown) => fn(manager) }, create,

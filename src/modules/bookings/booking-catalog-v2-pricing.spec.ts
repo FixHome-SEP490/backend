@@ -1,3 +1,4 @@
+import { stubPendingVisitQuota } from '../../../test/helpers/pending-visit-quota.fixture';
 import { describe, expect, it, vi } from 'vitest';
 import { BookingsService } from './bookings.service';
 import { Booking } from './entities/booking.entity';
@@ -12,6 +13,7 @@ function fixture(code = 'AC-02') {
     fixed_labor_price_vnd: String(t.laborPriceVnd), included_scope: t.conditionVi, excluded_scope: null, is_active: true }));
   const manager = { query: vi.fn(async (sql: string) => sql.includes('JOIN service_categories') ? [{ code }] : rows),
     getRepository: (entity: unknown) => entity === Booking ? bookingRepo : {} };
+  stubPendingVisitQuota(manager);
   const instance = Object.create(BookingsService.prototype) as BookingsService;
   Object.assign(instance, { userRepo: { findOneBy: async () => ({ id: 'customer' }) },
     serviceRepo: { findOneBy: async () => record }, addressRepo: { findOneBy: async () => ({ userId: 'customer', line1: 'Synthetic', lat: 10, lng: 106 }) },
@@ -30,7 +32,7 @@ describe('Booking Catalog V2 persistence', () => {
       scopeSnapshot: 'Treo tường <=1.5 HP', catalogV2PricingSnapshot: { selectedVariant: { variantId: 'variant-0', variantCode: 'AC-02-01' } } });
     expect(toBookingResponse(created)).toHaveProperty('catalogV2PricingSnapshot.selectedVariant.variantCode', 'AC-02-01');
     expect(f.record.fixedPrice).toBeNull();
-    expect(f.manager.query.mock.calls[0][0]).toContain('FOR SHARE');
+    expect(f.manager.query.mock.calls.some(([sql]) => sql.includes('FOR SHARE'))).toBe(true);
   });
 
   it('persists inspection and null S when scope or facts are missing, even if parent has a fixed price', async () => {
@@ -51,8 +53,9 @@ describe('Booking Catalog V2 persistence', () => {
     Object.assign(f.record, { pricingMode: 'fixed_price', fixedPrice: 175000, scopeDescription: 'Legacy scope' });
     const created = await f.instance.create(f.dto, { id: 'customer', role: 'customer' });
     expect(created).toMatchObject({ pricingModeSnapshot: 'fixed_price', fixedUnitPriceSnapshot: 175000, scopeSnapshot: 'Legacy scope', catalogV2PricingSnapshot: null });
-    expect(f.manager.query).toHaveBeenCalledTimes(1);
-    expect(f.manager.query.mock.calls[0][0]).toContain('FOR SHARE OF s, c');
+    const catalogQueries = f.manager.query.mock.calls.filter(([sql]) => sql.includes('JOIN service_categories'));
+    expect(catalogQueries).toHaveLength(1);
+    expect(catalogQueries[0][0]).toContain('FOR SHARE OF s, c');
     await expect(f.instance.create({ ...f.dto, selectedVariantCode: 'AC-02-01' } as never, { id: 'customer', role: 'customer' })).rejects.toThrow();
   });
 });
