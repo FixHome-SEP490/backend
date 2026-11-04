@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-02 14:24 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-rebook-voucher-history-be-20261102
+> Cập nhật lần cuối: 2026-11-04 09:29 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-review2-p0-quota-noshow-20261104
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -93,6 +93,8 @@ Ba điều không đổi giữa các repo:
 Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức của nhóm). Mâu thuẫn giữa code và tài liệu thì ghi vào mục 8 và hỏi PO, không tự quyết.
 
 ## 3. Trạng thái hiện tại
+
+P0-1B quota (source, 04/11/2026): tối đa hai lượt pending/customer; standalone Booking và VisitGroup mỗi loại tính một lượt. Đếm DISTINCT trên child Booking `submitted/matching` còn `preferred_end_at > now()`, không dùng status parent. Khóa User khách trong cùng transaction trước tạo mới, shortlist solo/nhóm, đổi lịch và confirm rebook; solo có external manager vẫn kiểm, child thật dùng suất parent. Retry nhóm cùng key được kiểm lại sau khóa trước quota. Thợ rút khi khách đủ quota vẫn được nhả qua nhánh CLOSED/đóng đơn chưa trả tiền hiện có, không mở lượt thứ ba; giữ tiền/vật tư và chính sách hủy tự nguyện. Không migration/dependency mới. Solo no-show parity chưa triển khai; giới hạn ở mục 8.
 
 Rebook urgent và lịch sử thợ đã rời đơn (source, 02/11/2026): interruption confirm nhận opt-in `mode: urgent` qua luồng tạo booking/nhóm hiện có, giữ nguồn, receipt nguyên tử, giá mới và nghĩa vụ cũ. Lịch sử riêng của thợ lấy assignment inactive, gồm child nhóm, chỉ trả summary không PII; không đổi trạng thái đơn hoặc chạy departure sweep. Focused 7 spec/110 test và full unit 3074 passed/58 skipped PASS; typecheck/build PASS, lint 0 lỗi/4 cảnh báo có sẵn. Không migration, dependency hoặc thay đổi voucher/tiền/vật tư. PostgreSQL, Docker và Web/Mobile runtime NOT VERIFIED; hợp đồng consumer ở mục 5.
 
@@ -218,6 +220,8 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 5. Hợp đồng với repo khác
 
+- P0-1B: tạo solo/nhóm, đặt lại hoặc mở lại lượt pending vượt hai suất trả HTTP 409 `PENDING_VISIT_LIMIT_REACHED`, details `{limit: 2, remaining: 0}` và thông báo tiếng Việt. Lượt nhóm có child pending còn hạn tính một suất; matched/closed/cancelled/hết hạn không tính. Lượt đã pending không tốn suất thứ hai khi đổi lịch/shortlist. Cùng idempotency key của nhóm hoặc confirm rebook đã commit vẫn trả receipt cũ trước kiểm quota mới. Khách đủ suất khi thợ rút được báo cần chờ/hủy một yêu cầu trước đặt lại; không mời thêm thợ. Web/Mobile/docs consumer NOT VERIFIED, không sửa repo khác trong phạm vi này.
+
 - CORS expose thêm header `Date` để Web đọc giờ phản hồi cho countdown voucher qua origin khác; giữ origin, credentials và methods hiện có. Không thay TTL, tiền, schema hoặc nghiệp vụ voucher; browser cross-origin runtime NOT VERIFIED.
 
 - `POST /bookings/:id/interruption-rebook`: `mode` tùy chọn `scheduled|urgent`; bỏ mode giữ scheduled cũ, cần `date,slot`. Urgent bắt buộc bỏ cả date/slot (kể cả null), dùng cửa sổ tới ngay và giá hiện tại của `create/createGroup`. Giữ `items[].sourceBookingId/sourceCaseId`, ownership, unique consumption và transaction receipt. Fingerprint giữ payload legacy khi mode vắng, có mode thì ghi vào fingerprint; retry phải giữ nguyên payload/key, không đổi mode hay tạo key mới khi chưa rõ kết quả. Không chuyển tiền, voucher hoặc vật tư từ đơn cũ.
@@ -306,6 +310,8 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 7. Quyết định đã chốt
 
+- Owner 04/11/2026: tối đa hai logical visits pending/unaccepted/customer kể cả recovery/rebook; không ngoại lệ suất thứ ba. Mọi chuyển từ không được đếm sang pending dùng chung khóa User khách trước Booking/group/order/technician. Nhả thợ không đồng nghĩa quy lỗi khách; trách nhiệm/phí/strike mới chỉ sau SM review, chính sách khách tự hủy cũ giữ nguyên.
+
 - Owner 01/11/2026: khách vắng/không liên lạc được cần check-in lần phân công hiện tại, hai call attempt cách ít nhất 5 phút, một notification trong nền tảng và chờ 10 phút từ call đầu theo giờ server. Một command dừng mọi child đủ điều kiện, giữ child completed/paid/completion-requested và lịch sử; không tự quy lỗi, phạt, thu hay hoàn tiền. Khách tự chọn subset thiết bị dừng để đặt lịch/giá mới, mỗi nguồn dùng một lần và không cần SM gate; một sự cố nhóm có case con riêng. SM xử lý vận hành/tiền/nhận vật tư, Admin xem và giữ quyền quyết định trách nhiệm hiện có. Chi tiết source: `docs/GROUP-STOP-API-CONTRACT.md`.
 - Địa chỉ lưu (PO 01/11/2026, lỗi 29, `POST/PATCH /me/addresses`, cả khách lẫn thợ): `lat` và `lng` bắt buộc đủ cặp, là số trong khoảng -90 đến 90 và -180 đến 180; thiếu một hay cả hai, gửi `null` hoặc sai kiểu trả 400 `VALIDATION_FAILED` với câu tiếng Việt trong `error.details`. PATCH chạm vào chữ địa chỉ, mã vùng hay toạ độ phải gửi lại đủ cặp; PATCH chỉ đổi tên gợi nhớ hoặc mặc định được bỏ toạ độ khi bản ghi đã có, địa chỉ cũ chưa có toạ độ thì mọi thay đổi trả 400 `ADDRESS_LOCATION_REQUIRED` cho tới khi được ghim (giả định của đội, PO chưa nói riêng về PATCH). Các ô chữ (`label`, `line1`, `ward`, `district`, `province`) được chuẩn hoá NFC, gộp khoảng trắng và cắt hai đầu, rồi chỉ nhận chữ (kể cả tiếng Việt có dấu), số, khoảng trắng và dấu `, . / - ( ) # ' ’ & :`, cần ít nhất một chữ hoặc số; từ chối emoji, ký tự vô hình (ZWSP, ZWJ, BOM, dấu chiều viết, soft hyphen, chữ trống Hangul), ký tự điều khiển kể cả NUL, tab và xuống dòng, thẻ HTML, chồng quá hai dấu thanh. Giới hạn `label`, `ward`, `district`, `province` 100 ký tự, `line1` 255. `provinceCode`, `districtCode` chỉ nhận chữ số, chữ Latin, `_`, `-`, tối đa 20. Booking và lượt nhiều thiết bị chỉ nhận `addressId` nên không có ô địa chỉ tự do khác. Dữ liệu cũ không migrate: 137 địa chỉ trên database dùng chung ngày 01/11 đều có toạ độ và đều qua luật mới.
 
@@ -364,6 +370,9 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 8. Việc đang dở và rủi ro đã biết
 
+- P0-1B B2 BLOCKED: solo `cannotContinue` vẫn từ chối `customer_absent/customer_unreachable`; contact/readiness API và evidence scope hiện chỉ có VisitGroup. Cần Lead tách quyền sở hữu controller/contract cho solo rồi tái dùng hai call attempt cách 5 phút, notice trong app, 10 phút từ giờ server, GPS/phân công hiện tại và support-case receipt; không mở bypass bằng prose/timestamp client hoặc tự phạt. Negative tests chỉ chứng minh gate từ chối, không chứng minh solo operational release đã có.
+- P0-1B B1: race test dùng persistence double trong bộ nhớ và kiểm SQL shape, tương thích Node 20; không thay bằng chứng PostgreSQL READ COMMITTED/row lock/rollback/RLS nhiều instance. PostgreSQL E2E, shared DEV, Docker/health, Web/Mobile và runtime NOT VERIFIED; task không kết nối/ghi DB, không khởi chạy service riêng. Lead review rồi tích hợp/restart Backend trước runtime QA; không commit/push/merge/deploy trong task.
+
 - Rebook urgent/history: Docker daemon local không chạy, PostgreSQL opt-in của onsite rebook chưa được thực thi; không kết nối DB dùng chung. Cần PostgreSQL cô lập để xác nhận SQL/lock/concurrent replay, lịch sử inactive nhóm có sibling active và count/page. Chưa chạy Docker/health, Web/Mobile/authenticated runtime; coordinator review độc lập, phối hợp consumer rồi restart Backend trước runtime QA được phép. Không commit/push/merge/deploy trong task writer này.
 
 - QA demo A/B/C: chưa chạy authenticated HTTP, provider upload, PostgreSQL lock/concurrency/filter SQL, Docker/health hoặc Web/Mobile thiết bị thật; không kết nối DB dùng chung. Coordinator cần tích hợp Web nhánh UNKNOWN của part-returns (không coi là clear), đồng bộ context consumer/docs và restart backend trước runtime QA. Không commit/push/PR/merge/deploy trong task source writer này.
@@ -410,6 +419,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-04 09:29 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p0-quota-noshow-20261104 | Ghi quota hai lượt pending nguyên tử, retry/nhả thợ ở cap, contract 409 và blocker solo no-show/PostgreSQL.
+
 - 2026-11-02 14:24 (UTC+7) | foxonworld | foxonworld/fixhome-rebook-voucher-history-be-20261102 | Expose header Date qua CORS cho đồng hồ voucher Web, giữ chính sách origin/credentials/methods.
 - 2026-11-02 10:21 (UTC+7) | foxonworld | foxonworld/fixhome-rebook-voucher-history-be-20261102 | Thêm urgent interruption opt-in và lịch sử thợ inactive gồm child nhóm, giữ receipt/PII/tiền cũ, ghi hợp đồng consumer và giới hạn PostgreSQL/runtime.
 - 2026-11-02 01:00 (UTC+7) | foxonworld | foxonworld/fixhome-qa-seven-issues-be-20261102 | Sửa upload onsite ADDITIONAL, quyền đọc UNKNOWN trả kho sau STOP và projection trạng thái VisitGroup; giữ nghĩa vụ cũ và ghi giới hạn consumer/runtime.
@@ -449,4 +460,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-27 23:26 (UTC+7) | foxonworld | foxonworld/fixhome-p1-backend-voucher-admin-20261027 | Thêm lifecycle Admin voucher DRAFT/PUBLISHED/PAUSED/ARCHIVED, version/replay/audit và migration cộng thêm; quota theo campaign, PostgreSQL/RLS/runtime chưa kiểm chứng, giữ owner DB gate.
 - 2026-10-27 22:11 (UTC+7) | ToanAltF4 | feat/parts-gas-electrical | Thêm 52 linh kiện: 36 mã điện/đèn V3 và 16 mã phổ biến theo giá thị trường (nạp gas, magie, hút mùi, giá treo tivi, sen)
 - 2026-10-27 21:04 (UTC+7) | foxonworld | foxonworld/fixhome-t21-f3-wallet-only-20261027 | Implement owner-approved F3 wallet-only refund independent of settled original rail; keep provider/cash payment evidence, gross-net ledger, cash subsidy reversal, full quota recovery and refund duplication guard.
-- 2026-10-27 18:20 (UTC+7) | foxonworld | foxonworld/fixhome-t21-final-merge-post-toan-20261027 | Cập nhật T2.1 funded rails có guard động, CASH tech lookup, giới hạn refund F3 và F4 chưa apply; runtime chưa kiểm chứng.

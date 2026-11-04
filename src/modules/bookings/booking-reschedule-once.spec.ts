@@ -1,3 +1,4 @@
+import { stubPendingVisitQuota } from '../../../test/helpers/pending-visit-quota.fixture';
 import 'reflect-metadata';
 import { describe, expect, it, vi } from 'vitest';
 import { BookingStatus } from '../../shared/enums';
@@ -22,6 +23,7 @@ function harness(rescheduleCount: number) {
     createQueryBuilder: vi.fn(() => queryBuilder),
     save: vi.fn(async (value: unknown) => value),
   };
+  stubPendingVisitQuota(manager);
   const audit = { logWithManager: vi.fn(async () => undefined) };
   const dataSource = { transaction: vi.fn(async (fn: (m: typeof manager) => Promise<unknown>) => fn(manager)) };
   const service = Object.create(BookingsService.prototype) as BookingsService;

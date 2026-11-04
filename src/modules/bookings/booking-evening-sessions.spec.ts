@@ -1,3 +1,4 @@
+import { stubPendingVisitQuota } from '../../../test/helpers/pending-visit-quota.fixture';
 import 'reflect-metadata';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { validate } from 'class-validator';
@@ -41,6 +42,7 @@ describe('customer evening session contract', () => {
       query: async () => [{ id: 'service' }],
       getRepository: (entity: unknown) => entity === Booking ? stored : {},
     };
+  stubPendingVisitQuota(manager);
     const service = Object.create(BookingsService.prototype) as BookingsService;
     Object.assign(service, {
       bookingRepo: { findOneBy: async () => old },
@@ -66,6 +68,7 @@ describe('customer evening session contract', () => {
       createQueryBuilder: () => qb,
       save: async (value: unknown) => value,
     };
+  stubPendingVisitQuota(manager);
     const service = Object.create(BookingsService.prototype) as BookingsService;
     Object.assign(service, {
       dataSource: { transaction: async (fn: (m: typeof manager) => Promise<unknown>) => fn(manager) },

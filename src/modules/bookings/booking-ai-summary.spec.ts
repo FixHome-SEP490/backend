@@ -1,3 +1,4 @@
+import { stubPendingVisitQuota } from '../../../test/helpers/pending-visit-quota.fixture';
 import 'reflect-metadata';
 import { describe, expect, it, vi } from 'vitest';
 import { plainToInstance } from 'class-transformer';
@@ -29,6 +30,7 @@ function fixture(session: Record<string, unknown> | null | Error) {
     }),
   };
   const manager = { queryRunner: { isTransactionActive: true }, query: vi.fn(async () => [{ id: 'service-1' }]), getRepository: vi.fn(() => bookingRepo) };
+  stubPendingVisitQuota(manager);
   const dataSource = {
     query: vi.fn(),
     getRepository: vi.fn(() => sessionRepo),

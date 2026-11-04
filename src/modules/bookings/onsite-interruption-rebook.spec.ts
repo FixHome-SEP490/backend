@@ -1,3 +1,4 @@
+import { stubPendingVisitQuota } from '../../../test/helpers/pending-visit-quota.fixture';
 import 'reflect-metadata';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -84,6 +85,7 @@ function fixture(stopped = 1, grouped = false) {
       findOneBy: (where: any) => manager.findOneBy(entity, where), find: (options: any) => manager.find(entity, options),
     }),
   };
+  stubPendingVisitQuota(manager);
   manager.findOneOrFail = async (entity, options) => {
     const row = await manager.findOne(entity, options); if (!row) throw new Error('Fixture row unavailable'); return row;
   };

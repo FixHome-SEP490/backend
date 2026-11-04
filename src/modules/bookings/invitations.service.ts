@@ -28,6 +28,7 @@ import { randomUUID } from 'crypto';
 import { TechnicianInvitationPreviewDto, toTechnicianInvitationPreview } from './booking-privacy.dto';
 import { technicianDistances } from './technician-distance';
 import { AcceptGreetingPublisher } from '../messaging/accept-greeting.publisher';
+import { checkPendingVisitQuota, lockPendingVisitCustomer } from './pending-visit-quota';
 
 @Injectable()
 export class InvitationsService implements OnModuleInit, OnModuleDestroy {
@@ -141,6 +142,7 @@ export class InvitationsService implements OnModuleInit, OnModuleDestroy {
     if (customer.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
     if (!Array.isArray(technicianIds) || technicianIds.length < 1 || technicianIds.length > 2 || new Set(technicianIds).size !== technicianIds.length) throw new BusinessException(ErrorCodes.SHORTLIST_LIMIT_EXCEEDED, 'Select 1 or 2 distinct technicians in priority order');
     return this.dataSource.transaction(async manager => {
+      await lockPendingVisitCustomer(manager, customer.id);
       const booking = await manager.findOne(Booking, { where: { id: bookingId, customerId: customer.id }, lock: { mode: 'pessimistic_write' } });
       if (!booking) throw new ForbiddenException('Booking not found');
       if (!opts.asVisit) refuseLoneGroupedBookingAction(booking);
@@ -148,6 +150,9 @@ export class InvitationsService implements OnModuleInit, OnModuleDestroy {
       // The lead booking's lock guards the whole visit; the other devices follow its status.
       const siblings = await groupSiblings(manager, booking, true);
       if (siblings.some(sibling => ![BookingStatus.SUBMITTED, BookingStatus.MATCHING, BookingStatus.CLOSED].includes(sibling.status))) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Booking cannot be shortlisted');
+      if ([booking, ...siblings].some(b => b.preferredEndAt && b.preferredEndAt > new Date())) {
+        await checkPendingVisitQuota(manager, customer.id, booking.visitGroupId ?? booking.id);
+      }
       const existing = await manager.findOneBy(ServiceOrder, { bookingId });
       if (existing && (![ServiceOrderStatus.ACCEPTED, ServiceOrderStatus.EN_ROUTE].includes(existing.status) || await manager.count(TechnicianAssignment, { where: { serviceOrderId: existing.id, isActive: true } }))) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Order already has an active technician');
       const previous = await manager.find(BookingInvitation, { where: { bookingId } });

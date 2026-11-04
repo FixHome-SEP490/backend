@@ -74,6 +74,7 @@ import type { CreateVisitGroupDto } from '../visit-groups/visit-group.dto';
 import { buildInterruptionDraft } from './interruption-draft';
 import { InterruptionRebook, InterruptionRebookSource } from './entities/interruption-rebook.entity';
 import { InterruptionRebookDto, validInterruptionRebookSchedule } from './dto/interruption-rebook.dto';
+import { checkPendingVisitQuota, lockPendingVisitCustomer } from './pending-visit-quota';
 
 export interface TechnicianCandidate {
   technicianId: string;
@@ -179,7 +180,7 @@ export class BookingsService {
   async create(
     dto: CreateBookingDto,
     customer: { id: string; role: string },
-    group?: { manager: EntityManager; visitGroupId: string },
+    group?: { manager: EntityManager; visitGroupId: string | null },
   ): Promise<Booking> {
     if (customer.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
     this.validateCreateMediaInput(dto);
@@ -277,6 +278,12 @@ export class BookingsService {
     const inTransaction = <T>(work: (manager: EntityManager) => Promise<T>): Promise<T> =>
       group ? work(group.manager) : this.dataSource.transaction(work);
     const saved = await inTransaction(async (manager) => {
+      // Only actual children share the parent's already-checked logical slot.
+      // Solo recovery also supplies a manager, but must still take/check quota.
+      if (!group?.visitGroupId) {
+        await lockPendingVisitCustomer(manager, customer.id);
+        await checkPendingVisitQuota(manager, customer.id);
+      }
       // V2 resolves and locks both rows below; legacy services need the same
       // authoritative gate, including rebooks and children in a visit transaction.
       if (!catalogV2) {
@@ -859,6 +866,7 @@ export class BookingsService {
     // The technician holding the order hears about the new session once it is saved.
     let moved: { technicianId: string; orderId: string; code: string } | null = null;
     const saved = await this.dataSource.transaction(async (manager) => {
+      await lockPendingVisitCustomer(manager, customer.id);
       const booking = await manager.findOne(Booking, {
         where: { id: bookingId, customerId: customer.id },
         lock: { mode: 'pessimistic_write' },
@@ -898,6 +906,10 @@ export class BookingsService {
       // the description stays editable.
       if ([booking, ...siblings].some((b) => (b.rescheduleCount ?? 0) >= 1)) {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Mỗi đơn chỉ được đổi lịch hẹn một lần.');
+      }
+      // Moving an expired pending request back into a future window consumes a slot too.
+      if ([BookingStatus.SUBMITTED, BookingStatus.MATCHING].includes(booking.status) || !order) {
+        await checkPendingVisitQuota(manager, customer.id, booking.visitGroupId ?? booking.id);
       }
       booking.rescheduleCount = (booking.rescheduleCount ?? 0) + 1;
       booking.preferredStartAt = window.start;
@@ -1044,6 +1056,7 @@ export class BookingsService {
       : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, stable(child)])) : value;
     const fingerprint = createHash('sha256').update(JSON.stringify(stable(normalized))).digest('hex');
     return this.dataSource.transaction(async manager => {
+      await lockPendingVisitCustomer(manager, customer.id);
       const anchor = await manager.findOneBy(Booking, { id: anchorId, customerId: customer.id });
       if (!anchor) throw new ForbiddenException('Interrupted order not found or access denied');
       const originalItems = anchor.visitGroupId
@@ -1140,6 +1153,7 @@ export class BookingsService {
       : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, stable(child)])) : value;
     const fingerprint = createHash('sha256').update(JSON.stringify(stable(normalized))).digest('hex');
     return this.dataSource.transaction(async manager => {
+      await lockPendingVisitCustomer(manager, customer.id);
       // The original lead is the lock for the whole source visit. Its lock is
       // acquired first, matching the VisitGroup mutation order.
       const anchor = await manager.findOneBy(Booking, { id: anchorId, customerId: customer.id });

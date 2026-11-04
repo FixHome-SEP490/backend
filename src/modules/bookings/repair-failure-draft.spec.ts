@@ -1,3 +1,4 @@
+import { stubPendingVisitQuota } from '../../../test/helpers/pending-visit-quota.fixture';
 import 'reflect-metadata';
 import { describe, expect, it, vi } from 'vitest';
 import { FindOperator } from 'typeorm';
@@ -30,6 +31,7 @@ function fixture(outcomes = ['succeeded', 'failed', 'succeeded'], solo = false) 
     : row[key] === value);
   const find = vi.fn(async (entity: any, options: any) => (rows[entity.name] ?? []).filter(row => matches(row, options?.where)));
   const manager = { find, findOne: vi.fn(async (entity: any, options: any) => (rows[entity.name] ?? []).find(row => matches(row, options.where)) ?? null), findOneBy: vi.fn(async (entity: any, where: any) => (rows[entity.name] ?? []).find(row => matches(row, where)) ?? null), insert: vi.fn(), update: vi.fn(), save: vi.fn() };
+  stubPendingVisitQuota(manager);
   const service = Object.assign(Object.create(BookingsService.prototype), { dataSource: { manager } }) as BookingsService;
   return { rows, manager, service, customer: { id: 'customer', role: Role.CUSTOMER } };
 }

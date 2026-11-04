@@ -1,4 +1,5 @@
 import { andWhereTextMatches } from '../../shared/utils/list-search';
+import { checkPendingVisitQuota, lockPendingVisitCustomer } from '../bookings/pending-visit-quota';
 import { NO_DEPARTURE_CANCEL_REASON } from './no-departure';
 import { closeOrderPartRequests, assertPartsResolved, assertApprovedPartsResolved, usedPartQuantities, holderPartRequests, releaseOutgoingTechnicianPartRequests } from '../part-requests/part-request-lifecycle';
 import { custodyUsageForInvoice, p1CustodyEnabled } from '../part-requests/part-custody.policy';
@@ -876,6 +877,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     if (!body.reason?.trim()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Cancellation reason required');
     const reference = await authorizeOrder(this.dataSource.manager, orderId, actor);
     return this.dataSource.transaction(async manager => {
+      const source = await manager.findOneByOrFail(Booking, { id: reference.bookingId });
+      await lockPendingVisitCustomer(manager, source.customerId);
       const booking = await manager.findOneOrFail(Booking, { where: { id: reference.bookingId }, lock: { mode: 'pessimistic_write' } });
       // A one-child VisitGroup exception must use the audited SupportCase command.
       // The normal endpoint cannot safely distinguish money/custody exposure.
@@ -895,6 +898,12 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     if (!body.reason?.trim()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Cancellation reason required');
     if (actor.role !== Role.CUSTOMER && actor.role !== Role.TECHNICIAN) throw new ForbiddenException('Order not found or access denied');
     return this.dataSource.transaction(async manager => {
+      const source = await manager.findOneBy(VisitGroup, { id: groupId });
+      if (!source) throw new ForbiddenException('Order not found or access denied');
+      if (actor.role === Role.CUSTOMER && source.customerId !== actor.id) {
+        throw new ForbiddenException('Order not found or access denied');
+      }
+      await lockPendingVisitCustomer(manager, source.customerId);
       // The lead booking's row is the visit's lock, taken first like Accept.
       const leadItem = await manager.findOne(VisitGroupItem, { where: { groupId }, order: { sequence: 'ASC' } });
       const lead = leadItem && await manager.findOne(Booking, { where: { id: leadItem.bookingId }, lock: { mode: 'pessimistic_write' } });
@@ -963,16 +972,19 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       const last = Math.max(0, ...previous.filter(inv => inv.status === InvitationStatus.ACCEPTED).map(inv => inv.priorityOrder));
       // Append a fresh invitation round; the original dispatch history stays immutable.
       const remaining = previous.filter(inv => inv.priorityOrder > last && inv.status === InvitationStatus.CANCELLED);
+      // Operational release must succeed at cap. Reuse the existing CLOSED/no-replacement
+      // outcome instead of rolling release back or creating a third pending visit.
+      const quotaAllowsRematch = await checkPendingVisitQuota(manager, booking.customerId, booking.visitGroupId ?? booking.id, false);
       const offset = Math.max(0, ...previous.map(inv => inv.priorityOrder));
-      const group = remaining.length > 0
+      const group = quotaAllowsRematch && remaining.length > 0
         ? manager.create(BookingInvitationGroup, { id: randomUUID(), bookingId: booking.id })
         : null;
       if (group) await manager.save(group);
-      for (const [index, candidate] of remaining.entries()) await manager.save(BookingInvitation, manager.create(BookingInvitation, { groupId: group!.id, bookingId: booking.id, technicianId: candidate.technicianId, priorityOrder: offset + index + 1, status: InvitationStatus.STANDBY, invitedAt: new Date(), expiresAt: null }));
-      booking.status = BookingStatus.MATCHING;
+      for (const [index, candidate] of (quotaAllowsRematch ? remaining : []).entries()) await manager.save(BookingInvitation, manager.create(BookingInvitation, { groupId: group!.id, bookingId: booking.id, technicianId: candidate.technicianId, priorityOrder: offset + index + 1, status: InvitationStatus.STANDBY, invitedAt: new Date(), expiresAt: null }));
+      booking.status = quotaAllowsRematch ? BookingStatus.MATCHING : BookingStatus.CLOSED;
       await manager.save(booking);
-      await mirrorGroupStatus(manager, booking, BookingStatus.MATCHING);
-      await activateNextInvitation(manager, booking, await this.configService.getInt('matching.invitation_ttl_minutes', 30), invitationActivatedHook(this.notificationsService));
+      await mirrorGroupStatus(manager, booking, booking.status);
+      if (quotaAllowsRematch) await activateNextInvitation(manager, booking, await this.configService.getInt('matching.invitation_ttl_minutes', 30), invitationActivatedHook(this.notificationsService));
       // Re-read the persisted result: activateNextInvitation updates Booking via manager.update.
       const rematch = await manager.findOneBy(Booking, { id: booking.id });
       if (!rematch || ![BookingStatus.MATCHING, BookingStatus.CLOSED].includes(rematch.status))
@@ -995,7 +1007,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
           await manager.update(ServiceOrder, affected.id, { status: ServiceOrderStatus.CANCELLED, cancelledAt: closedAt });
           await manager.insert(OrderStatusHistory, { serviceOrderId: affected.id, fromStatus: previousStatus,
             toStatus: ServiceOrderStatus.CANCELLED, actorUserId: actor.id, actorRole: actor.role,
-            reason: 'Thợ đã rút và không còn thợ thay thế đủ điều kiện.' });
+            reason: quotaAllowsRematch ? 'Thợ đã rút và không còn thợ thay thế đủ điều kiện.' : 'Thợ đã rút; khách đã đủ hai lượt đang chờ, không mở thêm lượt tìm thợ.' });
           await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role,
             action: 'TECHNICIAN_WITHDRAWAL_NO_REPLACEMENT', resourceType: 'service_order',
             resourceId: affected.id, before: { status: previousStatus }, after: { status: ServiceOrderStatus.CANCELLED } });
@@ -1012,11 +1024,13 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         userId: booking.customerId,
         title: rematch.status === BookingStatus.CLOSED ? 'Chưa tìm được thợ thay thế' : 'Đang tìm thợ thay thế',
         message: rematch.status === BookingStatus.CLOSED
-          ? 'Thợ đã rút khỏi đơn #' + order.code + '. Hiện chưa có thợ thay thế phù hợp; bạn có thể đặt lại lịch.'
+          ? 'Thợ đã rút khỏi đơn #' + order.code + (quotaAllowsRematch
+            ? '. Hiện chưa có thợ thay thế phù hợp; bạn có thể đặt lại lịch.'
+            : '. Bạn đã có hai lượt sửa chữa chờ nhận. Vui lòng chờ hoặc hủy một yêu cầu trước khi đặt lại.')
           : 'Thợ đã rút khỏi đơn #' + order.code + '. FixHome đang tìm thợ thay thế cho bạn.',
         type: 'ORDER_CANCELLED', referenceId: order.id, referenceType: 'SERVICE_ORDER', isRead: false,
       });
-      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'TECHNICIAN_WITHDRAWAL_REMATCH', resourceType: 'service_order', resourceId: orderId, after: { reason: body.reason, strikeApplied: false } });
+      await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'TECHNICIAN_WITHDRAWAL_REMATCH', resourceType: 'service_order', resourceId: orderId, after: { reason: body.reason, strikeApplied: false, rematchBlockedBy: quotaAllowsRematch ? null : ErrorCodes.PENDING_VISIT_LIMIT_REACHED } });
       return order;
     }
     await this.commitTransition(manager, order, ServiceOrderStatus.CANCELLED, actor, body.reason);
