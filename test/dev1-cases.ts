@@ -341,7 +341,7 @@ export function registerDev1Cases(context: () => Context) {
       await post('/bookings', f.owner, f.body).expect(201);
     });
 
-    it('books up to three devices as one visit, refuses a fourth and never handles one device alone (PO 21/10/2026)', async () => {
+    it('books up to five devices as one visit, refuses a sixth and never handles one device alone (PO 04/11/2026)', async () => {
       const f = await fixture(), db = context().db;
       const { BusinessConfigService } = runtimeRequire('./dist/modules/system-config/business-config.service.js');
       const setGroups = async (on: boolean) => {
@@ -372,14 +372,14 @@ export function registerDev1Cases(context: () => Context) {
         expect((await get(`/visit-groups/${group.id}`, f.outsider)).status).toBe(404);
         expect(unwrap((await get('/visit-groups/my', f.owner).expect(200)).body)[0].id).toBe(group.id);
 
-        // A fourth device is refused with the support contact; the database caps it too.
-        const four = await post('/visit-groups', f.owner, { ...body, idempotencyKey: undefined, items: [device, device, device, device] });
-        expect(four.status, JSON.stringify(four.body)).toBe(422);
-        expect(four.body.error.code).toBe('VISIT_GROUP_DEVICE_LIMIT');
-        expect(four.body.error.message).toContain('tối đa 3 thiết bị');
-        // The screen takes the limit and the hotline from the contact endpoint (null until configured).
-        expect(unwrap((await get('/visit-groups/contact', f.owner).expect(200)).body)).toEqual({ enabled: true, deviceLimit: 3, hotline: null });
-        await expect(db.query('INSERT INTO visit_group_items (group_id, sequence, booking_id, service_id) VALUES ($1, 4, $2, $3)', [group.id, rows[0].id, f.service.id])).rejects.toThrow();
+        // Six devices are refused, whereas five belong to one self-service visit.
+        const six = await post('/visit-groups', f.owner, { ...body, idempotencyKey: undefined, items: Array(6).fill(device) });
+        expect(six.status, JSON.stringify(six.body)).toBe(422);
+        expect(six.body.error.code).toBe('VISIT_GROUP_DEVICE_LIMIT');
+        expect(six.body.error.message).toContain('tối đa 5 thiết bị');
+        expect(unwrap((await get('/visit-groups/contact', f.owner).expect(200)).body)).toEqual({ enabled: true, deviceLimit: 5, hotline: null });
+        const [sequenceCheck] = await db.query("SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conname = 'chk_visit_group_items_sequence'");
+        expect(sequenceCheck?.definition).toMatch(/sequence\s*<=\s*5/);
 
         // No device is matched, moved or cancelled on its own.
         const child = rows[0].id;
@@ -397,6 +397,12 @@ export function registerDev1Cases(context: () => Context) {
         const cancelled = unwrap((await post(`/visit-groups/${group.id}/cancel`, f.owner, { reason: 'Đổi lịch khác' }).expect(201)).body);
         expect(cancelled.status).toBe('cancelled');
         expect((await db.query('SELECT status FROM bookings WHERE visit_group_id = $1', [group.id])).map((row: any) => row.status)).toEqual(['cancelled', 'cancelled']);
+        const five = unwrap((await post('/visit-groups', f.owner, {
+          ...body, idempotencyKey: 'visit-' + randomUUID(),
+          items: Array.from({ length: 5 }, (_, index) => ({ ...device, deviceLabel: 'Machine ' + (index + 1) })),
+        }).expect(201)).body);
+        expect(five.items.map((item: any) => item.sequence)).toEqual([1, 2, 3, 4, 5]);
+        expect((await db.query('SELECT COUNT(*)::int AS n FROM bookings WHERE visit_group_id = $1', [five.id]))[0].n).toBe(5);
 
         // More devices than a visit takes: a consultation request reaches the managers.
         const consult = unwrap((await post('/visit-groups/consultation', f.owner, { message: 'Nhà có 5 máy lạnh', devices: ['Máy 1', 'Máy 2'] }).expect(201)).body);

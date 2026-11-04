@@ -13,17 +13,18 @@ import { Notification } from '../notifications/entities/notification.entity';
 import { CashSettlement } from '../service-orders/entities/cash-settlement.entity';
 
 const customer = { id: 'customer', role: Role.CUSTOMER };
-function setup(failedThird = false) {
+function setup(failedThird = false, deviceCount = 3) {
+  const devices = Array.from({ length: deviceCount }, (_, index) => index + 1);
   const rows = new Map<any, any[]>([
     [VisitGroup, [{ id: 'visit', customerId: customer.id }]],
-    [VisitGroupItem, [1, 2, 3].map(n => ({ groupId: 'visit', sequence: n, bookingId: `b${n}`, outcome: n === 3 && failedThird ? 'failed' : 'succeeded' }))],
-    [Booking, [1, 2, 3].map(n => ({ id: `b${n}`, visitGroupId: 'visit', customerId: customer.id, status: 'matched' }))],
-    [ServiceOrder, [1, 2, 3].map(n => ({ id: `o${n}`, bookingId: `b${n}`, status: n === 3 && failedThird ? 'cancelled' : 'under_repair', completionRequestedAt: new Date(), paymentStatus: 'unpaid' }))],
+    [VisitGroupItem, devices.map(n => ({ groupId: 'visit', sequence: n, bookingId: `b${n}`, outcome: n === 3 && failedThird ? 'failed' : 'succeeded' }))],
+    [Booking, devices.map(n => ({ id: `b${n}`, visitGroupId: 'visit', customerId: customer.id, status: 'matched' }))],
+    [ServiceOrder, devices.map(n => ({ id: `o${n}`, bookingId: `b${n}`, status: n === 3 && failedThird ? 'cancelled' : 'under_repair', completionRequestedAt: new Date(), paymentStatus: 'unpaid' }))],
     // Even a stale failed-device invoice must never be charged.
-    [Invoice, [1, 2, 3].map(n => ({ id: `i${n}`, serviceOrderId: `o${n}`, laborTotal: n * 100000, partsTotal: 5000,
+    [Invoice, devices.map(n => ({ id: `i${n}`, serviceOrderId: `o${n}`, laborTotal: n * 100000, partsTotal: 5000,
       fixHomePartsTotal: 5000, technicianPartsTotal: 0, technicianPartWarrantyFeeTotal: 0, shippingFee: 0,
       grandTotal: n * 100000 + 5000, commissionRateSnapshot: 0.1, commissionAmount: n * 10000, paymentStatus: 'unpaid' }))],
-    [TechnicianAssignment, [1, 2, 3].map(n => ({ serviceOrderId: `o${n}`, technicianId: 'tech', isActive: true }))],
+    [TechnicianAssignment, devices.map(n => ({ serviceOrderId: `o${n}`, technicianId: 'tech', isActive: true }))],
   ]);
   const list = (entity: any) => { if (!rows.has(entity)) rows.set(entity, []); return rows.get(entity)!; };
   const matches = (row: any, where: any) => Object.entries(where).every(([key, value]: [string, any]) =>
@@ -76,6 +77,18 @@ describe('E0 one parent payment uses child invoice snapshots', () => {
     expect(s.list(Payment).map(row => [row.invoiceId, row.amount])).toEqual(failed ? [['i1', 105000], ['i2', 205000]] : [['i1', 105000], ['i2', 205000], ['i3', 305000]]);
     expect(s.list(Invoice).map(row => row.paymentStatus)).toEqual(failed ? ['paid', 'paid', 'unpaid'] : ['paid', 'paid', 'paid']);
     expect(s.list(VisitGroupPayment)).toMatchObject([{ status: 'verified', amount: failed ? 310000 : 615000 }]);
+    await expect(s.service.payVisitWithWallet('visit', customer)).rejects.toMatchObject({ status: 409 });
+    expect(s.wallet.apply).toHaveBeenCalledOnce();
+  });
+
+  it('checks out five child invoices once and allocates each frozen amount', async () => {
+    const s = setup(false, 5);
+    expect(await s.service.payVisitWithWallet('visit', customer)).toMatchObject({ amount: 1525000, paid: true });
+    expect(s.wallet.apply).toHaveBeenCalledExactlyOnceWith(s.manager, expect.objectContaining({ amount: 1525000, idempotencyKey: 'VISIT:visit' }));
+    expect(s.list(Payment).map(row => [row.invoiceId, row.amount])).toEqual([
+      ['i1', 105000], ['i2', 205000], ['i3', 305000], ['i4', 405000], ['i5', 505000],
+    ]);
+    expect(s.list(VisitGroupPayment)).toMatchObject([{ status: 'verified', amount: 1525000 }]);
     await expect(s.service.payVisitWithWallet('visit', customer)).rejects.toMatchObject({ status: 409 });
     expect(s.wallet.apply).toHaveBeenCalledOnce();
   });

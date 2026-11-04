@@ -38,7 +38,7 @@ export class VisitGroupsController {
   @Post()
   @RiskLimit('booking-create')
   @RequirePermission('booking:create')
-  @ApiOperation({ summary: 'Customer: book 1 to 3 physical devices in one visit', description: 'Creates one child Booking (quantity 1) per device in one transaction, sharing address and arrival session. A fourth device is refused with VISIT_GROUP_DEVICE_LIMIT (422); the hotline comes from GET /visit-groups/contact. 403 FEATURE_DISABLED while visit_group.enabled is not true.' })
+  @ApiOperation({ summary: 'Customer: book 1 to 5 physical devices in one visit', description: 'Creates one child Booking (quantity 1) per device in one transaction, sharing address and arrival session. A sixth device is refused with VISIT_GROUP_DEVICE_LIMIT (422); the hotline comes from GET /visit-groups/contact. 403 FEATURE_DISABLED while visit_group.enabled is not true.' })
   async create(@Body() dto: CreateVisitGroupDto, @Req() req: AuthedRequest) {
     return { data: await this.visitGroups.create(dto, req.user) };
   }

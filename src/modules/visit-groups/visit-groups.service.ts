@@ -30,7 +30,7 @@ export const VISIT_GROUP_ENABLED_KEY = 'visit_group.enabled';
 export const SUPPORT_HOTLINE_KEY = 'support.hotline';
 
 /**
- * Up to three physical devices booked in one visit (PO 21/10/2026). The group is
+ * Up to five physical devices booked in one visit (PO 04/11/2026). The group is
  * a thin envelope: each device becomes a normal child Booking (quantity 1)
  * through BookingsService.create, inside one transaction, so the device rules
  * (price variant, description, photos, address) are the ones every booking uses.
@@ -60,7 +60,7 @@ export class VisitGroupsService {
     if (dto.items.length > VISIT_GROUP_DEVICE_LIMIT) {
       throw new BusinessException(
         ErrorCodes.VISIT_GROUP_DEVICE_LIMIT,
-        // PO 21/10/2026: the screen locks adding at the limit and says so; no hotline, no "contact us".
+        // PO 04/11/2026: requests over five use the existing hotline/manual consultation path.
         `Mỗi lần đặt được tối đa ${VISIT_GROUP_DEVICE_LIMIT} thiết bị.`,
         { limit: VISIT_GROUP_DEVICE_LIMIT, hotline: await this.hotline() },
       );

@@ -2,6 +2,7 @@ import { Transform, Type } from 'class-transformer';
 import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsIn, IsObject, IsOptional, IsString, Matches, MaxLength, ValidateBy, ValidateIf, ValidateNested } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { BookingDeviceAttributesDto, UUID_REGEX } from '../booking.dto';
+import { VISIT_GROUP_DEVICE_LIMIT } from '../../visit-groups/visit-group.dto';
 
 /** Shared by HTTP validation and internal confirmation; urgent never accepts a client window. */
 export function validInterruptionRebookSchedule(input: { mode?: unknown; date?: unknown; slot?: unknown }): boolean {
@@ -36,7 +37,7 @@ export class InterruptionRebookDto {
   @IsOptional() @IsString() @MaxLength(1000)
   @Transform(({ value }) => typeof value === 'string' ? value.trim() : value)
   customerNote?: string;
-  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(3)
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(VISIT_GROUP_DEVICE_LIMIT)
   @ValidateNested({ each: true }) @Type(() => InterruptionRebookItemDto)
   items: InterruptionRebookItemDto[];
 }

@@ -8,6 +8,7 @@ import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { Address } from '../users/entities/address.entity';
 import { Service } from '../services/entities/service.entity';
 import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity';
+import { VISIT_GROUP_DEVICE_LIMIT } from '../visit-groups/visit-group.dto';
 import { PrivateBookingPhotoUpload } from '../media/entities/private-booking-photo-upload.entity';
 import { Booking } from './entities/booking.entity';
 import { BookingMedia } from './entities/booking-media.entity';
@@ -26,7 +27,7 @@ export async function buildRepairFailureDraft(manager: EntityManager, bookingId:
     : [];
   if (anchor.visitGroupId && !failedItems.some(item => item.bookingId === anchor.id)) deny();
   const sourceIds = anchor.visitGroupId ? failedItems.map(item => item.bookingId) : [anchor.id];
-  if (!sourceIds.length || sourceIds.length > 3 || new Set(sourceIds).size !== sourceIds.length) deny();
+  if (!sourceIds.length || sourceIds.length > VISIT_GROUP_DEVICE_LIMIT || new Set(sourceIds).size !== sourceIds.length) deny();
   const items: RepairFailureDraftItem[] = [];
   for (const sourceId of sourceIds) {
     if (await manager.findOneBy(RepairFailureRebookSource, { sourceBookingId: sourceId })) deny();

@@ -5,8 +5,8 @@ import { VisitGroup } from './visit-group.entity';
 export type VisitDeviceOutcome = 'succeeded' | 'failed' | 'quote_declined' | 'interrupted';
 
 /**
- * One physical device of a VisitGroup. `sequence` is 1 to 3 and unique in its
- * group (a database CHECK and unique index), so a group can never hold a fourth
+ * One physical device of a VisitGroup. `sequence` is 1 to 5 and unique in its
+ * group (a database CHECK and unique index), so a group can never hold a sixth
  * device whatever the client sends. Quote, photos, parts and invoice live on the
  * child booking and its service order, not here.
  */
