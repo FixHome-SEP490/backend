@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-04 18:34 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-review2-p3-w2-warehouse-fulfillment-be-20261104
+> Cập nhật lần cuối: 2026-11-04 18:45 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-review2-p3-w2-warehouse-fulfillment-be-20261104
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -393,7 +393,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 8. Việc đang dở và rủi ro đã biết
 
-- W2 giữ nhánh admission tracking-only trong `protect_part_custody()` dựa trên ISSUE ledger, SM, thời điểm, SKU và lượng gốc; chỉ PRE_REPAIR/QUOTATION/ADDITIONAL, giữ nhánh legacy và immutability cũ. CI head `2a7edf4` đã chạy nhưng cả 8 ca mới FAIL 401 do Passport đọc JWT secret môi trường khác signing key. Harness mới dùng chung effective ConfigService secret; HTTP smoke với JwtAuthGuard thật tái hiện RED rồi GREEN, token thiếu/sai vẫn 401 và role đọc từ repository. Local Node20 sau merge: full unit 3314 passed/58 skipped, focused 115 passed, typecheck/build PASS, lint 0 lỗi/4 cảnh báo có sẵn. PostgreSQL E2E trên head sửa phải chạy lại CI; không thay unit PASS cho bằng chứng DB/rollback/concurrency. Shared DEV và Web/runtime vẫn NOT VERIFIED.
+- W2 admission tracking-only giữ legacy/cohort/version và loại WARRANTY. CI `41822080739` trên head `6d2753a` đã qua full unit, lint/typecheck/build, security và hai PostgreSQL voucher/cash gate. E2E 133 passed/39 skipped/1 failed: 7/8 ca W2 PASS gồm race, QR/recovery, return/issue rollback, lifecycle release. JWT 401 đã sửa bằng effective ConfigService secret, giữ guard thật. Ca còn lại vi phạm `ux_pr_active_pre_repair` do fixture tạo thêm request active cùng order; bản sửa tạo Booking/ServiceOrder riêng cho receipt legacy, không nới constraint/assertion. Phải có CI GREEN trên head mới trước merge/deploy; shared DEV/Web/runtime vẫn NOT VERIFIED.
 - W2 PR #195 đã tích hợp official dev `80fa61f`; ba migration warranty `1793466000000`–`1793466000002` có trong source, blocker thiếu source đã được giải quyết. Giữ nguyên luồng Warranty và ModuleRef; W2 không enroll/reserve/QR/handover WARRANTY hoặc đơn đã đóng. Writer được ủy quyền commit/push cùng nhánh, không merge PR/deploy/migrate DB chung. Release vẫn cần CI PostgreSQL GREEN và Lead read-only preflight schema/grants/ledger trước migration. DEV chưa có kho/tồn thật: cần Admin/SM nhập dữ liệu thật trước khi tuyên bố fulfillment hoạt động. Handover vẫn từ chối khi thiếu tracking-only/activation/cohort hợp lệ; không tự bật cờ. Sau release được duyệt phải restart backend trước runtime QA; không bulk rollback/delete lịch sử vật lý.
 
 - P3 W1 warehouse: source đã thêm ba bảng additive và API Admin/SM theo quyền kho; chưa chạy migration trên PostgreSQL/DEV, chưa chứng minh rollback, row lock và replay đồng thời trên PostgreSQL. Không seed kho, không ghi DB chung, không đổi cờ custody/cash. W2 còn thiếu chọn/giữ kho và fulfill PartRequest, bàn giao/nhận vật lý/trả kho; W3 còn cần quyết định và kiểm chứng Finance cho chia phí 70/30 xuyên quote/invoice/payment/settlement. Không bật fulfillment hoặc thay semantics cũ trước các phase riêng.
@@ -453,6 +453,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-04 18:45 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w2-warehouse-fulfillment-be-20261104 | Ghi CI đã xác minh JWT và 7 ca W2 PostgreSQL; sửa fixture receipt legacy sang order riêng, giữ unique active PRE_REPAIR.
 - 2026-11-04 18:34 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w2-warehouse-fulfillment-be-20261104 | Tích hợp Warranty từ dev 80fa61f, tách gate W2 và sửa JWT harness dùng effective secret; giữ CI/DB/runtime release gate.
 - 2026-11-04 14:35 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w2-warehouse-fulfillment-be-20261104 | Thêm W2 PICKUP nguyên tử, QR hai bước/recovery và trả kho cùng custody; ghi migration tiến, gate warranty, zero stock và PostgreSQL/runtime chưa kiểm chứng.
 - 2026-11-04 13:53 (UTC+7) | Hgnv11 | warranty-cost-sla-20261104 | Gộp dev vào nhánh bảo hành, giữ cả ghi chú warehouse, booking draft và bảo hành.
@@ -492,4 +493,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-29 16:02 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-safe-exit-t8-20261029 | Thêm T8 operational STOP/deassign với strict final proof, giữ nghĩa vụ cũ và hold checkout hóa đơn interrupted; ghi giới hạn T9/T10 và kiểm chứng tối thiểu.
 - 2026-10-29 13:53 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-backend-integration-20261029 | Hợp nhất T2 và T3b vào nhánh tích hợp cục bộ, giữ cả hai mục 3/5/8/9; chạy lại gate và ghi review release.
 - 2026-10-29 13:45 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-parts-t3-20261029 | Thêm T3b read-only SM-only legacy manual-review với receipt unknown, cập nhật hợp đồng/audit; full suite/lint/typecheck/build xanh, AT10 vẫn chờ Web.
-- 2026-10-29 13:29 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-backend-t1-20261029 | Nối receipt onsite vào draft/confirm đặt lại, chặn completion/manager action và sửa deadlock khóa; ghi blocker terminal và D3 hoãn.

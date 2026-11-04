@@ -231,12 +231,17 @@ describe.skipIf(process.env.CI !== 'true')('W2 real PostgreSQL / JWT / custody a
     })).rejects.toThrow('eligible post-activation handover');
     expect(await repo('PartCustody').countBy({ partRequestId: f.req.id })).toBe(0);
     expect(await f.balance()).toMatchObject([{ on_hand: 1, reserved: 1 }]);
-    const legacy = await save('PartRequest', { serviceOrderId: f.order.id, technicianId: f.tech.id,
+    // One active PRE_REPAIR per order is a real invariant. Give the legacy receipt its own order.
+    const sourceBooking = await repo('Booking').findOneByOrFail({ id: f.order.bookingId });
+    const legacyBooking = await save('Booking', { customerId: sourceBooking.customerId, serviceId: sourceBooking.serviceId,
+      description: 'W2 isolated legacy receipt', status: 'matched' });
+    const legacyOrder = await save('ServiceOrder', { bookingId: legacyBooking.id, code: `W2-legacy-${randomUUID()}`, status: 'accepted' });
+    const legacy = await save('PartRequest', { serviceOrderId: legacyOrder.id, technicianId: f.tech.id,
       requestType: 'pre_repair', fulfillmentMethod: 'pickup', status: 'received', receivedAt: new Date() });
     legacy.items = [await save('PartRequestItem', { partRequestId: legacy.id, partCatalogId: f.catalog[0].id,
       partSource: 'fixhome', partNameSnapshot: 'W2 synthetic legacy', quantity: 1, unitPriceSnapshot: 50000 })];
     const before = await f.balance();
-    await db.transaction(manager => custody.enrollHandover(manager, legacy, f.order));
+    await db.transaction(manager => custody.enrollHandover(manager, legacy, legacyOrder));
     expect(await repo('PartCustody').countBy({ partRequestId: legacy.id })).toBe(1);
     expect(await repo('WarehouseAllocation').countBy({ partRequestId: legacy.id })).toBe(0);
     expect(await f.balance()).toEqual(before);
