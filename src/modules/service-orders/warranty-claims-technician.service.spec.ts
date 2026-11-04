@@ -88,6 +88,20 @@ const makeService = (options: { claim?: unknown; visits?: unknown[]; profile?: u
   return { service, claimRepo, claimTx, visitTx, visitRepo, reader, notifier };
 };
 
+describe('technician reads one claim', () => {
+  it('returns my own claim as the staff view', async () => {
+    const { service, claimRepo } = makeService();
+    const view = await service.getMine('claim-1', TECH);
+    expect(claimRepo.findOne).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'claim-1', technicianId: TECH.id } }));
+    expect(view).toEqual({ id: 'claim-1' });
+  });
+
+  it('answers not found for a claim that is not assigned to me, instead of confirming it exists', async () => {
+    const { service } = makeService({ claim: null });
+    await expect(service.getMine('claim-1', TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.NOT_FOUND } });
+  });
+});
+
 describe('technician warranty commands', () => {
   it('accepts a submitted claim, opens a scheduled visit and tells the customer', async () => {
     const { service, claimTx, visitTx, notifier } = makeService();

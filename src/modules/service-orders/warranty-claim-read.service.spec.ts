@@ -32,6 +32,7 @@ describe('WarrantyClaimReadService', () => {
       coverage: {
         find: vi.fn().mockResolvedValue([{ id: 'cov-1', note: 'Vòi sen', expiresAt: new Date('2026-10-30T00:00:00.000Z') }]),
       },
+      invoiceItem: { find: vi.fn().mockResolvedValue([]) },
       visit: {
         find: vi.fn().mockResolvedValue([
           { id: 'visit-new', warrantyClaimId: 'claim-1', status: 'checked_in', createdAt: new Date('2026-09-30') },
@@ -45,6 +46,7 @@ describe('WarrantyClaimReadService', () => {
       repos.user as any,
       repos.coverage as any,
       repos.visit as any,
+      repos.invoiceItem as any,
     );
 
     const [view] = await service.toStaffViews([claim]);
@@ -52,6 +54,7 @@ describe('WarrantyClaimReadService', () => {
     expect(view.order).toEqual({
       id: 'order-1',
       code: 'SO-1',
+      bookingId: 'booking-1',
       serviceName: 'Sửa đường nước',
       addressSummary: '12 Lê Lợi',
       customerName: 'Khách A',
@@ -64,9 +67,30 @@ describe('WarrantyClaimReadService', () => {
     expect(JSON.stringify(view)).not.toContain('0900');
   });
 
+  it('names the covered item after its invoice line, so the manager and the technician see what is claimed', async () => {
+    const find = (rows: unknown[]) => ({ find: vi.fn().mockResolvedValue(rows) });
+    const service = new WarrantyClaimReadService(
+      find([{ id: 'order-1', code: 'SO-1', bookingId: 'booking-1' }]) as any,
+      find([{ id: 'booking-1', customerId: 'customer-1' }]) as any,
+      find([{ id: 'customer-1', fullName: 'Khách A' }]) as any,
+      find([
+        { id: 'cov-line', invoiceItemId: 'line-2', note: null, expiresAt: new Date() },
+        { id: 'cov-note', invoiceItemId: null, note: 'Ghi chú cũ', expiresAt: new Date() },
+        { id: 'cov-none', invoiceItemId: null, note: null, expiresAt: new Date() },
+      ]) as any,
+      find([]) as any,
+      find([{ id: 'line-2', description: 'Board X' }]) as any,
+    );
+    const claim = (coverageId: string) => ({ id: `c-${coverageId}`, serviceOrderId: 'order-1', warrantyCoverageId: coverageId, technician: null, status: 'submitted', submittedAt: new Date() }) as any;
+
+    const views = await service.toStaffViews([claim('cov-line'), claim('cov-note'), claim('cov-none')]);
+
+    expect(views.map((v) => v.coverage?.itemDescription)).toEqual(['Board X', 'Ghi chú cũ', 'Bảo hành dịch vụ']);
+  });
+
   it('returns nothing without querying when there are no claims', async () => {
     const find = vi.fn();
-    const service = new WarrantyClaimReadService({ find } as any, { find } as any, { find } as any, { find } as any, { find } as any);
+    const service = new WarrantyClaimReadService({ find } as any, { find } as any, { find } as any, { find } as any, { find } as any, { find } as any);
     expect(await service.toStaffViews([])).toEqual([]);
     expect(find).not.toHaveBeenCalled();
   });

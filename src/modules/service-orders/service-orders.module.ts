@@ -10,6 +10,7 @@ import { WarrantyClaimsService } from './warranty-claims.service';
 import { WarrantyClaimsTechnicianController } from './warranty-claims-technician.controller';
 import { WarrantyClaimsTechnicianService } from './warranty-claims-technician.service';
 import { WarrantyClaimReadService } from './warranty-claim-read.service';
+import { WarrantyClaimDetailService } from './warranty-claim-detail.service';
 import { WarrantyClaimsManagerController } from './warranty-claims-manager.controller';
 import { WarrantyClaimsManagerService } from './warranty-claims-manager.service';
 import { WarrantyNotifier } from './warranty-notifier.service';
@@ -89,6 +90,7 @@ import { VouchersModule } from '../vouchers/vouchers.module';
     WarrantyClaimsTechnicianService,
     WarrantyClaimsManagerService,
     WarrantyClaimReadService,
+    WarrantyClaimDetailService,
     WarrantyNotifier,
     WarrantyCostService,
     WarrantySweepService,

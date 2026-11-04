@@ -62,6 +62,14 @@ export class WarrantyClaimsTechnicianService {
     return { items: await this.reader.toStaffViews(claims), total };
   }
 
+  /** One claim of mine; a claim handed back or assigned to someone else is simply not found. */
+  async getMine(claimId: string, technician: OrderActor): Promise<StaffWarrantyClaimDto> {
+    const claim = await this.claimRepo.findOne({ where: { id: claimId, technicianId: technician.id }, relations: ['technician'] });
+    if (!claim) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Không tìm thấy yêu cầu bảo hành.');
+    const [view] = await this.reader.toStaffViews([claim]);
+    return view;
+  }
+
   async accept(claimId: string, dto: AcceptWarrantyClaimDto, technician: OrderActor): Promise<StaffWarrantyClaimDto> {
     const claim = await this.ownClaim(claimId, technician.id, WarrantyClaimStatus.SUBMITTED);
     await this.claimRepo.manager.transaction(async (manager) => {

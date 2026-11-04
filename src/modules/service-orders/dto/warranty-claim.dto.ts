@@ -247,6 +247,7 @@ export class StaffWarrantyClaimDto extends WarrantyClaimViewDto {
   order: {
     id: string;
     code: string;
+    bookingId: string;
     serviceName: string;
     addressSummary: string;
     customerName: string;

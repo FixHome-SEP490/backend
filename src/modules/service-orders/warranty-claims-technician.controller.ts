@@ -63,6 +63,13 @@ export class WarrantyClaimsTechnicianController {
     return { data: items, meta: { page, pageSize, total } };
   }
 
+  @Get(':claimId')
+  @ApiOperation({ summary: 'Technician: one warranty claim assigned to me' })
+  @ApiNotFoundResponse({ description: 'Claim not found or not assigned to me' })
+  async get(@Param('claimId', ParseUUIDPipe) claimId: string, @Req() req: Req) {
+    return { data: await this.service.getMine(claimId, req.user) };
+  }
+
   @Post(':claimId/accept')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Technician: take the claim and schedule an inspection' })
