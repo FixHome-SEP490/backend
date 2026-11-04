@@ -10,6 +10,7 @@ function setup(order: { departureWarnedAt: Date | null; status?: ServiceOrderSta
   const assignment = { technicianId: 'tech-1', assignedAt: new Date(windowStart.getTime() - minutes(120)), isActive: true };
   const updates: Array<[string, unknown, Record<string, unknown>]> = [];
   const manager = {
+    find: vi.fn().mockResolvedValue([]), // No warehouse-managed requests in this legacy fixture.
     findOneBy: vi.fn(async (entity: { name: string }) => (entity.name === 'ServiceOrder' ? state.order : entity.name === 'TechnicianAssignment' ? assignment : null)),
     findOne: vi.fn(async (entity: { name: string }) => (entity.name === 'Booking' ? booking : state.order)),
     update: vi.fn(async (entity: { name: string }, where: unknown, values: Record<string, unknown>) => {

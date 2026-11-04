@@ -28,6 +28,8 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../shared/enums';
 import { PartRequestsService } from './part-requests.service';
+import { RiskLimit } from '../../common/rate-limit/risk-rate-limit';
+import { WarehouseCommandDto, WarehouseHandoverDto } from './dto/warehouse-fulfillment.dto';
 import {
   CreatePartRequestDto,
   ReceivePartRequestDto,
@@ -45,7 +47,38 @@ import {
 export class PartRequestsController {
   constructor(private readonly partRequestsService: PartRequestsService) {}
 
+  @Get('part-requests/:id/warehouse-allocation')
+  @Roles(Role.TECHNICIAN, Role.SERVICE_MANAGER, Role.ADMIN)
+  async warehouseAllocation(@Param('id', ParseUUIDPipe) id: string, @Req() req: { user: { id: string; role: string } }) {
+    return { data: await this.partRequestsService.warehouseAllocation(id, req.user) };
+  }
+
+  @Post('part-requests/:id/warehouse-reserve')
+  @HttpCode(200)
+  @Roles(Role.SERVICE_MANAGER, Role.ADMIN)
+  @RiskLimit('warehouse-stock')
+  async warehouseReserve(@Param('id', ParseUUIDPipe) id: string, @Body() body: WarehouseCommandDto, @Req() req: { user: { id: string; role: string } }) {
+    return { data: await this.partRequestsService.warehouseCommand(id, 'reserve', body, req.user) };
+  }
+
+  @Post('part-requests/:id/warehouse-qr')
+  @HttpCode(200)
+  @Roles(Role.SERVICE_MANAGER)
+  @RiskLimit('warehouse-stock')
+  async warehouseQr(@Param('id', ParseUUIDPipe) id: string, @Body() body: WarehouseCommandDto, @Req() req: { user: { id: string; role: string } }) {
+    return { data: await this.partRequestsService.warehouseCommand(id, 'qr', body, req.user) };
+  }
+
+  @Post('part-requests/:id/warehouse-handover')
+  @HttpCode(200)
+  @Roles(Role.SERVICE_MANAGER)
+  @RiskLimit('warehouse-stock')
+  async warehouseHandover(@Param('id', ParseUUIDPipe) id: string, @Body() body: WarehouseHandoverDto, @Req() req: { user: { id: string; role: string } }) {
+    return { data: await this.partRequestsService.warehouseCommand(id, 'handover', body, req.user) };
+  }
+
   @Patch('part-requests/:id/qr')
+  @RiskLimit('warehouse-stock')
   @Roles(Role.SERVICE_MANAGER)
   @ApiOperation({ summary: 'Rotate unreceived handover QR, invalidating the previous token' })
   async regenerateQr(@Param('id', ParseUUIDPipe) id: string, @Req() req: { user: { id: string; role: string } }) {
@@ -55,6 +88,7 @@ export class PartRequestsController {
   // ── 1. Technician: Pre-Repair Parts Request ──
 
   @Post('service-orders/:orderId/part-requests')
+  @RiskLimit('warehouse-stock')
   @Roles(Role.TECHNICIAN)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
@@ -102,6 +136,7 @@ export class PartRequestsController {
   // ── 3. Technician: Receive via QR Scan ──
 
   @Post('part-requests/:id/receive')
+  @RiskLimit('warehouse-stock')
   @Roles(Role.TECHNICIAN)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -152,6 +187,7 @@ export class PartRequestsController {
   // ── 5. Cancel Part Request ──
 
   @Patch('part-requests/:id/cancel')
+  @RiskLimit('warehouse-stock')
   @Roles(Role.TECHNICIAN, Role.SERVICE_MANAGER)
   @ApiOperation({
     summary: 'Cancel a parts request',

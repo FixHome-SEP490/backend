@@ -16,6 +16,7 @@ function setup(bookingStatus: BookingStatus = BookingStatus.MATCHING) {
   invitationUpdate.set.mockReturnValue(invitationUpdate);
   invitationUpdate.where.mockReturnValue(invitationUpdate);
   const manager = {
+    find: vi.fn().mockResolvedValue([]), // No warehouse-managed requests in this legacy fixture.
     findOne: vi.fn(async (entity: { name: string }) => {
       if (entity.name === 'Booking') return booking;
       if (entity.name === 'ServiceOrder') return order;
