@@ -15,6 +15,7 @@ const HOUR_MS = 60 * MINUTE_MS;
 /** DEV pilot ceilings only. Tune this map from DEV 429/false-positive metrics before wider rollout. */
 export const RISK_RATE_LIMITS = {
   'booking-create': { limit: 20, windowMs: 10 * MINUTE_MS },
+  'booking-draft-write': { limit: 60, windowMs: MINUTE_MS },
   'booking-consultation': { limit: 10, windowMs: HOUR_MS },
   'onsite-contact': { limit: 10, windowMs: 10 * MINUTE_MS },
   'onsite-stop': { limit: 20, windowMs: MINUTE_MS },
