@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-04 23:50 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104
+> Cập nhật lần cuối: 2026-11-05 01:07 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -93,6 +93,8 @@ Ba điều không đổi giữa các repo:
 Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức của nhóm). Mâu thuẫn giữa code và tài liệu thì ghi vào mục 8 và hỏi PO, không tự quyết.
 
 ## 3. Trạng thái hiện tại
+
+P3 W3 B2a (source only, 05/11/2026): internal facts preview + pure owner access helper chưa mount; reload actor role/status, scope PartRequest/Order/Booking/active assignment, source parts/labor và invoice existence. Không đọc tiền/evidence/W2 allocation/bảng B1, không ghi/transaction/lock; SM/Admin không có wide-read hoặc proposal/consent authority. Preview NON_ATOMIC/NON_EXECUTABLE, năm blocker shipping/warehouse/courier/finance/aggregate labor luôn giữ, mọi action BLOCKED. Focused 174 PASS (67 B2a + các suite cũ), typecheck/build/lint PASS (4 warning cũ), diff/allowlist PASS; PG 22 case vẫn NOT_VERIFIED. B2b JWT/fresh transactional auth/source approval và review Finance/legal còn thiếu; xem mục 11 `docs/WAREHOUSE_W3_FINANCE_CONTRACT.md`.
 
 P3 W3 B1 (source only, 04/11/2026): migration additive `1793466000005-DeliveryConsentState`, ba entity và internal store transaction/CAS + journal/evidence append-only; DB trigger kiểm scope khớp request/order/customer/active assignment/source; warehouse bắt buộc NULL, không đọc/bind W2 allocation dù có status released. Không có stock/warehouse authority B1. Không mount provider/route, không apply schema hay mở W3 tiền; B2 JWT/facts/approved shipping source/aggregate labor và B3 DELIVERY stock còn chờ review. B1 trước review: 93 focused PASS; review-fix RED 7/GREEN store 36, focused cuối 100 PASS, typecheck/build/lint PASS (4 warning cũ); PG CI spec 22 skipped, local PG/runtime NOT_RUN; chi tiết mục 10 `docs/WAREHOUSE_W3_FINANCE_CONTRACT.md`.
 
@@ -463,7 +465,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
-- 2026-11-04 23:50 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | Phase A (20:54): Thêm Phase A domain dual consent/actual versioned thuần, giữ cutover đóng; ghi Phase B storage/auth/warehouse và gate Finance/team. B1 (22:54): Thêm B1 consent persistence inert, scope trigger/CAS/append-only; ghi 93 focused PASS, PG 22 skipped, giữ W3 cutover đóng, chưa có API/DB apply. Review-fix-01: warehouse bắt buộc NULL, bỏ đọc/bind W2, focused cuối 100 PASS, typecheck/build/lint PASS; khôi phục T8 nguyên văn, giữ 40 entry.
+- 2026-11-05 01:07 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | B2a source only: owner facts preview/read-only, denial đồng nhất, mọi action BLOCKED, 174 focused PASS, typecheck/build/lint/diff PASS; JWT/API/DB/finance chưa mở. Checkpoint trước 2026-11-04 23:50 (UTC+7): Phase A (20:54): Thêm Phase A domain dual consent/actual versioned thuần, giữ cutover đóng; ghi Phase B storage/auth/warehouse và gate Finance/team. B1 (22:54): Thêm B1 consent persistence inert, scope trigger/CAS/append-only; ghi 93 focused PASS, PG 22 skipped, giữ W3 cutover đóng, chưa có API/DB apply. Review-fix-01: warehouse bắt buộc NULL, bỏ đọc/bind W2, focused cuối 100 PASS, typecheck/build/lint PASS; khôi phục T8 nguyên văn, giữ 40 entry.
 - 2026-11-04 19:37 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | Chốt W3 scaffold và khóa cutover; ghi 3358 unit PASS/58 skipped, gate Finance/pháp lý, DELIVERY stock và PG/runtime chưa kiểm chứng.
 - 2026-11-04 18:45 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w2-warehouse-fulfillment-be-20261104 | Ghi CI đã xác minh JWT và 7 ca W2 PostgreSQL; sửa fixture receipt legacy sang order riêng, giữ unique active PRE_REPAIR.
 - 2026-11-04 18:34 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w2-warehouse-fulfillment-be-20261104 | Tích hợp Warranty từ dev 80fa61f, tách gate W2 và sửa JWT harness dùng effective secret; giữ CI/DB/runtime release gate.

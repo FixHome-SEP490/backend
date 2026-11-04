@@ -402,3 +402,68 @@ Phase A gần nhất theo Lead, giữ đủ nội dung và tối đa 40 entry, k
 SAFE_TO_ACTIVATE_FINANCE=NO.** B2 tiếp theo cần trusted facts + transactional JWT/RBAC/IDOR,
 approved shipping source, evidence resolver và lock matrix review; B3 warehouse DELIVERY cần
 phase riêng được duyệt. Không apply shared DEV, commit/push/PR update/merge/deploy trong B1.
+
+## 11. Phase B2a — trusted facts preview, SOURCE ONLY (05/11/2026)
+
+`DeliveryConsentFactsService` là plain internal class không đăng ký provider, module hoặc
+route. `preview(manager, requestId, principal)` chỉ đọc; không gọi B1 store/domain command,
+không mở transaction/lock, không ghi DB/audit/notification, không gọi provider hoặc API.
+Không đọc bảng B1 chưa apply migration 0005, evidence, W2 allocation/warehouse, payment hay
+wallet. W2 PICKUP và historical DELIVERY không được đổi policy hoặc nâng thành W3 authority.
+
+`delivery-consent-access.policy.ts` chỉ parse cấu trúc principal và so scope do server đọc,
+**không xác thực JWT**. Future trusted guard phải cấp cả actor ID và role, không lấy từ body.
+User được reload với ID/role/isActive/status; phải còn active và khớp principal. SM/Admin bị
+`NOT_FOUND_OR_DENIED` trước khi đọc PartRequest; không có SM wide-read, consent hoặc proposal
+permission. B1 warehouse luôn NULL nên B2a không thể chứng minh assigned SM authority.
+
+Owner preview chỉ cho đúng Booking customer hoặc technician của chính PartRequest có active
+assignment trên cùng Order, với technician User còn active/đúng role. So lại quan hệ
+PartRequest → Order → Booking và assignment(order,technician), không ghép facts khác đơn.
+Đây là gate bảo thủ cho preview W3: thiếu/revoke assignment cũng từ chối customer preview;
+không thay quyền đọc lịch sử đang có của API khác. Missing resource, sai owner/role/status
+user hoặc scope thiếu/khác đều có một error `NOT_FOUND_OR_DENIED`, không kèm ID, state hoặc
+lý do riêng tư. Lỗi infrastructure được propagate, không giả thành verdict quyền; wrapper
+HTTP tương lai phải dùng cơ chế redaction/error handling hiện có.
+
+Sau ownership check mới đọc source và kiểm **invoice existence only** bằng `existsBy`.
+Mọi query dùng select tối thiểu; không đọc/return shippingFee, labor, commission, invoice detail,
+QR, private object/evidence ref, source note hoặc profile người khác. Output chỉ có actor hiện
+tại, own request/order ID, enum trạng thái quan sát, trạng thái parts/labor source và blockers.
+Source Quotation approved/version/decidedAt đúng order/technician, hoặc AdditionalCost approved
+do đúng Booking customer quyết định, chỉ mang nhãn `VERIFIED_APPROVED` cho **parts/labor**.
+Source chưa duyệt hoặc binding thiếu/sai không được coi là verified. Không coi Quotation có
+shipping approval; approved AdditionalCost một mình cũng chưa chứng minh W3 split approval.
+
+Output luôn `mode=NON_EXECUTABLE_PREVIEW`, `consistency=NON_ATOMIC`, bốn action newConsent,
+proposal, dispatch và payout luôn `BLOCKED`; luôn có cả năm blocker:
+
+- `SHIPPING_APPROVAL_SOURCE_UNVERIFIED`
+- `WAREHOUSE_DELIVERY_ALLOCATION_MISSING`
+- `COURIER_PROOF_UNVERIFIED`
+- `FINANCE_CUTOVER_CLOSED`
+- `TOTAL_ORDER_LABOR_BUDGET_UNVERIFIED`
+
+Các blocker này biểu diễn authority chưa chứng minh, không claim đã kiểm file/courier hoặc
+đã query allocation và thấy rỗng. Owner có thể xem blocker cụ thể cho order đóng/completion
+intent/invoiced, request đã delivering/received/closed, Warranty/PRE_REPAIR/PICKUP, source
+chưa approved hoặc binding sai; đây không phải permission tạo consent. Không tính S/c/t/net
+labor, không suy budget từ source hoặc input khách. Multi-delivery/child budget, D ledger,
+rounding, seller-of-record/tax và consent wording vẫn cần Finance/team/legal.
+
+Preview có thể stale/race giữa các read, không giữ snapshot/lock và không chứng minh toàn
+bộ global lock order. Không dùng output hoặc cache preview để authorize mutation, ký consent,
+dispatch, payout hoặc activation. B2b còn cần JWT/RBAC/IDOR wrapper, authority SM/approved
+shipping source/evidence, re-read scope trong transaction đã review cùng replay/CAS và
+negative/race tests. B2a không tạo DTO/controller/module hoặc ENV/grant/override để mở gate.
+
+Kiểm chứng B2a: genuine RED 60 failed khi chưa triển khai; regression malformed ownership
+facts RED 1 failed/66 passed trước khi chuẩn hóa denial. Focused GREEN **174 passed/0 failed**
+(67 B2a, 62 Phase A, 36 B1, 7 cutover, 2 context), Node 20.19.5. Test dùng mocked EntityManager;
+không chứng minh JWT/HTTP hoặc PostgreSQL. PG 22 case cũ vẫn **NOT_VERIFIED**, không chạy DB
+hoặc full suite. Typecheck/lint/build/diff và preservation check ghi theo thực chạy ở handover.
+Gate local cuối: typecheck/build/lint PASS (0 errors/4 warning cũ), diff/allowlist PASS đúng
+6 file; context vẫn 40 entry và giữ toàn bộ event trước. Không sửa B1/Phase A/Finance/W2/auth/module.
+
+**B2a INERT — READY_FOR_LEAD_REVIEW, chờ independent review. SAFE_TO_APPLY_DB=NO;
+SAFE_TO_ACTIVATE_FINANCE=NO.** Không commit/push/PR update/merge/deploy/migration/shared DB.
