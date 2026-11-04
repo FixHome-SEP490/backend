@@ -44,6 +44,7 @@ import {
 import { BankAccountService } from './bank-account.service';
 import { WalletService } from './wallet.service';
 import { payoutMessage, toWithdrawalResponse } from './withdrawal.mapper';
+import { RiskLimit } from '../../common/rate-limit/risk-rate-limit';
 import { WithdrawalPayoutService } from './withdrawal-payout.service';
 
 @ApiTags('Technician / Wallet')
@@ -97,6 +98,7 @@ export class TechnicianWalletController {
   }
 
   @Post('top-up')
+  @RiskLimit('user-payment-init')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Kỹ thuật viên: Nạp tiền vào ví',

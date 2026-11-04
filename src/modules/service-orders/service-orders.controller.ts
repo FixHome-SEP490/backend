@@ -44,6 +44,7 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../shared/enums';
 import { CheckInDto, UpdateLocationDto, EvidenceDto, CompletionRequestDto, CompletionConfirmationDto, ReasonDto, TrackOrderDto } from './order-command.dto';
 import { ServiceOrdersService } from './service-orders.service';
+import { RiskLimit } from '../../common/rate-limit/risk-rate-limit';
 import {
   } from '../../shared/enums';
 import {
@@ -439,6 +440,7 @@ export class ServiceOrdersController {
   }
 
   @Post('invoices/:id/pay')
+  @RiskLimit('user-payment-init')
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('invoice:pay_own')
   @HttpCode(HttpStatus.OK)
@@ -458,6 +460,7 @@ export class ServiceOrdersController {
   }
 
   @Post('invoices/:id/vnpay-url')
+  @RiskLimit('user-payment-init')
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('invoice:pay_own')
   @HttpCode(HttpStatus.OK)

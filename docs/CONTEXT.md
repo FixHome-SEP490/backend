@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-04 09:29 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-review2-p0-quota-noshow-20261104
+> Cập nhật lần cuối: 2026-11-04 09:45 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-review2-p0-security-20261104
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -93,6 +93,8 @@ Ba điều không đổi giữa các repo:
 Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức của nhóm). Mâu thuẫn giữa code và tài liệu thì ghi vào mục 8 và hỏi PO, không tự quyết.
 
 ## 3. Trạng thái hiện tại
+
+P0-1A giới hạn tốc độ (source, 04/11/2026): bucket theo rủi ro, lưu trong tiến trình, bảo vệ tạo lịch đơn/nhóm, tư vấn, khởi tạo thanh toán, upload media, sửa tin nhắn và sự kiện typing/mời gọi Socket.IO đã xác thực. Sau auth dùng ID người dùng; HTTP ẩn danh dùng `req.ip`, guard không tự đọc `X-Forwarded-For`; kết quả qua proxy phụ thuộc cấu hình chưa kiểm chứng. HTTP vượt ngưỡng trả 429 và `Retry-After`; giữ throttling Auth/AI riêng, miễn trừ VNPay IPN đã ký. Ngưỡng DEV pilot: tạo lịch 20/10 phút, tư vấn 10/giờ, thanh toán 30/phút, media 30/phút (video 6/giờ), tin nhắn 60/phút (attachment 12/phút), typing 60/10 giây, mời gọi 10/phút. Không migration, dependency hay biến môi trường mới. Cấu hình proxy tin cậy và topology replica CHƯA KIỂM CHỨNG; limiter in-memory chỉ có hiệu lực trong từng tiến trình, chưa phải chính sách production.
 
 P0-1B quota (source, 04/11/2026): tối đa hai lượt pending/customer; standalone Booking và VisitGroup mỗi loại tính một lượt. Đếm DISTINCT trên child Booking `submitted/matching` còn `preferred_end_at > now()`, không dùng status parent. Khóa User khách trong cùng transaction trước tạo mới, shortlist solo/nhóm, đổi lịch và confirm rebook; solo có external manager vẫn kiểm, child thật dùng suất parent. Retry nhóm cùng key được kiểm lại sau khóa trước quota. Thợ rút khi khách đủ quota vẫn được nhả qua nhánh CLOSED/đóng đơn chưa trả tiền hiện có, không mở lượt thứ ba; giữ tiền/vật tư và chính sách hủy tự nguyện. Không migration/dependency mới. Solo no-show parity chưa triển khai; giới hạn ở mục 8.
 
@@ -370,6 +372,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 8. Việc đang dở và rủi ro đã biết
 
+- P0-1A chỉ mới được kiểm ở source/test; ngưỡng pilot chỉnh tại `src/common/rate-limit/risk-rate-limit.ts`, chưa được duyệt cho production. Limiter lưu in-memory theo từng Backend process, không đồng bộ replica và mất trạng thái khi restart; topology và trusted-proxy CHƯA KIỂM CHỨNG. Không ghi DB dùng chung, không migration/dependency/biến môi trường mới. Chờ Lead review và gate CI/release; sau release cần restart Backend và smoke test DEV có auth cho tạo lịch, khởi tạo thanh toán, ghi media/tin nhắn và Socket.IO. Runtime, proxy và consumer repo khác CHƯA KIỂM CHỨNG; writer branch không push/merge/deploy.
+
 - P0-1B B2 BLOCKED: solo `cannotContinue` vẫn từ chối `customer_absent/customer_unreachable`; contact/readiness API và evidence scope hiện chỉ có VisitGroup. Cần Lead tách quyền sở hữu controller/contract cho solo rồi tái dùng hai call attempt cách 5 phút, notice trong app, 10 phút từ giờ server, GPS/phân công hiện tại và support-case receipt; không mở bypass bằng prose/timestamp client hoặc tự phạt. Negative tests chỉ chứng minh gate từ chối, không chứng minh solo operational release đã có.
 - P0-1B B1: race test dùng persistence double trong bộ nhớ và kiểm SQL shape, tương thích Node 20; không thay bằng chứng PostgreSQL READ COMMITTED/row lock/rollback/RLS nhiều instance. PostgreSQL E2E, shared DEV, Docker/health, Web/Mobile và runtime NOT VERIFIED; task không kết nối/ghi DB, không khởi chạy service riêng. Lead review rồi tích hợp/restart Backend trước runtime QA; không commit/push/merge/deploy trong task.
 
@@ -419,6 +423,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-04 09:45 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p0-security-20261104 | Thêm P0-1A risk throttling theo actor/IP cho route rủi ro và socket; ghi DEV ceilings cùng giới hạn in-memory/runtime chưa kiểm chứng.
+
 - 2026-11-04 09:29 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p0-quota-noshow-20261104 | Ghi quota hai lượt pending nguyên tử, retry/nhả thợ ở cap, contract 409 và blocker solo no-show/PostgreSQL.
 
 - 2026-11-02 14:24 (UTC+7) | foxonworld | foxonworld/fixhome-rebook-voucher-history-be-20261102 | Expose header Date qua CORS cho đồng hồ voucher Web, giữ chính sách origin/credentials/methods.
@@ -459,4 +465,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-28 13:56 (UTC+7) | foxonworld | foxonworld/fixhome-p0-replace-core-20261028 | Ghi hợp đồng P0/P1 dừng sửa, đổi thợ và đặt lại sau gián đoạn; migration cộng thêm, guard VisitGroup và rủi ro PostgreSQL/Web chưa kiểm chứng.
 - 2026-10-27 23:26 (UTC+7) | foxonworld | foxonworld/fixhome-p1-backend-voucher-admin-20261027 | Thêm lifecycle Admin voucher DRAFT/PUBLISHED/PAUSED/ARCHIVED, version/replay/audit và migration cộng thêm; quota theo campaign, PostgreSQL/RLS/runtime chưa kiểm chứng, giữ owner DB gate.
 - 2026-10-27 22:11 (UTC+7) | ToanAltF4 | feat/parts-gas-electrical | Thêm 52 linh kiện: 36 mã điện/đèn V3 và 16 mã phổ biến theo giá thị trường (nạp gas, magie, hút mùi, giá treo tivi, sen)
-- 2026-10-27 21:04 (UTC+7) | foxonworld | foxonworld/fixhome-t21-f3-wallet-only-20261027 | Implement owner-approved F3 wallet-only refund independent of settled original rail; keep provider/cash payment evidence, gross-net ledger, cash subsidy reversal, full quota recovery and refund duplication guard.
