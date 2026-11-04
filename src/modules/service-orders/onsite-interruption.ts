@@ -12,6 +12,7 @@ import { ServiceOrder } from './entities/service-order.entity';
 import { TechnicianAssignment } from './entities/technician-assignment.entity';
 import { VisitGroup } from '../visit-groups/entities/visit-group.entity';
 import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity';
+import { soloContactEvidence } from './onsite-contact';
 
 export const ONSITE_INTERRUPTION_ACTION = 'TECHNICIAN_CANNOT_CONTINUE_ONSITE';
 export const ONSITE_STOP_ACTION = 'TECHNICIAN_ONSITE_STOP_FINALIZED';
@@ -92,6 +93,15 @@ export async function verifiedOnsiteInterruption(manager: EntityManager, order: 
   const checkin = await manager.findOneBy(ArrivalCheckIn, { id: after.checkInId,
     serviceOrderId: order.id, technicianId: receipt.actorUserId, result: CheckInResult.VALID });
   if (!assignment || !checkin || !validAssignmentCheckIn(assignment, checkin)) return null;
+  if (!booking.visitGroupId && ['customer_absent', 'customer_unreachable'].includes(request.reasonCode)) {
+    const ids = after.contactEvidenceIds;
+    const recordedAt = new Date(receipt.createdAt).getTime();
+    if (!Array.isArray(ids) || ids.length < 3 || ids.some(id => typeof id !== 'string' || !isUUID(id, '4')) ||
+      new Set(ids).size !== ids.length || !Number.isFinite(recordedAt) || recordedAt > Date.now()) return null;
+    const evidence = await soloContactEvidence(manager, { order, booking, assignment, checkin },
+      { id: receipt.actorUserId }, recordedAt, ids as string[]);
+    if (evidence.rows.length !== ids.length || !evidence.readiness.ready) return null;
+  }
   if (final) {
     const stopAt = typeof stopped?.stoppedAt === 'string' ? Date.parse(stopped.stoppedAt) : NaN;
     if (final.actorRole !== Role.TECHNICIAN || final.actorUserId !== receipt.actorUserId
