@@ -5,6 +5,11 @@ import { CALL_SERVER_EVENTS } from './call.types';
 import { MessagingService } from './messaging.service';
 import { Role } from '../../shared/enums';
 
+// This suite covers call state transitions; the risk limiter has its own focused socket tests.
+vi.mock('../../common/rate-limit/risk-rate-limit', () => ({
+  consumeRiskRateLimit: vi.fn(() => ({ allowed: true, retryAfterSeconds: 0 })),
+}));
+
 /**
  * These tests are about one thing only: a call must never reach anybody except
  * the two people whose booking it belongs to. The audio path is peer-to-peer

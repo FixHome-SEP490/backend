@@ -30,6 +30,7 @@ import { MessagingService } from './messaging.service';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import { MessagingGateway } from './messaging.gateway';
+import { RiskLimit } from '../../common/rate-limit/risk-rate-limit';
 import {
   EditMessageDto,
   ListMessagesQueryDto,
@@ -94,6 +95,7 @@ export class ConversationsController {
   }
 
   @Post(':id/messages')
+  @RiskLimit('message-write')
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('message:write_thread')
   @HttpCode(HttpStatus.CREATED)
@@ -119,6 +121,7 @@ export class ConversationsController {
   }
 
   @Post(':id/attachments')
+  @RiskLimit('message-attachment')
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('message:write_thread')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: VIDEO_MAX_BYTES, files: 1 } }))
@@ -165,6 +168,7 @@ export class MessagesController {
   ) {}
 
   @Patch(':id')
+  @RiskLimit('message-write')
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('message:write_thread')
   @ApiBearerAuth()
@@ -188,6 +192,7 @@ export class MessagesController {
   }
 
   @Delete(':id')
+  @RiskLimit('message-write')
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('message:write_thread')
   @HttpCode(HttpStatus.OK)

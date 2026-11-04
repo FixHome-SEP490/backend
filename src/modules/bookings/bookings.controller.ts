@@ -35,6 +35,7 @@ import { AttachBookingMediaDto, CreateBookingDto, ScheduleBookingDto, RebookDto,
 import { ReasonDto } from '../service-orders/order-command.dto';
 import { toBookingInvitationResponse, toBookingMediaResponse, toBookingResponse } from './booking-privacy.dto';
 import { BookingPrivateMediaContentService } from './booking-private-media-content.service';
+import { RiskLimit } from '../../common/rate-limit/risk-rate-limit';
 
 @ApiTags('Bookings')
 @Controller('bookings')
@@ -47,6 +48,7 @@ export class BookingsController {
   ) {}
 
   @Post()
+  @RiskLimit('booking-create')
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('booking:create')
   @ApiBearerAuth()
