@@ -1009,6 +1009,8 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
   it('reverts all migrations, adopts legacy users and preserves account state and timestamps', async () => {
     await db.query(`
       TRUNCATE TABLE
+        booking_drafts,
+        booking_draft_submit_receipts,
         verification_documents,
         technician_verifications,
         technician_profiles,

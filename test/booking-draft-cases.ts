@@ -164,7 +164,7 @@ export function registerBookingDraftCases(context: () => Context) {
       await f.db.getRepository('Service').update(f.service.id, { isActive: true });
       const other = await context().register();
       const foreign = await f.db.getRepository('Address').save({ userId: other.user.id, line1: 'Synthetic other location', district: 'Q1', province: 'HCM', lat: 10, lng: 106 });
-      await submit(f.owner, draft.id, { ...f.body, request: { kind: 'booking', data: { ...f.data, addressId: foreign.id } } }).expect(403);
+      await submit(f.owner, draft.id, { ...f.body, request: { kind: 'booking', data: { ...f.data, addressId: foreign.id } } }).expect(404);
       await submit(f.owner, draft.id, { ...f.body, request: { kind: 'booking', data: { ...f.data, preferredStartAt: '2020-01-01T00:00:00Z' } } }).expect(422);
       expect(await f.db.getRepository('Booking').count({ where: { customerId: f.owner.user.id } })).toBe(0);
     });
