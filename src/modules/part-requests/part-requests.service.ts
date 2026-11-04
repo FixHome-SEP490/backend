@@ -16,6 +16,7 @@ import {
   QuotationStatus,
   AdditionalCostStatus,
   CostItemType,
+  AccountStatus,
   WarrantyClaimStatus,
 } from '../../shared/enums';
 import { ErrorCodes } from '../../shared/constants/error-codes';
@@ -33,10 +34,12 @@ import { PartRequestStateMachine } from './part-request-state-machine';
 import { Quotation } from '../quotations/entities/quotation.entity';
 import { QuotationItem } from '../quotations/entities/quotation-item.entity';
 import { AdditionalCostRequest } from '../service-orders/entities/additional-cost-request.entity';
+import { custodyActivation, custodyUsageForInvoice, lockCustodyTechnician, partReturnsTrackingEnabled } from './part-custody.policy';
+import { releaseWarehouseReservations, WarehouseFulfillmentService } from './warehouse-fulfillment.service';
+import { WarehouseHandoverDto } from './dto/warehouse-fulfillment.dto';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { WarrantyClaim } from '../service-orders/entities/warranty-claim.entity';
 import { WarrantyCostService } from '../service-orders/warranty-cost.service';
-import { custodyActivation, custodyUsageForInvoice } from './part-custody.policy';
 import { partRequestCostSource } from './part-request-lifecycle';
 import { MAX_PART_QUANTITY } from './part-custody.rules';
 import {
@@ -65,11 +68,49 @@ export class PartRequestsService {
     private readonly notificationsService: NotificationsService,
     @Optional() private readonly custodyService?: PartCustodyService,
     @Optional() private readonly moduleRef?: ModuleRef,
+    @Optional() private readonly warehouseFulfillment?: WarehouseFulfillmentService,
   ) {}
 
   // Resolved lazily: the cost service lives in service-orders and needs wallets, which this module must not import.
   private warrantyCost(): WarrantyCostService | null {
     try { return this.moduleRef?.get(WarrantyCostService, { strict: false }) ?? null; } catch { return null; }
+  }
+
+  async warehouseAllocation(requestId: string, actor: { id: string; role: string }) {
+    if (![Role.TECHNICIAN, Role.SERVICE_MANAGER, Role.ADMIN].includes(actor.role as Role)) throw new ForbiddenException();
+    await this.getById(requestId, actor);
+    return this.warehouseFulfillment!.view(this.dataSource.manager, requestId);
+  }
+
+  async warehouseCommand(requestId: string, kind: 'reserve' | 'qr' | 'handover', body: { idempotencyKey: string; qrToken?: string }, actor: { id: string; role: string }) {
+    if (![Role.SERVICE_MANAGER, Role.ADMIN].includes(actor.role as Role) || (kind !== 'reserve' && actor.role !== Role.SERVICE_MANAGER)) throw new ForbiddenException();
+    return this.dataSource.transaction(async manager => {
+      const { request, order } = await this.lockRequest(manager, requestId, actor);
+      if (request.requestType === PartRequestType.WARRANTY ||
+          [ServiceOrderStatus.COMPLETED, ServiceOrderStatus.CANCELLED].includes(order.status) || order.completionRequestedAt) {
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Yêu cầu bảo hành hoặc đơn đã đóng không thuộc luồng xuất kho W2.');
+      }
+      if (!await manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, technicianId: request.technicianId, isActive: true })) {
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Kỹ thuật viên không còn phụ trách đơn sửa chữa.');
+      }
+      if (!await manager.findOne(User, { where: { id: request.technicianId, role: Role.TECHNICIAN, isActive: true, status: AccountStatus.ACTIVE } })) {
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Kỹ thuật viên không hoạt động; chưa thể cấp linh kiện.');
+      }
+      if (kind === 'reserve') return this.warehouseFulfillment!.reserve(manager, request, actor, body.idempotencyKey);
+      if (kind === 'qr') return this.warehouseFulfillment!.qr(manager, request, actor, body.idempotencyKey);
+      return this.warehouseFulfillment!.issue(manager, request, actor, body as WarehouseHandoverDto, async at => {
+        const activation = await custodyActivation(manager);
+        if (!this.custodyService || !partReturnsTrackingEnabled() || !activation || !activation.activatedAt ||
+            !(order.createdAt instanceof Date) || order.createdAt <= activation.activatedAt) {
+          throw new BusinessException(ErrorCodes.CONFLICT, 'Chưa đủ điều kiện theo dõi trả linh kiện vật lý; chưa xuất kho.');
+        }
+        await this.custodyService.enrollHandover(manager, { ...request, receivedAt: at }, order);
+        const rows = await manager.find(PartCustody, { where: { partRequestId: request.id } });
+        if (rows.length !== request.items.length || rows.some(row => !row.trackingOnly || row.technicianId !== request.technicianId)) {
+          throw new BusinessException(ErrorCodes.CONFLICT, 'Chưa ghi đủ nghĩa vụ giữ linh kiện; chưa xuất kho.');
+        }
+      });
+    });
   }
 
   // Always lock the order before its request, matching cancellation and invoicing.
@@ -82,6 +123,8 @@ export class PartRequestsService {
     if ([ServiceOrderStatus.CANCELLED, ServiceOrderStatus.COMPLETED].includes(order.status) || order.completionRequestedAt) {
       throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Parts are immutable after order closure or completion request');
     }
+    // Custody commands take Order -> Technician. Take the same order before Request/allocation.
+    await lockCustodyTechnician(manager, reference.technicianId);
     const request = await manager.findOneOrFail(PartRequest, { where: { id }, lock: { mode: 'pessimistic_write' } });
     if (actor.role === Role.TECHNICIAN && request.technicianId !== actor.id) throw new ForbiddenException('This part request belongs to another technician');
     request.items = await manager.find(PartRequestItem, { where: { partRequestId: id } });
@@ -323,6 +366,10 @@ export class PartRequestsService {
         },
       });
 
+      await this.warehouseFulfillment?.enroll(manager, savedRequest, actor);
+
+      // W2 notifications are transactional and target the assigned warehouse SM / manual fallback.
+      if (this.warehouseFulfillment && fulfillment === FulfillmentMethod.PICKUP) return savedRequest;
       // 8. Notify Service Managers
       try {
         const smUsers = await manager.find(User, {
@@ -438,6 +485,7 @@ export class PartRequestsService {
     await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role,
       action: 'QUOTATION_PART_REQUEST_CREATED', resourceType: 'part_request', resourceId: request.id,
       after: { serviceOrderId: quote.serviceOrderId, quotationId: quote.id, itemCount: request.items.length } });
+    await this.warehouseFulfillment?.enroll(manager, request, actor);
     return request;
   }
 
@@ -556,6 +604,7 @@ export class PartRequestsService {
       },
     });
 
+    await this.warehouseFulfillment?.enroll(manager, savedRequest, { id: technicianId, role: Role.TECHNICIAN });
     return savedRequest;
   }
 
@@ -571,6 +620,8 @@ export class PartRequestsService {
     if (actor.role !== Role.SERVICE_MANAGER) throw new ForbiddenException('Service Manager role required');
     return this.dataSource.transaction(async (manager: EntityManager) => {
       const { request } = await this.lockRequest(manager, requestId, actor);
+
+      if (request.requestType !== PartRequestType.WARRANTY && await this.warehouseFulfillment?.allocation(manager, requestId)) throw new BusinessException(ErrorCodes.CONFLICT, 'Vui lòng chuẩn bị mã nhận tại luồng kho được phân công.');
 
       if (!request) {
         throw new BusinessException(
@@ -731,6 +782,7 @@ export class PartRequestsService {
       if (![PartRequestStatus.READY, PartRequestStatus.DELIVERING].includes(request.status) || request.receivedAt) {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'QR can only be rotated before handover');
       }
+      if (request.requestType !== PartRequestType.WARRANTY && await this.warehouseFulfillment?.allocation(manager, requestId)) throw new BusinessException(ErrorCodes.CONFLICT, 'Vui lòng đổi mã tại luồng kho được phân công.');
       request.qrToken = `FH-PR-${request.id.slice(0, 8)}-${crypto.randomBytes(16).toString('hex')}`;
       request.qrGeneratedAt = new Date();
       await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'PART_REQUEST_QR_ROTATED', resourceType: 'part_request', resourceId: requestId });
@@ -798,8 +850,9 @@ export class PartRequestsService {
         );
       }
 
-      // Validate QR Token
-      if (!request.qrToken || request.qrToken !== dto.qrToken.trim()) {
+      const warehouseAcknowledged = request.requestType !== PartRequestType.WARRANTY && await this.warehouseFulfillment?.acknowledge(manager, request, dto.qrToken.trim());
+      // Legacy retains its existing QR contract; W2 uses the separate physical-handover receipt.
+      if (!warehouseAcknowledged && (!request.qrToken || request.qrToken !== dto.qrToken.trim())) {
         throw new BusinessException(
           ErrorCodes.VALIDATION_FAILED,
           'Invalid QR token for this part request',
@@ -807,8 +860,8 @@ export class PartRequestsService {
       }
 
       // Token expiry check: 48 hours
-      if (!request.qrGeneratedAt) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'QR token has no issue date');
-      if (request.qrGeneratedAt) {
+      if (!warehouseAcknowledged && !request.qrGeneratedAt) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'QR token has no issue date');
+      if (!warehouseAcknowledged && request.qrGeneratedAt) {
         const expiryMs = 48 * 60 * 60 * 1000;
         if (Date.now() - new Date(request.qrGeneratedAt).getTime() > expiryMs) {
           throw new BusinessException(
@@ -824,7 +877,7 @@ export class PartRequestsService {
       request.qrToken = null;
 
       const saved = await manager.save(PartRequest, request);
-      await this.custodyService?.enrollHandover(manager, request, order);
+      if (!warehouseAcknowledged) await this.custodyService?.enrollHandover(manager, request, order);
       // A warranty part caused by the technician's own workmanship is charged at handover.
       if (request.requestType === PartRequestType.WARRANTY) await this.warrantyCost()?.chargeOnReceive(manager, saved);
 
@@ -1003,6 +1056,12 @@ export class PartRequestsService {
     return this.dataSource.transaction(async (manager: EntityManager) => {
       const { request } = await this.lockRequest(manager, requestId, actor);
 
+      const allocation = request.requestType !== PartRequestType.WARRANTY ? await this.warehouseFulfillment?.allocation(manager, requestId) : null;
+      if (allocation) {
+        if (actor.role === Role.SERVICE_MANAGER && allocation.warehouseId) await this.warehouseFulfillment!.requireManager(manager, allocation, actor, false);
+        if (['handed_over','received'].includes(allocation.status)) throw new BusinessException(ErrorCodes.CONFLICT, 'Linh kiện đã xuất vật lý; không thể tự đảo tồn kho bằng hủy yêu cầu.');
+      }
+
       if (!request) {
         throw new BusinessException(
           ErrorCodes.NOT_FOUND,
@@ -1051,6 +1110,7 @@ export class PartRequestsService {
       }
 
       const previous = request.status;
+      await this.warehouseFulfillment?.release(manager, request, actor);
       request.status = PartRequestStatus.CANCELLED;
       request.cancelledAt = new Date();
       request.qrToken = null;
@@ -1181,6 +1241,7 @@ export class PartRequestsService {
     reason: string,
     actor: { id: string; role: string },
   ): Promise<void> {
+    await releaseWarehouseReservations(manager, { serviceOrderId: orderId });
     const activeRequests = await manager.find(PartRequest, {
       where: {
         serviceOrderId: orderId,

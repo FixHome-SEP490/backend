@@ -2,6 +2,7 @@ import { andWhereTextMatches } from '../../shared/utils/list-search';
 import { checkPendingVisitQuota, lockPendingVisitCustomer } from '../bookings/pending-visit-quota';
 import { NO_DEPARTURE_CANCEL_REASON } from './no-departure';
 import { closeOrderPartRequests, assertPartsResolved, assertApprovedPartsResolved, usedPartQuantities, holderPartRequests, releaseOutgoingTechnicianPartRequests } from '../part-requests/part-request-lifecycle';
+import { releaseWarehouseReservations } from '../part-requests/warehouse-fulfillment.service';
 import { custodyUsageForInvoice, p1CustodyEnabled } from '../part-requests/part-custody.policy';
 import { Payment } from '../finance/entities/payment.entity';
 import { PartRequest } from '../part-requests/entities/part-request.entity';
@@ -1143,6 +1144,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       await this.commitTransition(manager, order, ServiceOrderStatus.CANCELLED, actor, `Không sửa được: ${reason}`, 'repair_failure');
       // Release every unreceived request on this failed order, including one
       // an earlier technician left open. RECEIVED requests retain custody.
+      await releaseWarehouseReservations(manager, { serviceOrderId: orderId });
       await manager.update(PartRequest, {
         serviceOrderId: orderId,
         status: In([PartRequestStatus.REQUESTED, PartRequestStatus.READY, PartRequestStatus.DELIVERING]),
