@@ -24,6 +24,7 @@ export const RISK_RATE_LIMITS = {
   'media-video-upload': { limit: 6, windowMs: HOUR_MS },
   'message-write': { limit: 60, windowMs: MINUTE_MS },
   'message-attachment': { limit: 12, windowMs: MINUTE_MS },
+  'warehouse-stock': { limit: 30, windowMs: MINUTE_MS },
   'socket-typing': { limit: 60, windowMs: 10_000 },
   'socket-call-invite': { limit: 10, windowMs: MINUTE_MS },
 } as const;

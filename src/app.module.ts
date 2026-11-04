@@ -44,6 +44,7 @@ import { VouchersModule } from './modules/vouchers/vouchers.module';
 // each other; finance must finish loading first or Nest sees an undefined constructor parameter.
 import { VisitGroupsModule } from './modules/visit-groups/visit-groups.module';
 import { BookingDraftsModule } from './modules/booking-drafts/booking-drafts.module';
+import { WarehousesModule } from './modules/warehouses/warehouses.module';
 
 @Module({
   imports: [
@@ -97,6 +98,7 @@ import { BookingDraftsModule } from './modules/booking-drafts/booking-drafts.mod
     VouchersModule,
     MailModule,
     GeoModule,
+    WarehousesModule,
   ],
 })
 export class AppModule {}
