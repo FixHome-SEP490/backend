@@ -291,3 +291,114 @@ payment/refund/payout consumers. Phase A không mở bất kỳ gate phát hành
 
 **READY_FOR_LEAD_REVIEW — Phase A source only; Phase B cần storage + transactional auth +
 warehouse DELIVERY integration và Finance/team approval.**
+
+## 10. Phase B1 — inert consent persistence, SOURCE ONLY (04/11/2026)
+
+B1 bổ sung migration tiến `1793466000005-DeliveryConsentState`, ba entity và
+`DeliveryConsentStoreService` nội bộ. Không đăng ký provider/module/controller/route;
+không gọi từ PartRequestsService, W2 hay bất kỳ consumer tiền nào. Entity/migration có thể
+được glob TypeORM phát hiện khi build, nhưng không chạy migration hoặc synchronize trong
+phase này. B1 không tạo API, consent đăng nhập, dispatch, stock/custody movement, Invoice,
+ledger, notification hoặc cờ mở cutover. CHECK W3 của migration 0004 giữ nguyên.
+
+### Storage và scope integrity
+
+- `delivery_consent_sessions`: một root/PartRequest, revision CAS và quoteVersion tách biệt,
+  projection Phase A không chứa receipt; identity bất biến gồm order/customer/technician,
+  assignment ID, SM đề xuất, source quotation hoặc AdditionalCost; warehouse bắt buộc NULL.
+- `delivery_consent_commands`: append-only command UUID theo request, unique
+  `(part_request_id,command_id)` và `(part_request_id,result_version)`; immutable command
+  body/fingerprint, actor/role, source snapshot/digest/version, projection và proposal receipt
+  liên kết cùng request. Mỗi quote chỉ một proposal, một consent mỗi vai trò và một actual.
+- `delivery_evidence_records`: append-only metadata riêng tư trước khi session tồn tại;
+  FK scope request/order/uploader, purpose/quoteVersion, digest/MIME/size, retention nullable.
+  `cloudinary://evidence/fixhome/evidence/<order>/<uploader>/<UUID>` là định dạng reference
+  của scaffold B1, **chưa có resolver/upload adapter được triển khai**. Không nhận URL public.
+  NULL retention không cho phép tự xóa file. Metadata không chứng minh bytes/object tồn tại,
+  quyền truy cập provider hay tính xác thực hóa đơn/quote courier.
+
+FK đơn lẻ không đủ: INSERT/UPDATE trigger kiểm PartRequest thực sự thuộc đúng order và
+technician, Booking của order có đúng customer, assignment ID đúng order/technician và đang
+active, các actor còn active/đúng role; source trực tiếp approved đúng order/technician và
+AdditionalCost do đúng customer duyệt. **B1 luôn giữ warehouse NULL**, có CHECK
+`ck_delivery_b1_no_warehouse` và scope guard; store không đọc/copy allocation hoặc warehouse
+W2 ở bất kỳ status nào, kể cả `released` còn giữ warehouse/SM ID. W2 PICKUP đã issued/released
+không chứng minh W3 DELIVERY reservation hoặc authority. Sự tồn tại hay thay đổi allocation W2
+không khiến B1 session bị từ chối hoặc được gán kho. SM chỉ là người đề xuất đã được trusted
+adapter cung cấp, **không phải bằng chứng được phân công kho**. Khi có authoritative allocation
+riêng cho DELIVERY, cần forward migration/gate được review riêng; B1 không tự tạo/chuyển allocation.
+
+Không thêm trigger vào bảng W2/assignment đang chạy: reassignment hợp lệ vẫn được phép.
+Scope cũ khiến command mới và replay bị chặn. Maintenance nội bộ
+`invalidateIfScopeChanged` ghi một lần `SCOPE_CHANGED` khi identity/assignment không còn
+khớp; giữ nguyên revision/projection/journal, audit actor NULL để không giả mạo hành động SM.
+Không thể reset/uninvalidate root hoặc sửa identity để tái sử dụng consent cũ. Historical read
+vẫn có thể rebuild; B2 phải tự kiểm quyền đọc hiện tại trước khi gọi store.
+
+Các số tiền dùng bigint SQL trong miền JS safe integer; CHECK dùng numeric cho phép nhân
+và trừ trung gian, `c=floor((7*S+5)/10)`, `t=S-c`, `netLabor=L-C-D-t>=0`.
+Actual thấp hơn trần lưu S/c/t riêng, không sửa quote hay Invoice. D>0 chỉ lưu blocker
+`KNOWN_DEDUCTIONS_LEDGER_REQUIRED`; D=0 luôn `FINANCIAL_CUTOVER_CLOSED`.
+UPDATE/DELETE commands/evidence và TRUNCATE ba bảng bị chặn. Deferred constraint đòi
+journal liên tục/đủ root revision và head snapshot khớp, không commit root thiếu receipt.
+Down chỉ cho schema rỗng; có bất kỳ history/evidence nào phải từ chối, không tự xóa dữ liệu.
+RLS bật không có policy; REVOKE tables/functions khỏi PUBLIC và các API roles hiện hữu,
+không tự GRANT. Table owner/superuser vẫn có quyền theo PostgreSQL; B2 cần review role/grants.
+
+### Caller transaction, replay và giới hạn authority
+
+Store yêu cầu EntityManager có transaction đang active; không mở/commit transaction riêng.
+Lấy lock Order → Technician → PartRequest → Session, derive scope từ DB, recheck active
+actor/source, replay journal bằng domain Phase A và so từng projection/fingerprint.
+Command mới phải đúng expectedVersion; root CAS + immutable receipt + AuditLog cùng manager.
+Lỗi SQL, audit hoặc deferred constraint phải làm caller rollback toàn bộ; caller không được
+nuốt lỗi rồi commit. Exact replay trả state hiện tại và receipt gốc, không tăng revision hay
+phục hồi consent cũ; cùng key khác body/actor xung đột. Replay sau Invoice vẫn có thể đọc
+receipt hợp lệ, không tạo command mới; scope/actor/source bị thu hồi thì từ chối.
+
+Source FK/reference chỉ chứng minh source parts/labor approved có thật. Quotation không có
+shipping approval, AdditionalCost đã approved không được sửa ngầm. B1 không chứng nhận
+nguồn đó đã có chấp thuận phí 70/30, không lấy laborDelta làm net labor toàn order. Budget
+vẫn là input **chỉ từ trusted server adapter tương lai**; B1 không có JWT/session và không
+thể phân biệt actor struct thật/giả từ client. Không được expose store làm API trực tiếp.
+SHA-256 là content identity, không phải chữ ký/HMAC hay chống DB owner cố ý sửa schema.
+
+Global lock matrix chưa được chứng minh với cancellation/group/quotation (có luồng Booking
+hoặc VisitGroup trước Order); B2 phải review trước mounting. Aggregate ngân sách của nhiều
+delivery cùng order/technician hoặc nhiều child, per-delivery rounding so với invoice aggregate
+CHECK (hai S=1 cho c=2 nhưng round tổng S=2 cho c=1), group cap5, repeat order, seller-of-record,
+tax, consent wording, D ledger, source shipping approval, evidence retention/provider và DELIVERY
+reservation/ISSUE/courier/custody vẫn là release blockers. Không claim physical DELIVERY ready.
+
+### Kiểm chứng và bước tiếp
+
+- Genuine RED store: 22 failed/1 passed; regression metadata thừa `createdAt` cũng RED
+  (1 failed/28 passed) trước khi thêm exact key validation. GREEN trước review-fix: store 29/29,
+  Phase A 62/62 và context 2/2, **93 passed/0 failed** trong 3 spec, Node 20.19.5.
+- Unit persistence double chứng minh replay/CAS/scope checks của service; không chứng minh
+  rollback/row locking/RLS hoặc SQL trigger trên PostgreSQL.
+- `test/delivery-consent-storage.e2e-spec.ts` dùng **chỉ** PostgreSQL CI ephemeral hiện có,
+  schema UUID riêng, không đọc dotenv/DATABASE_*; yêu cầu CI + GitHub Actions. Bao phủ
+  migration, scope sai, bigint/micro-VND, append-only, deferred completeness, replay/races,
+  rollback, reassignment/invalidation và down guard. Local collection: **22 skipped**;
+  actual PostgreSQL execution: **NOT_RUN**; không suy ra SQL syntax/constraint PASS từ build.
+- `npm run typecheck`, `npm run build`, `npm run lint`: PASS; lint 0 errors/4 warnings có sẵn.
+  Allowlist đúng 9 file, `git diff --check` PASS; Phase A/finance/W2/module/config không sửa.
+  Full suite không chạy theo scope. SQL runtime/migration rehearsal, HTTP/JWT/provider,
+  warehouse DELIVERY authority, Web/Mobile và Finance/legal: **NOT VERIFIED**.
+
+Review-fix-01 (source only): regression 6 status W2 + static migration contract đã RED
+7 failed/29 passed, GREEN store **36 passed/0 failed** sau khi bỏ toàn bộ dependency đọc/lock W2,
+buộc warehouse NULL. Static assertion chỉ kiểm SQL được emit, không chứng minh PostgreSQL
+thực thi CHECK/trigger. PG spec giữ 22 case, kiểm tên/định nghĩa CHECK và direct INSERT
+warehouse khác NULL bị chặn; runtime DB vẫn **NOT_RUN**, local collection **22 skipped** vì
+harness chỉ chạy khi cả CI và GitHub Actions. Các cross-identity check không giảm.
+Focused cuối Node 20.19.5: **100 passed/0 failed** (store 36, Phase A 62, context 2);
+typecheck/build/lint PASS, lint 0 errors/4 warnings cũ. Không chạy full suite, DB hoặc HTTP.
+Entry T8 2026-10-29 16:02 được khôi phục nguyên văn từ HEAD 79f5078; checkpoint B1 gộp vào
+Phase A gần nhất theo Lead, giữ đủ nội dung và tối đa 40 entry, không xóa event lịch sử khác.
+
+**B1 SOURCE ONLY — chờ independent schema/security review. SAFE_TO_APPLY_DB=NO;
+SAFE_TO_ACTIVATE_FINANCE=NO.** B2 tiếp theo cần trusted facts + transactional JWT/RBAC/IDOR,
+approved shipping source, evidence resolver và lock matrix review; B3 warehouse DELIVERY cần
+phase riêng được duyệt. Không apply shared DEV, commit/push/PR update/merge/deploy trong B1.
