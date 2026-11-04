@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-04 19:37 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104
+> Cập nhật lần cuối: 2026-11-04 20:54 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -93,6 +93,8 @@ Ba điều không đổi giữa các repo:
 Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức của nhóm). Mâu thuẫn giữa code và tài liệu thì ghi vào mục 8 và hỏi PO, không tự quyết.
 
 ## 3. Trạng thái hiện tại
+
+P3 W3 Phase A (source only, 04/11/2026): thêm `delivery-consent.policy.ts` thuần, proposal/actual versioned, dual consent bind S/c/t và fingerprint, receipt replay/CAS; REVISE xóa consent/actual hiện hành, không xóa lịch sử. Actual dưới trần ghi riêng, vượt trần cần quote version mới và cả hai consent; D>0 giữ blocker ledger. Không caller live/API/DB/dispatch hoặc activation; W2, finance, migration và consumer giữ nguyên. Phase B storage/auth transaction/warehouse DELIVERY còn chờ Finance/team; giới hạn tại mục 9 của `docs/WAREHOUSE_W3_FINANCE_CONTRACT.md`.
 
 P3 W3 (source scaffold, 04/11/2026): ADR `docs/WAREHOUSE_W3_FINANCE_CONTRACT.md`, pure integer VND 70/30 half-up với checked arithmetic và NET_LABOR trừ phần thợ. Invoice mới chỉ freeze LEGACY_100_0 cùng share 100/0; invoice cũ không backfill/tính lại. Migration tiến `1793466000004-WarehouseDeliverySplit` thêm snapshot bất biến và CHECK khóa lưu W3; chưa apply. Guard code không có ENV override tại thanh toán, dues, wallet/custody, group checkout và voucher/refund. Đây không phải ACTIVATED W3, chưa đủ điều kiện deploy. W2 chỉ reserve PICKUP; DELIVERY chưa có allocation/dispatch stock proof, không đổi fulfillment hoặc W2 QR/Warranty. D>0 cần ledger đích được Finance duyệt trước payout thật. Gate còn lại: Finance review độc lập, seller-of-record/tax/consent, toàn bộ ledger/provider/refund, PG CI và Web runtime. Không sửa Mobile/AI, không DB chung/ENV/commit/push/merge/deploy. Kiểm chứng Node 20.19.5: focused 54/54 và full unit 3358 passed/58 skipped/0 failed, typecheck/build PASS, lint 0 errors/4 warnings có sẵn; PostgreSQL/provider/Web/runtime NOT VERIFIED. Handover READY_FOR_LEAD_REVIEW, chưa deployable.
 
@@ -397,7 +399,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 8. Việc đang dở và rủi ro đã biết
 
-- P3 W3 chưa deployable: migration/snapshot cần PostgreSQL CI và review Finance độc lập trước release; không apply shared DEV hoặc đổi custody flags. DELIVERY không được dùng allocation PICKUP làm bằng chứng; chưa có luồng dual consent, courier actual/dispatch, no-negative-wallet W3, funded refund/partial child/cancel và signed IPN W3 được chứng minh xuyên suốt. D>0 chưa có ledger đích được duyệt. Sau cutover thật chỉ disable enrollment mới/forward fix, không downgrade tiền cũ. Seller-of-record/tax/consent còn mở. Không chạy Docker/server/health vì có thể chạm DB dùng chung; Lead áp schema đã duyệt và restart Backend trong đợt QA được phép.
+- P3 W3 chưa deployable: migration/snapshot cần PostgreSQL CI và review Finance độc lập trước release; không apply shared DEV hoặc đổi custody flags. DELIVERY không được dùng allocation PICKUP làm bằng chứng; dual consent/actual mới có domain thuần, chưa có luồng live courier dispatch/no-negative-wallet W3, funded refund/partial child/cancel và signed IPN W3 được chứng minh xuyên suốt. D>0 chưa có ledger đích được duyệt. Sau cutover thật chỉ disable enrollment mới/forward fix, không downgrade tiền cũ. Seller-of-record/tax/consent còn mở. Không chạy Docker/server/health vì có thể chạm DB dùng chung; Lead áp schema đã duyệt và restart Backend trong đợt QA được phép.
 
 - W2 admission tracking-only giữ legacy/cohort/version và loại WARRANTY. CI `41822080739` trên head `6d2753a` đã qua full unit, lint/typecheck/build, security và hai PostgreSQL voucher/cash gate. E2E 133 passed/39 skipped/1 failed: 7/8 ca W2 PASS gồm race, QR/recovery, return/issue rollback, lifecycle release. JWT 401 đã sửa bằng effective ConfigService secret, giữ guard thật. Ca còn lại vi phạm `ux_pr_active_pre_repair` do fixture tạo thêm request active cùng order; bản sửa tạo Booking/ServiceOrder riêng cho receipt legacy, không nới constraint/assertion. Phải có CI GREEN trên head mới trước merge/deploy; shared DEV/Web/runtime vẫn NOT VERIFIED.
 - W2 PR #195 đã tích hợp official dev `80fa61f`; ba migration warranty `1793466000000`–`1793466000002` có trong source, blocker thiếu source đã được giải quyết. Giữ nguyên luồng Warranty và ModuleRef; W2 không enroll/reserve/QR/handover WARRANTY hoặc đơn đã đóng. Writer được ủy quyền commit/push cùng nhánh, không merge PR/deploy/migrate DB chung. Release vẫn cần CI PostgreSQL GREEN và Lead read-only preflight schema/grants/ledger trước migration. DEV chưa có kho/tồn thật: cần Admin/SM nhập dữ liệu thật trước khi tuyên bố fulfillment hoạt động. Handover vẫn từ chối khi thiếu tracking-only/activation/cohort hợp lệ; không tự bật cờ. Sau release được duyệt phải restart backend trước runtime QA; không bulk rollback/delete lịch sử vật lý.
@@ -459,6 +461,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-04 20:54 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | Thêm Phase A domain dual consent/actual versioned thuần, giữ cutover đóng; ghi Phase B storage/auth/warehouse và gate Finance/team.
 - 2026-11-04 19:37 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | Chốt W3 scaffold và khóa cutover; ghi 3358 unit PASS/58 skipped, gate Finance/pháp lý, DELIVERY stock và PG/runtime chưa kiểm chứng.
 - 2026-11-04 18:45 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w2-warehouse-fulfillment-be-20261104 | Ghi CI đã xác minh JWT và 7 ca W2 PostgreSQL; sửa fixture receipt legacy sang order riêng, giữ unique active PRE_REPAIR.
 - 2026-11-04 18:34 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w2-warehouse-fulfillment-be-20261104 | Tích hợp Warranty từ dev 80fa61f, tách gate W2 và sửa JWT harness dùng effective secret; giữ CI/DB/runtime release gate.
@@ -498,4 +501,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-30 11:23 (UTC+7) | foxonworld | foxonworld/fixhome-bug-detector-backend-release-integration-20261030 | Tích hợp 12 patch BUG DETECTOR, hòa giải finance/booking và guard state machine; ghi hợp đồng, giới hạn PostgreSQL/runtime và gate Lead trước merge tự deploy.
 - 2026-10-29 16:14 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-failed-work-t9-20261029 | Thêm T9 read-only finance disposition và guard khoản thu mới, bảo toàn sibling checkout/tiền cũ; ghi blocker genuine failed work và giới hạn kiểm chứng.
 - 2026-10-29 16:02 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-safe-exit-t8-20261029 | Thêm T8 operational STOP/deassign với strict final proof, giữ nghĩa vụ cũ và hold checkout hóa đơn interrupted; ghi giới hạn T9/T10 và kiểm chứng tối thiểu.
-- 2026-10-29 13:53 (UTC+7) | foxonworld | foxonworld/fixhome-platform-first-backend-integration-20261029 | Hợp nhất T2 và T3b vào nhánh tích hợp cục bộ, giữ cả hai mục 3/5/8/9; chạy lại gate và ghi review release.

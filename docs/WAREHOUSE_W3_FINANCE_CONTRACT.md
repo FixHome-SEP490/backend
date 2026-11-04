@@ -189,3 +189,105 @@ không chạy DB tại máy writer. Không gọi courier hoặc chạy thử hà
 **READY_FOR_LEAD_REVIEW — source scaffold, NOT DEPLOYABLE / NOT ACTIVATED W3.**
 Lead giữ quyền commit/push/PR/migration/release; Finance/pháp lý, DELIVERY stock coupling,
 dual consent và toàn bộ payment/refund ledger vẫn là gate bắt buộc.
+
+## 9. Phase A — versioned dual-consent domain (source only)
+
+Checkpoint 04/11/2026, tiếp nối scaffold trên cùng nhánh. Chỉ thêm
+`src/modules/part-requests/delivery-consent.policy.ts` và spec tương ứng; không có
+consumer live, API, module registration, migration, ENV hoặc kích hoạt W3 mới.
+Các kết quả full suite ở mục 8 thuộc scaffold trước Phase A, không phải lần chạy lại
+cho phase này. W2 PICKUP, DELIVERY lịch sử, LEGACY 100/0 và finance guards giữ nguyên.
+
+### Giá trị, version và chuyển trạng thái
+
+- Hai hàm thuần: `createDeliveryProposal(scope, command, actor)` và
+  `applyDeliveryCommand(state, command, actor)`. Không dùng clock, random, I/O hay DB.
+  Output sao chép đầu vào cần thiết và đóng băng đệ quy; không mutate/freeze object của caller.
+- Scope cố định gồm `partRequestId`, `serviceOrderId`, `customerId`, `technicianId`,
+  `responsibleServiceManagerId`; ba actor ID phải khác nhau. Đây là dữ kiện phải được
+  server đọc/xác minh ở Phase B, không phải quyền từ payload client.
+- `version` là revision CAS, bắt đầu 1 và tăng sau mỗi command được chấp nhận.
+  `quoteVersion` chỉ tăng khi `REVISE`, kể cả cùng S nhưng sửa evidence, approved cost,
+  budget hoặc chủ động mở version mới. Initial `PROPOSE` đòi `expectedVersion=0`.
+- Command hợp lệ: `PROPOSE`, `REVISE`, `CONSENT`, `RECORD_ACTUAL`. Đúng SM đã bind mới
+  propose/revise/record actual. Đúng khách/thợ đã bind mới consent cho phần của mình.
+  Không có Admin override, role mới, lệnh dispatch, receive, payment hoặc terminal.
+- State chỉ có `AWAITING_DUAL_CONSENT` → `CONSENTED` → `ACTUAL_RECORDED`.
+  `REVISE` quay về awaiting, xóa cả hai consent và actual hiện hành nhưng giữ receipt cũ.
+  **ACTUAL_RECORDED không có nghĩa courier đã được xác minh ngoài đời, đã booking,
+  warehouse đã reserve/ISSUE, READY_FOR_DISPATCH hoặc được phép thanh toán.**
+
+### Ràng buộc consent và actual
+
+Quote/actual đều gọi `calculateShippingShares(S, 'W3_70_30_V1')` hiện có, không sao chép
+công thức ratio. Quote fingerprint SHA-256 bind scope, quoteVersion, S/c/t, budget,
+evidence và approved-cost reference. Consent cần `accepted=true`, đúng quote fingerprint,
+quoteVersion/S và đúng c hoặc t; receipt giữ actor/role, UUID v4 command ID, evidence ref
+và content fingerprint. Không auto-consent kể cả S=0; không dùng approval cũ thay consent.
+Các ID/evidence reference là opaque ASCII reference tối đa 256 ký tự; command ID là
+UUID v4 lowercase. Chỉ kiểm cú pháp reference, không chứng minh tồn tại hoặc nội dung.
+
+Actual chỉ được ghi sau cả hai consent cùng quote. Nếu actual > approved S,
+`RENEWED_DUAL_CONSENT_REQUIRED`: không thay state; phải `REVISE` quote mới với approved-cost
+và evidence mới được server xác minh, xin lại CẢ HAI consent rồi ghi actual. Exact replay
+consent v1 sau REVISE chỉ trả state mới, không phục hồi consent v1.
+
+Actual <= approved ceiling được đóng băng riêng cùng `approvedCeilingTotal`, quoteVersion,
+actual S/c/t, evidence và actor SM; giữ nguyên quote/consent và không sửa Invoice.
+Đây là quy tắc cụ thể của Phase A theo owner order mới nhất, bổ sung ngoại lệ actual dưới
+trần cho đề xuất sơ bộ ở mục 4. Không được ghi đè actual đã lưu: sửa actual/evidence cần
+REVISE và renewed dual consent, hoặc replay chính xác command đã ghi.
+
+Budget chỉ nhận L/C/D số nguyên không âm, kiểm bằng BigInt `L-C-D-t >= 0`; không clamp.
+`D>0` vẫn có thể biểu diễn khả năng chi trả trong mô hình nhưng luôn trả
+`payoutBlockReason=KNOWN_DEDUCTIONS_LEDGER_REQUIRED`; D=0 vẫn là
+`FINANCIAL_CUTOVER_CLOSED`. Không tạo debit, payout hoặc ledger đích cho D.
+
+### Replay, tính toàn vẹn và giới hạn
+
+Fingerprint command bind scope + actor/role + toàn bộ command canonical, gồm
+`expectedVersion`. Cùng key/payload đã commit replay trước CAS, không thêm receipt/version
+và không rewind state mới. Cùng key khác payload/actor hoặc đổi expectedVersion sau commit
+trả `COMMAND_CONFLICT`. Command mới phải đúng revision hiện tại; duplicate consent bằng
+key khác bị từ chối. Command lỗi không tạo receipt. Payload thừa/thiếu cũng bị từ chối.
+
+State được kiểm lại bằng replay lịch sử receipt đầy đủ và đối chiếu snapshot dẫn xuất;
+không tin một cờ CONSENTED hoặc các consent ghép từ hai nhánh race độc lập. Hash là
+content identity, **không phải chữ ký hay bằng chứng persisted**. Caller không được gửi
+state/receipt/evidence verdict làm thẩm quyền. Không prune lịch sử receipt của domain này.
+Replay có chi phí theo lịch sử; đây chưa phải thiết kế storage hiệu năng cho production.
+
+Pure functions không khóa DB, không chống được hai writer cùng đọc version cũ và cùng
+tạo nhánh revision mới. Unit test race chỉ chứng minh quy tắc CAS/replay trên giá trị;
+không chứng minh transaction, concurrency nhiều process, JWT/RBAC/IDOR hoặc courier thật.
+
+### Phase B bắt buộc trước integration
+
+Storage/version/receipt append-only, unique `(partRequestId, commandId)` và CAS/transaction
+cùng audit; xác thực JWT + quyền hiện tại/ownership/assignment/SM kho trước cả replay;
+resolve approved-cost và evidence thật, khóa order để kiểm tổng t của mọi delivery không
+vượt net labor còn lại sau commission/các deduction được duyệt. Không dùng lại cùng một
+budget cho nhiều request như thể mỗi request có toàn bộ tiền công riêng.
+
+Phải thiết kế và review warehouse DELIVERY reservation đủ SKU ở đúng một kho, physical
+ISSUE/courier dispatch proof/custody admission và vòng đời hủy; W2 hiện chỉ nhận PICKUP.
+Không gọi hàm mới từ luồng live trước phase riêng được duyệt. Finance/team/pháp lý vẫn
+phải duyệt ledger D, invoice actual-vs-ceiling, seller-of-record/tax/consent và tất cả
+payment/refund/payout consumers. Phase A không mở bất kỳ gate phát hành nào.
+
+### Kiểm chứng Phase A — Node 20.19.5
+
+- RED ban đầu: 50 failed/10 passed do domain chưa được triển khai; sửa fixture undefined
+  để thực sự gửi undefined thay vì default test helper. Regression mutable serialized replay
+  cũng đã được kiểm RED trước khi khôi phục immutable output.
+- Focused Vitest PASS: 5 spec, 108 test, 0 failed/0 skipped; gồm 62 test domain mới,
+  `shipping-finance.policy`, `invoice-shipping-snapshot`, `w3-cutover` và `context-doc`.
+- `npm run typecheck`: PASS sau sửa type narrowing, không dùng cast để bỏ qua lỗi đó.
+- `npm run lint`: PASS, 0 errors/4 warnings có sẵn ngoài allowlist.
+- Full suite/build, PostgreSQL, auth/API/concurrency/runtime và independent Finance review:
+  NOT VERIFIED trong Phase A; không chạy lại full suite hoặc tạo artifact runtime.
+- Review source theo scope: chỉ hai file domain/spec mới và hai tài liệu allowlist;
+  không live consumer, financial activation, DB/ENV write, commit/push/PR update/deploy.
+
+**READY_FOR_LEAD_REVIEW — Phase A source only; Phase B cần storage + transactional auth +
+warehouse DELIVERY integration và Finance/team approval.**

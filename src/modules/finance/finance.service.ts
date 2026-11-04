@@ -64,6 +64,7 @@ import {
 } from './vnpay/vnpay.util';
 import { loadVisitCharge, sameAllocations, type VisitCharge } from './visit-charge';
 import { VisitGroup } from '../visit-groups/entities/visit-group.entity';
+import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity';
 import { VisitGroupPayment } from '../visit-groups/entities/visit-group-payment.entity';
 import { Notification } from '../notifications/entities/notification.entity';
 import { SettlementService } from '../wallet/settlement.service';
@@ -194,7 +195,10 @@ export class FinanceService {
     });
     if (replay) {
       if (replay.scopeKind === scopeKind && replay.scopeId === scopeId &&
-          replay.voucherReservationId === (input.voucherReservationId ?? null)) return replay;
+          replay.voucherReservationId === (input.voucherReservationId ?? null)) {
+        await this.assertCashIntentReplayShippingAllowed(replay);
+        return replay;
+      }
       throw new BusinessException(ErrorCodes.CONFLICT, 'Mã thao tác đã được dùng.');
     }
     return this.dataSource.transaction(async manager => {
@@ -217,6 +221,7 @@ export class FinanceService {
             invoice.serviceOrderId !== scopeId) {
           throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Không tìm thấy đơn sửa chữa.');
         }
+        assertShippingFinancialCutoverAllowed(invoice);
         await this.assertNoStoppedCollection(manager, scopeId, scopeKind);
         const assignment = await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: scopeId, isActive: true } });
         if (!assignment || !order.completionRequestedAt ||
@@ -338,7 +343,10 @@ export class FinanceService {
         reference.technicianId !== actor.id) {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Không tìm thấy yêu cầu tiền mặt.');
     }
-    if (sameReplay(reference)) return reference;
+    if (sameReplay(reference)) {
+      await this.assertCashIntentReplayShippingAllowed(reference);
+      return reference;
+    }
     if (reference.status !== 'pending') throw new BusinessException(ErrorCodes.CONFLICT, 'Yêu cầu tiền mặt không còn chờ nhận.');
     if (reference.voucherReservationId) await this.assertFundedCollectionReady();
     try {
@@ -364,6 +372,7 @@ export class FinanceService {
               invoice.paymentStatus === PaymentStatus.PAID || await isCompletionHeld(manager, scopeId)) {
             throw new BusinessException(ErrorCodes.CONFLICT, 'Đơn hoặc kỹ thuật viên đã thay đổi.');
           }
+          assertShippingFinancialCutoverAllowed(invoice);
           const gross = this.requireWholeVnd(invoice.grandTotal, 'Invoice amount');
           allocations = [{ invoiceId: invoice.id, serviceOrderId: scopeId,
             originalGrossVnd: gross, customerDueVnd: quote?.total.customerDueVnd ?? gross }];
@@ -509,9 +518,93 @@ export class FinanceService {
       });
     } catch (error) {
       const latest = await this.dataSource.getRepository(CashPaymentIntent).findOneBy({ id: input.intentId });
-      if (latest && sameReplay(latest)) return latest;
+      if (latest && sameReplay(latest)) {
+        await this.assertCashIntentReplayShippingAllowed(latest);
+        return latest;
+      }
       throw error;
     }
+  }
+
+  /** Replays acknowledge an existing receipt, never collect again. Check immutable invoice
+   * money after ownership; lock Order first and avoid adding an invoice write lock to replay. */
+  private async assertCashIntentReplayShippingAllowed(intent: CashPaymentIntent): Promise<void> {
+    await this.dataSource.transaction(async manager => {
+      if (intent.scopeKind === 'VISIT_GROUP') {
+        const invalid = (): never => { throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Không tìm thấy phân bổ tiền mặt hợp lệ của lượt sửa.'); };
+        // Group lock precedes child reads. Replay never acquires invoice write locks.
+        const group = await manager.findOne(VisitGroup, { where: { id: intent.scopeId }, lock: { mode: 'pessimistic_write' } });
+        if (!group || group.customerId !== intent.customerId) invalid();
+        const items = await manager.find(VisitGroupItem, { where: { groupId: group.id } });
+        const bookings = await manager.find(Booking, { where: { visitGroupId: group.id } });
+        const bookingIds = new Set(bookings.map(row => row.id));
+        if (!items.length || items.length !== bookings.length || bookingIds.size !== bookings.length ||
+            new Set(items.map(row => row.bookingId)).size !== items.length ||
+            items.some(row => row.groupId !== group.id || !bookingIds.has(row.bookingId)) ||
+            bookings.some(row => row.customerId !== group.customerId || row.visitGroupId !== group.id)) invalid();
+        const orders = await manager.find(ServiceOrder, { where: { bookingId: In([...bookingIds]) }, order: { id: 'ASC' } });
+        const orderIds = new Set(orders.map(row => row.id));
+        if (!orders.length || orderIds.size !== orders.length || orders.some(row => !bookingIds.has(row.bookingId))) invalid();
+        const invoices = await manager.find(Invoice, { where: { serviceOrderId: In([...orderIds]) }, order: { id: 'ASC' } });
+        const byInvoice = new Map(invoices.map(row => [row.id, row]));
+        if (byInvoice.size !== invoices.length || invoices.some(row => !orderIds.has(row.serviceOrderId)) ||
+            !Array.isArray(intent.allocations) || !intent.allocations.length ||
+            new Set(intent.allocations.map(row => row?.invoiceId)).size !== intent.allocations.length ||
+            new Set(intent.allocations.map(row => row?.serviceOrderId)).size !== intent.allocations.length) invalid();
+        let gross = 0n, due = 0n;
+        for (const allocation of intent.allocations) {
+          const invoice = allocation && byInvoice.get(allocation.invoiceId);
+          if (!invoice || invoice.serviceOrderId !== allocation.serviceOrderId || !orderIds.has(allocation.serviceOrderId)) invalid();
+          const original = this.requireWholeVnd(allocation.originalGrossVnd, 'Cash allocation gross');
+          const customerDue = this.requireWholeVnd(allocation.customerDueVnd, 'Cash allocation due');
+          if (original !== this.requireWholeVnd(invoice.grandTotal, 'Invoice amount') || customerDue > original) invalid();
+          gross += BigInt(original); due += BigInt(customerDue);
+        }
+        if (gross !== BigInt(this.requireWholeVnd(intent.grossVnd, 'Cash intent gross')) ||
+            due !== BigInt(this.requireWholeVnd(intent.customerDueVnd, 'Cash intent due'))) invalid();
+        // Scan the COMPLETE owned membership, not only the untrusted allocation subset.
+        // Even a forged reduced intent/payment must not hide an omitted W3 child.
+        for (const invoice of invoices) assertShippingFinancialCutoverAllowed(invoice);
+        let expected: { invoiceId: string; serviceOrderId: string; amount: number }[];
+        if (intent.status === 'received') {
+          if (!intent.visitGroupPaymentId) invalid();
+          const payment = await manager.findOne(VisitGroupPayment, { where: { id: intent.visitGroupPaymentId } });
+          if (!payment || payment.id !== intent.visitGroupPaymentId || payment.visitGroupId !== group.id ||
+              payment.rail !== 'cash' || payment.status !== 'verified' || payment.requestedByUserId !== intent.technicianId ||
+              payment.idempotencyKey !== `CASH_INTENT:${intent.id}` ||
+              this.requireWholeVnd(payment.amount, 'Cash payment amount') !== intent.customerDueVnd) invalid();
+          expected = payment.allocations; // Frozen receipt, including invoices now PAID.
+        } else {
+          // Discover omitted current charges, but retain owned frozen allocations that are no
+          // longer chargeable (e.g. already paid/cancelled). Replay is not a new checkout.
+          const current = (await loadVisitCharge(manager, group.id)).allocations;
+          const currentIds = new Set(current.map(row => row.invoiceId));
+          expected = [...current, ...intent.allocations.filter(row => !currentIds.has(row.invoiceId)).map(row => ({
+            invoiceId: row.invoiceId, serviceOrderId: row.serviceOrderId,
+            amount: this.requireWholeVnd(byInvoice.get(row.invoiceId).grandTotal, 'Invoice amount'),
+          }))];
+        }
+        if (!Array.isArray(expected) || expected.length !== intent.allocations.length ||
+            new Set(expected.map(row => row?.invoiceId)).size !== expected.length ||
+            expected.some(row => !row || !intent.allocations.some(allocation => allocation.invoiceId === row.invoiceId &&
+              allocation.serviceOrderId === row.serviceOrderId && this.requireWholeVnd(row.amount, 'Cash replay allocation') ===
+              (intent.status === 'received' ? allocation.customerDueVnd : allocation.originalGrossVnd)))) invalid();
+        return;
+      }
+      if (intent.scopeKind !== 'SOLO') throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Không tìm thấy đơn sửa chữa.');
+      const order = await manager.findOne(ServiceOrder, { where: { id: intent.scopeId }, lock: { mode: 'pessimistic_write' } });
+      const booking = order && await manager.findOne(Booking, { where: { id: order.bookingId } });
+      const allocation = intent.allocations?.[0];
+      if (!order || !booking || booking.customerId !== intent.customerId || booking.visitGroupId ||
+          intent.allocations?.length !== 1 || !allocation?.invoiceId || allocation.serviceOrderId !== order.id) {
+        throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Không tìm thấy đơn sửa chữa.');
+      }
+      const invoice = await manager.findOne(Invoice, { where: { id: allocation.invoiceId, serviceOrderId: order.id } });
+      if (!invoice || invoice.id !== allocation.invoiceId || invoice.serviceOrderId !== order.id) {
+        throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Không tìm thấy đơn sửa chữa.');
+      }
+      assertShippingFinancialCutoverAllowed(invoice);
+    });
   }
 
   async cancelCashIntent(scopeKind: CashIntentScope, scopeId: string,
