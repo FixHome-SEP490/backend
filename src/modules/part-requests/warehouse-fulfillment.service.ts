@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { EntityManager, FindOptionsWhere, In } from 'typeorm';
-import { AccountStatus, FulfillmentMethod, PartRequestStatus, Role } from '../../shared/enums';
+import { AccountStatus, FulfillmentMethod, PartRequestStatus, PartRequestType, Role } from '../../shared/enums';
 import { Notification } from '../notifications/entities/notification.entity';
 import { User } from '../users/entities/user.entity';
 import { Warehouse } from '../warehouses/entities';
@@ -11,6 +11,7 @@ import { canonicalWarehouseQuantities, hasWholeRequestStock, warehouseBalance, W
 
 type Actor = { id: string; role: string };
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const eligibleRequestType = (type: PartRequestType) => [PartRequestType.PRE_REPAIR, PartRequestType.QUOTATION, PartRequestType.ADDITIONAL].includes(type);
 
 /** Caller owns Order -> Technician -> PartRequest locks. All writes use that SAME manager. */
 @Injectable()
@@ -56,13 +57,14 @@ export class WarehouseFulfillmentService {
 
   /** Creates ONLY new PICKUP allocations. Historical requests never enter this method. */
   async enroll(manager: EntityManager, request: PartRequest, actor: Actor): Promise<void> {
-    if (request.fulfillmentMethod !== FulfillmentMethod.PICKUP) return;
+    if (request.fulfillmentMethod !== FulfillmentMethod.PICKUP || !eligibleRequestType(request.requestType)) return;
     await manager.insert(WarehouseAllocation, { partRequestId: request.id, technicianId: request.technicianId,
       warehouseId: null, responsibleUserId: null, status: 'manual_assistance' });
     await this.reserve(manager, request, actor, `auto:${request.id}`, true);
   }
 
   async reserve(manager: EntityManager, request: PartRequest, actor: Actor, key: string, automatic = false) {
+    if (!eligibleRequestType(request.requestType)) throw new ConflictException('Yêu cầu này tiếp tục dùng luồng cấp linh kiện riêng.');
     if (!automatic && ![Role.SERVICE_MANAGER, Role.ADMIN].includes(actor.role as Role)) throw new ForbiddenException();
     const a = await this.allocation(manager, request.id);
     if (!a || request.fulfillmentMethod !== FulfillmentMethod.PICKUP) throw new ConflictException('Yêu cầu lịch sử tiếp tục dùng quy trình cũ.');
@@ -107,6 +109,7 @@ export class WarehouseFulfillmentService {
   }
 
   async qr(manager: EntityManager, request: PartRequest, actor: Actor, key: string) {
+    if (!eligibleRequestType(request.requestType)) throw new ConflictException('Yêu cầu này tiếp tục dùng luồng cấp linh kiện riêng.');
     const a = await this.allocation(manager, request.id);
     if (!a) throw new ConflictException('Yêu cầu không thuộc luồng kho mới.');
     const warehouse = await this.requireManager(manager, a, actor, false);
@@ -130,6 +133,7 @@ export class WarehouseFulfillmentService {
   }
 
   async issue(manager: EntityManager, request: PartRequest, actor: Actor, body: { qrToken: string; idempotencyKey: string }, enrollCustody: (at: Date) => Promise<void>) {
+    if (!eligibleRequestType(request.requestType)) throw new ConflictException('Yêu cầu này tiếp tục dùng luồng cấp linh kiện riêng.');
     const a = await this.allocation(manager, request.id);
     if (!a) throw new ConflictException('Yêu cầu không thuộc luồng kho mới.');
     const warehouse = await this.requireManager(manager, a, actor);
@@ -152,6 +156,7 @@ export class WarehouseFulfillmentService {
   }
 
   async acknowledge(manager: EntityManager, request: PartRequest, raw: string): Promise<boolean> {
+    if (request.requestType === PartRequestType.WARRANTY) return false;
     const a = await this.allocation(manager, request.id);
     if (!a) return false;
     if (a.status !== 'handed_over' || a.technicianId !== request.technicianId || !a.receiptHash ||
@@ -164,6 +169,7 @@ export class WarehouseFulfillmentService {
   }
 
   async release(manager: EntityManager, request: PartRequest, actor: Actor): Promise<void> {
+    if (request.requestType === PartRequestType.WARRANTY) return;
     const a = await this.allocation(manager, request.id);
     if (!a || ['handed_over','received','released'].includes(a.status)) return;
     const command = await this.command(manager, request.id, `release:${request.id}`, 'release', actor, {});
@@ -211,7 +217,8 @@ export class WarehouseFulfillmentService {
 /** Bulk lifecycle callers already hold the Order lock. No new transaction or connection.
  * Only W2 rows take the additional locks; historical requests never mutate warehouse stock. */
 export async function releaseWarehouseReservations(manager: EntityManager, where: FindOptionsWhere<PartRequest>): Promise<void> {
-  const requests = await manager.find(PartRequest, { where, order: { technicianId: 'ASC', id: 'ASC' } });
+  const requests = (await manager.find(PartRequest, { where, order: { technicianId: 'ASC', id: 'ASC' } }))
+    .filter(request => request.requestType !== PartRequestType.WARRANTY);
   if (!requests.length) return;
   const allocations = await manager.find(WarehouseAllocation, { where: { partRequestId: In(requests.map(r => r.id)), status: In(['manual_assistance','reserved','ready']) } });
   if (!allocations.length) return;

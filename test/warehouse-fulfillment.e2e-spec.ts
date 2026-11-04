@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { warehouseJwtConfig } from './warehouse-jwt-config';
 import { JwtModule, JwtService } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { Test } from '@nestjs/testing';
@@ -51,14 +52,15 @@ describe.skipIf(process.env.CI !== 'true')('W2 real PostgreSQL / JWT / custody a
     fulfillment = new Core(); custody = new Custody(db, fulfillment);
     const Audit = load('modules/audit-log/audit-log.service', 'AuditLogService');
     const Notices = load('modules/notifications/notifications.service', 'NotificationsService');
-    parts = new Parts(db, repo('PartRequest'), repo('PartRequestItem'), repo('FixHomePart'), new Audit(repo('AuditLog')), new Notices(repo('Notification')), custody, fulfillment);
+    parts = new Parts(db, repo('PartRequest'), repo('PartRequestItem'), repo('FixHomePart'), new Audit(repo('AuditLog')), new Notices(repo('Notification')), custody, undefined, fulfillment);
     const User = load('modules/users/entities/user.entity', 'User');
     const JwtStrategy = load('modules/auth/strategies/jwt.strategy', 'JwtStrategy');
     const RolesGuard = load('common/guards/roles.guard', 'RolesGuard');
-    const module = await Test.createTestingModule({ imports: [PassportModule, JwtModule.register({ secret })],
+    const auth = warehouseJwtConfig(secret);
+    const module = await Test.createTestingModule({ imports: [PassportModule, JwtModule.register({ secret: auth.secret })],
       controllers: [load('modules/part-requests/part-requests.controller', 'PartRequestsController'), load('modules/part-requests/part-returns.controller', 'PartReturnsController')],
       providers: [RolesGuard, JwtStrategy, { provide: getRepositoryToken(User), useValue: repo('User') },
-        { provide: ConfigService, useValue: new ConfigService({ JWT_ACCESS_SECRET: secret }) },
+        { provide: ConfigService, useValue: auth.config },
         { provide: Custody, useValue: custody }, { provide: Parts, useValue: parts }] }).compile();
     app = module.createNestApplication(); app.useLogger(false);
     app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }));

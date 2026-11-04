@@ -25,6 +25,7 @@ import {
   QueryWarrantyClaimsDto,
   QueryWarrantyStatsDto,
   RejectWarrantyClaimDto,
+  ReviewWarrantyDeclineDto,
   StaffWarrantyClaimDto,
   TechnicianWarrantyStatDto,
 } from './dto/warranty-claim.dto';
@@ -115,6 +116,20 @@ export class WarrantyClaimsManagerController {
     @Req() req: Req,
   ) {
     return { data: await this.service.reject(claimId, dto, req.user) };
+  }
+
+  @Post(':claimId/review-decline')
+  @Roles(Role.SERVICE_MANAGER)
+  @RequirePermission('support:resolve')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Manager: judge a decline or missed response; not justified costs the technician reputation' })
+  @ApiConflictResponse({ description: 'Nothing is waiting for review' })
+  async reviewDecline(
+    @Param('claimId', ParseUUIDPipe) claimId: string,
+    @Body() dto: ReviewWarrantyDeclineDto,
+    @Req() req: Req,
+  ) {
+    return { data: await this.service.reviewDecline(claimId, dto, req.user) };
   }
 
   @Post(':claimId/close')

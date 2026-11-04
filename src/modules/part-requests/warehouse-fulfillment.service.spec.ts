@@ -4,13 +4,13 @@ import { releaseWarehouseReservations, WarehouseFulfillmentService } from './war
 import { WarehouseAllocation } from './entities/warehouse-allocation.entity';
 import { PartRequest, PartRequestItem } from './entities';
 import { Warehouse } from '../warehouses/entities';
-import { Role, FulfillmentMethod, PartRequestStatus, PartSource } from '../../shared/enums';
+import { Role, FulfillmentMethod, PartRequestStatus, PartSource, PartRequestType } from '../../shared/enums';
 import { User } from '../users/entities/user.entity';
 
 function setup(status = 'reserved') {
   const allocation = { partRequestId: 'request', warehouseId: 'warehouse', responsibleUserId: 'sm', technicianId: 'tech', status,
     tokenVersion: 0, tokenHash: null, tokenExpiresAt: null, receiptHash: null, receiptExpiresAt: null };
-  const request = { id: 'request', serviceOrderId: 'order', technicianId: 'tech', status: PartRequestStatus.REQUESTED,
+  const request = { id: 'request', serviceOrderId: 'order', technicianId: 'tech', requestType: PartRequestType.PRE_REPAIR, status: PartRequestStatus.REQUESTED,
     fulfillmentMethod: FulfillmentMethod.PICKUP, items: [{ id: 'item', partCatalogId: 'sku', partSource: PartSource.FIXHOME, quantity: 2 }] };
   const manager = { findOne: vi.fn(async (entity: unknown): Promise<any> => entity === WarehouseAllocation ? allocation : entity === PartRequest ? request :
     entity === Warehouse ? { id: 'warehouse', responsibleUserId: 'sm', status: 'active' } : null),
@@ -20,6 +20,12 @@ function setup(status = 'reserved') {
 }
 
 describe('W2 physical authority and legacy safety', () => {
+  it('does not enroll Warranty pickup requests or mutate their warehouse state', async () => {
+    const { service, manager, request } = setup();
+    request.requestType = PartRequestType.WARRANTY;
+    await expect(service.enroll(manager as never, request as never, { id: 'sm', role: Role.SERVICE_MANAGER })).resolves.toBeUndefined();
+    expect(manager.insert).not.toHaveBeenCalled(); expect(manager.query).not.toHaveBeenCalled();
+  });
   it('keeps historical requests legacy without inventory mutation', async () => {
     const { service, manager, request } = setup();
     manager.findOne.mockResolvedValue(null);

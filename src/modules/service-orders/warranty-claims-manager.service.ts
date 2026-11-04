@@ -1,10 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, IsNull, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants/error-codes';
 import {
   AccountStatus,
+  PartSource,
   Role,
   WarrantyClaimStatus,
   WarrantyCustomerPrompt,
@@ -12,6 +13,8 @@ import {
   WarrantyVisitStatus,
 } from '../../shared/enums';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import { PartRequestsService } from '../part-requests/part-requests.service';
+import { QuotationItem } from '../quotations/entities/quotation-item.entity';
 import { User } from '../users/entities/user.entity';
 import {
   ApproveWarrantyProposalDto,
@@ -19,12 +22,17 @@ import {
   CloseWarrantyClaimDto,
   QueryWarrantyClaimsDto,
   RejectWarrantyClaimDto,
+  ReviewWarrantyDeclineDto,
   StaffWarrantyClaimDto,
   TechnicianWarrantyStatDto,
 } from './dto/warranty-claim.dto';
+import { AdditionalCostItem } from './entities/additional-cost-item.entity';
+import { InvoiceItem } from './entities/invoice-item.entity';
 import { WarrantyClaim } from './entities/warranty-claim.entity';
+import { WarrantyCoverage } from './entities/warranty-coverage.entity';
 import { WarrantyVisit } from './entities/warranty-visit.entity';
 import { WarrantyClaimReadService } from './warranty-claim-read.service';
+import { WarrantyCostService } from './warranty-cost.service';
 import { WarrantyNotifier } from './warranty-notifier.service';
 import type { OrderActor } from './order-access';
 
@@ -52,6 +60,9 @@ export class WarrantyClaimsManagerService {
     private readonly reader: WarrantyClaimReadService,
     private readonly notifier: WarrantyNotifier,
     private readonly auditLog: AuditLogService,
+    private readonly dataSource: DataSource,
+    private readonly cost: WarrantyCostService,
+    private readonly partRequests: PartRequestsService,
   ) {}
 
   async list(query: QueryWarrantyClaimsDto): Promise<{ data: StaffWarrantyClaimDto[]; total: number }> {
@@ -61,6 +72,7 @@ export class WarrantyClaimsManagerService {
     if (query.status) where.status = query.status;
     if (query.technicianId) where.technicianId = query.technicianId;
     if (query.unassigned) where.technicianId = IsNull();
+    if (query.declineReview) where.declineReview = query.declineReview;
     const [claims, total] = await this.claimRepo.findAndCount({
       where,
       relations: ['technician'],
@@ -102,7 +114,7 @@ export class WarrantyClaimsManagerService {
     await this.claimRepo.manager.transaction(async (tx) => {
       const updated = await tx.getRepository(WarrantyClaim).update(
         { id: claim.id, status: claim.status },
-        { technicianId: technician.id, status: WarrantyClaimStatus.SUBMITTED },
+        { technicianId: technician.id, status: WarrantyClaimStatus.SUBMITTED, lastReminderAt: null },
       );
       if (updated.affected !== 1) throw conflict('Yêu cầu bảo hành đã được xử lý.');
       await tx
@@ -130,31 +142,90 @@ export class WarrantyClaimsManagerService {
     const reasonCode = covered ? null : (dto.reasonCode ?? visit.notCoveredReasonCode);
     if (!covered && !reasonCode) throw invalid('Cần chọn lý do không bảo hành.');
     if (!covered && !dto.customerNote) throw invalid('Cần nhập nội dung giải thích gửi cho khách hàng.');
+    if (final !== proposed && !dto.overrideReason) throw invalid('Cần ghi lý do khi đổi kết luận của kỹ thuật viên.');
 
-    const updated = await this.claimRepo.update(
-      { id: claim.id, status: WarrantyClaimStatus.INSPECTED },
-      {
-        status: covered ? WarrantyClaimStatus.IN_PROGRESS : WarrantyClaimStatus.AWAITING_CUSTOMER,
-        awaitingPrompt: covered ? null : WarrantyCustomerPrompt.CONCLUSION,
-        customerResponse: null,
-        customerRespondedAt: null,
-        resolutionNotes: dto.customerNote ?? null,
-        finalResult: final,
-        finalReasonCode: reasonCode,
-        smOverrodeProposal: final !== proposed,
-        reviewedByManagerId: manager.id,
-        reviewedAt: new Date(),
-      },
-    );
-    if (updated.affected !== 1) throw conflict('Yêu cầu bảo hành đã được xử lý.');
+    // The decision and the FixHome part it may hand over are one commit.
+    await this.dataSource.transaction(async (tx) => {
+      const updated = await tx.getRepository(WarrantyClaim).update(
+        { id: claim.id, status: WarrantyClaimStatus.INSPECTED },
+        {
+          status: covered ? WarrantyClaimStatus.IN_PROGRESS : WarrantyClaimStatus.AWAITING_CUSTOMER,
+          awaitingPrompt: covered ? null : WarrantyCustomerPrompt.CONCLUSION,
+          awaitingSince: covered ? null : new Date(),
+          customerResponse: null,
+          customerRespondedAt: null,
+          resolutionNotes: dto.customerNote ?? null,
+          finalResult: final,
+          finalReasonCode: reasonCode,
+          smOverrodeProposal: final !== proposed,
+          reviewedByManagerId: manager.id,
+          reviewedAt: new Date(),
+        },
+      );
+      if (updated.affected !== 1) throw conflict('Yêu cầu bảo hành đã được xử lý.');
+      if (covered) await this.openPartSupport(tx, claim, final, dto, manager);
+    });
 
-    await this.audit(manager, 'WARRANTY_PROPOSAL_APPROVED', claim, { proposed }, { final, reasonCode, overridden: final !== proposed });
+    await this.audit(manager, 'WARRANTY_PROPOSAL_APPROVED', claim, { proposed }, { final, reasonCode, overridden: final !== proposed, overrideReason: dto.overrideReason ?? null });
     if (covered) {
       await this.notifier.toUser(claim.technicianId, 'Yêu cầu bảo hành đã được duyệt', 'Vui lòng thực hiện bảo hành miễn phí cho khách hàng.', 'WARRANTY_APPROVED', claim.serviceOrderId);
       await this.notifier.toUser(claim.customerId, 'Yêu cầu bảo hành được chấp nhận', 'Kỹ thuật viên sẽ thực hiện bảo hành miễn phí cho bạn.', 'WARRANTY_DECISION_MADE', claim.serviceOrderId);
     } else {
       await this.notifier.toUser(claim.customerId, 'Cần bạn phản hồi về kết luận bảo hành', 'Vui lòng xem kết luận và cho biết bạn có đồng ý không.', 'WARRANTY_CUSTOMER_RESPONSE_NEEDED', claim.serviceOrderId);
     }
+    return this.view(await this.mustFind(claim.id));
+  }
+
+  /**
+   * FixHome supplies the replacement part only when the fault is the part (PO 04/11/2026). A
+   * fault in the technician's workmanship still gets the part, but the technician pays for it;
+   * a part the technician bought stays theirs to replace.
+   */
+  private async openPartSupport(
+    tx: EntityManager,
+    claim: WarrantyClaim,
+    final: WarrantyInspectionResult,
+    dto: ApproveWarrantyProposalDto,
+    actor: OrderActor,
+  ): Promise<void> {
+    let parts = dto.replacementParts ?? [];
+    if (!parts.length && final === WarrantyInspectionResult.COVERED_PART) {
+      const coverage = await tx.findOneBy(WarrantyCoverage, { id: claim.warrantyCoverageId });
+      const line = coverage?.invoiceItemId ? await tx.findOneBy(InvoiceItem, { id: coverage.invoiceItemId }) : null;
+      // A labor line or a part the technician bought: nothing for FixHome to supply.
+      if (!line || line.partSource !== PartSource.FIXHOME) return;
+      const source = line.sourceItemId
+        ? (await tx.findOneBy(QuotationItem, { id: line.sourceItemId })) ?? (await tx.findOneBy(AdditionalCostItem, { id: line.sourceItemId }))
+        : null;
+      if (!source?.partCatalogId) throw invalid('Chọn linh kiện FixHome cấp cho lần bảo hành này.');
+      parts = [{ partCatalogId: source.partCatalogId, quantity: line.quantity }];
+    }
+    if (!parts.length) return;
+    if (!claim.technicianId) throw invalid('Cần phân công kỹ thuật viên trước khi cấp linh kiện.');
+    await this.partRequests.createWarrantyRequest(tx, {
+      claim, items: parts, actor,
+    });
+  }
+
+  /**
+   * A decline the system could not verify, or a technician who never answered or showed, waits
+   * here. Only a manager's "not justified" costs reputation (same rule as cancellations).
+   */
+  async reviewDecline(claimId: string, dto: ReviewWarrantyDeclineDto, manager: OrderActor): Promise<StaffWarrantyClaimDto> {
+    const claim = await this.mustFind(claimId);
+    if (claim.declineReview !== 'pending') throw conflict('Không có từ chối hoặc vắng mặt nào đang chờ xét.');
+    const cause = claim.declineReasonCode === 'no_show' ? 'no_show' : 'decline';
+    await this.dataSource.transaction(async (tx) => {
+      const updated = await tx.getRepository(WarrantyClaim).update(
+        { id: claim.id, declineReview: 'pending' },
+        { declineReview: dto.valid ? 'valid' : 'invalid' },
+      );
+      if (updated.affected !== 1) throw conflict('Yêu cầu bảo hành đã được xử lý.');
+      if (!dto.valid) {
+        await this.cost.penalize(tx, claim, cause, manager.id, cause === 'no_show' ? 'không đến kiểm tra bảo hành' : 'từ chối bảo hành không chính đáng');
+      }
+    });
+    await this.audit(manager, 'WARRANTY_DECLINE_REVIEWED', claim, { declineReview: 'pending' }, { valid: dto.valid, cause, note: dto.note });
     return this.view(await this.mustFind(claim.id));
   }
 
@@ -203,23 +274,41 @@ export class WarrantyClaimsManagerService {
         'Yêu cầu bị phản đối cần do một quản lý khác xem xét lại.',
       );
     }
+    const unfixed = dto.outcome === 'unfixed';
     const customerAgreed =
       claim.status === WarrantyClaimStatus.AWAITING_CUSTOMER && claim.customerResponse === 'agreed';
-    if (!dto.note && !customerAgreed) throw invalid('Cần nhập ghi chú khi đóng yêu cầu này.');
+    if (!dto.note && (!customerAgreed || unfixed)) throw invalid('Cần nhập ghi chú khi đóng yêu cầu này.');
+    if (unfixed && claim.finalResult === WarrantyInspectionResult.NOT_COVERED) {
+      throw invalid('Yêu cầu không thuộc bảo hành không thể đóng với kết cục không khắc phục được.');
+    }
 
-    const updated = await this.claimRepo.update(
-      { id: claim.id, status: claim.status },
-      {
-        status: dto.outcome === 'resolved' ? WarrantyClaimStatus.RESOLVED : WarrantyClaimStatus.REJECTED,
-        awaitingPrompt: null,
-        ...(dto.note ? { resolutionNotes: dto.note } : {}),
-        resolvedAt: new Date(),
-        ...(claim.reviewedByManagerId ? {} : { reviewedByManagerId: manager.id, reviewedAt: new Date() }),
-      },
-    );
-    if (updated.affected !== 1) throw conflict('Yêu cầu bảo hành đã được xử lý.');
-    await this.audit(manager, 'WARRANTY_CLAIM_CLOSED', claim, { status: claim.status }, { outcome: dto.outcome });
-    const message = dto.outcome === 'resolved' ? 'Yêu cầu bảo hành đã hoàn tất.' : 'Yêu cầu bảo hành đã được đóng.';
+    let refund: number | null = null;
+    await this.dataSource.transaction(async (tx) => {
+      const updated = await tx.getRepository(WarrantyClaim).update(
+        { id: claim.id, status: claim.status },
+        {
+          status: dto.outcome === 'rejected' ? WarrantyClaimStatus.REJECTED : WarrantyClaimStatus.RESOLVED,
+          outcomeCode: unfixed ? 'unfixed' : dto.outcome === 'resolved' ? 'fixed' : 'rejected',
+          awaitingPrompt: null,
+          awaitingSince: null,
+          ...(dto.note ? { resolutionNotes: dto.note } : {}),
+          resolvedAt: new Date(),
+          ...(claim.reviewedByManagerId ? {} : { reviewedByManagerId: manager.id, reviewedAt: new Date() }),
+        },
+      );
+      if (updated.affected !== 1) throw conflict('Yêu cầu bảo hành đã được xử lý.');
+      if (unfixed) {
+        refund = await this.cost.settleUnfixed(tx, claim, dto.refundAmount);
+        await tx.getRepository(WarrantyClaim).update({ id: claim.id }, { refundAmount: refund });
+        await this.cost.penalize(tx, claim, 'unfixed', manager.id, 'không khắc phục được trong hạn bảo hành');
+      }
+      await this.partRequests.settleWarrantyRequest(tx, claim.id);
+    });
+
+    await this.audit(manager, 'WARRANTY_CLAIM_CLOSED', claim, { status: claim.status }, { outcome: dto.outcome, refund });
+    const message = unfixed
+      ? `Không khắc phục được trong hạn bảo hành. ${Number(refund).toLocaleString('vi-VN')} ₫ đã được hoàn vào ví FixHome của khách.`
+      : dto.outcome === 'resolved' ? 'Yêu cầu bảo hành đã hoàn tất.' : 'Yêu cầu bảo hành đã được đóng.';
     await this.notifier.toUser(claim.customerId, 'Yêu cầu bảo hành đã đóng', message, 'WARRANTY_DECISION_MADE', claim.serviceOrderId);
     await this.notifier.toUser(claim.technicianId, 'Yêu cầu bảo hành đã đóng', message, 'WARRANTY_DECISION_MADE', claim.serviceOrderId);
     return this.view(await this.mustFind(claim.id));

@@ -73,7 +73,7 @@ export class WarehousePartFulfillment1793466000003 implements MigrationInterface
   /** Preserve legacy admission and immutable cohort/version checks. W2 is admitted ONLY
    * from its durable physical ISSUE evidence, never a technician claim or an allocation alone. */
   private async custodyAdmission(q: QueryRunner, w2: boolean): Promise<void> {
-    const physicalIssue = w2 ? `OR (NEW.tracking_only AND EXISTS (
+    const physicalIssue = w2 ? `OR (NEW.tracking_only AND r.request_type::text IN ('pre_repair','quotation','additional') AND EXISTS (
       SELECT 1 FROM part_request_warehouse_allocations wa
       JOIN warehouse_fulfillment_commands c ON c.part_request_id=wa.part_request_id AND c.kind='issue'
         AND c.actor_user_id=wa.handed_over_by

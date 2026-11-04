@@ -76,6 +76,11 @@ export class WarrantyClaimReadService {
             }
           : null,
         visit: visit ? toVisitView(visit) : null,
+        declineReview: claim.declineReview ?? null,
+        declineReasonCode: claim.declineReasonCode ?? null,
+        outcomeCode: claim.outcomeCode ?? null,
+        refundAmount: claim.refundAmount ?? null,
+        noShowFlaggedAt: claim.noShowFlaggedAt ?? null,
       };
     });
   }

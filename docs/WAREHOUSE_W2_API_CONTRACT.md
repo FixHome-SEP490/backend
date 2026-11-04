@@ -103,9 +103,16 @@ It extends `protect_part_custody()` admission with a tracking-only W2 branch req
 physical ISSUE ledger, assigned SM, warehouse, original quantities and handover timestamp.
 The legacy received_at branch and custody cohort/version immutability stay enforced. Historical
 migration files and runtime custody flags are unchanged. Rollback refuses ANY W2 history.
-Shared DEV migration/merge/deploy BLOCKED pending Lead reconciliation of already-applied warranty
-migrations `1793466000000`–`1793466000002` with official source; never undo warranty history.
-Lead owns migration, commit/push/PR/merge/deploy. Zero real DEV warehouses/stock means manual
+Official `origin/dev` at `80fa61f` includes warranty migrations `1793466000000`–`1793466000002`;
+that source mismatch is resolved. W2 stays limited to PRE_REPAIR / approved QUOTATION / ADDITIONAL
+on active service orders. WARRANTY requests retain their existing claim-based READY, inspection,
+receive and charging paths, including on completed orders; W2 reserve/QR/handover return 409.
+ModuleRef resolves WarrantyCostService as before; warehouseFulfillment is a separate injected provider.
+Merge/deploy still require GREEN CI and Lead shared-DB read-only preflight; never undo warranty history.
+Writer is authorized to commit/push to the existing PR branch; Lead owns migration/merge/deploy.
+Zero real DEV warehouses/stock means manual
 assistance is expected, NOT operational fulfillment. Real fulfillment requires Admin-created real
 warehouse + active primary SM + documented real stock-in + existing custody rollout prerequisites.
 PostgreSQL concurrency, authenticated HTTP and Web runtime remain NOT VERIFIED until run.
+The CI JWT harness signs using the same effective ConfigService secret as Passport, including
+environment overrides. It keeps the real JwtAuthGuard; absent and incorrectly signed tokens remain 401.
