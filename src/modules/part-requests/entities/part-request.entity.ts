@@ -62,6 +62,22 @@ export class PartRequest extends BaseEntity {
   @Column({ name: 'charge_technician', type: 'boolean', default: false })
   chargeTechnician: boolean;
 
+  // Warranty only: what the manager found on the faulty part brought back to the warehouse.
+  @Column({ name: 'faulty_inspection_result', type: 'varchar', length: 16, nullable: true })
+  faultyInspectionResult?: 'manufacturer' | 'installation' | 'undetermined' | null;
+
+  @Column({ name: 'faulty_inspection_note', type: 'text', nullable: true })
+  faultyInspectionNote?: string | null;
+
+  @Column({ name: 'faulty_inspection_evidence', type: 'jsonb', nullable: true })
+  faultyInspectionEvidence?: string[] | null;
+
+  @Column({ name: 'faulty_inspected_at', type: 'timestamptz', nullable: true })
+  faultyInspectedAt?: Date | null;
+
+  @Column({ name: 'faulty_inspected_by', type: 'uuid', nullable: true })
+  faultyInspectedBy?: string | null;
+
   // QR handover token — generated when SM marks READY
   @Column({ name: 'qr_token', type: 'varchar', length: 128, nullable: true })
   qrToken?: string | null;

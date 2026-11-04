@@ -44,6 +44,7 @@ import {
   ReceivePartRequestDto,
   UpdateItemUsageDto,
   MarkReadyDto,
+  FaultyInspectionDto,
   MarkDeliveringDto,
   QueryPartRequestsDto,
 } from './dto';
@@ -108,12 +109,12 @@ export class PartRequestsService {
   /**
    * Free FixHome parts for a warranty re-service (PO 04/11/2026). Created in the approval
    * transaction; the claim's technician collects them with the usual READY and QR handover.
-   * `chargeTechnician` marks a fault in the technician's own workmanship: they pay for the part
-   * when they receive it. Staff approve; there is no price on the customer's side.
+   * Who pays the part is decided later by the manager's inspection of the faulty part, which must
+   * precede READY. Staff approve; there is no price on the customer's side.
    */
   async createWarrantyRequest(
     manager: EntityManager,
-    input: { claim: WarrantyClaim; chargeTechnician: boolean; items: Array<{ partCatalogId: string; quantity: number }>; actor: { id: string; role: string } },
+    input: { claim: WarrantyClaim; items: Array<{ partCatalogId: string; quantity: number }>; actor: { id: string; role: string } },
   ): Promise<PartRequest> {
     const { claim, items, actor } = input;
     if (!claim.technicianId) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Warranty claim has no technician');
@@ -140,16 +141,53 @@ export class PartRequestsService {
     const request = await manager.save(PartRequest, manager.create(PartRequest, {
       serviceOrderId: claim.serviceOrderId, technicianId: claim.technicianId, requestType: PartRequestType.WARRANTY,
       fulfillmentMethod: FulfillmentMethod.PICKUP, shippingFee: 0, status: PartRequestStatus.REQUESTED,
-      warrantyClaimId: claim.id, chargeTechnician: input.chargeTechnician,
-      reason: input.chargeTechnician ? 'Warranty part, workmanship fault (technician pays)' : 'Warranty part, FixHome part defect (FixHome pays)',
+      warrantyClaimId: claim.id, chargeTechnician: false,
+      reason: 'Warranty part: faulty part must be inspected before it is issued',
     }));
     request.items = await manager.save(PartRequestItem, rows.map((row) => ({ ...row, partRequestId: request.id })) as PartRequestItem[]);
     await this.auditLogService.logWithManager(manager, {
       actorUserId: actor.id, actorRole: actor.role, action: 'WARRANTY_PART_REQUEST_CREATED',
       resourceType: 'part_request', resourceId: request.id,
-      after: { warrantyClaimId: claim.id, chargeTechnician: input.chargeTechnician, itemCount: rows.length },
+      after: { warrantyClaimId: claim.id, itemCount: rows.length },
     });
     return request;
+  }
+
+  /**
+   * What the manager found on the faulty part (PO 04/11/2026). Installation fault: the technician
+   * pays the new part when they receive it; manufacturer fault and undetermined: FixHome pays.
+   * Can be corrected until the technician has received the part, then it is locked.
+   */
+  async recordFaultyInspection(requestId: string, dto: FaultyInspectionDto, actor: { id: string; role: string }): Promise<PartRequest> {
+    if (actor.role !== Role.SERVICE_MANAGER) throw new ForbiddenException('Service Manager role required');
+    return this.dataSource.transaction(async (manager: EntityManager) => {
+      const { request } = await this.lockRequest(manager, requestId, actor);
+      if (request.requestType !== PartRequestType.WARRANTY) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Chỉ yêu cầu linh kiện bảo hành mới có bước kiểm tra linh kiện hỏng.');
+      }
+      if (![PartRequestStatus.REQUESTED, PartRequestStatus.READY, PartRequestStatus.DELIVERING].includes(request.status)) {
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Kỹ thuật viên đã nhận linh kiện nên không đổi được kết quả kiểm tra.');
+      }
+      const note = dto.note?.trim() ?? '';
+      const evidence = dto.evidenceRefs?.map((ref) => ref.trim()).filter(Boolean) ?? [];
+      if (dto.result === 'installation' && (note.length < 10 || !evidence.length)) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Kết luận do lắp đặt cần ghi chú và ít nhất một ảnh linh kiện hỏng.');
+      }
+      const before = request.faultyInspectionResult ?? null;
+      request.faultyInspectionResult = dto.result;
+      request.faultyInspectionNote = note || null;
+      request.faultyInspectionEvidence = evidence.length ? evidence : null;
+      request.faultyInspectedAt = new Date();
+      request.faultyInspectedBy = actor.id;
+      request.chargeTechnician = dto.result === 'installation';
+      const saved = await manager.save(PartRequest, request);
+      await this.auditLogService.logWithManager(manager, {
+        actorUserId: actor.id, actorRole: actor.role, action: 'WARRANTY_FAULTY_PART_INSPECTED',
+        resourceType: 'part_request', resourceId: requestId,
+        before: { result: before }, after: { result: dto.result, chargeTechnician: request.chargeTechnician },
+      });
+      return saved;
+    });
   }
 
   /** The claim closed: a received request is settled, anything not yet handed over is cancelled. */
@@ -539,6 +577,11 @@ export class PartRequestsService {
           ErrorCodes.NOT_FOUND,
           'Part request not found',
         );
+      }
+
+      // The replacement is issued only after the faulty part was looked at: the result says who pays.
+      if (request.requestType === PartRequestType.WARRANTY && !request.faultyInspectionResult) {
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Chưa kiểm tra linh kiện hỏng nên chưa thể chuẩn bị linh kiện thay thế.');
       }
 
       // Check state machine

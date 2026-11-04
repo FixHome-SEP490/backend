@@ -275,7 +275,7 @@ describe('manager approve: who pays for the part', () => {
 
     expect(partRequests.createWarrantyRequest).toHaveBeenCalledWith(
       decisionTx,
-      expect.objectContaining({ chargeTechnician: false, items: [{ partCatalogId: 'part-9', quantity: 2 }] }),
+      expect.objectContaining({ items: [{ partCatalogId: 'part-9', quantity: 2 }] }),
     );
   });
 
@@ -292,7 +292,7 @@ describe('manager approve: who pays for the part', () => {
     expect(labor.partRequests.createWarrantyRequest).not.toHaveBeenCalled();
   });
 
-  it('charges the technician for a part a workmanship fault made necessary', async () => {
+  it('lets the manager pick a part for a workmanship fault; who pays is decided by the inspection of the faulty part', async () => {
     const { service, decisionTx, partRequests } = makeService({
       visits: [makeVisit({ proposedResult: WarrantyInspectionResult.COVERED_WORKMANSHIP })],
     });
@@ -301,7 +301,7 @@ describe('manager approve: who pays for the part', () => {
 
     expect(partRequests.createWarrantyRequest).toHaveBeenCalledWith(
       decisionTx,
-      expect.objectContaining({ chargeTechnician: true, items: [{ partCatalogId: 'part-9', quantity: 1 }] }),
+      expect.objectContaining({ items: [{ partCatalogId: 'part-9', quantity: 1 }] }),
     );
   });
 

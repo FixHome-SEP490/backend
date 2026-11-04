@@ -109,6 +109,32 @@ export class MarkReadyDto {
   note?: string;
 }
 
+// ── SM: inspect the faulty part of a warranty request ──
+
+export const FAULTY_INSPECTION_RESULTS = ['manufacturer', 'installation', 'undetermined'] as const;
+export type FaultyInspectionResult = (typeof FAULTY_INSPECTION_RESULTS)[number];
+
+export class FaultyInspectionDto {
+  @ApiProperty({ enum: FAULTY_INSPECTION_RESULTS, description: 'manufacturer and undetermined: FixHome pays the new part; installation: the technician pays' })
+  @IsIn(FAULTY_INSPECTION_RESULTS)
+  result: FaultyInspectionResult;
+
+  @ApiPropertyOptional({ minLength: 10, maxLength: 2000, description: 'Required for installation' })
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @Length(10, 2000)
+  note?: string;
+
+  @ApiPropertyOptional({ type: [String], maxItems: 10, description: 'Photos of the faulty part; required for installation' })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @IsString({ each: true })
+  @MaxLength(512, { each: true })
+  evidenceRefs?: string[];
+}
+
 // ── SM: Mark Delivering ──
 
 export class MarkDeliveringDto {

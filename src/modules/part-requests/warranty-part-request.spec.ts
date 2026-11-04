@@ -60,16 +60,16 @@ const make = (options: { claimStatus?: WarrantyClaimStatus; requestStatus?: Part
 };
 
 describe('createWarrantyRequest', () => {
-  it('opens a request tied to the claim, priced at the selling price and charged only for a workmanship fault', async () => {
+  it('opens a request tied to the claim at the selling price; nobody is charged until the faulty part is inspected', async () => {
     const { service, manager, claim } = make();
 
     const request = await service.createWarrantyRequest(manager, {
-      claim: claim as any, chargeTechnician: true, items: [{ partCatalogId: 'part-9', quantity: 1 }, { partCatalogId: 'part-9', quantity: 2 }], actor: SM,
+      claim: claim as any, items: [{ partCatalogId: 'part-9', quantity: 1 }, { partCatalogId: 'part-9', quantity: 2 }], actor: SM,
     });
 
     expect(request).toMatchObject({
       requestType: PartRequestType.WARRANTY, warrantyClaimId: 'claim-1', technicianId: TECH.id,
-      chargeTechnician: true, status: PartRequestStatus.REQUESTED, shippingFee: 0,
+      chargeTechnician: false, status: PartRequestStatus.REQUESTED, shippingFee: 0,
     });
     const rows = manager.save.mock.calls.find((call: any[]) => call[0].name === 'PartRequestItem')![1];
     expect(rows).toEqual([expect.objectContaining({
@@ -78,7 +78,7 @@ describe('createWarrantyRequest', () => {
   });
 
   it('refuses a claim without a technician, an empty or bad list, an inactive part and a second request', async () => {
-    const base = { chargeTechnician: false, actor: SM };
+    const base = { actor: SM };
     const nobody = make({ claimTechnician: null });
     await expect(nobody.service.createWarrantyRequest(nobody.manager, { ...base, claim: nobody.claim as any, items: [{ partCatalogId: 'part-9', quantity: 1 }] }))
       .rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
@@ -101,6 +101,63 @@ describe('createWarrantyRequest', () => {
     twice.manager.findOneBy.mockResolvedValueOnce({ id: 'pr-existing' });
     await expect(twice.service.createWarrantyRequest(twice.manager, { ...base, claim: twice.claim as any, items: [{ partCatalogId: 'part-9', quantity: 1 }] }))
       .rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+  });
+});
+
+describe('recordFaultyInspection and the READY gate', () => {
+  const dto = (overrides: Record<string, unknown> = {}) => ({ result: 'manufacturer', ...overrides }) as any;
+  const installation = { result: 'installation', note: 'Đấu sai cực dây nguồn, chân cắm cháy.', evidenceRefs: ['photo-1'] };
+
+  it('decides who pays: installation is the technician, manufacturer and undetermined are FixHome', async () => {
+    for (const [result, charged] of [['installation', true], ['manufacturer', false], ['undetermined', false]] as const) {
+      const { service, request, audit } = make({ requestStatus: PartRequestStatus.REQUESTED, charge: !charged });
+      await service.recordFaultyInspection('pr-1', result === 'installation' ? installation as any : dto({ result }), SM);
+      expect(request).toMatchObject({ faultyInspectionResult: result, chargeTechnician: charged, faultyInspectedBy: SM.id });
+      expect(audit.logWithManager).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'WARRANTY_FAULTY_PART_INSPECTED' }));
+    }
+  });
+
+  it('refuses an installation verdict without a written reason and a photo, and bad input', async () => {
+    for (const bad of [{ result: 'installation' }, { ...installation, note: 'ngắn' }, { ...installation, evidenceRefs: [] }]) {
+      const { service, request } = make({ requestStatus: PartRequestStatus.REQUESTED });
+      await expect(service.recordFaultyInspection('pr-1', bad as any, SM)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+      expect(request.faultyInspectionResult).toBeUndefined();
+    }
+  });
+
+  it('can be corrected until the technician receives the part, then it is locked', async () => {
+    const open = make({ requestStatus: PartRequestStatus.READY });
+    open.request.faultyInspectionResult = 'undetermined';
+    await open.service.recordFaultyInspection('pr-1', installation as any, SM);
+    expect(open.request).toMatchObject({ faultyInspectionResult: 'installation', chargeTechnician: true });
+
+    for (const status of [PartRequestStatus.RECEIVED, PartRequestStatus.COMPLETED]) {
+      const locked = make({ requestStatus: status });
+      await expect(locked.service.recordFaultyInspection('pr-1', dto(), SM)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+    }
+  });
+
+  it('is for service managers and warranty requests only', async () => {
+    const tech = make({ requestStatus: PartRequestStatus.REQUESTED });
+    await expect(tech.service.recordFaultyInspection('pr-1', dto(), TECH)).rejects.toThrow(/Service Manager/);
+
+    const ordinary = make({ requestStatus: PartRequestStatus.REQUESTED });
+    ordinary.request.requestType = PartRequestType.ADDITIONAL;
+    ordinary.manager.findOne.mockImplementation(async (entity: { name: string }) => (entity.name === 'PartRequest' ? ordinary.request : null));
+    ordinary.manager.findOneBy.mockResolvedValue(null);
+    await expect(ordinary.service.recordFaultyInspection('pr-1', dto(), SM)).rejects.toBeDefined();
+  });
+
+  it('does not issue the replacement before the faulty part was inspected', async () => {
+    const blocked = make({ requestStatus: PartRequestStatus.REQUESTED });
+    await expect(blocked.service.markReady('pr-1', SM)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+    expect(blocked.request.status).toBe(PartRequestStatus.REQUESTED);
+
+    const inspected = make({ requestStatus: PartRequestStatus.REQUESTED });
+    inspected.request.faultyInspectionResult = 'manufacturer';
+    await inspected.service.markReady('pr-1', SM);
+    expect(inspected.request.status).toBe(PartRequestStatus.READY);
+    expect(inspected.request.qrToken).toBeTruthy();
   });
 });
 

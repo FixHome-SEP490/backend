@@ -203,7 +203,7 @@ export class WarrantyClaimsManagerService {
     if (!parts.length) return;
     if (!claim.technicianId) throw invalid('Cần phân công kỹ thuật viên trước khi cấp linh kiện.');
     await this.partRequests.createWarrantyRequest(tx, {
-      claim, chargeTechnician: final === WarrantyInspectionResult.COVERED_WORKMANSHIP, items: parts, actor,
+      claim, items: parts, actor,
     });
   }
 
