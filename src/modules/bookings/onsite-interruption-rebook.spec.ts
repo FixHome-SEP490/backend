@@ -16,7 +16,7 @@ import { BookingStatus, CheckInResult, PaymentStatus, Role, ServiceOrderStatus, 
 
 /** Real command, proof, draft, confirmation, Booking.create and VisitGroup.create.
  * Only persistence/config are doubled. This is not PostgreSQL concurrency proof. */
-function fixture(stopped = 1, grouped = false) {
+function fixture(stopped = 1, grouped = false, groupSize = 3) {
   const customer = { id: randomUUID(), role: Role.CUSTOMER };
   const technician = { id: randomUUID(), role: Role.TECHNICIAN };
   const serviceId = randomUUID(); const addressId = randomUUID(); const categoryId = randomUUID();
@@ -32,7 +32,7 @@ function fixture(stopped = 1, grouped = false) {
     VisitGroup: groupId ? [{ id: groupId, customerId: customer.id, addressId }] : [], VisitGroupItem: [],
     InterruptionRebook: [], InterruptionRebookSource: [],
   };
-  for (let i = 0; i < (grouped ? 3 : 1); i++) {
+  for (let i = 0; i < (grouped ? groupSize : 1); i++) {
     const bookingId = randomUUID(); const orderId = randomUUID();
     rows.Booking.push({ id: bookingId, customerId: customer.id, serviceId, addressId,
       visitGroupId: groupId, status: BookingStatus.MATCHED, quantity: 1, description: `Synthetic device ${i + 1}`,
@@ -431,5 +431,16 @@ describe('verified onsite interruption customer self-service', () => {
     const h = fixture(); await h.stop();
     await expect(new RepairFailureVoucherEvidence().failure(h.manager, h.rows.SupportCase[0].id)).rejects.toThrow();
     expect(h.rows.VoucherClaim ?? []).toHaveLength(0);
+  });
+
+  it('rebooks five interrupted child bookings as one new VisitGroup', async () => {
+    const h = fixture(5, true, 5);
+    await h.stop();
+    const result = await h.submit(h.body());
+    expect(result.targetKind).toBe('visit_group');
+    expect(result.items).toHaveLength(5);
+    expect(h.rows.Booking).toHaveLength(10);
+    expect(h.rows.VisitGroupItem.filter(item => item.groupId === result.visitGroupId)).toHaveLength(5);
+    expect(h.rows.InterruptionRebookSource).toHaveLength(5);
   });
 });

@@ -277,7 +277,7 @@ export class BookingsController {
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @RequirePermission('booking:read_own')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Customer: read an owned failed-repair draft', description: 'Includes only failed children with verified incidents. One failed child creates a standalone booking; two or three create one new visit group. Original photos are read references, never upload claim IDs.' })
+  @ApiOperation({ summary: 'Customer: read an owned failed-repair draft', description: 'Includes only failed children with verified incidents. One failed child creates a standalone booking; two to five create one new visit group. Group failed-repair rebooking requires the full set. Original photos are read references, never upload claim IDs.' })
   async repairFailureDraft(
     @Param('id', ParseUUIDPipe) id: string,
     @Req() req: { user: { id: string; role: string } },
