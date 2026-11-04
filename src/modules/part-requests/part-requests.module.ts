@@ -14,9 +14,11 @@ import { User } from '../users/entities/user.entity';
 import { AuditLogModule } from '../audit-log/audit-log.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { RbacModule } from '../rbac/rbac.module';
+import { WarehouseFulfillmentModule } from './warehouse-fulfillment.module';
 
 @Module({
   imports: [
+    WarehouseFulfillmentModule,
     ConditionalModule.registerWhen(PartCustodyModule, env => env.P1_CUSTODY_ENABLED === 'true' || env.PART_RETURNS_TRACKING_ENABLED === 'true'),
     TypeOrmModule.forFeature([
       PartRequest,

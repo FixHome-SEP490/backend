@@ -69,7 +69,7 @@ describe('Cancelling an order closes its booking', () => {
 describe('Part requests when the technician changes', () => {
   it('releases only what the outgoing technician has not picked up', async () => {
     const update = vi.fn(async () => ({ affected: 1 }));
-    await releaseOutgoingTechnicianPartRequests({ update } as unknown as EntityManager, 'order-1', 'tech-old');
+    await releaseOutgoingTechnicianPartRequests({ update, find: vi.fn(async () => []) } as unknown as EntityManager, 'order-1', 'tech-old');
     const [, where, values] = update.mock.calls[0] as unknown as [unknown, { technicianId: string; status: { value: string[] } }, { status: string }];
     expect(where.technicianId).toBe('tech-old');
     expect(where.status.value).toEqual([PartRequestStatus.REQUESTED, PartRequestStatus.READY, PartRequestStatus.DELIVERING]);

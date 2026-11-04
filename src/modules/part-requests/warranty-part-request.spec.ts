@@ -13,6 +13,7 @@ import {
 } from '../../shared/enums';
 import { PartRequestsService } from './part-requests.service';
 import { holderPartRequests } from './part-request-lifecycle';
+import { WarehouseFulfillmentService } from './warehouse-fulfillment.service';
 
 const TECH = { id: 'tech-1', role: Role.TECHNICIAN };
 const SM = { id: 'sm-1', role: Role.SERVICE_MANAGER };
@@ -21,7 +22,7 @@ const SM = { id: 'sm-1', role: Role.SERVICE_MANAGER };
  * A warranty request lives on an order that is already COMPLETED and is used without a quotation,
  * so it must not go through the order-bound rules of the other request types.
  */
-const make = (options: { claimStatus?: WarrantyClaimStatus; requestStatus?: PartRequestStatus; claimTechnician?: string | null; part?: unknown; charge?: boolean } = {}) => {
+const make = (options: { claimStatus?: WarrantyClaimStatus; requestStatus?: PartRequestStatus; claimTechnician?: string | null; part?: unknown; charge?: boolean; warehouse?: WarehouseFulfillmentService } = {}) => {
   const claim = {
     id: 'claim-1', serviceOrderId: 'order-1',
     technicianId: 'claimTechnician' in options ? options.claimTechnician : TECH.id,
@@ -55,11 +56,25 @@ const make = (options: { claimStatus?: WarrantyClaimStatus; requestStatus?: Part
     { transaction: vi.fn((cb: any) => cb(manager)) } as any, {} as any, {} as any, {} as any,
     audit as any, { createNotification: vi.fn().mockResolvedValue({}) } as any, undefined,
     { get: vi.fn(() => cost) } as any,
+    options.warehouse,
   );
   return { service, manager, claim, item, request, cost, audit };
 };
 
 describe('createWarrantyRequest', () => {
+  it('keeps W2 commands out of Warranty on a completed order while preserving ModuleRef receive charging', async () => {
+    const warehouse = new WarehouseFulfillmentService();
+    const reserve = vi.spyOn(warehouse, 'reserve');
+    for (const kind of ['reserve', 'qr', 'handover'] as const) {
+      const f = make({ warehouse });
+      await expect(f.service.warehouseCommand('pr-1', kind, { idempotencyKey: 'command-key' }, SM))
+        .rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+    }
+    expect(reserve).not.toHaveBeenCalled();
+    const f = make({ warehouse });
+    await f.service.receiveByQr('pr-1', { qrToken: 'tok' }, TECH);
+    expect(f.cost.chargeOnReceive).toHaveBeenCalledOnce();
+  });
   it('opens a request tied to the claim at the selling price; nobody is charged until the faulty part is inspected', async () => {
     const { service, manager, claim } = make();
 
