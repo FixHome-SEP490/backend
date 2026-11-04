@@ -94,6 +94,26 @@ export class WarrantyClaim extends BaseEntity {
   @Column({ name: 'reviewed_at', type: 'timestamptz', nullable: true })
   reviewedAt: Date | null;
 
+  /** When the claim started waiting for the customer; the auto-close deadline counts from here. */
+  @Column({ name: 'awaiting_since', type: 'timestamptz', nullable: true })
+  awaitingSince: Date | null;
+
+  @Column({ name: 'last_reminder_at', type: 'timestamptz', nullable: true })
+  lastReminderAt: Date | null;
+
+  @Column({ name: 'no_show_flagged_at', type: 'timestamptz', nullable: true })
+  noShowFlaggedAt: Date | null;
+
+  /** A decline the manager still has to judge (pending), or has judged valid or invalid. */
+  @Column({ name: 'decline_review', type: 'varchar', length: 12, nullable: true })
+  declineReview: 'pending' | 'valid' | 'invalid' | null;
+
+  @Column({ name: 'outcome_code', type: 'varchar', length: 12, nullable: true })
+  outcomeCode: 'fixed' | 'unfixed' | 'rejected' | null;
+
+  @Column({ name: 'refund_amount', type: 'bigint', nullable: true, transformer: { to: (v: number | null) => v, from: (v: string | null) => (v == null ? null : Number(v)) } })
+  refundAmount: number | null;
+
   @Column({ name: 'submitted_at', type: 'timestamptz', default: () => 'now()' })
   submittedAt: Date;
 

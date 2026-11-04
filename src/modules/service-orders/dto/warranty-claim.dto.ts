@@ -18,6 +18,7 @@ import {
   Min,
   MinLength,
   ValidateIf,
+  ValidateNested,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { PaginationDto } from '../../../shared/dto';
@@ -177,8 +178,8 @@ export class ProposeWarrantyInspectionDto {
   @MaxLength(WARRANTY_CLAIM_MAX_TEXT_LENGTH)
   findings: string;
 
-  @ApiPropertyOptional({ type: [String], description: 'At least one item is required for not_covered' })
-  @ValidateIf((o: ProposeWarrantyInspectionDto) => o.result === WarrantyInspectionResult.NOT_COVERED || o.evidenceRefs !== undefined)
+  @ApiPropertyOptional({ type: [String], description: 'At least one item is required for not_covered and covered_part (FixHome pays the part)' })
+  @ValidateIf((o: ProposeWarrantyInspectionDto) => o.result === WarrantyInspectionResult.NOT_COVERED || o.result === WarrantyInspectionResult.COVERED_PART || o.evidenceRefs !== undefined)
   @IsArray()
   @ArrayMinSize(0)
   @ArrayMaxSize(WARRANTY_CLAIM_MAX_EVIDENCE_REFS)
@@ -257,6 +258,21 @@ export class StaffWarrantyClaimDto extends WarrantyClaimViewDto {
 
   @ApiPropertyOptional({ type: WarrantyVisitViewDto, nullable: true })
   visit: WarrantyVisitViewDto | null;
+
+  @ApiPropertyOptional({ enum: ['pending', 'valid', 'invalid'], nullable: true, description: 'A decline or missed response the manager still has to judge, or the verdict' })
+  declineReview?: 'pending' | 'valid' | 'invalid' | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  declineReasonCode?: string | null;
+
+  @ApiPropertyOptional({ enum: ['fixed', 'unfixed', 'rejected'], nullable: true })
+  outcomeCode?: 'fixed' | 'unfixed' | 'rejected' | null;
+
+  @ApiPropertyOptional({ nullable: true, description: 'Whole VND refunded to the customer wallet when the item could not be fixed' })
+  refundAmount?: number | null;
+
+  @ApiPropertyOptional({ format: 'date-time', nullable: true, description: 'The technician accepted but did not check in by the deadline' })
+  noShowFlaggedAt?: Date | null;
 }
 
 const boolFromQuery = ({ value }: { value: unknown }): unknown =>
@@ -278,12 +294,43 @@ export class QueryWarrantyClaimsDto extends PaginationDto {
   @IsOptional()
   @IsCanonicalUuid()
   technicianId?: string;
+
+  @ApiPropertyOptional({ enum: ['pending'], description: 'Only claims whose decline or missed response still waits for a manager' })
+  @IsOptional()
+  @IsIn(['pending'])
+  declineReview?: 'pending';
 }
 
 export class AssignWarrantyClaimDto {
   @ApiProperty({ format: 'uuid' })
   @IsCanonicalUuid()
   technicianId: string;
+}
+
+export class ReviewWarrantyDeclineDto {
+  @ApiProperty({ description: 'true: the decline was justified; false: it was not, and the technician loses reputation points' })
+  @IsBoolean()
+  valid: boolean;
+
+  @ApiProperty()
+  @IsString()
+  @Transform(trim)
+  @MinLength(WARRANTY_CLAIM_MIN_TEXT_LENGTH)
+  @MaxLength(WARRANTY_CLAIM_MAX_TEXT_LENGTH)
+  note: string;
+}
+
+export class ReplacementPartDto {
+  @ApiProperty({ format: 'uuid' })
+  @IsCanonicalUuid()
+  partCatalogId: string;
+
+  @ApiProperty({ minimum: 1, maximum: 100 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  quantity: number;
 }
 
 export class ApproveWarrantyProposalDto {
@@ -304,6 +351,22 @@ export class ApproveWarrantyProposalDto {
   @MinLength(WARRANTY_CLAIM_MIN_TEXT_LENGTH)
   @MaxLength(WARRANTY_CLAIM_MAX_TEXT_LENGTH)
   customerNote?: string;
+
+  @ApiPropertyOptional({ description: 'Required when the manager changes the technician proposal' })
+  @IsOptional()
+  @IsString()
+  @Transform(trim)
+  @MinLength(WARRANTY_CLAIM_MIN_TEXT_LENGTH)
+  @MaxLength(WARRANTY_CLAIM_MAX_TEXT_LENGTH)
+  overrideReason?: string;
+
+  @ApiPropertyOptional({ type: () => [ReplacementPartDto], description: 'FixHome parts to hand over for the re-service. Defaults to the covered part line when the fault is the part' })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => ReplacementPartDto)
+  replacementParts?: ReplacementPartDto[];
 }
 
 export class RejectWarrantyClaimDto {
@@ -320,9 +383,16 @@ export class RejectWarrantyClaimDto {
 }
 
 export class CloseWarrantyClaimDto {
-  @ApiProperty({ enum: ['resolved', 'rejected'] })
-  @IsIn(['resolved', 'rejected'])
-  outcome: 'resolved' | 'rejected';
+  @ApiProperty({ enum: ['resolved', 'rejected', 'unfixed'], description: 'unfixed: the technician could not fix it in time; refund the customer wallet and charge the original technician' })
+  @IsIn(['resolved', 'rejected', 'unfixed'])
+  outcome: 'resolved' | 'rejected' | 'unfixed';
+
+  @ApiPropertyOptional({ description: 'Whole VND refunded to the customer wallet for unfixed; defaults to the covered invoice line' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  refundAmount?: number;
 
   @ApiPropertyOptional({ description: 'Required unless the customer already agreed' })
   @IsOptional()

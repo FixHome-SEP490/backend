@@ -102,6 +102,37 @@ export class ReputationService implements OnModuleInit, OnModuleDestroy {
     return event;
   }
 
+  /**
+   * Warranty penalty (PO 04/11/2026): only after a manager confirmed the decline was not
+   * justified, the technician did not show, or the item could not be fixed in time.
+   * One event per claim and cause; the caller locks the claim and owns the transaction.
+   */
+  async penalizeWarranty(manager: EntityManager, input: {
+    claimId: string; cause: 'decline' | 'no_show' | 'unfixed'; technicianId: string;
+    serviceOrderId: string | null; actorId: string; reason: string;
+  }): Promise<ReputationEvent | null> {
+    const prior = await manager.findOne(ReputationEvent, { where: { warrantyClaimId: input.claimId, warrantyCause: input.cause } });
+    if (prior) return null;
+    const user = await manager.findOne(User, { where: { id: input.technicianId }, lock: { mode: 'pessimistic_write' } });
+    if (!user || user.role !== Role.TECHNICIAN) return null;
+    const cost = await this.configService.getInt('reputation.warranty_violation_points', 5);
+    if (!Number.isSafeInteger(cost) || cost <= 0 || cost > 100) throw new ConflictException('Cấu hình điểm uy tín bảo hành không hợp lệ.');
+    const before = user.reputationPoints ?? REPUTATION_START;
+    const after = clampPoints(before - cost);
+    await manager.update(User, user.id, { reputationPoints: after });
+    const penalty = await this.applyPenalty(manager, user, Role.TECHNICIAN, after);
+    const event = await manager.save(ReputationEvent, manager.create(ReputationEvent, {
+      userId: user.id, kind: 'violation', delta: after - before, pointsAfter: after,
+      reason: input.reason, penalty, serviceOrderId: input.serviceOrderId,
+      cancellationId: null, warrantyClaimId: input.claimId, warrantyCause: input.cause, actorUserId: input.actorId,
+    }));
+    await manager.insert(Notification, { userId: user.id,
+      title: 'Điểm uy tín sau xem xét bảo hành',
+      message: `Quản lý đã xác nhận bạn chưa hoàn thành nghĩa vụ bảo hành (${input.reason}): trừ ${before - after} điểm, còn ${after}/100.${penalty ? ' ' + penalty : ''}`,
+      type: 'REPUTATION_CHANGED', referenceType: 'WARRANTY_CLAIM', referenceId: input.claimId, isRead: false });
+    return event;
+  }
+
   /** Suspends or locks by the new score; returns a short Vietnamese description, or null. */
   private async applyPenalty(manager: EntityManager, user: User, role: Role, points: number): Promise<string | null> {
     const penalty = penaltyFor(points);

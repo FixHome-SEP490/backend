@@ -85,6 +85,10 @@ const KEY_VALIDATION: Record<string, KeyValidationRule> = {
   'ai.rate_limit_per_user_per_hour':    { type: 'int', min: 1, max: 1000 },
   'payment.mode':                       { type: 'enum', enumValues: ['DEMO', 'LIVE'] },
   'wallet.minimum_balance':             { type: 'bigint', min: 0, max: 100000000 },
+  'warranty.tech_response_hours':       { type: 'int', min: 1, max: 720 },
+  'warranty.inspection_hours':          { type: 'int', min: 1, max: 720 },
+  'warranty.customer_response_hours':   { type: 'int', min: 1, max: 720 },
+  'reputation.warranty_violation_points': { type: 'int', min: 1, max: 100 },
 };
 
 /**
@@ -223,6 +227,22 @@ const KEY_EFFECT: Record<
     status: 'ACTIVE',
     evidence:
       'src/modules/service-orders/labor-warranty.ts — laborWarrantyDefault() falls back to this when the technician set no labor warranty for the service nor a default; snapshotted onto service_orders.labor_warranty_days at assignment.',
+  },
+  'warranty.tech_response_hours': {
+    status: 'ACTIVE',
+    evidence: 'src/modules/service-orders/warranty-sweep.service.ts: sweepUnresponded and sweepUnassigned.',
+  },
+  'warranty.inspection_hours': {
+    status: 'ACTIVE',
+    evidence: 'src/modules/service-orders/warranty-sweep.service.ts: sweepNoShow.',
+  },
+  'warranty.customer_response_hours': {
+    status: 'ACTIVE',
+    evidence: 'src/modules/service-orders/warranty-sweep.service.ts: sweepCustomerSilent.',
+  },
+  'reputation.warranty_violation_points': {
+    status: 'ACTIVE',
+    evidence: 'src/modules/reputation/reputation.service.ts: penalizeWarranty.',
   },
   'warranty.max_days': {
     status: 'ACTIVE',

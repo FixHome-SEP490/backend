@@ -1,5 +1,6 @@
 // src/modules/part-requests/part-requests.service.ts
 import { Injectable, Logger, ForbiddenException, Optional, BadRequestException } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { PartCustodyService } from './part-custody.service';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository, Not } from 'typeorm';
@@ -15,6 +16,7 @@ import {
   QuotationStatus,
   AdditionalCostStatus,
   CostItemType,
+  WarrantyClaimStatus,
 } from '../../shared/enums';
 import { ErrorCodes } from '../../shared/constants/error-codes';
 import { BusinessException } from '../../common/exceptions/business.exception';
@@ -31,6 +33,9 @@ import { PartRequestStateMachine } from './part-request-state-machine';
 import { Quotation } from '../quotations/entities/quotation.entity';
 import { QuotationItem } from '../quotations/entities/quotation-item.entity';
 import { AdditionalCostRequest } from '../service-orders/entities/additional-cost-request.entity';
+import { ServiceOrder } from '../service-orders/entities/service-order.entity';
+import { WarrantyClaim } from '../service-orders/entities/warranty-claim.entity';
+import { WarrantyCostService } from '../service-orders/warranty-cost.service';
 import { custodyActivation, custodyUsageForInvoice } from './part-custody.policy';
 import { partRequestCostSource } from './part-request-lifecycle';
 import { MAX_PART_QUANTITY } from './part-custody.rules';
@@ -58,13 +63,20 @@ export class PartRequestsService {
     private readonly auditLogService: AuditLogService,
     private readonly notificationsService: NotificationsService,
     @Optional() private readonly custodyService?: PartCustodyService,
+    @Optional() private readonly moduleRef?: ModuleRef,
   ) {}
+
+  // Resolved lazily: the cost service lives in service-orders and needs wallets, which this module must not import.
+  private warrantyCost(): WarrantyCostService | null {
+    try { return this.moduleRef?.get(WarrantyCostService, { strict: false }) ?? null; } catch { return null; }
+  }
 
   // Always lock the order before its request, matching cancellation and invoicing.
   // Do not lock a LEFT JOIN of items: PostgreSQL forbids locking its nullable side.
   private async lockRequest(manager: EntityManager, id: string, actor: { id: string; role: string }) {
     const reference = await manager.findOne(PartRequest, { where: { id } });
     if (!reference) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Part request not found');
+    if (reference.requestType === PartRequestType.WARRANTY) return this.lockWarrantyRequest(manager, reference, actor);
     const order = await authorizeOrder(manager, reference.serviceOrderId, actor, 'read', true);
     if ([ServiceOrderStatus.CANCELLED, ServiceOrderStatus.COMPLETED].includes(order.status) || order.completionRequestedAt) {
       throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Parts are immutable after order closure or completion request');
@@ -73,6 +85,86 @@ export class PartRequestsService {
     if (actor.role === Role.TECHNICIAN && request.technicianId !== actor.id) throw new ForbiddenException('This part request belongs to another technician');
     request.items = await manager.find(PartRequestItem, { where: { partRequestId: id } });
     return { request, order };
+  }
+
+  /**
+   * A warranty request outlives its completed order, so access follows the claim, not the order:
+   * staff, or the technician the claim is assigned to, while the claim is still open.
+   */
+  private async lockWarrantyRequest(manager: EntityManager, reference: PartRequest, actor: { id: string; role: string }) {
+    const claim = reference.warrantyClaimId ? await manager.findOneBy(WarrantyClaim, { id: reference.warrantyClaimId }) : null;
+    if (!claim) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Warranty claim not found');
+    const staff = [Role.ADMIN, Role.SERVICE_MANAGER].includes(actor.role as Role);
+    if (!staff && !(actor.role === Role.TECHNICIAN && claim.technicianId === actor.id)) throw new ForbiddenException('Order not found or access denied');
+    if ([WarrantyClaimStatus.RESOLVED, WarrantyClaimStatus.REJECTED].includes(claim.status)) {
+      throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Warranty claim is closed');
+    }
+    const order = await manager.findOneOrFail(ServiceOrder, { where: { id: reference.serviceOrderId } });
+    const request = await manager.findOneOrFail(PartRequest, { where: { id: reference.id }, lock: { mode: 'pessimistic_write' } });
+    request.items = await manager.find(PartRequestItem, { where: { partRequestId: reference.id } });
+    return { request, order };
+  }
+
+  /**
+   * Free FixHome parts for a warranty re-service (PO 04/11/2026). Created in the approval
+   * transaction; the claim's technician collects them with the usual READY and QR handover.
+   * `chargeTechnician` marks a fault in the technician's own workmanship: they pay for the part
+   * when they receive it. Staff approve; there is no price on the customer's side.
+   */
+  async createWarrantyRequest(
+    manager: EntityManager,
+    input: { claim: WarrantyClaim; chargeTechnician: boolean; items: Array<{ partCatalogId: string; quantity: number }>; actor: { id: string; role: string } },
+  ): Promise<PartRequest> {
+    const { claim, items, actor } = input;
+    if (!claim.technicianId) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Warranty claim has no technician');
+    if (!items.length) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Chọn ít nhất một linh kiện');
+    if (await manager.findOneBy(PartRequest, { warrantyClaimId: claim.id })) {
+      throw new BusinessException(ErrorCodes.CONFLICT, 'Yêu cầu bảo hành này đã có yêu cầu linh kiện.');
+    }
+    const merged = new Map<string, number>();
+    for (const item of items) {
+      if (!Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > MAX_PART_QUANTITY) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Số lượng linh kiện không hợp lệ');
+      }
+      merged.set(item.partCatalogId, (merged.get(item.partCatalogId) ?? 0) + item.quantity);
+    }
+    const rows: Partial<PartRequestItem>[] = [];
+    for (const [partCatalogId, quantity] of merged) {
+      const part = await manager.findOne(FixHomePart, { where: { id: partCatalogId, isActive: true } });
+      if (!part) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Approved part is no longer active in FixHome catalog');
+      rows.push({
+        partCatalogId, partSource: PartSource.FIXHOME, partNameSnapshot: part.name, quantity,
+        unitPriceSnapshot: Number(part.sellingPrice), usageStatus: PartUsageStatus.PENDING,
+      });
+    }
+    const request = await manager.save(PartRequest, manager.create(PartRequest, {
+      serviceOrderId: claim.serviceOrderId, technicianId: claim.technicianId, requestType: PartRequestType.WARRANTY,
+      fulfillmentMethod: FulfillmentMethod.PICKUP, shippingFee: 0, status: PartRequestStatus.REQUESTED,
+      warrantyClaimId: claim.id, chargeTechnician: input.chargeTechnician,
+      reason: input.chargeTechnician ? 'Warranty part, workmanship fault (technician pays)' : 'Warranty part, FixHome part defect (FixHome pays)',
+    }));
+    request.items = await manager.save(PartRequestItem, rows.map((row) => ({ ...row, partRequestId: request.id })) as PartRequestItem[]);
+    await this.auditLogService.logWithManager(manager, {
+      actorUserId: actor.id, actorRole: actor.role, action: 'WARRANTY_PART_REQUEST_CREATED',
+      resourceType: 'part_request', resourceId: request.id,
+      after: { warrantyClaimId: claim.id, chargeTechnician: input.chargeTechnician, itemCount: rows.length },
+    });
+    return request;
+  }
+
+  /** The claim closed: a received request is settled, anything not yet handed over is cancelled. */
+  async settleWarrantyRequest(manager: EntityManager, claimId: string): Promise<void> {
+    const request = await manager.findOne(PartRequest, { where: { warrantyClaimId: claimId }, lock: { mode: 'pessimistic_write' } });
+    if (!request || [PartRequestStatus.COMPLETED, PartRequestStatus.CANCELLED].includes(request.status)) return;
+    if (request.status === PartRequestStatus.RECEIVED) {
+      request.status = PartRequestStatus.COMPLETED;
+      request.completedAt = new Date();
+    } else {
+      request.status = PartRequestStatus.CANCELLED;
+      request.cancelledAt = new Date();
+    }
+    request.qrToken = null;
+    await manager.save(PartRequest, request);
   }
 
   private visible(request: PartRequest, actor: { role: string }): PartRequest {
@@ -690,6 +782,8 @@ export class PartRequestsService {
 
       const saved = await manager.save(PartRequest, request);
       await this.custodyService?.enrollHandover(manager, request, order);
+      // A warranty part caused by the technician's own workmanship is charged at handover.
+      if (request.requestType === PartRequestType.WARRANTY) await this.warrantyCost()?.chargeOnReceive(manager, saved);
 
       // Audit log
       await this.auditLogService.logWithManager(manager, {
@@ -740,7 +834,9 @@ export class PartRequestsService {
     if (![PartUsageStatus.USED, PartUsageStatus.RETURNED].includes(dto.usageStatus)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Usage must be USED or RETURNED');
     return this.dataSource.transaction(async (manager: EntityManager) => {
       const { request, order } = await this.lockRequest(manager, requestId, actor);
-      if (order.status !== ServiceOrderStatus.UNDER_REPAIR) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Item usage requires UNDER_REPAIR');
+      const warranty = request.requestType === PartRequestType.WARRANTY;
+      // A warranty request is used after the order completed, so the repair state and the quotation do not apply.
+      if (!warranty && order.status !== ServiceOrderStatus.UNDER_REPAIR) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Item usage requires UNDER_REPAIR');
 
       if (!request) {
         throw new BusinessException(
@@ -775,7 +871,10 @@ export class PartRequestsService {
       }
 
       const previous = item.usageStatus;
-      if (item.partSource === PartSource.FIXHOME && dto.usageStatus === PartUsageStatus.USED) {
+      if (warranty && previous !== PartUsageStatus.PENDING) {
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Linh kiện bảo hành đã được ghi nhận sử dụng.');
+      }
+      if (!warranty && item.partSource === PartSource.FIXHOME && dto.usageStatus === PartUsageStatus.USED) {
         await this.assertUsageApproved(manager, request, item, dto.usedQty ?? item.quantity);
       }
       const custodyRecorded = await this.custodyService?.recordUsage(manager, request, item, order, dto, actor);
@@ -786,6 +885,7 @@ export class PartRequestsService {
       if (custodyRecorded === 'replayed') return item;
       item.usageStatus = dto.usageStatus;
       const saved = await manager.save(PartRequestItem, item);
+      if (warranty) await this.warrantyCost()?.creditReturned(manager, request, saved);
 
       // Audit log
       await this.auditLogService.logWithManager(manager, {
@@ -1045,6 +1145,7 @@ export class PartRequestsService {
     });
 
     for (const pr of activeRequests) {
+      if (pr.requestType === PartRequestType.WARRANTY) continue;
       if (
         pr.status !== PartRequestStatus.COMPLETED &&
         pr.status !== PartRequestStatus.CANCELLED
@@ -1081,6 +1182,7 @@ export class PartRequestsService {
     });
 
     for (const pr of receivedRequests) {
+      if (pr.requestType === PartRequestType.WARRANTY) continue;
       pr.status = PartRequestStatus.COMPLETED;
       pr.completedAt = new Date();
       await manager.save(PartRequest, pr);

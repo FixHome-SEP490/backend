@@ -54,6 +54,14 @@ export class PartRequest extends BaseEntity {
   @Column({ name: 'quotation_id', type: 'uuid', nullable: true })
   quotationId?: string | null;
 
+  // Set only on a warranty request; the claim it serves.
+  @Column({ name: 'warranty_claim_id', type: 'uuid', nullable: true })
+  warrantyClaimId?: string | null;
+
+  // Warranty request caused by the technician's own workmanship: the technician pays the part.
+  @Column({ name: 'charge_technician', type: 'boolean', default: false })
+  chargeTechnician: boolean;
+
   // QR handover token — generated when SM marks READY
   @Column({ name: 'qr_token', type: 'varchar', length: 128, nullable: true })
   qrToken?: string | null;

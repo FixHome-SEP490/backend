@@ -4,6 +4,7 @@ import { DataSource, In, IsNull, Repository } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants/error-codes';
 import {
+  AccountStatus,
   SupportCaseType,
   ServiceOrderStatus,
   WARRANTY_CLAIM_ACTIVE_STATUSES,
@@ -11,6 +12,7 @@ import {
   WarrantyStatus,
 } from '../../shared/enums';
 import { SupportCasesService } from '../support-cases/support-cases.service';
+import { User } from '../users/entities/user.entity';
 import {
   CreateWarrantyClaimDto,
   RespondWarrantyClaimDto,
@@ -82,12 +84,16 @@ export class WarrantyClaimsService {
         where: { serviceOrderId: orderId },
         order: { assignedAt: 'DESC' },
       });
+      // A technician who has since left or been locked cannot take the claim; a manager assigns it.
+      const original = assignment?.technicianId
+        ? await manager.getRepository(User).findOne({ where: { id: assignment.technicianId, status: AccountStatus.ACTIVE, isActive: true }, select: ['id'] })
+        : null;
       const now = new Date();
       return claims.save(claims.create({
         serviceOrderId: orderId,
         warrantyCoverageId: coverage.id,
         customerId: customer.id,
-        technicianId: assignment?.technicianId ?? null,
+        technicianId: original?.id ?? null,
         description: dto.description,
         evidenceRefs: dto.evidenceRefs?.length ? dto.evidenceRefs : null,
         status: WarrantyClaimStatus.SUBMITTED,
@@ -98,6 +104,14 @@ export class WarrantyClaimsService {
     });
 
     // WarrantyNotifier is best-effort; notify only after the claim is committed.
+    if (!saved.technicianId) {
+      await this.notifier.toManagers(
+        'Yêu cầu bảo hành chưa có kỹ thuật viên',
+        `Kỹ thuật viên của đơn ${order.code} không còn hoạt động. Vui lòng phân công kỹ thuật viên cho yêu cầu bảo hành.`,
+        'WARRANTY_REASSIGN_NEEDED',
+        orderId,
+      );
+    }
     await this.notifier.toUser(
       saved.technicianId,
       'Yêu cầu bảo hành mới',

@@ -38,7 +38,8 @@ export async function releaseOutgoingTechnicianPartRequests(manager: EntityManag
 
 /** The requests that gate completion: those of the technician holding the order. */
 export async function holderPartRequests(manager: EntityManager, orderId: string, requests?: PartRequest[]): Promise<PartRequest[]> {
-  const all = requests ?? await manager.find(PartRequest, { where: { serviceOrderId: orderId }, relations: ['items'] });
+  const all = (requests ?? await manager.find(PartRequest, { where: { serviceOrderId: orderId }, relations: ['items'] }))
+    .filter(request => request.requestType !== PartRequestType.WARRANTY);
   const holder = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: orderId, isActive: true });
   return holder ? all.filter(request => request.technicianId === holder.technicianId) : all;
 }

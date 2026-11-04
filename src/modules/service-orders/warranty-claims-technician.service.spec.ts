@@ -38,7 +38,7 @@ const makeVisit = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-const makeService = (options: { claim?: unknown; visits?: unknown[] } = {}) => {
+const makeService = (options: { claim?: unknown; visits?: unknown[]; profile?: unknown; coverage?: unknown; booking?: unknown } = {}) => {
   const claimTx = { update: vi.fn().mockResolvedValue({ affected: 1 }) };
   const visitTx = {
     update: vi.fn().mockResolvedValue({ affected: 1 }),
@@ -55,6 +55,24 @@ const makeService = (options: { claim?: unknown; visits?: unknown[] } = {}) => {
       transaction: vi.fn(async (cb: any) =>
         cb({ getRepository: (entity: { name: string }) => (entity.name === 'WarrantyVisit' ? visitTx : claimTx) }),
       ),
+      // The technician's own records a decline reason is checked against.
+      findOneBy: vi.fn(async (entity: { name: string }) => {
+        switch (entity.name) {
+          case 'TechnicianProfile':
+            return 'profile' in options ? options.profile : { id: 'prof-1', isAvailable: true, workSuspendedUntil: null, serviceRadiusKm: 10 };
+          case 'WarrantyCoverage':
+            return options.coverage ?? { expiresAt: new Date(Date.now() + 20 * 86_400_000) };
+          case 'ServiceOrder':
+            return { id: 'order-1', bookingId: 'booking-1' };
+          case 'Booking':
+            return options.booking ?? { latitudeSnapshot: 10.77, longitudeSnapshot: 106.7, provinceSnapshot: '79', districtSnapshot: '760' };
+          case 'Address':
+            return { lat: 10.78, lng: 106.69 };
+          default:
+            return null;
+        }
+      }),
+      find: vi.fn().mockResolvedValue([]),
     },
   };
   const visitRepo = {
@@ -123,9 +141,43 @@ describe('technician warranty commands', () => {
         declinedByTechnicianId: TECH.id,
         declineReasonCode: WarrantyDeclineReason.BUSY,
         declinedAt: expect.any(Date),
+        declineReview: 'pending',
       }),
     );
     expect(notifier.toManagers).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'WARRANTY_REASSIGN_NEEDED', 'order-1');
+  });
+
+  it('verifies on-leave and out-of-area declines against the technician records; anything else waits for a manager', async () => {
+    const reviewOf = async (reason: WarrantyDeclineReason, options: Parameters<typeof makeService>[0] = {}) => {
+      const { service, claimRepo } = makeService(options);
+      await service.decline('claim-1', { reasonCode: reason, ...(reason === WarrantyDeclineReason.OTHER ? { note: 'Có việc gia đình đột xuất.' } : {}) }, TECH);
+      return claimRepo.update.mock.calls[0][1].declineReview;
+    };
+    const paused = { id: 'prof-1', isAvailable: false, workSuspendedUntil: null, serviceRadiusKm: 10 };
+    const suspended = { id: 'prof-1', isAvailable: true, workSuspendedUntil: new Date(Date.now() + 86_400_000), serviceRadiusKm: 10 };
+    const faraway = { latitudeSnapshot: 21.03, longitudeSnapshot: 105.85, provinceSnapshot: '01', districtSnapshot: '001' };
+
+    expect(await reviewOf(WarrantyDeclineReason.ON_LEAVE, { profile: paused })).toBe('valid');
+    expect(await reviewOf(WarrantyDeclineReason.ON_LEAVE, { profile: suspended })).toBe('valid');
+    expect(await reviewOf(WarrantyDeclineReason.ON_LEAVE)).toBe('pending');
+    expect(await reviewOf(WarrantyDeclineReason.OUT_OF_AREA, { booking: faraway })).toBe('valid');
+    expect(await reviewOf(WarrantyDeclineReason.OUT_OF_AREA)).toBe('pending');
+    expect(await reviewOf(WarrantyDeclineReason.BUSY)).toBe('pending');
+    expect(await reviewOf(WarrantyDeclineReason.OTHER)).toBe('pending');
+    expect(await reviewOf(WarrantyDeclineReason.ON_LEAVE, { profile: null })).toBe('pending');
+  });
+
+  it('refuses an unverifiable decline in the last day of the coverage but lets a verified one through', async () => {
+    const lastDay = { expiresAt: new Date(Date.now() + 3_600_000) };
+
+    const busy = makeService({ coverage: lastDay });
+    await expect(busy.service.decline('claim-1', { reasonCode: WarrantyDeclineReason.BUSY }, TECH))
+      .rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+    expect(busy.claimRepo.update).not.toHaveBeenCalled();
+
+    const onLeave = makeService({ coverage: lastDay, profile: { id: 'prof-1', isAvailable: false, workSuspendedUntil: null, serviceRadiusKm: 10 } });
+    await onLeave.service.decline('claim-1', { reasonCode: WarrantyDeclineReason.ON_LEAVE }, TECH);
+    expect(onLeave.claimRepo.update).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ declineReview: 'valid' }));
   });
 
   it('checks in only once and records the position', async () => {
@@ -149,10 +201,26 @@ describe('technician warranty commands', () => {
     await expect(
       early.service.propose(
         'claim-1',
-        { result: WarrantyInspectionResult.COVERED_PART, findings: 'Linh kiện bị nứt ở mối ghép' },
+        { result: WarrantyInspectionResult.COVERED_PART, findings: 'Linh kiện bị nứt ở mối ghép', evidenceRefs: ['photo-1'] },
         TECH,
       ),
     ).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+
+    const noEvidence = makeService({
+      claim: makeClaim({ status: WarrantyClaimStatus.ACCEPTED }),
+      visits: [makeVisit({ status: WarrantyVisitStatus.CHECKED_IN })],
+    });
+    await expect(
+      noEvidence.service.propose('claim-1', { result: WarrantyInspectionResult.COVERED_PART, findings: 'Linh kiện bị nứt ở mối ghép' }, TECH),
+    ).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+    expect(noEvidence.claimTx.update).not.toHaveBeenCalled();
+
+    const labor = makeService({
+      claim: makeClaim({ status: WarrantyClaimStatus.ACCEPTED }),
+      visits: [makeVisit({ status: WarrantyVisitStatus.CHECKED_IN })],
+    });
+    await labor.service.propose('claim-1', { result: WarrantyInspectionResult.COVERED_WORKMANSHIP, findings: 'Mối nối bị lỏng do lắp chưa chặt' }, TECH);
+    expect(labor.claimTx.update).toHaveBeenCalled();
 
     const ok = makeService({
       claim: makeClaim({ status: WarrantyClaimStatus.ACCEPTED }),
@@ -160,7 +228,7 @@ describe('technician warranty commands', () => {
     });
     await ok.service.propose(
       'claim-1',
-      { result: WarrantyInspectionResult.COVERED_PART, findings: 'Linh kiện bị nứt ở mối ghép' },
+      { result: WarrantyInspectionResult.COVERED_PART, findings: 'Linh kiện bị nứt ở mối ghép', evidenceRefs: ['photo-1'] },
       TECH,
     );
     expect(ok.claimTx.update).toHaveBeenCalledWith(

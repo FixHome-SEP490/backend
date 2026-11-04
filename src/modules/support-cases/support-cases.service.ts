@@ -885,6 +885,10 @@ export class SupportCasesService {
       referenceId: supportCase.serviceOrderId,
       description: `Hoàn tiền khiếu nại đơn #${orderCode}`,
     });
+    // A fully refunded order keeps no warranty.
+    if (already + (amount as number) >= paid) {
+      await manager.query(`UPDATE warranty_coverages SET status = 'voided' WHERE service_order_id = $1 AND status IN ('active','pending')`, [supportCase.serviceOrderId]);
+    }
     return { customerId: supportCase.customerId, amount: amount as number, orderCode };
   }
 
