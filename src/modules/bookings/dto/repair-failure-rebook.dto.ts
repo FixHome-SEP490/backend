@@ -1,6 +1,7 @@
 import { Transform, Type } from 'class-transformer';
 import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsIn, IsObject, IsOptional, IsString, Matches, MaxLength, ValidateNested } from 'class-validator';
 import { BookingDeviceAttributesDto, UUID_REGEX } from '../booking.dto';
+import { VISIT_GROUP_DEVICE_LIMIT } from '../../visit-groups/visit-group.dto';
 
 export class RepairFailureRebookItemDto {
   @Matches(UUID_REGEX) sourceBookingId: string;
@@ -19,7 +20,7 @@ export class RepairFailureRebookDto {
   @IsOptional() @IsString() @MaxLength(1000)
   @Transform(({ value }) => typeof value === 'string' ? value.trim() : value)
   customerNote?: string;
-  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(3)
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(VISIT_GROUP_DEVICE_LIMIT)
   @ValidateNested({ each: true }) @Type(() => RepairFailureRebookItemDto)
   items: RepairFailureRebookItemDto[];
 }

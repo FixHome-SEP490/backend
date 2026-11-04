@@ -12,6 +12,7 @@ import * as bcrypt from 'bcrypt';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { registerDev1Cases } from './dev1-cases';
+import { registerBookingDraftCases } from './booking-draft-cases';
 import { installKycBucket, kycBucket, uploadedKyc } from './kyc-bucket';
 
 // Always use a new schema; never synchronize/drop the configured database.
@@ -257,6 +258,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     storage.storage.clear();
   });
   registerDev1Cases(() => ({ app, db, register, provisionTechnician }));
+  registerBookingDraftCases(() => ({ app, db, register, technician, admin }));
 
   afterAll(async () => {
     if (app) await app.close();
@@ -1007,6 +1009,8 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
   it('reverts all migrations, adopts legacy users and preserves account state and timestamps', async () => {
     await db.query(`
       TRUNCATE TABLE
+        booking_drafts,
+        booking_draft_submit_receipts,
         verification_documents,
         technician_verifications,
         technician_profiles,

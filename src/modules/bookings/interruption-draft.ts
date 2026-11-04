@@ -6,6 +6,7 @@ import { SupportCase } from '../support-cases/entities/support-case.entity';
 import { Address } from '../users/entities/address.entity';
 import { Service } from '../services/entities/service.entity';
 import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity';
+import { VISIT_GROUP_DEVICE_LIMIT } from '../visit-groups/visit-group.dto';
 import { Booking } from './entities/booking.entity';
 import { InterruptionRebookSource } from './entities/interruption-rebook.entity';
 import { AuditLog } from '../audit-log/entities/audit-log.entity';
@@ -22,7 +23,7 @@ export async function buildInterruptionDraft(manager: EntityManager, anchorId: s
     ? await manager.find(VisitGroupItem, { where: { groupId: anchor.visitGroupId }, order: { sequence: 'ASC' } }) : [];
   if (anchor.visitGroupId && !groupItems.some(item => item.bookingId === anchorId)) deny();
   const candidates = anchor.visitGroupId ? groupItems.filter(item => item.outcome === 'interrupted').map(item => item.bookingId) : [anchor.id];
-  if (selectedSourceBookingIds && (!selectedSourceBookingIds.length || selectedSourceBookingIds.length > 3 ||
+  if (selectedSourceBookingIds && (!selectedSourceBookingIds.length || selectedSourceBookingIds.length > VISIT_GROUP_DEVICE_LIMIT ||
     new Set(selectedSourceBookingIds).size !== selectedSourceBookingIds.length || !selectedSourceBookingIds.includes(anchorId) ||
     selectedSourceBookingIds.some(id => !candidates.includes(id)))) deny();
   const sourceIds: string[] = [];
@@ -31,7 +32,7 @@ export async function buildInterruptionDraft(manager: EntityManager, anchorId: s
     if (!await manager.findOneBy(InterruptionRebookSource, { sourceBookingId: sourceId })) sourceIds.push(sourceId);
   }
   if (!sourceIds.includes(anchorId)) deny();
-  if (!sourceIds.length || sourceIds.length > 3 || new Set(sourceIds).size !== sourceIds.length) deny();
+  if (!sourceIds.length || sourceIds.length > VISIT_GROUP_DEVICE_LIMIT || new Set(sourceIds).size !== sourceIds.length) deny();
   const items = [];
   for (const sourceId of sourceIds) {
     const booking = lockSources

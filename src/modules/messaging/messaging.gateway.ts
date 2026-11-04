@@ -28,6 +28,7 @@ import {
   CallSignalPayload,
 } from './call.types';
 import { NotificationsService } from '../notifications/notifications.service';
+import { consumeRiskRateLimit } from '../../common/rate-limit/risk-rate-limit';
 
 /** Why a call did not get through to the person it rang. */
 type MissedReason = 'no_answer' | 'cancelled' | 'busy' | 'offline';
@@ -253,6 +254,11 @@ export class MessagingGateway
     const conversationId = body?.conversationId;
     if (!actor || !conversationId) return { ok: false };
 
+    // Typing is a best-effort hint; drop excess events before checking membership or broadcasting.
+    if (!consumeRiskRateLimit('socket-typing', `user:${actor.id}`).allowed) {
+      return { ok: true };
+    }
+
     if (!(await this.messagingService.isMember(conversationId, actor.id))) {
       return { ok: false };
     }
@@ -281,6 +287,11 @@ export class MessagingGateway
     const actor = client.data?.user;
     const conversationId = body?.conversationId;
     if (!actor || !conversationId) return { ok: false, reason: 'invalid' };
+
+    // Aggregate across this user's authenticated sockets and stop before the call/missed-call side effects.
+    if (!consumeRiskRateLimit('socket-call-invite', `user:${actor.id}`).allowed) {
+      return { ok: false };
+    }
 
     const peerId = await this.messagingService.resolveCallPeer(
       conversationId,

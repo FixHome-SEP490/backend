@@ -71,6 +71,7 @@ import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity
 import { RepairFailureRebook, RepairFailureRebookSource } from './entities/repair-failure-rebook.entity';
 import { RepairFailureRebookDto } from './dto/repair-failure-rebook.dto';
 import type { CreateVisitGroupDto } from '../visit-groups/visit-group.dto';
+import { VISIT_GROUP_DEVICE_LIMIT } from '../visit-groups/visit-group.dto';
 import { buildInterruptionDraft } from './interruption-draft';
 import { InterruptionRebook, InterruptionRebookSource } from './entities/interruption-rebook.entity';
 import { InterruptionRebookDto, validInterruptionRebookSchedule } from './dto/interruption-rebook.dto';
@@ -1046,7 +1047,7 @@ export class BookingsService {
     if (customer.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
     if (!dto || !/^[A-Za-z0-9_-]{8,128}$/.test(dto.idempotencyKey ?? '') || !isUUID(dto.addressId)
       || !validInterruptionRebookSchedule(dto)
-      || !Array.isArray(dto.items) || dto.items.length < 1 || dto.items.length > 3
+      || !Array.isArray(dto.items) || dto.items.length < 1 || dto.items.length > VISIT_GROUP_DEVICE_LIMIT
       || dto.items.some(item => !isUUID(item?.sourceBookingId) || !isUUID(item?.sourceCaseId))
       || new Set(dto.items.map(item => item.sourceBookingId)).size !== dto.items.length) {
       throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Yêu cầu đặt lại không hợp lệ.');
@@ -1143,7 +1144,7 @@ export class BookingsService {
     if (customer.role !== Role.CUSTOMER) throw new ForbiddenException('Customer role required');
     if (!dto || !/^[A-Za-z0-9_-]{8,128}$/.test(dto.idempotencyKey ?? '') || !isUUID(dto.addressId)
       || !/^\d{4}-\d{2}-\d{2}$/.test(dto.date ?? '') || !Object.prototype.hasOwnProperty.call(BOOKING_SLOTS, dto.slot)
-      || !Array.isArray(dto.items) || dto.items.length < 1 || dto.items.length > 3
+      || !Array.isArray(dto.items) || dto.items.length < 1 || dto.items.length > VISIT_GROUP_DEVICE_LIMIT
       || dto.items.some(item => !isUUID(item?.sourceBookingId) || !isUUID(item?.sourceIncidentId))
       || new Set(dto.items.map(item => item.sourceBookingId)).size !== dto.items.length) {
       throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Yêu cầu đặt lại không hợp lệ.');

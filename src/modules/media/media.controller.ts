@@ -18,6 +18,7 @@ import { Role } from '../../shared/enums';
 import { PrivateBookingPhotoUploadService } from './private-booking-photo-upload.service';
 import { PrivateBookingPhotoFile } from './private-booking-photo-storage.service';
 import { VIDEO_MAX_BYTES } from '../../shared/utils/media-signature';
+import { RiskLimit } from '../../common/rate-limit/risk-rate-limit';
 
 @ApiTags('Media')
 @Controller('media')
@@ -28,6 +29,7 @@ export class MediaController {
   ) {}
 
   @Post('booking-photo-upload')
+  @RiskLimit('media-upload')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.CUSTOMER)
   @ApiBearerAuth()
@@ -53,6 +55,7 @@ export class MediaController {
   }
 
   @Post('booking-video-upload')
+  @RiskLimit('media-video-upload')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.CUSTOMER)
   @ApiBearerAuth()
@@ -74,6 +77,7 @@ export class MediaController {
   }
 
   @Post('upload')
+  @RiskLimit('media-upload')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @UseInterceptors(

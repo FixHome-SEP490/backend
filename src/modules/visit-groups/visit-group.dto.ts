@@ -20,8 +20,8 @@ import {
 import { UrgencyLevel } from '../../shared/enums';
 import { BookingDeviceAttributesDto, UUID_REGEX } from '../bookings/booking.dto';
 
-/** The self-service limit (PO 21/10/2026); the database also caps `sequence` at 3. */
-export const VISIT_GROUP_DEVICE_LIMIT = 3;
+/** The self-service limit (PO 04/11/2026); the database caps `sequence` at 5. */
+export const VISIT_GROUP_DEVICE_LIMIT = 5;
 
 export class VisitGroupItemDto {
   @ApiProperty({ format: 'uuid', description: 'Catalog service for this one physical device.' })
@@ -87,7 +87,8 @@ export class CreateVisitGroupDto {
   @IsOptional() @IsString() @Matches(/^[A-Za-z0-9_-]{1,128}$/, { message: 'aiSessionId must be the session id returned by the assistant' })
   aiSessionId?: string;
 
-  @ApiProperty({ type: [VisitGroupItemDto], minItems: 1, description: `One entry per physical device. More than ${VISIT_GROUP_DEVICE_LIMIT} is refused with VISIT_GROUP_DEVICE_LIMIT (422); GET /visit-groups/contact gives the hotline.` })
+  @ApiProperty({ type: [VisitGroupItemDto], minItems: 1, maxItems: VISIT_GROUP_DEVICE_LIMIT, description: `One entry per physical device. More than ${VISIT_GROUP_DEVICE_LIMIT} is refused with VISIT_GROUP_DEVICE_LIMIT (422); GET /visit-groups/contact gives the hotline.` })
+  // Keep the domain cap in the service so oversized requests retain its typed 422 response.
   @IsArray() @ArrayMinSize(1) @ArrayMaxSize(10)
   @ValidateNested({ each: true }) @Type(() => VisitGroupItemDto)
   items: VisitGroupItemDto[];

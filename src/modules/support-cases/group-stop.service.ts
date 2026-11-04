@@ -14,23 +14,16 @@ import { hasOnsiteInterruption, onsiteInterruptionRequest, validAssignmentCheckI
 import { User } from '../users/entities/user.entity';
 import { VisitGroup } from '../visit-groups/entities/visit-group.entity';
 import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity';
+import { VISIT_GROUP_DEVICE_LIMIT } from '../visit-groups/visit-group.dto';
 import { GroupContactAttemptDto, GroupStopDto } from './dto/group-stop.dto';
 import { SupportCase } from './entities';
 import { SupportCaseActor } from './support-cases.service';
 import { TechnicianReportService } from './technician-report.service';
+import { contactReadiness } from '../service-orders/onsite-contact';
+export { contactReadiness } from '../service-orders/onsite-contact';
 
 export const GROUP_CONTACT = 'VISIT_CONTACT_ATTEMPT';
 export const GROUP_STOP = 'VISIT_GROUP_STOPPED';
-
-export function contactReadiness(callTimes: number[], notified: boolean, now: number) {
-  const calls = callTimes.filter(time => Number.isFinite(time) && time <= now).sort((a, b) => a - b);
-  const first = calls[0];
-  const spaced = calls.length >= 2 && calls[calls.length - 1] - first >= 300000;
-  return { contactCount: calls.length, notificationSent: notified, callsSpaced: spaced,
-    nextCallAt: first === undefined ? null : new Date(first + 300000).toISOString(),
-    nextEligibleAt: first === undefined ? null : new Date(first + 600000).toISOString(),
-    serverNow: new Date(now).toISOString(), ready: spaced && notified && now - first >= 600000 };
-}
 
 @Injectable()
 export class GroupStopService {
@@ -40,7 +33,7 @@ export class GroupStopService {
   /** Lead -> group -> ALL bookings -> orders -> assignments. Never lock finance after orders. */
   private async scope(manager: EntityManager, groupId: string) {
     const refs = await manager.find(VisitGroupItem, { where: { groupId }, order: { sequence: 'ASC' } });
-    if (!refs.length || refs.length > 3) throw new NotFoundException('Không tìm thấy lượt sửa chữa.');
+    if (!refs.length || refs.length > VISIT_GROUP_DEVICE_LIMIT) throw new NotFoundException('Không tìm thấy lượt sửa chữa.');
     const lead = await manager.findOne(Booking, { where: { id: refs[0].bookingId }, lock: { mode: 'pessimistic_write' } });
     const group = await manager.findOne(VisitGroup, { where: { id: groupId }, lock: { mode: 'pessimistic_write' } });
     if (!lead || !group) throw new NotFoundException('Không tìm thấy lượt sửa chữa.');

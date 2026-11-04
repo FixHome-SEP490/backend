@@ -43,6 +43,8 @@ import { VouchersModule } from './modules/vouchers/vouchers.module';
 // Loaded last on purpose: it reaches SupportCasesService, whose file and FinanceService import
 // each other; finance must finish loading first or Nest sees an undefined constructor parameter.
 import { VisitGroupsModule } from './modules/visit-groups/visit-groups.module';
+import { BookingDraftsModule } from './modules/booking-drafts/booking-drafts.module';
+import { WarehousesModule } from './modules/warehouses/warehouses.module';
 
 @Module({
   imports: [
@@ -73,6 +75,7 @@ import { VisitGroupsModule } from './modules/visit-groups/visit-groups.module';
     ServicesModule,
     BookingsModule,
     VisitGroupsModule,
+    BookingDraftsModule,
     AiDiagnosisModule,
     ServiceOrdersModule,
     ReputationModule,
@@ -95,6 +98,7 @@ import { VisitGroupsModule } from './modules/visit-groups/visit-groups.module';
     VouchersModule,
     MailModule,
     GeoModule,
+    WarehousesModule,
   ],
 })
 export class AppModule {}
