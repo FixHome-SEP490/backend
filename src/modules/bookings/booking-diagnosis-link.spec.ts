@@ -1,3 +1,4 @@
+import { stubPendingVisitQuota } from '../../../test/helpers/pending-visit-quota.fixture';
 import 'reflect-metadata';
 import { describe, expect, it, vi } from 'vitest';
 import { Role, ServicePricingMode } from '../../shared/enums';
@@ -37,6 +38,7 @@ function fixture() {
     query: vi.fn(async () => [{ id: 'service-1' }]),
     getRepository: vi.fn(() => bookingRepo),
   };
+  stubPendingVisitQuota(manager);
   const dataSource = {
     query,
     transaction: vi.fn(async (callback: (transactionManager: typeof manager) => unknown) => callback(manager)),

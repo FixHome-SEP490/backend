@@ -10,6 +10,7 @@ import { Cancellation } from './entities/cancellation.entity';
 import { Notification } from '../notifications/entities/notification.entity';
 import { ServiceOrdersService } from './service-orders.service';
 import { ServiceOrderStateMachine } from './service-order-state-machine';
+import { VisitGroup } from '../visit-groups/entities/visit-group.entity';
 
 const { activateNextInvitationMock } = vi.hoisted(() => ({
   activateNextInvitationMock: vi.fn(),
@@ -19,10 +20,10 @@ vi.mock('../bookings/activate-next-invitation', () => ({
   invitationActivatedHook: () => async () => undefined,
 }));
 
-function scenario(hasReplacement: boolean, grouped = false) {
+function scenario(hasReplacement: boolean, grouped = false, pending = 0) {
   const groupId = grouped ? 'visit-1' : null;
   const booking = { id: 'booking-1', customerId: 'customer-1', visitGroupId: groupId,
-    status: BookingStatus.MATCHED };
+    status: BookingStatus.MATCHED, preferredEndAt: new Date('2030-12-01') };
   const sibling = { id: 'booking-2', customerId: 'customer-1', visitGroupId: groupId,
     status: BookingStatus.MATCHED };
   const lead = { id: 'order-1', bookingId: booking.id, code: 'FH-1',
@@ -35,6 +36,7 @@ function scenario(hasReplacement: boolean, grouped = false) {
   const histories: Array<{ serviceOrderId: string; fromStatus: string; toStatus: string; reason: string }> = [];
   const events: string[] = [];
   const manager = {
+    query: vi.fn(async () => [{ pending }]),
     findOne: vi.fn(async (entity: unknown, options: { where?: { id?: string } }) => {
       if (entity === ServiceOrder) return orders.find(order => order.id === options.where?.id || order.bookingId === (options.where as { bookingId?: string })?.bookingId) ?? null;
       return null;
@@ -106,6 +108,19 @@ function scenario(hasReplacement: boolean, grouped = false) {
 
 describe('BUG #43/#46 technician withdrawal outcome and notification', () => {
   beforeEach(() => activateNextInvitationMock.mockReset());
+
+  it.each([false, true])('releases technician at quota cap without reopening a third visit (group=%s)', async grouped => {
+    const s = scenario(true, grouped, 2);
+    if (grouped) await s.cancel(s.sibling, s.second.id, false);
+    await s.cancel(s.booking, s.lead.id, grouped ? true : undefined);
+    expect(s.assignments.get(s.lead.id)).toBe(false);
+    expect(s.booking.status).toBe(BookingStatus.CLOSED);
+    expect(s.lead.status).toBe(ServiceOrderStatus.CANCELLED);
+    if (grouped) expect(s.second.status).toBe(ServiceOrderStatus.CANCELLED);
+    expect(activateNextInvitationMock).not.toHaveBeenCalled();
+    expect(s.notifications).toHaveLength(1);
+    expect(s.notifications[0].message).not.toContain('đang tìm');
+  });
 
   it('no replacement: Booking CLOSED, Order terminal, exactly one committed truthful notice', async () => {
     const s = scenario(false);
@@ -207,4 +222,49 @@ describe('BUG #43/#46 technician withdrawal outcome and notification', () => {
     expect(s.manager.update).not.toHaveBeenCalledWith(
       expect.anything(), expect.anything(), expect.objectContaining({ paymentStatus: 'paid' }));
   });
+});
+
+describe('cancelVisit authorization before customer quota lock', () => {
+  function accessScenario() {
+    const manager = {
+      queryRunner: { isTransactionActive: true },
+      findOneBy: vi.fn(async (entity: unknown) => entity === VisitGroup
+        ? { id: 'visit', customerId: 'owner' } : null),
+      query: vi.fn(async () => [{ id: 'owner' }]),
+      // Stop the fixture after admission, before any existing cancellation business logic.
+      findOne: vi.fn(async () => { throw new Error('reached-booking-lock'); }),
+    };
+    const transaction = vi.fn(async (work: (m: typeof manager) => unknown) => work(manager));
+    const service = Object.assign(Object.create(ServiceOrdersService.prototype), {
+      dataSource: { transaction },
+    }) as ServiceOrdersService;
+    return { manager, transaction, service };
+  }
+
+  it('rejects a foreign customer before taking any customer or booking lock', async () => {
+    const h = accessScenario();
+    await expect(h.service.cancelVisit('visit', { reason: 'Synthetic cancellation' }, {
+      id: 'foreign-customer', role: Role.CUSTOMER,
+    })).rejects.toMatchObject({ message: 'Order not found or access denied', status: 403 });
+    expect(h.manager.query).not.toHaveBeenCalled();
+    expect(h.manager.findOne).not.toHaveBeenCalled();
+  });
+
+  it.each([Role.ADMIN, Role.SERVICE_MANAGER, 'unknown'])('rejects role %s before transaction or customer lock', async role => {
+    const h = accessScenario();
+    await expect(h.service.cancelVisit('visit', { reason: 'Synthetic cancellation' }, {
+      id: 'owner', role,
+    })).rejects.toMatchObject({ message: 'Order not found or access denied', status: 403 });
+    expect(h.transaction).not.toHaveBeenCalled();
+    expect(h.manager.query).not.toHaveBeenCalled();
+  });
+
+  it.each([{ id: 'owner', role: Role.CUSTOMER }, { id: 'assigned-tech', role: Role.TECHNICIAN }])(
+    'preserves customer-lock admission for $role', async actor => {
+      const h = accessScenario();
+      await expect(h.service.cancelVisit('visit', { reason: 'Synthetic cancellation' }, actor))
+        .rejects.toThrow('reached-booking-lock');
+      expect(h.manager.query).toHaveBeenCalledWith('SELECT id FROM users WHERE id = $1 FOR UPDATE', ['owner']);
+      expect(h.manager.findOne).toHaveBeenCalled();
+    });
 });

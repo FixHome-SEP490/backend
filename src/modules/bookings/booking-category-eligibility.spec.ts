@@ -1,3 +1,4 @@
+import { stubPendingVisitQuota } from '../../../test/helpers/pending-visit-quota.fixture';
 import { describe, expect, it, vi } from 'vitest';
 import { BookingsService } from './bookings.service';
 import { Booking } from './entities/booking.entity';
@@ -16,6 +17,7 @@ function fixture(code = 'QA_LEGACY') {
     findOneBy: async () => null, find: async () => [],
     getRepository: (entity: unknown) => entity === Booking ? repository : {},
   };
+  stubPendingVisitQuota(manager);
   const bookings = Object.assign(Object.create(BookingsService.prototype), {
     bookingRepo: { findOneBy: async () => ({ id: 'old', customerId: 'customer', status: BookingStatus.CANCELLED,
       serviceId: service.id, addressId: 'address', quantity: 1, description: 'Synthetic repair' }) },

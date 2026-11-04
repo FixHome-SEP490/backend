@@ -1,3 +1,4 @@
+import { stubPendingVisitQuota } from '../../../test/helpers/pending-visit-quota.fixture';
 import 'reflect-metadata';
 import { describe, expect, it, vi } from 'vitest';
 import { ForbiddenException } from '@nestjs/common';
@@ -18,11 +19,13 @@ const end = new Date('2030-10-22T11:00:00Z');
 function harness(config: Record<string, string> = { 'visit_group.enabled': 'true', 'support.hotline': '1900 0000' }) {
   let created = 0;
   const manager = {
+    findOneBy: vi.fn(async () => null),
     create: vi.fn((_entity: unknown, data: object) => ({ ...data })),
     save: vi.fn(async (value: object) => ({ id: 'group-1', ...value })),
     insert: vi.fn(async () => undefined),
     update: vi.fn(async () => undefined),
   };
+  stubPendingVisitQuota(manager);
   const dataSource = {
     transaction: vi.fn(async (work: (m: typeof manager) => Promise<unknown>) => work(manager)),
     getRepository: vi.fn(() => ({ find: vi.fn(async () => []), findBy: vi.fn(async () => []) })),

@@ -7,6 +7,7 @@ import { BookingStatus, Role, SupportCaseType } from '../../shared/enums';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { BookingsService } from '../bookings/bookings.service';
 import { InvitationsService } from '../bookings/invitations.service';
+import { checkPendingVisitQuota, lockPendingVisitCustomer } from '../bookings/pending-visit-quota';
 import { ScheduleBookingDto } from '../bookings/booking.dto';
 import { ServiceOrdersService } from '../service-orders/service-orders.service';
 import { Booking } from '../bookings/entities/booking.entity';
@@ -72,6 +73,13 @@ export class VisitGroupsService {
     let groupId: string;
     try {
       const createInManager = async (manager: EntityManager) => {
+        await lockPendingVisitCustomer(manager, customer.id);
+        // Recheck after the shared lock: a same-key request may have committed while we waited.
+        if (dto.idempotencyKey) {
+          const earlier = await manager.findOneBy(VisitGroup, { customerId: customer.id, idempotencyKey: dto.idempotencyKey });
+          if (earlier) return earlier.id;
+        }
+        await checkPendingVisitQuota(manager, customer.id);
         const group = await manager.save(manager.create(VisitGroup, {
           customerId: customer.id,
           addressId: dto.addressId,

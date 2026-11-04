@@ -1,3 +1,4 @@
+import { stubPendingVisitQuota } from '../../../test/helpers/pending-visit-quota.fixture';
 import 'reflect-metadata';
 import { describe, expect, it, vi } from 'vitest';
 import { BookingsService } from './bookings.service';
@@ -48,6 +49,7 @@ function fixture(count = 1, grouped = count > 1) {
     update: vi.fn(async (entity, where, value) => { table(entity).filter(row => matches(row, typeof where === 'string' ? { id: where } : where)).forEach(row => Object.assign(row, value)); return { affected: 1 }; }),
     query: vi.fn(async (sql: string) => sql.includes('JOIN service_categories') ? [{ code: 'AC-02' }] : variants),
   };
+  stubPendingVisitQuota(manager);
   manager.getRepository = (entity: any) => ({
     create: (value: any) => manager.create(entity, value), save: (value: any) => manager.save(entity, value),
     find: (options: any) => manager.find(entity, options), findOneBy: (where: any) => manager.findOneBy(entity, where),
