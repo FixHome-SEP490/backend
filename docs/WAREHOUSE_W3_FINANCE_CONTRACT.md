@@ -732,3 +732,20 @@ hai tài liệu CONTEXT và contract này. Tổng 12 file của B3a, không mở
 Build/typecheck đã được Lead sửa và xác nhận PASS bằng type-only export. Vẫn phải kiểm CI PostgreSQL/schema/security và phối hợp Web trước release; không dùng B3a làm shipping approval hoặc financial activation.
 Không stage/commit/push/PR/merge/deploy/migrate/seed/shared DB. Sau integration/schema/release
 được duyệt phải restart Backend trước runtime QA.
+
+## 15. B3a Admin JWT/HTTP/PostgreSQL verification extension (05/11/2026)
+
+Trong schema cô lập hiện hữu của GitHub Actions, `test/app.e2e-spec.ts` bổ sung
+7 test HTTP thật qua Nest, JwtStrategy, RolesGuard, PermissionGuard, ValidationPipe,
+PostgreSQL và AuditLogService strict. Phạm vi: JWT thiếu 401, Customer/Technician 403,
+JWT role giả không được nâng quyền, Admin bị khóa 401, current/history chỉ Draft và
+không có effective policy, create đúng một DRAFT kèm audit trong transaction, dữ
+liệu nguy hiểm `__proto__` và các tham số sai trả 400, conflict/expectedRevision 409,
+hai PATCH cùng CAS chỉ một thành công, history bất biến, impact preview của phiên
+bản cũ chỉ là hypothetical không phát sinh tiền, thu hồi `config:update` chặn mutation
+dù RBAC guard có cache. Không mở activate/retire hoặc fee approval.
+
+Chỉ dùng PostgreSQL CI hiện có trong schema ngẫu nhiên, không dùng shared DEV.
+Local `typecheck`/`lint`/`build`/`git diff --check` PASS; **chưa có kết quả
+HTTP/PG CI cho 7 test mới tại thời điểm ghi**. Sau CI phải cập nhật sự thật kiểm thử,
+không coi việc có test là đã verify Supabase DEV hay W3 settlement.

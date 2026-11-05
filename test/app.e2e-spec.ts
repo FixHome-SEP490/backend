@@ -1251,6 +1251,258 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     });
   });
 
+  describe('W3 B3a Admin draft API (real JWT, PostgreSQL; no execution)', () => {
+    const base = '/api/v1/admin/w3-delivery-policy';
+    const params = {
+      feeCeilingVnd: 50000,
+      proposalReviewAfterMinutes: 30,
+      courierEvidenceReviewAfterMinutes: 60,
+    };
+    let initial: { id: string; state: { revision: number } };
+    let head: { id: string; state: { revision: number } };
+    const count = (table: 'w3_delivery_policy_versions' | 'audit_logs') =>
+      db.query(
+        table === 'w3_delivery_policy_versions'
+          ? 'SELECT count(*)::integer AS n FROM w3_delivery_policy_versions'
+          : `SELECT count(*)::integer AS n FROM audit_logs WHERE resource_type = 'w3_delivery_policy'`,
+      ).then((rows) => Number(rows[0].n));
+
+    it('rejects missing, non-Admin, role-spoofed and locked JWT identities', async () => {
+      await http().get(`${base}/current`).expect(401);
+      for (const actor of [customer, technician]) {
+        await http()
+          .get(`${base}/current`)
+          .set('Authorization', bearer(actor))
+          .expect(403);
+        await http()
+          .post(`${base}/drafts`)
+          .set('Authorization', bearer(actor))
+          .send({ expectedRevision: 0, parameters: params })
+          .expect(403);
+      }
+      const spoofed = jwt.sign(
+        { sub: customer.user.id, role: 'admin' },
+        { secret: accessSecret, expiresIn: '15m' },
+      );
+      await http()
+        .get(`${base}/history`)
+        .set('Authorization', `Bearer ${spoofed}`)
+        .expect(403);
+      const locked = await db.getRepository('User').save({
+        email: `${randomUUID()}@example.test`,
+        passwordHash: 'CI_ONLY_NON_LOGIN_CREDENTIAL',
+        fullName: 'W3 locked CI Admin',
+        role: 'admin',
+        status: 'locked',
+        isActive: true,
+      });
+      const lockedJwt = jwt.sign(
+        { sub: locked.id, role: 'admin' },
+        { secret: accessSecret, expiresIn: '15m' },
+      );
+      await http()
+        .get(`${base}/current`)
+        .set('Authorization', `Bearer ${lockedJwt}`)
+        .expect(401);
+    });
+
+    it('starts without an effective policy and forbids activation endpoints', async () => {
+      const current = await http()
+        .get(`${base}/current`)
+        .set('Authorization', bearer(admin))
+        .expect(200);
+      expect(current.headers['cache-control']).toContain('no-store');
+      expect(current.body.data).toMatchObject({
+        mode: 'NON_EXECUTABLE_PREVIEW',
+        financialExecution: 'BLOCKED',
+        effectivePolicy: null,
+        draft: null,
+      });
+      expect(current.body.data.blockers).toEqual(expect.arrayContaining([
+        'LEGAL_UNVERIFIED',
+        'ACCOUNTING_UNVERIFIED',
+        'WAREHOUSE_UNVERIFIED',
+        'COURIER_UNVERIFIED',
+        'SHIPPING_APPROVAL_SOURCE_UNVERIFIED',
+        'FINANCE_CUTOVER_CLOSED',
+      ]));
+      const history = await http()
+        .get(`${base}/history`)
+        .set('Authorization', bearer(admin))
+        .expect(200);
+      expect(history.body.data.drafts).toEqual([]);
+      await http()
+        .post(`${base}/activate`)
+        .set('Authorization', bearer(admin))
+        .send({ force: true })
+        .expect(404);
+      await http()
+        .post(`${base}/retire`)
+        .set('Authorization', bearer(admin))
+        .send({ force: true })
+        .expect(404);
+    });
+
+    it('rejects unknown, dangerous and invalid Draft input before any write', async () => {
+      const before = await count('w3_delivery_policy_versions');
+      const valid = { expectedRevision: 0, parameters: params };
+      const invalid = [
+        { ...valid, status: 'ACTIVE' },
+        { ...valid, parameters: { ...params, feeCeilingVnd: -1 } },
+        { ...valid, parameters: { ...params, feeCeilingVnd: 0.5 } },
+        { ...valid, parameters: { ...params, feeCeilingVnd: 9007199254740992 } },
+        { ...valid, parameters: { ...params, sellerOfRecord: 'APPROVED' } },
+      ];
+      for (const body of invalid) {
+        await http()
+          .post(`${base}/drafts`)
+          .set('Authorization', bearer(admin))
+          .send(body)
+          .expect(400);
+      }
+      // Raw preflight rejects prototype-key pollution before global DTO stripping.
+      await http()
+        .post(`${base}/drafts`)
+        .set('Authorization', bearer(admin))
+        .set('Content-Type', 'application/json')
+        .send('{"expectedRevision":0,"parameters":{"feeCeilingVnd":50000,"proposalReviewAfterMinutes":30,"courierEvidenceReviewAfterMinutes":60},"__proto__":{"status":"ACTIVE"}}')
+        .expect(400);
+      expect(await count('w3_delivery_policy_versions')).toBe(before);
+    });
+
+    it('creates only one versioned DRAFT with mandatory transactional audit', async () => {
+      const result = await http()
+        .post(`${base}/drafts`)
+        .set('Authorization', bearer(admin))
+        .send({ expectedRevision: 0, parameters: params })
+        .expect(201);
+      expect(result.headers['cache-control']).toContain('no-store');
+      expect(result.body.data).toMatchObject({
+        financialExecution: 'BLOCKED',
+        effectivePolicy: null,
+        draft: { state: {
+          status: 'DRAFT',
+          revision: 1,
+          mode: 'NON_EXECUTABLE_PREVIEW',
+          policy: {
+            kind: 'W3_DELIVERY_OPERATING_POLICY_V1',
+            parameters: params,
+          },
+        } },
+      });
+      initial = result.body.data.draft;
+      head = initial;
+      expect(await count('w3_delivery_policy_versions')).toBe(1);
+      expect(await count('audit_logs')).toBe(1);
+      await http()
+        .post(`${base}/drafts`)
+        .set('Authorization', bearer(admin))
+        .send({ expectedRevision: 0, parameters: params })
+        .expect(409);
+      expect(await count('w3_delivery_policy_versions')).toBe(1);
+    });
+
+    it('serializes concurrent PATCH CAS; returns history and never overwrites a version', async () => {
+      const updates = await Promise.all([
+        http()
+          .patch(`${base}/drafts/${initial.id}`)
+          .set('Authorization', bearer(admin))
+          .send({ expectedRevision: 1, parameters: { ...params, feeCeilingVnd: 60000 } }),
+        http()
+          .patch(`${base}/drafts/${initial.id}`)
+          .set('Authorization', bearer(admin))
+          .send({ expectedRevision: 1, parameters: { ...params, feeCeilingVnd: 70000 } }),
+      ]);
+      expect(updates.map((x) => x.status).sort()).toEqual([200, 409]);
+      head = updates.find((x) => x.status === 200)!.body.data.draft;
+      expect(head.state.revision).toBe(2);
+      await http()
+        .patch(`${base}/drafts/${initial.id}`)
+        .set('Authorization', bearer(admin))
+        .send({ expectedRevision: 1, parameters: params })
+        .expect(409);
+      const history = await http()
+        .get(`${base}/history?limit=2`)
+        .set('Authorization', bearer(admin))
+        .expect(200);
+      expect(history.body.data.drafts.map((d: { state: { revision: number } }) => d.state.revision))
+        .toEqual([2, 1]);
+      expect(history.body.data.drafts[1].id).toBe(initial.id);
+      expect(await count('w3_delivery_policy_versions')).toBe(2);
+      expect(await count('audit_logs')).toBe(2);
+    });
+
+    it('produces only hypothetical impact for a historical Draft and keeps finances blocked', async () => {
+      const before = [await count('w3_delivery_policy_versions'), await count('audit_logs')];
+      const result = await http()
+        .post(`${base}/preview`)
+        .set('Authorization', bearer(admin))
+        .send({
+          draftId: initial.id,
+          expectedRevision: 1,
+          samples: [{
+            proposalId: 'ci-proposal-1',
+            proposalVersion: 1,
+            shippingFeeVnd: 20000,
+            proposalAgeMinutes: 35,
+            courierEvidenceAgeMinutes: null,
+          }],
+        })
+        .expect(200);
+      expect(result.body.data).toMatchObject({
+        mode: 'NON_EXECUTABLE_PREVIEW',
+        hypotheticalOnly: true,
+        financialExecution: 'BLOCKED',
+        effectivePolicy: null,
+        draftId: initial.id,
+        proposals: [{
+          proposalId: 'ci-proposal-1',
+          customerShippingShare: 14000,
+          technicianShippingShare: 6000,
+        }],
+      });
+      expect(result.body.data.blockers).toContain('FINANCE_CUTOVER_CLOSED');
+      expect([await count('w3_delivery_policy_versions'), await count('audit_logs')])
+        .toEqual(before);
+      await http()
+        .post(`${base}/preview`)
+        .set('Authorization', bearer(admin))
+        .send({ draftId: initial.id, expectedRevision: 2, samples: [] })
+        .expect(409);
+    });
+
+    it('checks the underlying Admin config:update grant inside a real transaction', async () => {
+      const removed: { role_id: string; permission_id: string }[] = await db.query(
+        `DELETE FROM role_permissions rp USING roles r, permissions p
+        WHERE rp.role_id = r.id AND rp.permission_id = p.id
+        AND r.code = 'admin' AND p.code = 'config:update'
+        RETURNING rp.role_id, rp.permission_id`,
+      );
+      expect(removed).toHaveLength(1);
+      const before = await count('w3_delivery_policy_versions');
+      try {
+        await http()
+          .patch(`${base}/drafts/${head.id}`)
+          .set('Authorization', bearer(admin))
+          .send({ expectedRevision: 2, parameters: params })
+          .expect(403);
+        expect(await count('w3_delivery_policy_versions')).toBe(before);
+      } finally {
+        for (const row of removed)
+          await db.query(
+            'INSERT INTO role_permissions (role_id, permission_id) VALUES ($1, $2)',
+            [row.role_id, row.permission_id],
+          );
+      }
+      const current = await http()
+        .get(`${base}/current`)
+        .set('Authorization', bearer(admin))
+        .expect(200);
+      expect(current.body.data.draft.id).toBe(head.id);
+      expect(current.body.data.financialExecution).toBe('BLOCKED');
+    });
+  });
+
   it('reverts all migrations, adopts legacy users and preserves account state and timestamps', async () => {
     // Empty W3 append-only tables still prohibit TRUNCATE CASCADE. Revert
     // these two protected schemas first, before resetting the legacy fixture.
