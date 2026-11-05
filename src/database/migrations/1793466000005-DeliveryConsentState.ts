@@ -205,12 +205,19 @@ export class DeliveryConsentState1793466000005 implements MigrationInterface {
 
       CREATE FUNCTION delivery_command_guard() RETURNS trigger LANGUAGE plpgsql AS $$
       DECLARE s delivery_consent_sessions; parent delivery_consent_commands; prev delivery_consent_commands; expected_source text;
+        expected_actor uuid; expected_block_reason text; expected_status text;
       BEGIN
         SELECT * INTO STRICT s FROM delivery_consent_sessions WHERE part_request_id=NEW.part_request_id;
+        -- Evaluate CASE values as PL/pgSQL assignments, not inline in IF predicates.
+        -- Keep the same actor, deduction and consent/status invariants.
+        expected_actor := CASE NEW.actor_role WHEN 'customer' THEN s.customer_user_id WHEN 'technician' THEN s.technician_user_id ELSE s.responsible_service_manager_id END;
+        expected_block_reason := CASE WHEN NEW.known_deductions>0 THEN 'KNOWN_DEDUCTIONS_LEDGER_REQUIRED' ELSE 'FINANCIAL_CUTOVER_CLOSED' END;
+        expected_status := CASE WHEN NEW.snapshot->'actual'<>'null'::jsonb THEN 'ACTUAL_RECORDED'
+          WHEN NEW.snapshot->'customerConsent'<>'null'::jsonb AND NEW.snapshot->'technicianConsent'<>'null'::jsonb THEN 'CONSENTED' ELSE 'AWAITING_DUAL_CONSENT' END;
         IF s.invalidated_at IS NOT NULL OR NOT delivery_consent_scope_matches(s) OR s.version<>NEW.result_version
           OR s.projection<>NEW.snapshot OR s.quote_version<>NEW.quote_version THEN RAISE EXCEPTION 'Delivery command/root mismatch'; END IF;
         IF NOT EXISTS (SELECT 1 FROM users WHERE id=NEW.actor_user_id AND role::text=NEW.actor_role AND is_active AND status::text='active')
-          OR NEW.actor_user_id <> CASE NEW.actor_role WHEN 'customer' THEN s.customer_user_id WHEN 'technician' THEN s.technician_user_id ELSE s.responsible_service_manager_id END
+          OR NEW.actor_user_id <> expected_actor
           THEN RAISE EXCEPTION 'Delivery command actor mismatch'; END IF;
         IF s.source_quotation_id IS NOT NULL THEN
           SELECT 'quotation:'||id||':'||version INTO expected_source FROM quotations WHERE id=s.source_quotation_id AND version=NEW.source_version;
@@ -227,7 +234,7 @@ export class DeliveryConsentState1793466000005 implements MigrationInterface {
             THEN RAISE EXCEPTION 'Additional cost source snapshot mismatch'; END IF;
         END IF;
         IF expected_source IS NULL OR NEW.snapshot#>>'{quote,approvedCostRef}' IS DISTINCT FROM expected_source THEN RAISE EXCEPTION 'Delivery source binding mismatch'; END IF;
-        IF NEW.snapshot->>'payoutBlockReason' IS DISTINCT FROM CASE WHEN NEW.known_deductions>0 THEN 'KNOWN_DEDUCTIONS_LEDGER_REQUIRED' ELSE 'FINANCIAL_CUTOVER_CLOSED' END
+        IF NEW.snapshot->>'payoutBlockReason' IS DISTINCT FROM expected_block_reason
           THEN RAISE EXCEPTION 'Delivery financial gate must remain closed'; END IF;
         IF NEW.expected_version>0 THEN
           SELECT * INTO STRICT prev FROM delivery_consent_commands WHERE part_request_id=NEW.part_request_id AND result_version=NEW.expected_version;
@@ -267,8 +274,7 @@ export class DeliveryConsentState1793466000005 implements MigrationInterface {
           AND e.part_request_id=s.part_request_id AND e.service_order_id=s.service_order_id AND e.uploader_user_id=s.responsible_service_manager_id
           AND e.quote_version=NEW.quote_version AND e.purpose=CASE WHEN NEW.kind='RECORD_ACTUAL' THEN 'ACTUAL' ELSE 'QUOTE' END)
           THEN RAISE EXCEPTION 'Delivery evidence binding mismatch'; END IF;
-        IF NEW.snapshot->>'status' IS DISTINCT FROM CASE WHEN NEW.snapshot->'actual'<>'null'::jsonb THEN 'ACTUAL_RECORDED'
-          WHEN NEW.snapshot->'customerConsent'<>'null'::jsonb AND NEW.snapshot->'technicianConsent'<>'null'::jsonb THEN 'CONSENTED' ELSE 'AWAITING_DUAL_CONSENT' END
+        IF NEW.snapshot->>'status' IS DISTINCT FROM expected_status
           THEN RAISE EXCEPTION 'Delivery status mismatch'; END IF;
         RETURN NEW;
       END $$;
