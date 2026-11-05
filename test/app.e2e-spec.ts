@@ -1021,16 +1021,34 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
 
     beforeAll(async () => {
       // Disposable CI schema only. No real customer, warehouse, courier, or approved W3 fee.
-      owner = await register();
-      outsider = await register();
-      technicianOwner = await provisionTechnician();
-      technicianOutsider = await provisionTechnician();
-      manager = await register();
-      await db.query('UPDATE users SET role = $1 WHERE id = $2', [
-        'service_manager',
-        manager.user.id,
-      ]);
-      manager = await freshLogin(manager);
+      // Seed ONLY the disposable CI schema, avoiding unrelated public
+      // registration/login throttling. Each HTTP call still authenticates via
+      // real Passport JWT signature, strategy DB reload and role/owner guards.
+      const syntheticSession = async (
+        role: 'customer' | 'technician' | 'service_manager',
+      ): Promise<Session> => {
+        const user = await db.getRepository('User').save({
+          email: `${randomUUID()}@example.test`,
+          passwordHash: 'CI_ONLY_NON_LOGIN_CREDENTIAL',
+          fullName: 'W3 B2b isolated HTTP actor',
+          role,
+          status: 'active',
+          isActive: true,
+        });
+        return {
+          user: { id: user.id, email: user.email },
+          accessToken: jwt.sign(
+            { sub: user.id, role },
+            { secret: accessSecret, expiresIn: '15m' },
+          ),
+          refreshToken: '',
+        };
+      };
+      owner = await syntheticSession('customer');
+      outsider = await syntheticSession('customer');
+      technicianOwner = await syntheticSession('technician');
+      technicianOutsider = await syntheticSession('technician');
+      manager = await syntheticSession('service_manager');
 
       const category = await createCategory();
       const service = await createService(category.id);
