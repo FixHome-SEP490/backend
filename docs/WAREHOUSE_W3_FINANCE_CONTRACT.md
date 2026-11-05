@@ -1065,3 +1065,80 @@ shipping/financial snapshot, shipping policy, dues, cutover, voucher và context
 `npm run typecheck`, `npm run build`, `npm run lint`, `git diff --check`: **PASS**;
 lint giữ 0 errors/4 warning có sẵn ngoài allowlist. Không dùng unit/doubles hoặc mutation
 check thay cho PostgreSQL, source authority, Finance signoff hay đối soát tiền runtime.
+
+## 19. Cổng phát hành DEV cho migration W3 0004–0008 (06/11/2026)
+
+Đây là gate phát hành **chỉ DEV**, không phải activation W3 và không đụng
+Production. Source: `src/database/w3-dev-release-gate.ts` (planner + gate),
+`src/database/w3-dev-release.ts` (entrypoint), unit
+`src/database/w3-dev-release-gate.spec.ts` và PostgreSQL harness
+`src/database/w3-dev-release.postgres.spec.ts`.
+
+### Phạm vi và thứ tự
+
+- Chỉ đúng năm migration W3 `1793466000004`–`1793466000008`, đúng thứ tự
+  class/timestamp. Migration `DeliveryZeroFeeOperations1793466000008` là
+  additive zero-fee operational slice: hai bảng private
+  `delivery_operation_evidence`, `delivery_shipping_proposals`, guard
+  evidence/proposal, trigger movement completion, guard thay thế cho event/
+  movement 0007 (giữ function `_closed` cũ) và các guard request/item/invoice/
+  order/assignment/source/warehouse. Nó không mở invoice/global gate.
+- Prerequisite bắt buộc đã có trong ledger: bốn migration voucher/interruption
+  (`1792994400000`, `1792994400001`, `1793116800000`, `1793203200000`), W1
+  `WarehouseInventory1793379600003` và W2
+  `WarehousePartFulfillment1793466000003`. Gate cũng kiểm base table/cột mà
+  0008 cần (`part_request_items`, `additional_cost_items`, shipping fee,
+  `warehouse_stock.updated_at`, warehouse responsible/status) trước khi apply.
+- Cặp cash/reputation `CashPaymentIntents1793293200000`,
+  `TechnicianResponsibility1793293200001` được phép còn pending để gate
+  cash-first hiện có chạy tiếp; mọi migration pending khác bị từ chối. Gate W3
+  không ghi ledger cash, nên transaction 0008 và cặp cash pending tách biệt.
+- Deploy DEV chạy gate W3 trước, rồi gate cash/reputation không đổi, rồi mới
+  restart Backend. Gate W3 chỉ apply schema W3, không chạy migration cash.
+
+### Cơ chế fail-closed
+
+- Opt-in: chỉ chạy khi `NODE_ENV=production` và `W3_DEV_RELEASE=1`; thiếu một
+  điều kiện thì dừng, không in giá trị môi trường.
+- Khóa advisory `pg_try_advisory_lock(1793466000, 4)` (khác khóa ghi policy W3
+  `(1793466000, 6)`), đọc ledger `public.migrations` đúng một lần dưới khóa.
+- Kiểm DB role (`public`, CREATE, superuser/bypass RLS), schema prerequisite,
+  ledger order và replay marker. Marker 0008 là OR của hai bảng mới, function
+  zero-fee, function `_closed` và trigger guard, nên schema 0008 dù chỉ còn một
+  phần cũng không được replay DDL. Nếu schema W3 đã tồn tại nhưng ledger thiếu
+  thì từ chối chạy lại DDL; không chạy `down()`.
+- Apply các migration W3 còn thiếu trong **một transaction** cùng ledger row;
+  lỗi giữa chừng rollback toàn bộ, kể cả 0008. Sau apply kiểm lại bảng/cột/
+  constraint/index/trigger/function, RLS, PUBLIC/API-role revoke, quyền backend,
+  function 0008 không execute cho PUBLIC, event/movement guard mới đã thay thế
+  guard `_closed`, và gate physical phải đóng (đúng một row `enabled=false`,
+  invoice CHECK cutover vẫn còn).
+
+### Kiểm chứng
+
+| Gate | Kết quả |
+| --- | --- |
+| `npx vitest run src/database/w3-dev-release-gate.spec.ts` | PASS — 6 tests |
+| `npm run typecheck` | PASS |
+| `npm run lint` | PASS — 0 errors, 4 warning có sẵn |
+| `npm run build` | PASS |
+| `npx vitest run src/database/w3-dev-release.postgres.spec.ts` | NOT VERIFIED — local không có PostgreSQL/Docker; 10 tests skip, CI step chạy với `W3_DEV_ISOLATED_PG=1` |
+| Shared DEV migration/restart, `/health` | NOT VERIFIED |
+
+Unit test phủ exact order 0004–0008, cash pair coordination, thiếu prerequisite,
+unknown pending, missing/reordered/partial W3, reversed cash ledger và no
+downgrade. PostgreSQL harness (CI-only, database UUID riêng, không đọc `.env`)
+phủ rollback khi 0007 hoặc 0008 lỗi giữa chừng, apply + idempotent replay không
+`down`, legacy invoice default/immutability, unknown pending, thiếu index,
+grant API-role, DB role yếu, replay khi ledger 0007/0008 thiếu, marker 0008
+partial và việc cặp cash vẫn pending sau gate W3. Harness staged dùng
+`import.meta.glob` cho 0008: branch gate compile trước integration, nhưng CI
+fail-closed nếu migration 0008 chưa được cherry-pick.
+
+CI thêm step PostgreSQL cô lập trước `npm run test:e2e`; deploy VPS chạy
+`docker compose ... run --rm --no-deps -e W3_DEV_RELEASE=1 backend node
+dist/database/w3-dev-release.js` trước gate cash và trước `up -d`.
+Không có secret/env value trong output. Không push/merge/deploy hay ghi shared
+DEV trong task này. Migration class 0008 do worktree W3 finance/delivery cung
+cấp và được Lead cherry-pick vào Backend trước CI; gate chỉ whitelist/verify,
+không sao chép hay sửa source 0008.
