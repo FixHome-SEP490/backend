@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-05 22:31 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104
+> Cập nhật lần cuối: 2026-11-05 23:05 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -471,7 +471,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
-- 2026-11-05 22:31 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | W3 BE CI #42052960489 3836 unit +191 PG E2E PASS, xác minh 4 B2b HTTP/JWT owner preview (migration 0004/0005/0006 trong schema cô lập). Thêm tiếp 7 test B3a Admin Draft HTTP/JWT/PG (locked, RBAC, raw input, CAS/race, audit, hypothetical preview, thu hồi permission); local typecheck/lint/build PASS, CI của 7 test mới CHƯA RUN. Không thêm command/finance/courier, không shared DEV migration, Finance/legal/warehouse/courier gate đóng.
+- 2026-11-05 23:05 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | Backend W3 B3a real Admin HTTP/JWT/RBAC/CAS/audit E2E 7/7 CI PASS: #42060181287 (HEAD 44a6a76), tổng 3836 unit PASS/58 skipped và 198 PostgreSQL integration PASS/39 skipped; B2b 4 HTTP tests cũng giữ PASS. Lần CI đầu #42058256895 FAIL fixture RETURNING và legacy rollback immutable history; sửa đọc TypeORM tuple, chuyển B3a xuống sau replay và khởi tạo lại actors/RBAC trong CI schema, không tắt trigger. Lint/typecheck/build/security PASS; không shared DEV migration, Finance/warehouse/courier/legal gate vẫn đóng.
 
 - 2026-11-05 16:56 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | B2b source: JWT owner preview chỉ đọc, denial 404 đồng nhất và giữ lỗi DB, không mount B1 hoặc mở finance; review code độc lập không có lỗi chặn; focused 425 và full unit 3776 PASS/58 skipped, typecheck/lint/build/diff PASS; HTTP/PG/runtime chưa kiểm. Checkpoint B2a 01:07: B2a source only: owner facts preview/read-only, denial đồng nhất, mọi action BLOCKED, 174 focused PASS, typecheck/build/lint/diff PASS; JWT/API/DB/finance chưa mở. Checkpoint trước 2026-11-04 23:50 (UTC+7): Phase A (20:54): Thêm Phase A domain dual consent/actual versioned thuần, giữ cutover đóng; ghi Phase B storage/auth/warehouse và gate Finance/team. B1 (22:54): Thêm B1 consent persistence inert, scope trigger/CAS/append-only; ghi 93 focused PASS, PG 22 skipped, giữ W3 cutover đóng, chưa có API/DB apply. Review-fix-01: warehouse bắt buộc NULL, bỏ đọc/bind W2, focused cuối 100 PASS, typecheck/build/lint PASS; khôi phục T8 nguyên văn, giữ 40 entry.
 - 2026-11-04 19:37 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | Chốt W3 scaffold và khóa cutover; ghi 3358 unit PASS/58 skipped, gate Finance/pháp lý, DELIVERY stock và PG/runtime chưa kiểm chứng.

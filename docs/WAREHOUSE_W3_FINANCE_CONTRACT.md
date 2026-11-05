@@ -746,6 +746,14 @@ bản cũ chỉ là hypothetical không phát sinh tiền, thu hồi `config:upd
 dù RBAC guard có cache. Không mở activate/retire hoặc fee approval.
 
 Chỉ dùng PostgreSQL CI hiện có trong schema ngẫu nhiên, không dùng shared DEV.
-Local `typecheck`/`lint`/`build`/`git diff --check` PASS; **chưa có kết quả
-HTTP/PG CI cho 7 test mới tại thời điểm ghi**. Sau CI phải cập nhật sự thật kiểm thử,
-không coi việc có test là đã verify Supabase DEV hay W3 settlement.
+Local `typecheck`/`lint`/`build`/`git diff --check` PASS. GitHub CI
+`42060181287` trên commit `44a6a76` hoàn thành **SUCCESS**: 3836 unit
+PASS/58 skipped, 198 PostgreSQL integration PASS/39 skipped, trong đó
+`test/app.e2e-spec.ts` 128 PASS (7 Admin HTTP mới); lint, typecheck,
+security và build đều PASS. CI trước `42058256895` FAIL do hai lỗi test
+fixture: TypeORM DELETE RETURNING trả `[rows, affected]`; legacy replay
+cố rollback W3 append-only history sau khi Admin test đã ghi Draft. Đã sửa
+đọc đúng tuple và chạy suite Admin **sau** legacy migration replay, tái tạo
+RBAC/actor JWT chỉ trong CI schema. Không xóa Draft hay nới immutability.
+Kết quả CI **không** chứng minh Supabase shared DEV, legal signoff, kho,
+courier hoặc W3 settlement; giữ mọi financial/physical execution gate đóng.
