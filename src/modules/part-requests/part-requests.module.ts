@@ -7,6 +7,8 @@ import { PartCustodyModule } from './part-custody.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { PartRequestsController } from './part-requests.controller';
 import { PartRequestsService } from './part-requests.service';
+import { DeliveryConsentPreviewController } from './delivery-consent-preview.controller';
+import { DeliveryConsentPreviewService } from './delivery-consent-preview.service';
 import { PartRequest, PartRequestItem } from './entities';
 import { FixHomePart } from '../parts-catalog/entities/fixhome-part.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
@@ -31,8 +33,8 @@ import { WarehouseFulfillmentModule } from './warehouse-fulfillment.module';
     NotificationsModule,
     RbacModule,
   ],
-  controllers: [PartRequestsController],
-  providers: [PartRequestsService],
+  controllers: [PartRequestsController, DeliveryConsentPreviewController],
+  providers: [PartRequestsService, DeliveryConsentPreviewService],
   exports: [PartRequestsService, TypeOrmModule],
 })
 export class PartRequestsModule implements OnModuleInit {

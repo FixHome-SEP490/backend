@@ -467,3 +467,256 @@ Gate local cuối: typecheck/build/lint PASS (0 errors/4 warning cũ), diff/allo
 
 **B2a INERT — READY_FOR_LEAD_REVIEW, chờ independent review. SAFE_TO_APPLY_DB=NO;
 SAFE_TO_ACTIVATE_FINANCE=NO.** Không commit/push/PR update/merge/deploy/migration/shared DB.
+
+## 12. Admin delivery operating policy — INERT foundation (05/11/2026)
+
+`system-config/w3-delivery-policy.ts` và `w3-delivery-policy-preview.ts` là domain thuần,
+không provider/controller/route/entity hoặc migration. Không ghi `system_configs`, thêm
+config key/cache/service song song, đăng ký vào AppModule hoặc sửa AdminConfig hiện tại.
+Không có live activation adapter. Không tác động finance, W2 PICKUP, Warranty, historical
+DELIVERY, B1 consent store, ví, payment, invoice hoặc proposal/consent hiện có.
+
+### Snapshot và lifecycle mô phỏng
+
+- Policy snapshot `W3_DELIVERY_OPERATING_POLICY_V1` có identity, content `version`, toàn bộ
+  parameters và SHA-256 fingerprint canonical. Fingerprint chỉ nhận diện nội dung, không
+  phải chữ ký, chứng nhận pháp lý, approval hoặc bằng chứng đã lưu DB.
+- State có lifecycle `revision` riêng để kiểm expected revision. Tạo ban đầu là DRAFT;
+  mỗi revise tạo snapshot version mới và DRAFT mới, kể cả parameters không đổi. Có thể
+  đề xuất revision từ ACTIVE mô phỏng; bản ACTIVE cũ và các preview cũ không bị sửa.
+- `simulateW3DeliveryPolicyTransition` chỉ mô phỏng DRAFT → ACTIVE/RETIRED hoặc ACTIVE →
+  RETIRED. Không quay lại DRAFT, không same-state hoặc phục hồi RETIRED. ACTIVE **chỉ là
+  trạng thái giả định**, không effective policy, không enrollment hay permission runtime.
+- Mọi state/assessment/preview luôn `mode=NON_EXECUTABLE_PREVIEW` và
+  `financialExecution=BLOCKED`, kể cả caller gửi đủ bốn gate VERIFIED. Không có export
+  activation live, ENV override, thời điểm cutover, ledger hoặc quyền Admin mới.
+- Output được copy và freeze toàn bộ phần lồng nhau; không freeze/mutate input của caller.
+  Expected revision và version có kiểm safe integer/overflow. Đây là quy tắc trên giá trị,
+  không phải CAS/unique version/audit giữa nhiều writer; persistence tương lai phải thiết
+  kế transaction, append-only audit và kiểm quyền Admin hiện tại trước cả replay.
+
+### Parameters đề xuất, không có giá trị mặc định
+
+| Parameter | Kiểu/ý nghĩa trong preview |
+| --- | --- |
+| `feeCeilingVnd` | Số nguyên VND không âm, không vượt JS safe integer; trần review đề xuất, không phải bảng giá hoặc courier quote |
+| `proposalReviewAfterMinutes` | Số phút nguyên không âm; tuổi proposal >= ngưỡng thì đánh dấu cần review |
+| `courierEvidenceReviewAfterMinutes` | Số phút nguyên không âm; tuổi evidence >= ngưỡng thì đánh dấu cần review |
+
+Mọi parameter bắt buộc khai rõ; không fallback thành 0, không parse string/fraction/NaN/
+Infinity hoặc nhận field thừa. Giá trị 0 là input chủ động, không auto-consent hoặc miễn
+gate. Các ngưỡng chỉ phục vụ what-if review, không tự expire consent, hủy, dispatch, thu
+phí, chạy job hoặc xác lập SLA/pháp lý. Tên/ngữ nghĩa ngưỡng là schema đề xuất cho phase
+inert này; giá trị vận hành và phạm vi dùng thật cần review riêng trước integration.
+
+### Gate và impact preview
+
+Assessment giữ riêng `LEGAL_UNVERIFIED`, `ACCOUNTING_UNVERIFIED`, `WAREHOUSE_UNVERIFIED`,
+`COURIER_UNVERIFIED`. Chỉ evidence cấu trúc chính xác, status VERIFIED và reference hợp lệ,
+bind cùng policy ID/version/fingerprint mới bỏ blocker tương ứng trong mô hình. Thiếu,
+UNKNOWN, STALE, REJECTED, sai kiểu, sai binding hoặc shape đều fail closed. Revise đổi
+fingerprint/version nên gate evidence cũ không dùng lại. Evidence ở đây là **input giả
+định**, không resolver hay approval thực tế; không được nhận từ client làm authority.
+Thiếu bất kỳ gate nào thì mô phỏng chuyển ACTIVE cũng bị chặn.
+
+`FINANCIAL_CUTOVER_CLOSED` luôn còn kể cả bốn gate giả định đều VERIFIED. Shipping approval,
+dual consent, shared order labor budget, aggregate rounding, D ledger, tax/seller-of-record,
+signed provider/refund/funding/custody và release review vẫn chưa được giải quyết bởi policy.
+Admin không thể dùng policy, gate report hoặc preview này để mở tài chính.
+
+Impact preview nhận các sample giả định với `proposalId`, `proposalVersion` riêng và phí
+courier do caller khai rõ. Mỗi proposal preview giữ **full immutable policy snapshot**,
+content version/fingerprint và số tiền/shares; không dùng policy version thay proposal
+version. Không tạo hoặc sửa proposal thật, không tạo consent và không tự chuyển những
+consent cũ sang snapshot mới. Revised policy chỉ thay kết quả lần preview mới; không viết
+lại order/invoice/proposal lịch sử. Duplicate proposal ID trong một batch bị từ chối để
+không cộng lặp hai revision. Việc bind/revise proposal thật vẫn cần phase adapter riêng.
+
+Tái dùng `calculateShippingShares` hiện có cho từng sample. Tổng S/c/t cộng bằng BigInt,
+chỉ trả number sau kiểm safe integer; không round lại tổng. Hai sample S=1 cho tổng c=2,
+t=0; không dùng kết quả này để vượt Invoice CHECK hiện đang giữ cutover đóng. Phí vượt
+trần chỉ có `aboveFeeCeiling=true`, không clamp hoặc bịa giá thay thế. Evidence age NULL
+giữ review-due NULL, không coi như tuổi 0 hoặc evidence verified. Preview không tính payout,
+không phân bổ shared labor hoặc dùng phí/trần để suy ra khả năng thanh toán.
+
+### Giới hạn và bàn giao
+
+Chỉ code/spec mới trong allowlist và tài liệu này được sửa. `docs/CONTEXT.md` không thuộc
+allowlist task; Lead cần cập nhật mục 3/8/9 theo section 0 trong đợt tích hợp được phép,
+trước PR/release. Không sửa test context để bỏ gate. Web/Mobile/AI không được sửa hoặc
+tuyên bố đồng bộ; PostgreSQL/HTTP/JWT/provider/browser/runtime và Finance/legal signoff
+**NOT VERIFIED**. Không chạy migration, server hoặc shared DEV. Không commit/push/PR/
+merge/deploy. Sau integration/release được duyệt, restart Backend trước runtime QA.
+
+### Kiểm chứng thực chạy của phase này
+
+- RED lifecycle: **93 failed/18 passed** với các hàm chưa triển khai; RED preview:
+  **62 failed/0 passed**. GREEN mới: **173 passed/0 failed** trong hai spec.
+- Node **20.19.5** theo `.nvmrc`. Focused regression với `system-config`,
+  `part-requests/delivery-consent`, `shipping-finance.policy`, `invoice-shipping-snapshot`,
+  `w3-cutover`, `context-doc` và `--maxWorkers=4`: **13 files, 423 passed, 0 failed**.
+- Full `npm test -- --maxWorkers=4`, TZ UTC trong process test: **295 files passed,
+  5 files skipped; 3748 tests passed, 58 skipped, 0 failed**.
+- `npm run typecheck`, `npm run build`: **PASS**. `npm run lint`: **PASS**, 0 errors,
+  4 warning có sẵn ngoài allowlist. Prettier check cho bốn file mới: **PASS**.
+- Review độc lập chỉ đọc: không có finding cần chặn trong scope inert; reviewer chạy lại
+  hai spec trên Node 20.19.5, **173 passed/0 failed**, diff check PASS. Đây là code/security
+  review, không phải Finance/legal signoff. Malformed state/accessor/symbol và content
+  version MAX có thể bổ sung coverage; chưa có lỗi thực tế được chứng minh ở các nhánh đó.
+- Kiểm source caller: chỉ helper preview và specs import domain mới, không live consumer.
+  Không stage/commit/push hoặc sửa ba local commit trước. Không migration mới hoặc DB run.
+  PostgreSQL/HTTP/JWT/provider/Web/Mobile/runtime: **NOT VERIFIED**; các số PASS phía trên
+  không thay bằng chứng integration, concurrency hoặc thẩm quyền activation.
+
+**INERT FOUNDATION — READY_FOR_LEAD_REVIEW. SAFE_TO_APPLY_DB=NO;
+SAFE_TO_ACTIVATE_FINANCE=NO.** Cần Lead cập nhật context ngoài allowlist trước tích hợp.
+
+## 13. Phase B2b — JWT owner preview endpoint, SOURCE ONLY (05/11/2026)
+
+Source đăng ký `DeliveryConsentPreviewController` và `DeliveryConsentPreviewService` trong
+`PartRequestsModule`. GET `/api/v1/part-requests/:id/delivery-consent/preview` dùng
+`ParseUUIDPipe`, `JwtAuthGuard`, `RolesGuard`, chỉ CUSTOMER/TECHNICIAN; response
+`Cache-Control: no-store`. Không nhận DTO/query/body actor, approved source, fee hoặc verdict.
+Controller chỉ chuyển `{id, role}` từ `req.user`; JWT strategy hiện có đọc role/status/isActive
+thật từ User thay vì tin role trong payload JWT. Không đổi guard/auth hoặc cấu hình.
+
+Adapter dùng nguyên `DeliveryConsentFactsService.preview` B2a với DataSource.manager hiện có;
+đọc lại active DB actor và scope/owner/assignment như mục 11. Trả `{data: preview}` qua global
+envelope hiện có. UUID sai trả 400, JWT lỗi theo guard hiện có trả 401, SM/Admin bị RolesGuard
+chặn 403 trước đọc resource. Missing/foreign/revoked scope hoặc actor không còn đúng role
+trong facts check cùng trả `NotFoundException` 404 với câu “Không tìm thấy yêu cầu.”, không lộ
+request có tồn tại hay lý do riêng. Lỗi infrastructure propagate; adapter đánh dấu lỗi read
+riêng để ngay cả lỗi DB mang message `NOT_FOUND_OR_DENIED` cũng không bị đổi thành 404.
+
+Facts service vẫn plain internal class, adapter tự khởi tạo không I/O; không đăng ký B1 store,
+entity hoặc migration mới. Chỉ cấp `findOne` và `existsBy` cho facts, không cấp write/transaction/
+lock API; không đọc bảng consent B1 chưa apply, không gọi courier, audit hoặc notification.
+Entity glob và startup custody assertion hiện có không đổi. Source mounting này không thêm
+startup query B1; production bootstrap/schema compatibility thực tế vẫn **NOT VERIFIED**.
+Không dùng API này authorize bất kỳ command nào. Output giữ `NON_EXECUTABLE_PREVIEW`,
+`NON_ATOMIC`, năm blocker và bốn action BLOCKED của B2a, bao gồm `FINANCE_CUTOVER_CLOSED`.
+Parts/labor source approved không phải shipping approval; không nhận source approval từ client.
+
+Phạm vi mới: controller/service và hai focused spec, module wiring, context và mục 13 này.
+Giữ nguyên 103 dòng mục 12 cùng bốn file Admin policy pre-dirty; không stage hoặc sửa chúng.
+Source B2b không thay API cũ, W2 PICKUP, Warranty, tiền, migration, dependency hoặc ENV.
+Web/Mobile consumer adoption/runtime **NOT VERIFIED**, không sửa repo khác. Mục 4/9/10/11
+giữ lịch sử và đề xuất mutation; riêng JWT preview wrapper đã được thêm ở source trong mục này.
+
+Kiểm chứng: RED với implementation stub **20 failed/3 passed**, sau implementation **28 passed**
+trong hai spec (thêm DI và JWT validate units). Unit dùng mocked read dependencies, không giả
+backend/database hoặc tuyên bố HTTP integration PASS. Bao phủ owner customer/technician,
+IDOR, inactive/stale role, assignment revoked, missing request, SM/Admin, actor thừa authority,
+UUID/role route metadata và propagate DB error cả sentinel trùng. Nest DI unit resolve
+controller/service mà không có B1 provider; JWT validation unit dùng role DB, từ chối account
+missing/disabled. Không chứng minh chữ ký/expiry JWT qua HTTP hoặc truy vấn PostgreSQL thật.
+
+Node **20.19.5**: focused **425 passed/0 failed** (12 spec preview/access/facts/storage/domain,
+Admin policy, shipping/snapshot/cutover và context); `typecheck`, `lint`, `build` PASS,
+lint 0 errors/4 warning cũ. Full `npm test -- --maxWorkers=4`, TZ UTC trong process test:
+**297 files passed/5 skipped; 3776 tests passed/58 skipped/0 failed**.
+Review độc lập chỉ đọc không phát hiện lỗi chặn; reviewer chạy 4 spec **108 passed/0 failed**
+trên Node 24.15.0. Không phải Finance/legal signoff. SHA-256 prefix toàn bộ contract trước
+task và bốn file policy khớp baseline; `git diff --check` PASS, không có file staged.
+HTTP/JWT signature/expiry, PostgreSQL/race/production
+startup, Docker/health, Web/Mobile/provider và Finance/legal: **NOT VERIFIED**.
+
+**SOURCE ONLY — READY_FOR_LEAD_REVIEW, NOT DEPLOYABLE. SAFE_TO_APPLY_DB=NO;
+SAFE_TO_ACTIVATE_FINANCE=NO.** Không commit/push/PR/merge/deploy/migrate/seed hoặc shared DB.
+Lead giữ final diff/review/release; sau integration được duyệt phải restart Backend trước QA.
+
+## 14. Phase B3a — Admin DRAFT persistence, SOURCE ONLY (05/11/2026)
+
+Mục 12 là checkpoint foundation lịch sử; B3a bổ sung persistence/API trong module
+`system-config` hiện có và Database/DataSource hiện có. Không backend/database riêng,
+không ghi key vào `system_configs`, không thêm consumer vào finance, PartRequests hoặc W2.
+Generic AdminConfig không có đường đọc/kích hoạt bảng này. **Không effective policy**;
+chỉ lưu DRAFT, không API activate/retire/delete, thời điểm hiệu lực hoặc ENV override.
+Ba local commit và chín file code pre-dirty được giữ nguyên byte/hash; hai tài liệu chỉ
+cập nhật/append. Mục 12–13 và toàn bộ prefix contract trước B3a giữ nguyên.
+
+### Hợp đồng Admin (dưới `/api/v1/admin/w3-delivery-policy`)
+
+| Method/path | Permission | Input và kết quả |
+| --- | --- | --- |
+| GET `/current` | `config:read` | `data.draft=null` khi chưa có draft; còn lại `{id,state,createdAt}` của revision cao nhất |
+| GET `/history` | `config:read` | Query `beforeRevision?`, `limit?` (1–100, mặc định 20); `data.drafts` giảm dần theo revision |
+| POST `/drafts` | `config:update` | `{expectedRevision:0,parameters}`; tạo initial DRAFT một lần, HTTP 201 |
+| PATCH `/drafts/:id` | `config:update` | `{expectedRevision,parameters}` thay toàn bộ parameters; id UUIDv4 phải là head hiện tại; trả snapshot UUID mới, HTTP 200 |
+| POST `/preview` | `config:read` | `{draftId,expectedRevision,samples}`; HTTP 200, hypothetical-only với snapshot chính xác kể cả revision lịch sử |
+
+Mọi route cần JWT → RolesGuard (ADMIN) → PermissionGuard → raw-input guard, no-store,
+envelope chuẩn. Trong transaction đọc lại User active/role và permission DB không qua cache,
+khóa SHARE để không dùng quyền đã revoke giữa kiểm tra và ghi. Đây là global Admin policy,
+không mở quyền cho SM/customer/technician hoặc nhận actor từ body/query.
+Raw-input guard từ chối `__proto__`/`constructor` trước global ValidationPipe loại chúng;
+DTO/service từ chối field thừa, gate VERIFIED giả, inherited/accessor/symbol input và số sai.
+
+Parameters giữ đúng ba field mục 12, không mặc định phí; số nguyên không âm <= JS safe integer,
+không ép string/fraction/null thành tiền. `expectedRevision` là integer 0 chỉ cho create,
+1–2147483647 cho revise/preview; không tăng vượt giới hạn SQL integer.
+Samples tối đa 100, mỗi item giữ đúng năm field của pure impact preview ở mục 12.
+Tuổi courier evidence phải khai rõ integer hoặc NULL; không default thành đã xác minh.
+Không đọc invoice/order/proposal thật, không sinh consent, dispatch, phí hoặc payout.
+
+Mọi response có `mode=NON_EXECUTABLE_PREVIEW`, `financialExecution=BLOCKED`,
+`effectivePolicy=null` và typed blockers luôn đầy đủ:
+`LEGAL_UNVERIFIED`, `ACCOUNTING_UNVERIFIED`, `WAREHOUSE_UNVERIFIED`, `COURIER_UNVERIFIED`,
+`SHIPPING_APPROVAL_SOURCE_UNVERIFIED`, `FINANCE_CUTOVER_CLOSED`.
+Tên FINANCE ở API B3a không sửa enum FINANCIAL của pure foundation lịch sử.
+
+### Transaction và schema chưa áp dụng
+
+Migration tiến `1793466000006-W3DeliveryOperatingPolicy` thêm duy nhất bảng
+`w3_delivery_policy_versions`, không backfill hoặc sửa bảng/hóa đơn/proposal cũ.
+Một chain policy server-defined; content version và lifecycle revision là hai cột riêng,
+cùng tăng trong B3a vì chỉ hỗ trợ revise DRAFT. Unique theo policy/revision và
+policy/contentVersion; trạng thái chỉ DRAFT. Snapshot/fingerprint đầy đủ bất biến.
+Head là revision cao nhất, không phụ thuộc clock/cache/TTL hoặc mutable active pointer.
+
+READ COMMITTED + advisory transaction lock cố định serialize create/revise giữa instance;
+sau lock đọc head và kiểm UUID+CAS. PATCH mới thêm row và strict `logWithManagerStrict`
+before/after cùng EntityManager. Lỗi audit/SQL/deferred constraint rollback toàn transaction.
+Create trùng hoặc retry/stale PATCH trả 409, không tự rebase/ghi lần hai; client đọc lại
+current/history khi response chưa rõ. Không tuyên bố receipt replay idempotent thành công.
+
+DB INSERT guard kiểm actor Admin/permission, revision liên tục, safe integer, exact snapshot
+và canonical SHA-256 (content identity, không chữ ký). Deferred trigger đòi exact audit
+actor/resource/before/after; UPDATE/DELETE/TRUNCATE history bị chặn. Giờ ghi do DB đặt và
+không quyết định thứ tự. RLS không policy; REVOKE PUBLIC/API roles, không tự GRANT Backend.
+DB owner vẫn có quyền PostgreSQL; Lead phải kiểm role/grants thật trước release.
+Missing schema, snapshot hỏng hoặc audit/DB lỗi trả 503, không fallback config/default/PASS.
+Down chỉ cho bảng rỗng, từ chối xóa lịch sử. **Migration chưa chạy, kể cả local.**
+
+### Kiểm chứng và handoff
+
+- RED mới: 35 service + 15 controller failed khi implementation còn stub; GREEN 50.
+  Review raw-key regression RED 2 rồi GREEN; hiện hai spec **53 PASS** trên Node 20.19.5,
+  gồm real guard/ValidationPipe và Nest DI units. Independent read-only reviewer chạy lại
+  **53 PASS**, finding raw-key đã sửa. Review không phải Finance/legal signoff.
+- Transaction double chỉ serialize khi production phát advisory lock; kiểm CAS concurrent,
+  strict audit insert lỗi bằng AuditLogService thật và snapshot immutability. Không thay bằng
+  chứng PostgreSQL multi-instance/rollback/RLS hoặc JWT/HTTP thật.
+- `w3-delivery-policy-store.e2e-spec.ts`: **18 skipped**, actual PostgreSQL **NOT_RUN**.
+  Chỉ dùng ephemeral CI hiện có + schema UUID; không dotenv/DATABASE_* hoặc shared DB.
+  Có create/PATCH race, append-only, invalid snapshot/hash/money, audit rollback, down guard,
+  RLS/PUBLIC ACL; nhánh API-role grants chỉ kiểm khi role tồn tại, vắng role vẫn NOT VERIFIED.
+- Typecheck/build ban đầu **FAIL** do TS4053 ở hai B2b preview controller/service: `SourceFacts` chưa export, không phải lỗi B3a. Lead sau khi B3a hoàn thành đã export interface này (thay đổi type-only, không đổi runtime), và chạy lại `npm run typecheck` **PASS**, `npm run build` **PASS** cùng 136 targeted tests **PASS**. Không hạ compiler gate.
+- Focused cuối: **16 files, 487 PASS** (system-config, delivery-consent, shipping snapshot,
+  cutover, context); full `npm test -- --maxWorkers=4` với TZ UTC: **299 files passed/5 skipped,
+  3829 tests passed/58 skipped/0 failed**. `npm run lint`: **PASS**, 0 errors/4 warning cũ.
+  Context 2 test và Prettier file mới PASS; diff/preservation/allowlist PASS, staged NONE.
+  Chín file code pre-dirty giữ SHA-256 gốc, contract giữ toàn bộ byte prefix; tất cả event
+  context cũ giữ nguyên văn (gộp hai checkpoint cuối một dòng để giữ tối đa 40 entry).
+  HTTP/PG/Docker/health/Web/Mobile/provider và Finance/legal **NOT VERIFIED**.
+
+File B3a: `w3-delivery-policy-admin.controller.ts`, `.controller.spec.ts`, `.dto.ts`,
+`.service.ts`, `.service.spec.ts`, `w3-delivery-policy-store.service.ts`, `.e2e-spec.ts`
+trong `src/modules/system-config`; entity `entities/w3-delivery-policy-version.entity.ts`;
+migration `1793466000006-W3DeliveryOperatingPolicy.ts`; wiring `system-config.module.ts`;
+hai tài liệu CONTEXT và contract này. Tổng 12 file của B3a, không mở rộng allowlist.
+
+**B3a SOURCE ONLY — NOT_DEPLOYABLE. SAFE_TO_APPLY_DB=NO; SAFE_TO_ACTIVATE_FINANCE=NO.**
+Build/typecheck đã được Lead sửa và xác nhận PASS bằng type-only export. Vẫn phải kiểm CI PostgreSQL/schema/security và phối hợp Web trước release; không dùng B3a làm shipping approval hoặc financial activation.
+Không stage/commit/push/PR/merge/deploy/migrate/seed/shared DB. Sau integration/schema/release
+được duyệt phải restart Backend trước runtime QA.

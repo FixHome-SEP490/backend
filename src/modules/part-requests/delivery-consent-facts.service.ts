@@ -31,7 +31,7 @@ type PreviewBlocker =
   | 'FULFILLMENT_NOT_DELIVERY'
   | 'SOURCE_BINDING_UNVERIFIED'
   | 'PARTS_LABOR_SOURCE_NOT_APPROVED';
-interface SourceFacts {
+export interface SourceFacts {
   readonly kind: 'ADDITIONAL_COST' | 'QUOTATION' | 'UNRESOLVED';
   readonly partsLaborApproval:
     'VERIFIED_APPROVED' | 'NOT_APPROVED' | 'UNVERIFIED';
