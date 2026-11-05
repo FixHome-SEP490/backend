@@ -1251,6 +1251,65 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     });
   });
 
+  it('reverts all migrations, adopts legacy users and preserves account state and timestamps', async () => {
+    // Empty W3 append-only tables still prohibit TRUNCATE CASCADE. Revert
+    // these two protected schemas first, before resetting the legacy fixture.
+    for (const expected of [
+      'W3DeliveryOperatingPolicy1793466000006',
+      'DeliveryConsentState1793466000005',
+    ]) {
+      const latest = await db.query(
+        'SELECT name FROM migrations ORDER BY timestamp DESC LIMIT 1',
+      );
+      expect(latest[0]?.name).toBe(expected);
+      await db.undoLastMigration();
+    }
+    await db.query(`
+      TRUNCATE TABLE
+        booking_drafts,
+        booking_draft_submit_receipts,
+        verification_documents,
+        technician_verifications,
+        technician_profiles,
+        booking_invitations,
+        bookings
+      CASCADE;
+    `);
+    for (let i = 2; i < db.migrations.length; i++) await db.undoLastMigration();
+    await db.query(
+      `CREATE TYPE users_role_enum AS ENUM ('customer','technician','service_manager','admin')`,
+    );
+    await db.query(
+      `CREATE TABLE users (id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), email varchar NOT NULL UNIQUE, password_hash varchar NOT NULL, full_name varchar NOT NULL, phone_number varchar, role users_role_enum NOT NULL DEFAULT 'customer', is_active boolean NOT NULL DEFAULT true, created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now())`,
+    );
+    const legacyId = randomUUID();
+    await db.query(
+      `INSERT INTO users (id,email,password_hash,full_name,phone_number,is_active,created_at) VALUES ($1,'LEGACY@EXAMPLE.TEST','preserved-hash','Legacy User','+84987654321',false,'2025-01-02 03:04:05')`,
+      [legacyId],
+    );
+    expect(await db.runMigrations()).toHaveLength(db.migrations.length);
+    const [legacy] = await db.query('SELECT * FROM users WHERE id = $1', [
+      legacyId,
+    ]);
+    expect(legacy).toMatchObject({
+      email: 'legacy@example.test',
+      password_hash: 'preserved-hash',
+      phone_number: '0987654321',
+      status: 'locked',
+      is_active: false,
+    });
+    expect(legacy.created_at.toISOString()).toBe('2025-01-02T03:04:05.000Z');
+    await db.undoLastMigration();
+    expect(
+      await db.query('SELECT id FROM users WHERE id = $1', [legacyId]),
+    ).toHaveLength(1);
+    expect(await db.runMigrations()).toHaveLength(1);
+    for (let i = 0; i < db.migrations.length - 1; i++) await db.undoLastMigration();
+    await expect(db.undoLastMigration()).rejects.toThrow('Refusing to drop an adopted users table');
+    expect(await db.query('SELECT id FROM users WHERE id = $1', [legacyId])).toHaveLength(1);
+    expect(await db.runMigrations()).toHaveLength(db.migrations.length - 1);
+  }, 30_000);
+
   describe('W3 B3a Admin draft API (real JWT, PostgreSQL; no execution)', () => {
     const base = '/api/v1/admin/w3-delivery-policy';
     const params = {
@@ -1266,6 +1325,34 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
           ? 'SELECT count(*)::integer AS n FROM w3_delivery_policy_versions'
           : `SELECT count(*)::integer AS n FROM audit_logs WHERE resource_type = 'w3_delivery_policy'`,
       ).then((rows) => Number(rows[0].n));
+
+    beforeAll(async () => {
+      // The preceding migration-replay test resets the disposable CI schema.
+      // Re-seed RBAC and issue a new signed test JWT; never delete immutable history.
+      const { seedRbac } = runtimeRequire('./dist/database/seeds/seed-rbac.js');
+      await seedRbac(db);
+      const synthetic = async (role: 'admin' | 'customer' | 'technician'): Promise<Session> => {
+        const user = await db.getRepository('User').save({
+          email: `${randomUUID()}@example.test`,
+          passwordHash: 'CI_ONLY_NON_LOGIN_CREDENTIAL',
+          fullName: 'W3 Admin CI HTTP actor after migration replay',
+          role,
+          status: 'active',
+          isActive: true,
+        });
+        return {
+          user: { id: user.id, email: user.email },
+          accessToken: jwt.sign(
+            { sub: user.id, role },
+            { secret: accessSecret, expiresIn: '15m' },
+          ),
+          refreshToken: '',
+        };
+      };
+      admin = await synthetic('admin');
+      customer = await synthetic('customer');
+      technician = await synthetic('technician');
+    }, 60_000);
 
     it('rejects missing, non-Admin, role-spoofed and locked JWT identities', async () => {
       await http().get(`${base}/current`).expect(401);
@@ -1472,7 +1559,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     });
 
     it('checks the underlying Admin config:update grant inside a real transaction', async () => {
-      const removed: { role_id: string; permission_id: string }[] = await db.query(
+      const [removed]: [{ role_id: string; permission_id: string }[], number] = await db.query(
         `DELETE FROM role_permissions rp USING roles r, permissions p
         WHERE rp.role_id = r.id AND rp.permission_id = p.id
         AND r.code = 'admin' AND p.code = 'config:update'
@@ -1503,62 +1590,5 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     });
   });
 
-  it('reverts all migrations, adopts legacy users and preserves account state and timestamps', async () => {
-    // Empty W3 append-only tables still prohibit TRUNCATE CASCADE. Revert
-    // these two protected schemas first, before resetting the legacy fixture.
-    for (const expected of [
-      'W3DeliveryOperatingPolicy1793466000006',
-      'DeliveryConsentState1793466000005',
-    ]) {
-      const latest = await db.query(
-        'SELECT name FROM migrations ORDER BY timestamp DESC LIMIT 1',
-      );
-      expect(latest[0]?.name).toBe(expected);
-      await db.undoLastMigration();
-    }
-    await db.query(`
-      TRUNCATE TABLE
-        booking_drafts,
-        booking_draft_submit_receipts,
-        verification_documents,
-        technician_verifications,
-        technician_profiles,
-        booking_invitations,
-        bookings
-      CASCADE;
-    `);
-    for (let i = 2; i < db.migrations.length; i++) await db.undoLastMigration();
-    await db.query(
-      `CREATE TYPE users_role_enum AS ENUM ('customer','technician','service_manager','admin')`,
-    );
-    await db.query(
-      `CREATE TABLE users (id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), email varchar NOT NULL UNIQUE, password_hash varchar NOT NULL, full_name varchar NOT NULL, phone_number varchar, role users_role_enum NOT NULL DEFAULT 'customer', is_active boolean NOT NULL DEFAULT true, created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now())`,
-    );
-    const legacyId = randomUUID();
-    await db.query(
-      `INSERT INTO users (id,email,password_hash,full_name,phone_number,is_active,created_at) VALUES ($1,'LEGACY@EXAMPLE.TEST','preserved-hash','Legacy User','+84987654321',false,'2025-01-02 03:04:05')`,
-      [legacyId],
-    );
-    expect(await db.runMigrations()).toHaveLength(db.migrations.length);
-    const [legacy] = await db.query('SELECT * FROM users WHERE id = $1', [
-      legacyId,
-    ]);
-    expect(legacy).toMatchObject({
-      email: 'legacy@example.test',
-      password_hash: 'preserved-hash',
-      phone_number: '0987654321',
-      status: 'locked',
-      is_active: false,
-    });
-    expect(legacy.created_at.toISOString()).toBe('2025-01-02T03:04:05.000Z');
-    await db.undoLastMigration();
-    expect(
-      await db.query('SELECT id FROM users WHERE id = $1', [legacyId]),
-    ).toHaveLength(1);
-    expect(await db.runMigrations()).toHaveLength(1);
-    for (let i = 0; i < db.migrations.length - 1; i++) await db.undoLastMigration();
-    await expect(db.undoLastMigration()).rejects.toThrow('Refusing to drop an adopted users table');
-    expect(await db.query('SELECT id FROM users WHERE id = $1', [legacyId])).toHaveLength(1);
-    expect(await db.runMigrations()).toHaveLength(db.migrations.length - 1);
-  }, 30_000);
+
 });
