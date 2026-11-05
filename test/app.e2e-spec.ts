@@ -1006,7 +1006,295 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     ).toHaveLength(0);
   });
 
+  describe('W3 B2b authenticated owner preview (isolated HTTP/JWT/PostgreSQL)', () => {
+    let owner: Session;
+    let technicianOwner: Session;
+    let outsider: Session;
+    let technicianOutsider: Session;
+    let manager: Session;
+    let requestId: string;
+    let assignmentId: string;
+    let serviceOrderId: string;
+
+    const previewPath = (id = requestId) =>
+      `/api/v1/part-requests/${id}/delivery-consent/preview`;
+
+    beforeAll(async () => {
+      // Disposable CI schema only. No real customer, warehouse, courier, or approved W3 fee.
+      // Seed ONLY the disposable CI schema, avoiding unrelated public
+      // registration/login throttling. Each HTTP call still authenticates via
+      // real Passport JWT signature, strategy DB reload and role/owner guards.
+      const syntheticSession = async (
+        role: 'customer' | 'technician' | 'service_manager',
+      ): Promise<Session> => {
+        const user = await db.getRepository('User').save({
+          email: `${randomUUID()}@example.test`,
+          passwordHash: 'CI_ONLY_NON_LOGIN_CREDENTIAL',
+          fullName: 'W3 B2b isolated HTTP actor',
+          role,
+          status: 'active',
+          isActive: true,
+        });
+        return {
+          user: { id: user.id, email: user.email },
+          accessToken: jwt.sign(
+            { sub: user.id, role },
+            { secret: accessSecret, expiresIn: '15m' },
+          ),
+          refreshToken: '',
+        };
+      };
+      owner = await syntheticSession('customer');
+      outsider = await syntheticSession('customer');
+      technicianOwner = await syntheticSession('technician');
+      technicianOutsider = await syntheticSession('technician');
+      manager = await syntheticSession('service_manager');
+
+      const category = await createCategory();
+      const service = await createService(category.id);
+      const booking = await db.getRepository('Booking').save({
+        customerId: owner.user.id,
+        serviceId: service.id,
+        description: 'W3 read-only synthetic preview fixture',
+        status: 'matched',
+      });
+      const order = await db.getRepository('ServiceOrder').save({
+        bookingId: booking.id,
+        code: `W3-B2B-${randomUUID()}`,
+        status: 'under_repair',
+      });
+      serviceOrderId = order.id;
+      const assignment = await db.getRepository('TechnicianAssignment').save({
+        serviceOrderId,
+        technicianId: technicianOwner.user.id,
+        isActive: true,
+      });
+      assignmentId = assignment.id;
+      const source = await db.getRepository('AdditionalCostRequest').save({
+        serviceOrderId,
+        technicianId: technicianOwner.user.id,
+        status: 'approved',
+        reason: 'Synthetic approved parts/labor, NOT approved courier fee',
+        decidedAt: new Date(),
+        decidedByCustomerId: owner.user.id,
+        expiresAt: new Date(Date.now() + 86_400_000),
+        fulfillmentMethod: 'delivery',
+        shippingFee: 20_000,
+      });
+      const partRequest = await db.getRepository('PartRequest').save({
+        serviceOrderId,
+        technicianId: technicianOwner.user.id,
+        requestType: 'additional',
+        fulfillmentMethod: 'delivery',
+        additionalCostId: source.id,
+      });
+      requestId = partRequest.id;
+    });
+
+    it('allows only the matching owner and active technician, but never financial actions', async () => {
+      for (const session of [owner, technicianOwner]) {
+        const result = await http()
+          .get(previewPath())
+          .set('Authorization', bearer(session))
+          .expect(200);
+        expect(result.headers['cache-control']).toContain('no-store');
+        expect(result.body).toMatchObject({
+          success: true,
+          data: {
+            mode: 'NON_EXECUTABLE_PREVIEW',
+            consistency: 'NON_ATOMIC',
+            actor: { id: session.user.id },
+            requestId,
+            serviceOrderId,
+            observed: {
+              requestType: 'additional',
+              fulfillmentMethod: 'delivery',
+              requestStatus: 'requested',
+              orderStatus: 'under_repair',
+            },
+            source: {
+              kind: 'ADDITIONAL_COST',
+              partsLaborApproval: 'VERIFIED_APPROVED',
+              shippingApproval: 'UNVERIFIED',
+              version: null,
+            },
+            actions: {
+              newConsent: 'BLOCKED',
+              proposal: 'BLOCKED',
+              dispatch: 'BLOCKED',
+              payout: 'BLOCKED',
+            },
+          },
+        });
+        expect(result.body.data.blockers).toEqual(
+          expect.arrayContaining([
+            'SHIPPING_APPROVAL_SOURCE_UNVERIFIED',
+            'WAREHOUSE_DELIVERY_ALLOCATION_MISSING',
+            'COURIER_PROOF_UNVERIFIED',
+            'FINANCE_CUTOVER_CLOSED',
+            'TOTAL_ORDER_LABOR_BUDGET_UNVERIFIED',
+          ]),
+        );
+        // No private courier URL, raw source record, or financial authorization.
+        expect(JSON.stringify(result.body)).not.toContain('cloudinary://');
+        expect(result.body.data).not.toHaveProperty('shippingFee');
+        expect(result.body.data).not.toHaveProperty('approvedShippingFee');
+      }
+    });
+
+    it('keeps W3 physical HTTP preview owner-only and every physical mutation unavailable', async () => {
+      const physical = (id = requestId) => `/api/v1/part-requests/${id}/delivery-physical/preview`;
+      const before = await db.getRepository('WarehouseDeliveryEvent').count();
+      for (const session of [owner, technicianOwner]) {
+        const result = await http().get(physical()).set('Authorization', bearer(session)).expect(200);
+        expect(result.headers['cache-control']).toContain('no-store');
+        expect(result.body.data).toMatchObject({
+          mode: 'NON_EXECUTABLE_PREVIEW', consistency: 'NON_ATOMIC', eligibility: 'INELIGIBLE',
+          reason: 'LEGACY_OR_NOT_ENROLLED', physicalExecution: 'BLOCKED', financialExecution: 'BLOCKED',
+          evidence: 'NOT_RECORDED', actualCourierCost: null, courierPayment: 'NOT_RECORDED',
+          actions: { reserve: 'BLOCKED', issueToCourier: 'BLOCKED', dispatch: 'BLOCKED', technicianReceipt: 'BLOCKED' },
+        });
+        expect(result.body.data.blockers).toContain('PHYSICAL_ACTIVATION_CLOSED');
+      }
+      await http().get(physical()).expect(401);
+      for (const session of [admin, manager]) await http().get(physical()).set('Authorization', bearer(session)).expect(403);
+      await http().get(physical('not-a-uuid')).set('Authorization', bearer(owner)).expect(400);
+      const denied = await http().get(physical()).set('Authorization', bearer(outsider)).expect(404);
+      const missing = await http().get(physical(randomUUID())).set('Authorization', bearer(owner)).expect(404);
+      expect(denied.body.error).toEqual(missing.body.error);
+      for (const action of ['reserve','issue','dispatch','receipt']) {
+        await http().post(`/api/v1/part-requests/${requestId}/delivery-physical/${action}`).set('Authorization', bearer(technicianOwner)).send({ shippingApproved: true }).expect(404);
+      }
+      expect(await db.getRepository('WarehouseDeliveryEvent').count()).toBe(before);
+      expect(await db.query('SELECT * FROM warehouse_delivery_cohorts WHERE part_request_id=$1', [requestId])).toHaveLength(0);
+    });
+
+    it('enforces JWT, role, malformed ID and indistinguishable non-owner/not-found denial', async () => {
+      await http().get(previewPath()).expect(401);
+      await http()
+        .get(previewPath())
+        .set('Authorization', bearer(admin))
+        .expect(403);
+      await http()
+        .get(previewPath())
+        .set('Authorization', bearer(manager))
+        .expect(403);
+      await http()
+        .get(previewPath('not-a-uuid'))
+        .set('Authorization', bearer(owner))
+        .expect(400);
+      const deniedCustomer = await http()
+        .get(previewPath())
+        .query({ actorId: owner.user.id, role: 'customer', approved: 'true' })
+        .set('Authorization', bearer(outsider))
+        .expect(404);
+      const deniedTechnician = await http()
+        .get(previewPath())
+        .set('Authorization', bearer(technicianOutsider))
+        .expect(404);
+      const missing = await http()
+        .get(previewPath(randomUUID()))
+        .set('Authorization', bearer(owner))
+        .expect(404);
+      expect(deniedCustomer.body.error).toEqual(missing.body.error);
+      expect(deniedTechnician.body.error).toEqual(missing.body.error);
+    });
+
+    it('rechecks live assignment and DB actor status rather than trusting a stale JWT', async () => {
+      await db.getRepository('TechnicianAssignment').update(assignmentId, {
+        isActive: false,
+      });
+      try {
+        for (const session of [owner, technicianOwner]) {
+          await http()
+            .get(previewPath())
+            .set('Authorization', bearer(session))
+            .expect(404);
+        }
+      } finally {
+        await db.getRepository('TechnicianAssignment').update(assignmentId, {
+          isActive: true,
+        });
+      }
+
+      await db.query('UPDATE users SET status = $1 WHERE id = $2', [
+        'locked',
+        owner.user.id,
+      ]);
+      try {
+        await http()
+          .get(previewPath())
+          .set('Authorization', bearer(owner))
+          .expect(401);
+      } finally {
+        await db.query('UPDATE users SET status = $1 WHERE id = $2', [
+          'active',
+          owner.user.id,
+        ]);
+      }
+
+      await http()
+        .get(previewPath())
+        .set('Authorization', bearer(owner))
+        .expect(200);
+    });
+
+    it('does not create any consent journal, invoice, evidence, courier, or ledger record', async () => {
+      const count = async (table: string, field: string, id: string) => {
+        const names = new Set([
+          'delivery_consent_sessions',
+          'delivery_consent_commands',
+          'delivery_evidence_records',
+          'invoices',
+        ]);
+        if (!names.has(table) || !['part_request_id', 'service_order_id'].includes(field))
+          throw new Error('Unsafe table query in CI fixture');
+        const rows = await db.query(`SELECT count(*)::integer AS total FROM ${table} WHERE ${field} = $1`, [id]);
+        return rows[0].total as number;
+      };
+      const before = await Promise.all([
+        count('delivery_consent_sessions', 'part_request_id', requestId),
+        count('delivery_consent_commands', 'part_request_id', requestId),
+        count('delivery_evidence_records', 'part_request_id', requestId),
+        count('invoices', 'service_order_id', serviceOrderId),
+      ]);
+      expect(before).toEqual([0, 0, 0, 0]);
+      await http()
+        .get(previewPath())
+        .set('Authorization', bearer(owner))
+        .expect(200);
+      const after = await Promise.all([
+        count('delivery_consent_sessions', 'part_request_id', requestId),
+        count('delivery_consent_commands', 'part_request_id', requestId),
+        count('delivery_evidence_records', 'part_request_id', requestId),
+        count('invoices', 'service_order_id', serviceOrderId),
+      ]);
+      expect(after).toEqual(before);
+      await http()
+        .post(`/api/v1/part-requests/${requestId}/delivery-consent/consents`)
+        .set('Authorization', bearer(owner))
+        .send({ accepted: true, sourceApproved: true })
+        .expect(404);
+    });
+  });
+
   it('reverts all migrations, adopts legacy users and preserves account state and timestamps', async () => {
+    // Empty W3 append-only tables still prohibit TRUNCATE CASCADE. Revert
+    // these protected EMPTY schemas first, before resetting the legacy fixture.
+    // No production immutability trigger is disabled by this disposable-schema replay.
+    const protectedMigrations = [
+      'DeliveryZeroFeeOperations1793466000008',
+      'WarehouseDeliveryPhysical1793466000007',
+      'W3DeliveryOperatingPolicy1793466000006',
+      'DeliveryConsentState1793466000005',
+    ];
+    for (const expected of protectedMigrations) {
+      const latest = await db.query(
+        'SELECT name FROM migrations ORDER BY timestamp DESC LIMIT 1',
+      );
+      expect(latest[0]?.name).toBe(expected);
+      await db.undoLastMigration();
+    }
     await db.query(`
       TRUNCATE TABLE
         booking_drafts,
@@ -1018,7 +1306,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
         bookings
       CASCADE;
     `);
-    for (let i = 0; i < db.migrations.length; i++) await db.undoLastMigration();
+    for (let i = protectedMigrations.length; i < db.migrations.length; i++) await db.undoLastMigration();
     await db.query(
       `CREATE TYPE users_role_enum AS ENUM ('customer','technician','service_manager','admin')`,
     );
@@ -1052,4 +1340,286 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     expect(await db.query('SELECT id FROM users WHERE id = $1', [legacyId])).toHaveLength(1);
     expect(await db.runMigrations()).toHaveLength(db.migrations.length - 1);
   }, 30_000);
+
+  describe('W3 B3a Admin draft API (real JWT, PostgreSQL; no execution)', () => {
+    const base = '/api/v1/admin/w3-delivery-policy';
+    const params = {
+      feeCeilingVnd: 50000,
+      proposalReviewAfterMinutes: 30,
+      courierEvidenceReviewAfterMinutes: 60,
+    };
+    let initial: { id: string; state: { revision: number } };
+    let head: { id: string; state: { revision: number } };
+    const count = (table: 'w3_delivery_policy_versions' | 'audit_logs') =>
+      db.query(
+        table === 'w3_delivery_policy_versions'
+          ? 'SELECT count(*)::integer AS n FROM w3_delivery_policy_versions'
+          : `SELECT count(*)::integer AS n FROM audit_logs WHERE resource_type = 'w3_delivery_policy'`,
+      ).then((rows) => Number(rows[0].n));
+
+    beforeAll(async () => {
+      // The preceding migration-replay test resets the disposable CI schema.
+      // Re-seed RBAC and issue a new signed test JWT; never delete immutable history.
+      const { seedRbac } = runtimeRequire('./dist/database/seeds/seed-rbac.js');
+      await seedRbac(db);
+      const synthetic = async (role: 'admin' | 'customer' | 'technician'): Promise<Session> => {
+        const user = await db.getRepository('User').save({
+          email: `${randomUUID()}@example.test`,
+          passwordHash: 'CI_ONLY_NON_LOGIN_CREDENTIAL',
+          fullName: 'W3 Admin CI HTTP actor after migration replay',
+          role,
+          status: 'active',
+          isActive: true,
+        });
+        return {
+          user: { id: user.id, email: user.email },
+          accessToken: jwt.sign(
+            { sub: user.id, role },
+            { secret: accessSecret, expiresIn: '15m' },
+          ),
+          refreshToken: '',
+        };
+      };
+      admin = await synthetic('admin');
+      customer = await synthetic('customer');
+      technician = await synthetic('technician');
+    }, 60_000);
+
+    it('rejects missing, non-Admin, role-spoofed and locked JWT identities', async () => {
+      await http().get(`${base}/current`).expect(401);
+      for (const actor of [customer, technician]) {
+        await http()
+          .get(`${base}/current`)
+          .set('Authorization', bearer(actor))
+          .expect(403);
+        await http()
+          .post(`${base}/drafts`)
+          .set('Authorization', bearer(actor))
+          .send({ expectedRevision: 0, parameters: params })
+          .expect(403);
+      }
+      const spoofed = jwt.sign(
+        { sub: customer.user.id, role: 'admin' },
+        { secret: accessSecret, expiresIn: '15m' },
+      );
+      await http()
+        .get(`${base}/history`)
+        .set('Authorization', `Bearer ${spoofed}`)
+        .expect(403);
+      const locked = await db.getRepository('User').save({
+        email: `${randomUUID()}@example.test`,
+        passwordHash: 'CI_ONLY_NON_LOGIN_CREDENTIAL',
+        fullName: 'W3 locked CI Admin',
+        role: 'admin',
+        status: 'locked',
+        isActive: true,
+      });
+      const lockedJwt = jwt.sign(
+        { sub: locked.id, role: 'admin' },
+        { secret: accessSecret, expiresIn: '15m' },
+      );
+      await http()
+        .get(`${base}/current`)
+        .set('Authorization', `Bearer ${lockedJwt}`)
+        .expect(401);
+    });
+
+    it('starts without an effective policy and forbids activation endpoints', async () => {
+      const current = await http()
+        .get(`${base}/current`)
+        .set('Authorization', bearer(admin))
+        .expect(200);
+      expect(current.headers['cache-control']).toContain('no-store');
+      expect(current.body.data).toMatchObject({
+        mode: 'NON_EXECUTABLE_PREVIEW',
+        financialExecution: 'BLOCKED',
+        effectivePolicy: null,
+        draft: null,
+      });
+      expect(current.body.data.blockers).toEqual(expect.arrayContaining([
+        'LEGAL_UNVERIFIED',
+        'ACCOUNTING_UNVERIFIED',
+        'WAREHOUSE_UNVERIFIED',
+        'COURIER_UNVERIFIED',
+        'SHIPPING_APPROVAL_SOURCE_UNVERIFIED',
+        'FINANCE_CUTOVER_CLOSED',
+      ]));
+      const history = await http()
+        .get(`${base}/history`)
+        .set('Authorization', bearer(admin))
+        .expect(200);
+      expect(history.body.data.drafts).toEqual([]);
+      await http()
+        .post(`${base}/activate`)
+        .set('Authorization', bearer(admin))
+        .send({ force: true })
+        .expect(404);
+      await http()
+        .post(`${base}/retire`)
+        .set('Authorization', bearer(admin))
+        .send({ force: true })
+        .expect(404);
+    });
+
+    it('rejects unknown, dangerous and invalid Draft input before any write', async () => {
+      const before = await count('w3_delivery_policy_versions');
+      const valid = { expectedRevision: 0, parameters: params };
+      const invalid = [
+        { ...valid, status: 'ACTIVE' },
+        { ...valid, parameters: { ...params, feeCeilingVnd: -1 } },
+        { ...valid, parameters: { ...params, feeCeilingVnd: 0.5 } },
+        { ...valid, parameters: { ...params, feeCeilingVnd: 9007199254740992 } },
+        { ...valid, parameters: { ...params, sellerOfRecord: 'APPROVED' } },
+      ];
+      for (const body of invalid) {
+        await http()
+          .post(`${base}/drafts`)
+          .set('Authorization', bearer(admin))
+          .send(body)
+          .expect(400);
+      }
+      // Raw preflight rejects prototype-key pollution before global DTO stripping.
+      await http()
+        .post(`${base}/drafts`)
+        .set('Authorization', bearer(admin))
+        .set('Content-Type', 'application/json')
+        .send('{"expectedRevision":0,"parameters":{"feeCeilingVnd":50000,"proposalReviewAfterMinutes":30,"courierEvidenceReviewAfterMinutes":60},"__proto__":{"status":"ACTIVE"}}')
+        .expect(400);
+      expect(await count('w3_delivery_policy_versions')).toBe(before);
+    });
+
+    it('creates only one versioned DRAFT with mandatory transactional audit', async () => {
+      const result = await http()
+        .post(`${base}/drafts`)
+        .set('Authorization', bearer(admin))
+        .send({ expectedRevision: 0, parameters: params })
+        .expect(201);
+      expect(result.headers['cache-control']).toContain('no-store');
+      expect(result.body.data).toMatchObject({
+        financialExecution: 'BLOCKED',
+        effectivePolicy: null,
+        draft: { state: {
+          status: 'DRAFT',
+          revision: 1,
+          mode: 'NON_EXECUTABLE_PREVIEW',
+          policy: {
+            kind: 'W3_DELIVERY_OPERATING_POLICY_V1',
+            parameters: params,
+          },
+        } },
+      });
+      initial = result.body.data.draft;
+      head = initial;
+      expect(await count('w3_delivery_policy_versions')).toBe(1);
+      expect(await count('audit_logs')).toBe(1);
+      await http()
+        .post(`${base}/drafts`)
+        .set('Authorization', bearer(admin))
+        .send({ expectedRevision: 0, parameters: params })
+        .expect(409);
+      expect(await count('w3_delivery_policy_versions')).toBe(1);
+    });
+
+    it('serializes concurrent PATCH CAS; returns history and never overwrites a version', async () => {
+      const updates = await Promise.all([
+        http()
+          .patch(`${base}/drafts/${initial.id}`)
+          .set('Authorization', bearer(admin))
+          .send({ expectedRevision: 1, parameters: { ...params, feeCeilingVnd: 60000 } }),
+        http()
+          .patch(`${base}/drafts/${initial.id}`)
+          .set('Authorization', bearer(admin))
+          .send({ expectedRevision: 1, parameters: { ...params, feeCeilingVnd: 70000 } }),
+      ]);
+      expect(updates.map((x) => x.status).sort()).toEqual([200, 409]);
+      head = updates.find((x) => x.status === 200)!.body.data.draft;
+      expect(head.state.revision).toBe(2);
+      await http()
+        .patch(`${base}/drafts/${initial.id}`)
+        .set('Authorization', bearer(admin))
+        .send({ expectedRevision: 1, parameters: params })
+        .expect(409);
+      const history = await http()
+        .get(`${base}/history?limit=2`)
+        .set('Authorization', bearer(admin))
+        .expect(200);
+      expect(history.body.data.drafts.map((d: { state: { revision: number } }) => d.state.revision))
+        .toEqual([2, 1]);
+      expect(history.body.data.drafts[1].id).toBe(initial.id);
+      expect(await count('w3_delivery_policy_versions')).toBe(2);
+      expect(await count('audit_logs')).toBe(2);
+    });
+
+    it('produces only hypothetical impact for a historical Draft and keeps finances blocked', async () => {
+      const before = [await count('w3_delivery_policy_versions'), await count('audit_logs')];
+      const result = await http()
+        .post(`${base}/preview`)
+        .set('Authorization', bearer(admin))
+        .send({
+          draftId: initial.id,
+          expectedRevision: 1,
+          samples: [{
+            proposalId: 'ci-proposal-1',
+            proposalVersion: 1,
+            shippingFeeVnd: 20000,
+            proposalAgeMinutes: 35,
+            courierEvidenceAgeMinutes: null,
+          }],
+        })
+        .expect(200);
+      expect(result.body.data).toMatchObject({
+        mode: 'NON_EXECUTABLE_PREVIEW',
+        hypotheticalOnly: true,
+        financialExecution: 'BLOCKED',
+        effectivePolicy: null,
+        draftId: initial.id,
+        proposals: [{
+          proposalId: 'ci-proposal-1',
+          customerShippingShare: 14000,
+          technicianShippingShare: 6000,
+        }],
+      });
+      expect(result.body.data.blockers).toContain('FINANCE_CUTOVER_CLOSED');
+      expect([await count('w3_delivery_policy_versions'), await count('audit_logs')])
+        .toEqual(before);
+      await http()
+        .post(`${base}/preview`)
+        .set('Authorization', bearer(admin))
+        .send({ draftId: initial.id, expectedRevision: 2, samples: [] })
+        .expect(409);
+    });
+
+    it('checks the underlying Admin config:update grant inside a real transaction', async () => {
+      const [removed]: [{ role_id: string; permission_id: string }[], number] = await db.query(
+        `DELETE FROM role_permissions rp USING roles r, permissions p
+        WHERE rp.role_id = r.id AND rp.permission_id = p.id
+        AND r.code = 'admin' AND p.code = 'config:update'
+        RETURNING rp.role_id, rp.permission_id`,
+      );
+      expect(removed).toHaveLength(1);
+      const before = await count('w3_delivery_policy_versions');
+      try {
+        await http()
+          .patch(`${base}/drafts/${head.id}`)
+          .set('Authorization', bearer(admin))
+          .send({ expectedRevision: 2, parameters: params })
+          .expect(403);
+        expect(await count('w3_delivery_policy_versions')).toBe(before);
+      } finally {
+        for (const row of removed)
+          await db.query(
+            'INSERT INTO role_permissions (role_id, permission_id) VALUES ($1, $2)',
+            [row.role_id, row.permission_id],
+          );
+      }
+      const current = await http()
+        .get(`${base}/current`)
+        .set('Authorization', bearer(admin))
+        .expect(200);
+      expect(current.body.data.draft.id).toBe(head.id);
+      expect(current.body.data.financialExecution).toBe('BLOCKED');
+    });
+  });
+
+
 });

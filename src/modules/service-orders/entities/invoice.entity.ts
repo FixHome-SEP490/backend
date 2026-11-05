@@ -4,6 +4,7 @@ import { Entity, Column, OneToMany } from 'typeorm';
 import { BaseEntity } from '../../../database/base.entity';
 import { PaymentStatus } from '../../../shared/enums';
 import { InvoiceItem } from './invoice-item.entity';
+import type { ShippingPolicyVersion } from '../../finance/shipping-finance.policy';
 
 @Entity('invoices')
 export class Invoice extends BaseEntity {
@@ -29,6 +30,16 @@ export class Invoice extends BaseEntity {
 
   @Column({ name: 'shipping_fee', type: 'bigint', default: 0 })
   shippingFee: number;
+
+  @Column({ name: 'shipping_policy_version', type: 'varchar', length: 24, default: 'LEGACY_100_0' })
+  shippingPolicyVersion: ShippingPolicyVersion;
+
+  // NULL only for historical legacy rows. No historical monetary backfill.
+  @Column({ name: 'customer_shipping_share', type: 'bigint', nullable: true })
+  customerShippingShare?: number | null;
+
+  @Column({ name: 'technician_shipping_share', type: 'bigint', nullable: true })
+  technicianShippingShare?: number | null;
 
   @Column({ name: 'grand_total', type: 'bigint', default: 0 })
   grandTotal: number;

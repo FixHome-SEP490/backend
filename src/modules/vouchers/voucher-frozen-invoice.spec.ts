@@ -64,4 +64,10 @@ describe('frozenVoucherInvoiceFacts', () => {
     expect(() => frozenVoucherInvoiceFacts({ ...baseInvoice, commissionAmount: 10_000 } as Invoice,
       [usedFixHome, techPart, laborLine], approved)).toThrow();
   });
+
+  it('does not coerce a malformed frozen monetary value to zero', () => {
+    expect(() => frozenVoucherInvoiceFacts({
+      ...baseInvoice, technicianPartWarrantyFeeTotal: false,
+    } as unknown as Invoice, [usedFixHome, techPart, laborLine], approved)).toThrow();
+  });
 });

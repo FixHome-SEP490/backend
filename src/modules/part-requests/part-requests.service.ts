@@ -42,6 +42,9 @@ import { WarrantyClaim } from '../service-orders/entities/warranty-claim.entity'
 import { WarrantyCostService } from '../service-orders/warranty-cost.service';
 import { partRequestCostSource } from './part-request-lifecycle';
 import { MAX_PART_QUANTITY } from './part-custody.rules';
+import { WarehouseDeliveryStore } from './warehouse-delivery-store.service';
+import { canonicalWarehouseQuantities } from './warehouse-fulfillment.rules';
+import { isDeepStrictEqual } from 'node:util';
 import {
   CreatePartRequestDto,
   ReceivePartRequestDto,
@@ -588,6 +591,13 @@ export class PartRequestsService {
       PartRequestItem,
       itemsToSave as PartRequestItem[],
     );
+
+    // Only newly inserted, full-source ADDITIONAL DELIVERY requests enter W3.
+    // A deficit supplied partly from historical stock stays entirely in its legacy flow.
+    if (fulfillmentMethod === FulfillmentMethod.DELIVERY && isDeepStrictEqual(
+      canonicalWarehouseQuantities(savedRequest.items),
+      canonicalWarehouseQuantities(wanted.map(i => ({ partCatalogId: i.partCatalogId, partSource: i.partSource, quantity: i.quantity }))),
+    )) await new WarehouseDeliveryStore().enrollNew(manager, savedRequest.id, { id: technicianId, role: Role.TECHNICIAN });
 
     // Audit log
     await this.auditLogService.logWithManager(manager, {
