@@ -135,10 +135,7 @@ describe('dormant DELIVERY stock writer', () => {
     const writes = f.m.query.mock.calls.filter(([sql]: string[]) =>
       sql.startsWith('UPDATE warehouse_stock'),
     );
-    expect(writes).toHaveLength(2);
-    expect(
-      writes.every(([, args]: any[]) => args[2] === 2 && args[3] === 2),
-    ).toBe(true);
+    expect(writes).toHaveLength(0); // DB movement trigger owns the delta and balance atomically.
     expect(
       f.m.query.mock.calls.filter(([sql]: string[]) =>
         sql.startsWith('INSERT INTO warehouse_delivery_movements'),
@@ -188,9 +185,13 @@ describe('dormant DELIVERY stock writer', () => {
     const writes = f.m.query.mock.calls.filter(([sql]: string[]) =>
       sql.startsWith('UPDATE warehouse_stock'),
     );
-    expect(writes).toHaveLength(2);
+    expect(writes).toHaveLength(0);
     expect(
-      writes.every(([, args]: any[]) => args[2] === 0 && args[3] === 0),
+      f.m.query.mock.calls
+        .filter(([sql]: string[]) =>
+          sql.startsWith('INSERT INTO warehouse_delivery_movements'),
+        )
+        .every(([, args]: any[]) => args[7] === 0 && args[8] === 0),
     ).toBe(true);
   });
   it('requires transaction and propagates movement INSERT failure for rollback', async () => {

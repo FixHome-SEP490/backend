@@ -28,8 +28,23 @@ export class WarehouseDeliveryStock {
     const [gate] = await manager.query(
       'SELECT enabled FROM warehouse_delivery_gate WHERE id=1 FOR SHARE',
     );
-    if (gate?.enabled !== true)
-      throw new Error('DELIVERY_PHYSICAL_ACTIVATION_CLOSED');
+    if (gate?.enabled !== true) {
+      // A forward-reviewed, zero-fee proposal admits only its own cohort. The old
+      // global gate remains immutable/closed; Admin drafts cannot open it.
+      const [admission] = await manager.query(
+        `SELECT true AS admitted FROM delivery_shipping_proposals p
+        JOIN delivery_consent_sessions s ON s.part_request_id=p.part_request_id AND s.quote_version=p.quote_version
+        WHERE p.part_request_id=$1 AND s.invalidated_at IS NULL AND s.status='ACTUAL_RECORDED'
+        AND (s.projection#>>'{quote,totalShippingFee}')::numeric=0
+        AND (s.projection#>>'{actual,totalShippingFee}')::numeric=0
+        AND s.projection->'customerConsent'<>'null'::jsonb AND s.projection->'technicianConsent'<>'null'::jsonb
+        UNION ALL SELECT true AS admitted FROM warehouse_delivery_events e JOIN delivery_shipping_proposals p ON p.part_request_id=e.part_request_id
+        WHERE e.part_request_id=$1 AND e.command_id=$2 AND e.kind='RELEASE' LIMIT 1`,
+        [requestId, commandId],
+      );
+      if (admission?.admitted !== true)
+        throw new Error('DELIVERY_PHYSICAL_ACTIVATION_CLOSED');
+    }
     const ref = await manager.findOneOrFail(PartRequest, {
       where: { id: requestId },
     });
@@ -108,7 +123,7 @@ export class WarehouseDeliveryStock {
         state.evidence.length ||
         (event.expectedVersion > 0 &&
           (!preceding ||
-            !['INELIGIBLE', 'PENDING_ASSISTANCE'].includes(
+            !['INELIGIBLE', 'PENDING_ASSISTANCE', 'RELEASED'].includes(
               preceding.snapshot.status,
             )))
       )
@@ -148,15 +163,24 @@ export class WarehouseDeliveryStock {
       lock: { mode: 'pessimistic_read' },
     });
     const sm = await manager.findOne(User, {
-      where: { id: state.responsibleUserId },
+      where: {
+        id:
+          event.kind === 'RELEASE'
+            ? warehouse.responsibleUserId
+            : state.responsibleUserId,
+      },
       lock: { mode: 'pessimistic_read' },
     });
     if (
-      warehouse.status !== 'active' ||
-      warehouse.responsibleUserId !== state.responsibleUserId ||
+      (event.kind !== 'RELEASE' &&
+        (warehouse.status !== 'active' ||
+          warehouse.responsibleUserId !== state.responsibleUserId)) ||
       sm?.role !== 'service_manager' ||
       !sm.isActive ||
       sm.status !== 'active' ||
+      (event.kind === 'RELEASE' &&
+        (event.actorRole !== 'service_manager' ||
+          event.actorUserId !== sm.id)) ||
       (event.kind === 'ISSUE_TO_COURIER' &&
         (event.actorUserId !== sm.id ||
           event.actorRole !== 'service_manager' ||
@@ -227,10 +251,8 @@ export class WarehouseDeliveryStock {
       };
     });
     for (const b of balances) {
-      await manager.query(
-        `UPDATE warehouse_stock SET on_hand=$3,reserved=$4,version=version+1,updated_at=now() WHERE warehouse_id=$1 AND part_id=$2`,
-        [state.warehouseId, b.item.partId, b.onHand, b.reserved],
-      );
+      // Forward migration owns current+delta validation and the stock UPDATE inside
+      // the movement INSERT trigger. A receipt can never exist without its delta.
       await manager.query(
         `INSERT INTO warehouse_delivery_movements(part_request_id,command_id,warehouse_id,part_id,kind,delta,reservation_delta,on_hand_after,reserved_after)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,

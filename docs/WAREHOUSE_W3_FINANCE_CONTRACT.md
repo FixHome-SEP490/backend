@@ -1,7 +1,9 @@
-# W3 DELIVERY — ADR và hợp đồng tài chính (DRAFT, chưa kích hoạt)
+# W3 DELIVERY — hợp đồng tài chính và operational zero-fee slice (chưa release)
 
 Ngày: 04/11/2026. Nguồn: official dev `ba703298`, owner order W3 04/11/2026.
-Trạng thái: **CODE SCAFFOLD; KHÔNG PHẢI ACTIVATED W3**. Team Finance phải review độc lập
+Trạng thái hiện hành: **SOURCE ZERO-FEE OPERATIONS; KHÔNG PHẢI ACTIVATED DEV/FINANCE**.
+Mục 1–16 là checkpoint scaffold trước đây; mục 17 mô tả capability mới và giới hạn hiện hành.
+Team Finance phải review độc lập
 trước release. Không apply migration, đổi ENV hay ghi shared DB trong task này.
 
 ## 1. Quyết định và ranh giới
@@ -871,3 +873,130 @@ Không push để kích CI trong task writer. SAFE_TO_APPLY_DB=NO;
 SAFE_TO_ACTIVATE_PHYSICAL=NO; SAFE_TO_ACTIVATE_FINANCE=NO.
 
 **PostgreSQL CI security finding 06/11/2026:** Run #42071519421: 214 PG tests PASS, one FAIL where a forged nonempty `quantities` array passed the database trigger: JSONB containment `@> []` is true even for nonempty arrays. Updated migration `0007` to require exact JSONB empty `quantities` and `evidence` arrays and exact null fields for warehouse/SM/courier, adding an adversarial evidence case. CI after fix remains NOT VERIFIED until next run, shared DEV remains unchanged.
+
+## 17. Operational zero-fee vertical slice — source writer 06/11/2026
+
+Đã triển khai code ghi thật, không chỉ preview. **Chưa apply schema, deploy hoặc kích hoạt DEV.**
+Lead giữ release; các mục 1–16 mô tả checkpoint trước đây, không phải trạng thái route mới.
+Không có commit/push/merge, đổi ENV, provider booking hoặc ghi shared DEV trong task này.
+
+### Inventory nguồn thẩm quyền và blocker
+
+| Nguồn thực tế | Đủ thẩm quyền cho việc gì | Phần còn thiếu |
+| --- | --- | --- |
+| AdditionalCost APPROVED, customer quyết định, delivery, shippingFee riêng | Nguồn phí được duyệt độc lập với parts/labor; không tự thành đồng thuận chia phí | Chỉ phí 0 được admit; source phải chứa đúng toàn SKU request, không deficit/reused stock |
+| Quotation APPROVED | Parts/labor đã duyệt | Không có shipping approval riêng; không admit quotation/PRE_REPAIR/Warranty |
+| B1 domain/store/0005 | Version/CAS, hai actor/receipt, revise xóa consent/actual hiện hành, append-only audit | Adapter mới xác thực principal/DB role/owner/assignment và evidence, không dùng B1 metadata như proof bytes |
+| W2 PICKUP allocation | Quyền và stock PICKUP | Không dùng cho DELIVERY; cohort/warehouse proposal/journal riêng |
+| Admin policy DRAFT/0006 | Preview cấu hình giả định | Không phải phí được khách/thợ chấp thuận hoặc quyền mở gate |
+| Finance 0004 và các consumer | Legacy snapshot và cutover CLOSED | Chưa có approved courier payable/recipient/D ledger, seller-of-record/tax/refund/funding; không bịa quyết định |
+
+`CURRENT_STATE` handoff chưa tìm thấy trong backend worktree hoặc đường dẫn FixHome khả dụng;
+không coi các checkpoint cũ là owner/Finance signoff. Web companion được kiểm source tại
+`src/api/w3-delivery-physical.api.ts`: hiện chỉ gọi preview; chưa hỗ trợ các command mới.
+Mobile/AI không sửa; cross-repository runtime/parity **NOT VERIFIED**.
+
+### Capability và API đã mount trong Backend hiện có
+
+Base `/api/v1/part-requests/:id/delivery`, JWT + RolesGuard, reload active DB role/ownership,
+no-store và response envelope hiện có. Không nhận actor/source verdict/stock quantity từ client.
+Machine blocker trả qua `error.code=CONFLICT`, `error.details.blocker`.
+
+| Method/path | Actor | Input |
+| --- | --- | --- |
+| GET `/` | Customer owner, active Technician, SM của kho proposal | Trạng thái/version hiện tại; invalidated khi source/lifecycle/scope đổi |
+| POST `/evidence` | SM; Technician chỉ cho TECHNICIAN_RECEIPT | Multipart file JPEG/PNG/WebP ≤10MB, warehouseId, purpose, quoteVersion |
+| GET `/evidence/:evidenceId` | Đúng scope hiện tại | URL private ngắn hạn; không trả object path |
+| POST `/proposal` | Active SM của warehouse được chọn | commandId UUIDv4, expectedVersion, warehouseId, evidenceId QUOTE, courierReference, totalShippingFee=0 |
+| POST `/consent` | Đúng Customer hoặc đúng active Technician | commandId, expectedVersion, quoteVersion, quoteFingerprint, totalShippingFee, shippingShare, accepted=true |
+| POST `/actual` | SM của warehouse proposal | commandId, expectedVersion, quoteVersion, totalShippingFee=0, evidenceId ACTUAL |
+| POST `/reserve`, `/release` | Technician / current SM tương ứng | commandId, expectedVersion của physical journal |
+| POST `/issue-to-courier`, `/dispatch`, `/receipt` | SM, SM, Technician tương ứng | commandId, expectedVersion physical, evidenceId đúng stage/proposal/warehouse/uploader |
+
+Hai namespace revision khác nhau: consent version tăng qua proposal/consent/actual;
+physical version tăng riêng qua reserve/issue/dispatch/receipt/release. Client phải GET đọc lại
+sau conflict hoặc kết quả chưa rõ, giữ commandId/payload cho retry; không tự rebase retry.
+Exact replay kiểm quyền hiện hành trước khi trả receipt, không áp delta hay audit lần hai.
+
+Nguồn phải là ADDITIONAL DELIVERY mới, full-source và có shippingFee **được duyệt bằng 0**.
+Ceiling/actual dương trả `FINANCE_LEDGER_SOURCE_REQUIRED` trước hiệu ứng tiền/kho. Không dùng
+actual giảm từ ceiling dương để lách. Không suy phí 0 từ thiếu dữ liệu hoặc trần config.
+Không hỗ trợ positive-fee proposal/consent trong slice này; đây là blocker cụ thể, không phải
+Finance đã hoàn tất. Cần ledger nguồn, aggregate labor/D, legal/tax và review consumer trước mở.
+
+Zero-spending budget nội bộ `{0,0,0}` chỉ để tái dùng domain với t=0; **không phải** khẳng định
+tiền công/commission/D của order bằng 0. Public quote chỉ trả policy/version/fingerprint/S/c/t,
+`laborBudget=UNVERIFIED`; không trả sentinel budget/netLabor hoặc receipt của người khác.
+Phí 0 vẫn bắt buộc khách và kỹ thuật viên tự consent riêng đúng fingerprint/version/S/share.
+Revise thay chứng từ/proposal tạo quote version mới, cả hai consent và actual hiện hành hết hiệu lực.
+
+Upload dùng private OrderEvidenceStorage hiện có, sniff bytes/MIME/size, provider upload thành công
+rồi mới lưu digest SHA-256 do server tính; recheck scope sau upload, rollback thì cleanup file chưa
+được tham chiếu. Không nhận URL/ref/digest do client tự khai làm proof. Record bất biến bind request,
+order, warehouse, uploader, stage và quote version. Chứng từ thủ công vẫn cần người vận hành kiểm:
+`UPLOADED_BYTES_NOT_COURIER_VERIFIED` / `RECORDED_NOT_EXTERNALLY_VERIFIED`; không phải courier
+đã xác minh, đã trả tiền hoặc proof-of-payment. Không dùng lại cùng bytes cho hai physical stage.
+
+### Tồn kho, journal và vòng đời an toàn
+
+Enrollment cùng transaction tạo request, sau khi lưu mọi item, chỉ full-source ADDITIONAL DELIVERY;
+không tự enroll request đã commit hoặc chuyển legacy/deficit. Request phí dương full-source vẫn
+vào cohort để fail closed, không rơi về billing/QR 100/0; không quảng bá thành positive live.
+
+Kho được SM chọn và bind chứng từ/proposal. RESERVE kiểm source, scope, actual0 và cả hai consent
+trong transaction, khóa toàn SKU có thứ tự; thiếu bất kỳ SKU thì PENDING_ASSISTANCE, giữ 0 SKU.
+RESERVED → ISSUED_TO_COURIER → DISPATCH_RECORDED → TECHNICIAN_RECEIVED là bốn sự thật riêng.
+ISSUE trừ on_hand/reserved đúng quantity; dispatch/receipt không trừ thêm. RELEASE chỉ từ RESERVED,
+giải phóng đúng reservation attribution một lần, không đòi consent còn mới hoặc SM cũ còn active.
+
+Migration tiến 0008 thêm hai bảng append-only/RLS và scoped admission mới; không sửa 0004–0007,
+không bật global gate, không cấp grants. Movement INSERT trigger kiểm current+delta và tự UPDATE
+stock trong cùng transaction; deferred constraint đòi đủ movement mỗi SKU. Không thể tạo receipt
+giữ/issue chỉ bằng after=current mà không có delta. Source/items snapshot freeze sau proposal;
+item/usage của cohort không được sửa/thêm/xóa; assignment/kho không được mất authority khi đang
+có issued obligation. Down chỉ cho hai bảng mới rỗng, có history thì từ chối; không xóa history.
+
+Technician receipt **không** tự đổi PartRequest thành legacy RECEIVED hoặc gán custody ở lúc SM
+issue. Usage, Invoice/legacy billing, completion và financial consumers của cohort chưa hủy vẫn
+chặn. Trước issue: RELEASE rồi cancel request trước khi đóng order. Sau issue/receipt: không đảo
+tồn hoặc xóa nghĩa vụ; custody/usage/return/financial resolution cần contract và owner decision
+riêng. Warehouse/assignment có thể tiếp tục bị khóa cả sau TECHNICIAN_RECEIVED vì chưa có path
+giải quyết nghĩa vụ này. Đây là giới hạn vận hành có chủ đích cần Lead hiểu trước release.
+
+### Kiểm chứng và release boundary
+
+Reviewer độc lập chỉ đọc đã tìm và yêu cầu sửa actor revoke race, giả movement không đổi tồn,
+evidence sai kho, source/item/assignment drift, replay sau reserve và sentinel budget lộ ra API.
+Các fix có trong source. Reviewer chạy lại **6 spec / 109 tests PASS**, diff check PASS;
+đây là code/security review, **không phải Finance/legal signoff**.
+
+Unit của service dùng real consent domain/store + stock writer với transaction/provider double;
+không chứng minh PostgreSQL locking hoặc provider thật. Harness PostgreSQL cô lập hiện có thêm
+3 case: production intake → full physical chain + lifecycle guards, concurrent CAS, và direct SQL
+forged movement/incomplete journal phải rollback. Provider của harness là double, không gọi thật.
+Docker daemon không hoạt động cả sau kiểm tra quyền ngoài sandbox; không có local PostgreSQL tools.
+PG harness local skip, DDL/trigger/races/full `test:e2e`/HTTP JWT/provider/shared DEV/Web/Mobile runtime
+**NOT VERIFIED**. Không dùng shared DEV thay môi trường test. Gate cuối theo kết quả bàn giao.
+
+Gate cuối thực chạy trên Node **24.15.0** (Node 20.19.5 của `.nvmrc`: NOT VERIFIED):
+
+| Lệnh/gate | Kết quả |
+| --- | --- |
+| `npm run typecheck` | PASS |
+| `npm run lint` | PASS — 0 errors, 4 warning cũ ngoài scope |
+| `npm run build` | PASS |
+| `npm test -- --maxWorkers=4 --silent` | PASS — 305 files, 3897 tests passed, 58 skipped, 0 failed |
+| Focused service/controller/stock/context sau fix cuối | PASS — 4 files, 35 tests |
+| `npx vitest run --config vitest.config.e2e.ts test/warehouse-delivery-physical.e2e-spec.ts` | 19 skipped; actual PostgreSQL NOT VERIFIED |
+| `git diff --check` | PASS |
+| Full `npm run test:e2e`, Docker/health, HTTP/provider/Web/Mobile/shared DEV | NOT VERIFIED — không có PostgreSQL cô lập, không dùng shared DEV |
+
+RED→GREEN đã ghi nhận cho adapter admission, stock DB-owned delta và malformed approved fee
+(null không được biến thành 0). Full suite cuối chạy sau các fix, không thay bằng chứng SQL runtime.
+
+Lead phải kiểm PostgreSQL/HTTP thật, schema/grants/security, consumer và operator recovery trước
+quyết định release; apply forward schema đã duyệt rồi restart Backend trước runtime QA. Không chạy
+Docker Compose hoặc `/health` có thể nối shared DEV trong task writer.
+
+**IMPLEMENTED SAFE SOURCE SLICE; DEV NOT ACTIVATED. SAFE_TO_APPLY_DB=NO;
+SAFE_TO_ACTIVATE_FINANCE=NO.** Không tuyên bố hoàn thành positive shipping hoặc full W3.
