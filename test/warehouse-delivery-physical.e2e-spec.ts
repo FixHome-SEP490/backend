@@ -364,7 +364,7 @@ describe.skipIf(
       VALUES($1,$2,$3,$4,'RESERVE',0,1,1,1)`,
         [f.request.id, f.command.commandId, randomUUID(), randomUUID()],
       ),
-    ).rejects.toThrow('activation closed');
+    ).rejects.toThrow('Delivery movement scope mismatch');
     await expect(
       db.getRepository('PartRequest').update(f.request.id, {
         status: 'ready',
