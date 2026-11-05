@@ -1142,6 +1142,33 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
       }
     });
 
+    it('keeps W3 physical HTTP preview owner-only and every physical mutation unavailable', async () => {
+      const physical = (id = requestId) => `/api/v1/part-requests/${id}/delivery-physical/preview`;
+      const before = await db.getRepository('WarehouseDeliveryEvent').count();
+      for (const session of [owner, technicianOwner]) {
+        const result = await http().get(physical()).set('Authorization', bearer(session)).expect(200);
+        expect(result.headers['cache-control']).toContain('no-store');
+        expect(result.body.data).toMatchObject({
+          mode: 'NON_EXECUTABLE_PREVIEW', consistency: 'NON_ATOMIC', eligibility: 'INELIGIBLE',
+          reason: 'LEGACY_OR_NOT_ENROLLED', physicalExecution: 'BLOCKED', financialExecution: 'BLOCKED',
+          evidence: 'NOT_RECORDED', actualCourierCost: null, courierPayment: 'NOT_RECORDED',
+          actions: { reserve: 'BLOCKED', issueToCourier: 'BLOCKED', dispatch: 'BLOCKED', technicianReceipt: 'BLOCKED' },
+        });
+        expect(result.body.data.blockers).toContain('PHYSICAL_ACTIVATION_CLOSED');
+      }
+      await http().get(physical()).expect(401);
+      for (const session of [admin, manager]) await http().get(physical()).set('Authorization', bearer(session)).expect(403);
+      await http().get(physical('not-a-uuid')).set('Authorization', bearer(owner)).expect(400);
+      const denied = await http().get(physical()).set('Authorization', bearer(outsider)).expect(404);
+      const missing = await http().get(physical(randomUUID())).set('Authorization', bearer(owner)).expect(404);
+      expect(denied.body.error).toEqual(missing.body.error);
+      for (const action of ['reserve','issue','dispatch','receipt']) {
+        await http().post(`/api/v1/part-requests/${requestId}/delivery-physical/${action}`).set('Authorization', bearer(technicianOwner)).send({ shippingApproved: true }).expect(404);
+      }
+      expect(await db.getRepository('WarehouseDeliveryEvent').count()).toBe(before);
+      expect(await db.query('SELECT * FROM warehouse_delivery_cohorts WHERE part_request_id=$1', [requestId])).toHaveLength(0);
+    });
+
     it('enforces JWT, role, malformed ID and indistinguishable non-owner/not-found denial', async () => {
       await http().get(previewPath()).expect(401);
       await http()
@@ -1253,11 +1280,14 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
 
   it('reverts all migrations, adopts legacy users and preserves account state and timestamps', async () => {
     // Empty W3 append-only tables still prohibit TRUNCATE CASCADE. Revert
-    // these two protected schemas first, before resetting the legacy fixture.
-    for (const expected of [
+    // these protected EMPTY schemas first, before resetting the legacy fixture.
+    // No production immutability trigger is disabled by this disposable-schema replay.
+    const protectedMigrations = [
+      'WarehouseDeliveryPhysical1793466000007',
       'W3DeliveryOperatingPolicy1793466000006',
       'DeliveryConsentState1793466000005',
-    ]) {
+    ];
+    for (const expected of protectedMigrations) {
       const latest = await db.query(
         'SELECT name FROM migrations ORDER BY timestamp DESC LIMIT 1',
       );
@@ -1275,7 +1305,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
         bookings
       CASCADE;
     `);
-    for (let i = 2; i < db.migrations.length; i++) await db.undoLastMigration();
+    for (let i = protectedMigrations.length; i < db.migrations.length; i++) await db.undoLastMigration();
     await db.query(
       `CREATE TYPE users_role_enum AS ENUM ('customer','technician','service_manager','admin')`,
     );

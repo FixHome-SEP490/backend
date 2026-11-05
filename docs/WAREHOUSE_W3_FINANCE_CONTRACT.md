@@ -757,3 +757,115 @@ cố rollback W3 append-only history sau khi Admin test đã ghi Draft. Đã s�
 RBAC/actor JWT chỉ trong CI schema. Không xóa Draft hay nới immutability.
 Kết quả CI **không** chứng minh Supabase shared DEV, legal signoff, kho,
 courier hoặc W3 settlement; giữ mọi financial/physical execution gate đóng.
+
+## 16. Physical DELIVERY technical slice — CLOSED (06/11/2026)
+
+Đây là implementation kỹ thuật trong Backend hiện có, **không phải W3 physical đã
+hoạt động**. Không ghi shared DEV, không seed kho, không gọi courier, không sửa W2
+PICKUP/QR, Mobile, AI hoặc financial consumers. CHECK invoice 0004 giữ nguyên.
+Không suy ra shipping approval từ parts/labor approval, Admin DRAFT hoặc B1 status.
+
+### Phần đã có code
+
+- `warehouse-delivery.policy.ts`: canonical cộng SKU trùng, chọn đúng một kho đủ
+  toàn quantity hoặc trả INELIGIBLE/PENDING_ASSISTANCE, không chia/giữ một phần.
+  Legacy/not-delivery/frozen/unapproved/third-party/malformed items bị loại; thiếu
+  shipping approval/dual consent giữ pending, không trả warehouse/quantities đã giữ.
+- State domain: RESERVED → ISSUED_TO_COURIER → DISPATCH_RECORDED →
+  TECHNICIAN_RECEIVED. ISSUE_TO_COURIER, COURIER_DISPATCH, TECHNICIAN_RECEIPT cần
+  metadata riêng từng bước: courierReference, opaque evidenceRef, SHA-256 contentDigest.
+  Reference phải khớp xuyên chain, không dùng lại evidenceRef; không auto-evidence.
+  Chỉ nhãn RECORDED_NOT_EXTERNALLY_VERIFIED, không phải upload/external verification,
+  actual approved courier cost hay đã thanh toán. RELEASE chỉ trước ISSUE.
+- `WarehouseDeliveryStore` internal, không đăng ký Nest: caller phải xác thực actor và
+  giữ transaction/rollback. `enrollNew` chỉ nhận requested DELIVERY quotation/additional
+  trong chính transaction INSERT request; DB kiểm xmin + server creation time, không
+  client flag/cutoff timestamp. API legacy hiện có không gọi enrollment, không backfill.
+  `execute(RESERVE)` hiện chỉ ghi blocked assessment, không stock. Recheck DB role/active
+  assignment, source order/tech/customer approval, exact canonical source SKU/quantity;
+  deficit/legacy source không đủ binding vẫn unverified. Không nhận approval từ payload.
+- Receipt append-only bind request/actor/role/commandId UUIDv4/kind/expectedVersion bằng
+  fingerprint. Same command/payload trả ORIGINAL snapshot, payload khác trả conflict;
+  lệnh mới cần CAS head. Khóa Order → Technician → Request → Cohort, receipt unique theo
+  request/command và request/resultVersion. Lỗi phải rollback toàn transaction caller.
+  Đây là journal/receipt của command, không ghi tiền hoặc audit log có raw metadata.
+- `WarehouseDeliveryStock` dormant: chỉ tiêu thụ persisted event dưới DB gate; khóa
+  Order → Technician → Request → Cohort → Warehouse/SM → stock SKU tăng dần; kiểm
+  canonical quantity/state chain và attributable reservation của chính request.
+  Khóa/kiểm đủ mọi SKU trước UPDATE đầu tiên, cập nhật stock + movement cùng manager;
+  ISSUE trừ onHand và reserved, RELEASE chỉ reserved. Replay yêu cầu đủ journal SKU.
+  Không expose method HTTP, không có caller production, không tạo PartCustody/QR/Invoice.
+
+### API có thể gọi an toàn
+
+`GET /api/v1/part-requests/:id/delivery-physical/preview` dùng JWT/RolesGuard,
+chỉ CUSTOMER sở hữu hoặc TECHNICIAN đang active. Param DTO kiểm UUID; actor chỉ từ
+req.user. Tái dùng B2b owner/source facts trước và sau đọc projection; denial giữ 404,
+SM/Admin vẫn 403. Không thêm quyền broad SM khi chưa có warehouse binding.
+
+Envelope `{data: ...}` và no-store. Output luôn NON_EXECUTABLE_PREVIEW/NON_ATOMIC;
+eligibility INELIGIBLE hoặc PENDING_ASSISTANCE, historical lastAssessment riêng;
+physicalExecution/financialExecution và mọi action BLOCKED. Không trả private metadata,
+warehouse ID/stock quantity, S/c/t hoặc payer. actualCourierCost=null,
+courierPayment=NOT_RECORDED; không dùng null như 0. Không đọc B1 tables.
+Thiếu schema/physical read lỗi trả 503. GET không enroll/lock/ghi DB.
+
+**Không có POST/PATCH reserve, issue, dispatch hoặc ACK.** Internal physical commands
+khác RESERVE ném PHYSICAL_ACTIVATION_CLOSED trước persistence. RESERVE không có
+nguồn shipping approval/dual consent nên chỉ lưu pending/ineligible, không giữ tồn.
+
+### Migration và activation
+
+`1793466000007-WarehouseDeliveryPhysical`: bốn bảng additive gate/cohort/event/movement;
+không seed cohort/stock. Gate singleton có CHECK NOT enabled; history chống
+UPDATE/DELETE/TRUNCATE, RLS không policy và REVOKE PUBLIC/API roles. Event trigger chỉ
+admit blocked RESERVE snapshot không warehouse/quantity/courier evidence; movement
+INSERT bị chặn. Guard request đã enroll ngăn legacy QR/status giả physical handoff,
+giữ cancellation trước issue; request ngoài cohort tiếp tục legacy. Down từ chối nếu có
+cohort/history. Migration CHƯA APPLY, không tự GRANT runtime role.
+
+Chỉ đổi boolean gate không kích hoạt được. Muốn mở cần forward migration + code review
+cho shipping approval source, authenticated dual consent + aggregate labor, new intake,
+persistent physical command admission/actor SM binding/receipt, custody và lifecycle
+release/cancellation/assignment race, private evidence existence/retention và Web runtime.
+Domain states và dormant stock processor **không phải bằng chứng chain đã persist ngoài đời**.
+Finance/legal/seller/tax/payee/refund/D ledger, courier actual và invoice70/30 còn CLOSED.
+Không thể tuyên bố physical vertical slice đầy đủ hoặc sẵn sàng self-UAT DELIVERY trên DEV.
+
+### Kiểm chứng và review
+
+RED đã quan sát cho domain, store và preview khi chưa có implementation; GREEN mới
+42 tests ở bốn spec. Reviewer độc lập chỉ đọc đã phát hiện source/eligibility/reservation
+proof cần siết; writer sửa và giữ negative tests, reviewer chạy checkpoint 38/38 PASS.
+Review cuối đã đọc migration/harness/HTTP extension và source/doc, không còn finding
+chặn trong CLOSED scope; chạy độc lập 42 W3 + 2 context tests PASS. Không phải Finance
+signoff. BA/PM giữ giới hạn khi thiếu approval; architecture review giữ Nest module và
+không provider/caller stock mới; Security giữ owner denial/code+DB gates; QA phân biệt
+domain/dormant unit với PostgreSQL và physical runtime. Không đổi dependency/ENV/Docker.
+
+Kiểm chứng writer trên Node **24.15.0** (Node 20.19.5 theo `.nvmrc` chưa chạy tại lượt này):
+
+| Gate | Kết quả |
+| --- | --- |
+| `npx vitest run warehouse-delivery test/context-doc.spec.ts` | PASS — 5 files, 44 tests |
+| `npm test -- --maxWorkers=4`, TZ UTC | PASS — 303 files; 3871 tests passed, 58 skipped, 0 failed |
+| `npm run typecheck` | PASS |
+| `npm run lint` | PASS — 0 errors, 4 warning có sẵn |
+| `npm run build` | PASS |
+| PG harness mới qua config E2E | 16 skipped, PostgreSQL NOT VERIFIED |
+| HTTP/JWT thật, full `npm run test:e2e`, Docker/health, shared DEV/Web/Mobile | NOT VERIFIED |
+
+`test/app.e2e-spec.ts` thêm một bundled HTTP/JWT/PG case cho owner/role/UUID/denial,
+mọi mutation route 404 và GET không tạo cohort/event. Legacy replay cập nhật exact
+protected migrations 0007→0006→0005 để down các EMPTY schemas trước TRUNCATE fixture;
+không tắt trigger hoặc xóa lịch sử đã enroll. Case HTTP và replay mới chưa thực chạy CI.
+Đây là source-only handoff, chưa thể self-UAT physical trên DEV. Sau schema/integration
+và release được Lead duyệt phải restart Backend trước runtime QA.
+
+Harness `test/warehouse-delivery-physical.e2e-spec.ts` dùng PostgreSQL 16 ephemeral của
+GitHub Actions hiện có trong schema UUID, compiled entities/store và real migrations;
+không dotenv/DATABASE_* hoặc shared DB option. Có enrollment/legacy, pending/replay,
+CAS/same-command race, assignment/customer denial, rollback, code/DB physical gate,
+JSON types, immutable journal/RLS/ACL và down guard. Local skip không phải PG PASS.
+Không push để kích CI trong task writer. SAFE_TO_APPLY_DB=NO;
+SAFE_TO_ACTIVATE_PHYSICAL=NO; SAFE_TO_ACTIVATE_FINANCE=NO.
