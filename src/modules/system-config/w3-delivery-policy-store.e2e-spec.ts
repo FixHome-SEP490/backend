@@ -95,6 +95,8 @@ describe.skipIf(
       const user = await save('User', {
         email: `${randomUUID()}@example.test`,
         fullName: 'B3a synthetic Admin',
+        // CI-only placeholder satisfies the real users credential CHECK; never used to sign in.
+        passwordHash: 'CI_FIXTURE_NOT_A_REAL_PASSWORD_HASH',
         role: Role.ADMIN,
         status: 'active',
         isActive: true,

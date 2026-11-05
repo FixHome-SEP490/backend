@@ -1007,6 +1007,18 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
   });
 
   it('reverts all migrations, adopts legacy users and preserves account state and timestamps', async () => {
+    // Empty W3 append-only tables still prohibit TRUNCATE CASCADE. Revert
+    // these two protected schemas first, before resetting the legacy fixture.
+    for (const expected of [
+      'W3DeliveryOperatingPolicy1793466000006',
+      'DeliveryConsentState1793466000005',
+    ]) {
+      const latest = await db.query(
+        'SELECT name FROM migrations ORDER BY timestamp DESC LIMIT 1',
+      );
+      expect(latest[0]?.name).toBe(expected);
+      await db.undoLastMigration();
+    }
     await db.query(`
       TRUNCATE TABLE
         booking_drafts,
@@ -1018,7 +1030,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
         bookings
       CASCADE;
     `);
-    for (let i = 0; i < db.migrations.length; i++) await db.undoLastMigration();
+    for (let i = 2; i < db.migrations.length; i++) await db.undoLastMigration();
     await db.query(
       `CREATE TYPE users_role_enum AS ENUM ('customer','technician','service_manager','admin')`,
     );
