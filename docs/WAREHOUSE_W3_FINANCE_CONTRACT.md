@@ -625,6 +625,18 @@ startup, Docker/health, Web/Mobile/provider và Finance/legal: **NOT VERIFIED**.
 SAFE_TO_ACTIVATE_FINANCE=NO.** Không commit/push/PR/merge/deploy/migrate/seed hoặc shared DB.
 Lead giữ final diff/review/release; sau integration được duyệt phải restart Backend trước QA.
 
+**B2b follow-up 05/11/2026 (CI-only extension):** Lead thêm bốn nhóm E2E vào
+`test/app.e2e-spec.ts`, chạy trên **PostgreSQL 16 của GitHub Actions trong schema ngẫu nhiên**
+và qua HTTP Nest/JWT thật: CUSTOMER chủ đơn, TECHNICIAN đang active, outsider/SM/Admin,
+malformed UUID, đồng nhất denial 404, stale assignment/DB locked account và xác nhận
+GET không tạo consent command/evidence/invoice; POST consent vẫn không tồn tại.
+Local `typecheck`/`lint`/`build` và 30 focused unit PASS, `git diff --check` PASS.
+**Các E2E vừa thêm chưa có kết quả CI tại lúc viết; không coi là HTTP/JWT/PG PASS**
+cho đến khi GitHub Actions chạy xong. Các kết quả CI trước đó chỉ chứng minh migration
+0004/0005/0006, B1/B3a harness trên database cô lập; không chứng minh shared DEV.
+Không sửa binary B2b, không thêm command/mutation, không mở finance hoặc dùng source
+parts/labor approval như shipping approval.
+
 ## 14. Phase B3a — Admin DRAFT persistence, SOURCE ONLY (05/11/2026)
 
 Mục 12 là checkpoint foundation lịch sử; B3a bổ sung persistence/API trong module

@@ -1006,6 +1006,233 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     ).toHaveLength(0);
   });
 
+  describe('W3 B2b authenticated owner preview (isolated HTTP/JWT/PostgreSQL)', () => {
+    let owner: Session;
+    let technicianOwner: Session;
+    let outsider: Session;
+    let technicianOutsider: Session;
+    let manager: Session;
+    let requestId: string;
+    let assignmentId: string;
+    let serviceOrderId: string;
+
+    const previewPath = (id = requestId) =>
+      `/api/v1/part-requests/${id}/delivery-consent/preview`;
+
+    beforeAll(async () => {
+      // Disposable CI schema only. No real customer, warehouse, courier, or approved W3 fee.
+      owner = await register();
+      outsider = await register();
+      technicianOwner = await provisionTechnician();
+      technicianOutsider = await provisionTechnician();
+      manager = await register();
+      await db.query('UPDATE users SET role = $1 WHERE id = $2', [
+        'service_manager',
+        manager.user.id,
+      ]);
+      manager = await freshLogin(manager);
+
+      const category = await createCategory();
+      const service = await createService(category.id);
+      const booking = await db.getRepository('Booking').save({
+        customerId: owner.user.id,
+        serviceId: service.id,
+        description: 'W3 read-only synthetic preview fixture',
+        status: 'matched',
+      });
+      const order = await db.getRepository('ServiceOrder').save({
+        bookingId: booking.id,
+        code: `W3-B2B-${randomUUID()}`,
+        status: 'under_repair',
+      });
+      serviceOrderId = order.id;
+      const assignment = await db.getRepository('TechnicianAssignment').save({
+        serviceOrderId,
+        technicianId: technicianOwner.user.id,
+        isActive: true,
+      });
+      assignmentId = assignment.id;
+      const source = await db.getRepository('AdditionalCostRequest').save({
+        serviceOrderId,
+        technicianId: technicianOwner.user.id,
+        status: 'approved',
+        reason: 'Synthetic approved parts/labor, NOT approved courier fee',
+        decidedAt: new Date(),
+        decidedByCustomerId: owner.user.id,
+        expiresAt: new Date(Date.now() + 86_400_000),
+        fulfillmentMethod: 'delivery',
+        shippingFee: 20_000,
+      });
+      const partRequest = await db.getRepository('PartRequest').save({
+        serviceOrderId,
+        technicianId: technicianOwner.user.id,
+        requestType: 'additional',
+        fulfillmentMethod: 'delivery',
+        additionalCostId: source.id,
+      });
+      requestId = partRequest.id;
+    });
+
+    it('allows only the matching owner and active technician, but never financial actions', async () => {
+      for (const session of [owner, technicianOwner]) {
+        const result = await http()
+          .get(previewPath())
+          .set('Authorization', bearer(session))
+          .expect(200);
+        expect(result.headers['cache-control']).toContain('no-store');
+        expect(result.body).toMatchObject({
+          success: true,
+          data: {
+            mode: 'NON_EXECUTABLE_PREVIEW',
+            consistency: 'NON_ATOMIC',
+            actor: { id: session.user.id },
+            requestId,
+            serviceOrderId,
+            observed: {
+              requestType: 'additional',
+              fulfillmentMethod: 'delivery',
+              requestStatus: 'requested',
+              orderStatus: 'under_repair',
+            },
+            source: {
+              kind: 'ADDITIONAL_COST',
+              partsLaborApproval: 'VERIFIED_APPROVED',
+              shippingApproval: 'UNVERIFIED',
+              version: null,
+            },
+            actions: {
+              newConsent: 'BLOCKED',
+              proposal: 'BLOCKED',
+              dispatch: 'BLOCKED',
+              payout: 'BLOCKED',
+            },
+          },
+        });
+        expect(result.body.data.blockers).toEqual(
+          expect.arrayContaining([
+            'SHIPPING_APPROVAL_SOURCE_UNVERIFIED',
+            'WAREHOUSE_DELIVERY_ALLOCATION_MISSING',
+            'COURIER_PROOF_UNVERIFIED',
+            'FINANCE_CUTOVER_CLOSED',
+            'TOTAL_ORDER_LABOR_BUDGET_UNVERIFIED',
+          ]),
+        );
+        // No private courier URL, raw source record, or financial authorization.
+        expect(JSON.stringify(result.body)).not.toContain('cloudinary://');
+        expect(result.body.data).not.toHaveProperty('shippingFee');
+        expect(result.body.data).not.toHaveProperty('approvedShippingFee');
+      }
+    });
+
+    it('enforces JWT, role, malformed ID and indistinguishable non-owner/not-found denial', async () => {
+      await http().get(previewPath()).expect(401);
+      await http()
+        .get(previewPath())
+        .set('Authorization', bearer(admin))
+        .expect(403);
+      await http()
+        .get(previewPath())
+        .set('Authorization', bearer(manager))
+        .expect(403);
+      await http()
+        .get(previewPath('not-a-uuid'))
+        .set('Authorization', bearer(owner))
+        .expect(400);
+      const deniedCustomer = await http()
+        .get(previewPath())
+        .query({ actorId: owner.user.id, role: 'customer', approved: 'true' })
+        .set('Authorization', bearer(outsider))
+        .expect(404);
+      const deniedTechnician = await http()
+        .get(previewPath())
+        .set('Authorization', bearer(technicianOutsider))
+        .expect(404);
+      const missing = await http()
+        .get(previewPath(randomUUID()))
+        .set('Authorization', bearer(owner))
+        .expect(404);
+      expect(deniedCustomer.body.error).toEqual(missing.body.error);
+      expect(deniedTechnician.body.error).toEqual(missing.body.error);
+    });
+
+    it('rechecks live assignment and DB actor status rather than trusting a stale JWT', async () => {
+      await db.getRepository('TechnicianAssignment').update(assignmentId, {
+        isActive: false,
+      });
+      try {
+        for (const session of [owner, technicianOwner]) {
+          await http()
+            .get(previewPath())
+            .set('Authorization', bearer(session))
+            .expect(404);
+        }
+      } finally {
+        await db.getRepository('TechnicianAssignment').update(assignmentId, {
+          isActive: true,
+        });
+      }
+
+      await db.query('UPDATE users SET status = $1 WHERE id = $2', [
+        'locked',
+        owner.user.id,
+      ]);
+      try {
+        await http()
+          .get(previewPath())
+          .set('Authorization', bearer(owner))
+          .expect(401);
+      } finally {
+        await db.query('UPDATE users SET status = $1 WHERE id = $2', [
+          'active',
+          owner.user.id,
+        ]);
+      }
+
+      await http()
+        .get(previewPath())
+        .set('Authorization', bearer(owner))
+        .expect(200);
+    });
+
+    it('does not create any consent journal, invoice, evidence, courier, or ledger record', async () => {
+      const count = async (table: string, field: string, id: string) => {
+        const names = new Set([
+          'delivery_consent_sessions',
+          'delivery_consent_commands',
+          'delivery_evidence_records',
+          'invoices',
+        ]);
+        if (!names.has(table) || !['part_request_id', 'service_order_id'].includes(field))
+          throw new Error('Unsafe table query in CI fixture');
+        const rows = await db.query(`SELECT count(*)::integer AS total FROM ${table} WHERE ${field} = $1`, [id]);
+        return rows[0].total as number;
+      };
+      const before = await Promise.all([
+        count('delivery_consent_sessions', 'part_request_id', requestId),
+        count('delivery_consent_commands', 'part_request_id', requestId),
+        count('delivery_evidence_records', 'part_request_id', requestId),
+        count('invoices', 'service_order_id', serviceOrderId),
+      ]);
+      expect(before).toEqual([0, 0, 0, 0]);
+      await http()
+        .get(previewPath())
+        .set('Authorization', bearer(owner))
+        .expect(200);
+      const after = await Promise.all([
+        count('delivery_consent_sessions', 'part_request_id', requestId),
+        count('delivery_consent_commands', 'part_request_id', requestId),
+        count('delivery_evidence_records', 'part_request_id', requestId),
+        count('invoices', 'service_order_id', serviceOrderId),
+      ]);
+      expect(after).toEqual(before);
+      await http()
+        .post(`/api/v1/part-requests/${requestId}/delivery-consent/consents`)
+        .set('Authorization', bearer(owner))
+        .send({ accepted: true, sourceApproved: true })
+        .expect(404);
+    });
+  });
+
   it('reverts all migrations, adopts legacy users and preserves account state and timestamps', async () => {
     // Empty W3 append-only tables still prohibit TRUNCATE CASCADE. Revert
     // these two protected schemas first, before resetting the legacy fixture.
