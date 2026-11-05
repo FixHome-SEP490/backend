@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-06 00:03 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104
+> Cập nhật lần cuối: 2026-11-06 00:15 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -477,6 +477,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-06 00:15 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | W3 physical PostgreSQL CI #42071519421 phát hiện `jsonb @>` với [] chấp nhận quantities không rỗng dù gate đóng; thay bằng so sánh JSONB EXACT cho quantities/evidence [] và warehouse/SM/courier null, thêm negative E2E cả forged evidence. Chờ CI PostgreSQL chạy lại; Finance/physical vẫn BLOCKED, không shared DEV migration.
+
 - 2026-11-06 00:03 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | Thêm W3 physical source CLOSED: domain/blocked persistence/CAS/dormant stock/JWT preview/migration 0007; 42 unit mới, full 3871 PASS/58 skipped, typecheck/build/lint PASS; independent review 44 PASS, PG16 skipped/HTTP/runtime chưa kiểm chứng, giữ W2/legacy/Finance.
 
 - 2026-11-05 23:05 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | Backend W3 B3a real Admin HTTP/JWT/RBAC/CAS/audit E2E 7/7 CI PASS: #42060181287 (HEAD 44a6a76), tổng 3836 unit PASS/58 skipped và 198 PostgreSQL integration PASS/39 skipped; B2b 4 HTTP tests cũng giữ PASS. Lần CI đầu #42058256895 FAIL fixture RETURNING và legacy rollback immutable history; sửa đọc TypeORM tuple, chuyển B3a xuống sau replay và khởi tạo lại actors/RBAC trong CI schema, không tắt trigger. Lint/typecheck/build/security PASS; không shared DEV migration, Finance/warehouse/courier/legal gate vẫn đóng.
@@ -518,4 +520,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-31 10:15 (UTC+7) | Hgnv11 | dev | Thêm báo trễ đơn kế tiếp (delay-notice, delay-decision) và migration 3 cột nullable; tách phần nhả đơn dùng chung; chưa chạy migration, chưa kiểm chứng PostgreSQL và Web/Mobile.
 - 2026-10-30 13:15 (UTC+7) | foxonworld | foxonworld/fixhome-bug-detector-backend-release-integration-20261030 | Xác nhận CI PostgreSQL 16 run 41012366451 tại 6c69f00: E2E 100 PASS/34 skipped, bảo toàn guard #42 và giới hạn harness opt-in/runtime.
 - 2026-10-30 13:07 (UTC+7) | foxonworld | foxonworld/fixhome-bug-detector-backend-release-integration-20261030 | Ghi nguyên nhân 34 lỗi E2E PR #173, seed ví thợ tổng hợp trong schema riêng và giới hạn kiểm chứng PostgreSQL CI.
-- 2026-10-30 11:23 (UTC+7) | foxonworld | foxonworld/fixhome-bug-detector-backend-release-integration-20261030 | Tích hợp 12 patch BUG DETECTOR, hòa giải finance/booking và guard state machine; ghi hợp đồng, giới hạn PostgreSQL/runtime và gate Lead trước merge tự deploy.

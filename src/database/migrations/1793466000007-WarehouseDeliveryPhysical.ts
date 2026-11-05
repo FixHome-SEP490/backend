@@ -84,7 +84,13 @@ export class WarehouseDeliveryPhysical1793466000007 implements MigrationInterfac
         -- No admitted stock/physical state can be inserted, even through raw SQL.
         -- Opening requires a separately reviewed forward migration, not a config toggle.
         IF NEW.kind<>'RESERVE' OR NOT COALESCE(NEW.snapshot->>'status' IN ('INELIGIBLE','PENDING_ASSISTANCE'),false)
-          OR NOT COALESCE(NEW.snapshot @> '{"warehouseId":null,"responsibleUserId":null,"quantities":[],"courierReference":null,"evidence":[]}'::jsonb,false)
+          -- JSONB containment of an empty array also matches a NONEMPTY array.
+          -- Require exact empty arrays; otherwise raw SQL could forge stock/custody.
+          OR NOT COALESCE(NEW.snapshot->'quantities' = '[]'::jsonb,false)
+          OR NOT COALESCE(NEW.snapshot->'evidence' = '[]'::jsonb,false)
+          OR NOT COALESCE(NEW.snapshot->'warehouseId' = 'null'::jsonb,false)
+          OR NOT COALESCE(NEW.snapshot->'responsibleUserId' = 'null'::jsonb,false)
+          OR NOT COALESCE(NEW.snapshot->'courierReference' = 'null'::jsonb,false)
           OR NOT COALESCE(NEW.snapshot->>'reason' IN ('LEGACY_REQUEST','NOT_DELIVERY','SCOPE_FROZEN','PARTS_SOURCE_UNVERIFIED','FIXHOME_ITEMS_REQUIRED','SHIPPING_APPROVAL_SOURCE_UNVERIFIED','DUAL_CONSENT_UNVERIFIED','NO_SINGLE_WAREHOUSE'),false)
           OR NEW.snapshot-ARRAY['status','reason','warehouseId','responsibleUserId','quantities','version','courierReference','evidence']<>'{}'::jsonb
         THEN RAISE EXCEPTION 'W3 physical activation closed'; END IF;

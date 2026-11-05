@@ -335,6 +335,7 @@ describe.skipIf(
         version: 2,
         quantities: [{ partId: randomUUID(), quantity: 2 }],
       },
+      { ...event.snapshot, version: 2, evidence: [{ kind: 'ISSUE_TO_COURIER', evidenceRef: 'forged' }] },
       { ...event.snapshot, version: 2, paid: true },
     ]) {
       await expect(

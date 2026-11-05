@@ -869,3 +869,5 @@ CAS/same-command race, assignment/customer denial, rollback, code/DB physical ga
 JSON types, immutable journal/RLS/ACL và down guard. Local skip không phải PG PASS.
 Không push để kích CI trong task writer. SAFE_TO_APPLY_DB=NO;
 SAFE_TO_ACTIVATE_PHYSICAL=NO; SAFE_TO_ACTIVATE_FINANCE=NO.
+
+**PostgreSQL CI security finding 06/11/2026:** Run #42071519421: 214 PG tests PASS, one FAIL where a forged nonempty `quantities` array passed the database trigger: JSONB containment `@> []` is true even for nonempty arrays. Updated migration `0007` to require exact JSONB empty `quantities` and `evidence` arrays and exact null fields for warehouse/SM/courier, adding an adversarial evidence case. CI after fix remains NOT VERIFIED until next run, shared DEV remains unchanged.
