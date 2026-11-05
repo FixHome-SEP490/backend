@@ -874,6 +874,7 @@ SAFE_TO_ACTIVATE_PHYSICAL=NO; SAFE_TO_ACTIVATE_FINANCE=NO.
 
 **PostgreSQL CI security finding 06/11/2026:** Run #42071519421: 214 PG tests PASS, one FAIL where a forged nonempty `quantities` array passed the database trigger: JSONB containment `@> []` is true even for nonempty arrays. Updated migration `0007` to require exact JSONB empty `quantities` and `evidence` arrays and exact null fields for warehouse/SM/courier, adding an adversarial evidence case. CI after fix remains NOT VERIFIED until next run, shared DEV remains unchanged.
 
+
 ## 17. Operational zero-fee vertical slice — source writer 06/11/2026
 
 Đã triển khai code ghi thật, không chỉ preview. **Chưa apply schema, deploy hoặc kích hoạt DEV.**
@@ -1000,3 +1001,67 @@ Docker Compose hoặc `/health` có thể nối shared DEV trong task writer.
 
 **IMPLEMENTED SAFE SOURCE SLICE; DEV NOT ACTIVATED. SAFE_TO_APPLY_DB=NO;
 SAFE_TO_ACTIVATE_FINANCE=NO.** Không tuyên bố hoàn thành positive shipping hoặc full W3.
+
+## 18. Finance snapshot validation — source writer, 06/11/2026
+
+Phạm vi worktree `fixhome-w3-finance-ledger-20261106`, base `0b0cf5b`:
+chỉ Finance, voucher frozen facts/spec tương ứng và mục này. Không sửa PartRequests,
+Wallet, migration 0008, CI hoặc client. Lead giữ integration và cập nhật
+`docs/CONTEXT.md` theo section 0 trong cùng PR; context nằm ngoài allowlist writer.
+
+`finance/invoice-financial-snapshot.ts` bổ sung reader thuần, output bất biến, kiểm
+số nguyên VND/canonical bigint driver strings và phép cộng/trừ bằng BigInt:
+
+- Gross dùng `L+F+T+W+c`; PlatformDue giữ `C+F+FULL S`.
+- `technicianPayout=gross-C-F-FULL S`, `netLabor=L-C-t`, `nonlabor=T+W`.
+- Đây là các giá trị **trước D**, không mặc định mọi invoice có D=0 và không áp
+  deduction hoặc tạo ledger đích. Thiếu ledger D và full accounting vẫn chặn activation.
+- Từ chối snapshot W3 thiếu/sai share, gross/subtotal xung đột, tràn số hoặc net labor
+  âm, kể cả khi linh kiện thợ có thể che phần âm trong tổng payout. Không clamp hoặc
+  dùng voucher để bù ngân sách. Legacy 100/0 giữ quy tắc reader cũ, gồm pre-migration shape.
+
+`readInvoiceShippingSnapshot` nhận thêm danh sách shipment tùy chọn để kiểm tổng
+snapshot invoice từ **từng** shipping snapshot đã hợp lệ; tổng dùng BigInt, không chia
+lại trên tổng S. Hai shipment S=1 cho c=2,t=0. Danh sách phải không rỗng, cùng policy
+invoice và khớp full S/c/t; thiếu/sai dòng bị từ chối. Invoice không có danh sách vẫn
+phải qua quy tắc single-shipment cũ. Một invoice không trộn policy; group phải đọc từng
+child theo policy riêng, không gom courier cost rồi tính lại tỷ lệ.
+
+Đây chỉ là kiểm số học: danh sách không có shipment identity/source binding, nên **không**
+chứng minh đủ shipment, uniqueness, approved actual, dual consent hay assignment.
+Không có caller live cung cấp danh sách này. Adapter tương lai phải đọc immutable
+shipment facts đúng invoice/order và kiểm completeness/uniqueness trong transaction;
+không nhận danh sách hoặc verdict từ client. Schema CHECK hiện tại chưa hỗ trợ aggregate
+rounding W3; cần forward migration do writer/Lead khác review trước activation.
+
+`FinanceService.ensureFinancialDues` và `frozenVoucherInvoiceFacts` dùng chung monetary
+reader, giữ amount caps/commission/source-item checks tương ứng. Cả hai vẫn gọi
+`assertShippingFinancialCutoverAllowed` trước xử lý tiền; không mở W3 voucher/funding.
+Các guard payment/settlement/group/refund và DB cutover không bị gỡ hoặc thêm override.
+
+**Custody wiring chưa sửa:** `wallet/custody-settlement.ts` nằm ngoài allowlist; vẫn
+giữ công thức legacy L-C sau guard đóng. Lead phải nối monetary reader ở đó trước khi
+mở W3, dùng netLabor/nonlabor đã kiểm và đối soát ledger hold/release/idempotency.
+Wallet CASH legacy còn `allowNegative:true`; task này không thay quy tắc đó. Test guard
+chứng minh W3 bị chặn trước wallet/ledger bằng doubles, **không** chứng minh live W3
+không âm ví hoặc đã reconcile tiền thật.
+
+BA/PM: không tự quyết seller/tax/refund hoặc giới hạn demo. Tech Lead/Senior: helper
+trong module hiện hữu, không dependency/schema/ENV mới. Security: snapshot fail closed,
+guard không đổi, không auth bypass. QA/QC: kiểm số học và consumer guard tách biệt với
+PostgreSQL/provider/JWT/runtime. Đây là tự review, không phải Finance signoff độc lập.
+
+PostgreSQL E2E, shared DEV, Docker/health, provider và Web/Mobile runtime:
+**NOT VERIFIED** trong task này; không chạy server, migration hoặc ghi DB dùng chung.
+Sau integration/release được Lead duyệt phải restart Backend trước runtime QA.
+**SAFE_TO_ACTIVATE_FINANCE=NO**; kết quả gate local ghi trong handoff writer.
+
+Kiểm chứng trên Node **20.19.5**: hai regression consumer đã RED (dues nhận commission
+vượt labor; voucher ép false thành 0). Mutation kiểm hai lỗi cũ (bỏ trừ t, chia lại tổng
+shipment) làm **5/30 test helper FAIL**; khôi phục implementation rồi chạy focused
+shipping/financial snapshot, shipping policy, dues, cutover, voucher và context:
+**7 files/97 tests PASS**. Full `npm test -- --maxWorkers=4` với TZ UTC:
+**304 files passed/5 skipped; 3904 tests passed/58 skipped/0 failed**.
+`npm run typecheck`, `npm run build`, `npm run lint`, `git diff --check`: **PASS**;
+lint giữ 0 errors/4 warning có sẵn ngoài allowlist. Không dùng unit/doubles hoặc mutation
+check thay cho PostgreSQL, source authority, Finance signoff hay đối soát tiền runtime.

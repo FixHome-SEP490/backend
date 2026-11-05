@@ -1,5 +1,6 @@
 import type { Invoice } from '../service-orders/entities/invoice.entity';
 import { assertShippingFinancialCutoverAllowed } from '../finance/invoice-shipping-snapshot';
+import { readInvoiceFinancialSnapshot } from '../finance/invoice-financial-snapshot';
 import type { InvoiceItem } from '../service-orders/entities/invoice-item.entity';
 import type { VoucherFundingInvoiceFacts } from './voucher-funding.types';
 import { ConflictException } from '@nestjs/common';
@@ -23,23 +24,21 @@ export function frozenVoucherInvoiceFacts(
 ): VoucherFundingInvoiceFacts {
   assertShippingFinancialCutoverAllowed(invoice);
   const vnd = (value: unknown): number => {
+    if (typeof value !== 'number' &&
+        !(typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value))) {
+      throw new ConflictException('Dữ liệu hóa đơn ưu đãi không nhất quán.');
+    }
     const amount = Number(value);
     if (!Number.isSafeInteger(amount) || amount < 0 || value === null || value === undefined || value === '') {
       throw new ConflictException('Dữ liệu hóa đơn ưu đãi không nhất quán.');
     }
     return amount;
   };
-  const gross = vnd(invoice.grandTotal);
-  const labor = vnd(invoice.laborTotal);
-  const parts = vnd(invoice.partsTotal);
-  const fixHomeParts = vnd(invoice.fixHomePartsTotal);
-  const technicianParts = vnd(invoice.technicianPartsTotal);
-  const warranty = vnd(invoice.technicianPartWarrantyFeeTotal);
-  const shipping = vnd(invoice.shippingFee);
-  const commission = vnd(invoice.commissionAmount);
+  const financial = readInvoiceFinancialSnapshot(invoice);
+  const { grandTotal: gross, laborTotal: labor, fixHomePartsTotal: fixHomeParts,
+    technicianPartsTotal: technicianParts, commissionAmount: commission } = financial;
   const rate = Number(invoice.commissionRateSnapshot);
   if (invoice.paymentStatus !== PaymentStatus.UNPAID || !Number.isFinite(rate) || rate < 0 || rate > 1 ||
-      parts !== fixHomeParts + technicianParts || gross !== labor + parts + warranty + shipping ||
       commission !== Math.round(labor * rate) || !Array.isArray(items)) {
     throw new ConflictException('Dữ liệu hóa đơn ưu đãi không nhất quán.');
   }
@@ -87,11 +86,8 @@ export function frozenVoucherInvoiceFacts(
   if (resolvedLabor !== labor || resolvedFixHome !== fixHomeParts || resolvedOtherParts !== technicianParts) {
     throw new ConflictException('Tổng dòng hóa đơn không khớp bản gốc.');
   }
-  const platformDue = commission + fixHomeParts + shipping;
-  const entitlement = gross - platformDue;
-  if (![platformDue, entitlement].every(Number.isSafeInteger) || entitlement < 0) {
-    throw new ConflictException('Dữ liệu quyết toán ưu đãi không nhất quán.');
-  }
+  const platformDue = financial.platformDue;
+  const entitlement = financial.technicianPayout;
   return {
     invoiceId: invoice.id,
     successful: true,

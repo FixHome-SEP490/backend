@@ -30,6 +30,7 @@ import { CashSettlement } from '../service-orders/entities/cash-settlement.entit
 import { CommissionDue } from '../service-orders/entities/commission-due.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
 import { assertShippingFinancialCutoverAllowed } from './invoice-shipping-snapshot';
+import { readInvoiceFinancialSnapshot } from './invoice-financial-snapshot';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { ServiceOrderStateMachine } from '../service-orders/service-order-state-machine';
 import { OrderStatusHistory } from '../service-orders/entities/order-status-history.entity';
@@ -2951,22 +2952,18 @@ export class FinanceService {
     const commissionDueRepository = manager.getRepository(CommissionDue);
     const platformDueRepository = manager.getRepository(PlatformDue);
     const laborTotal = this.requireWholeVnd(invoice.laborTotal, 'Labor total');
-    const partsTotal = this.requireWholeVnd(invoice.partsTotal, 'Parts total');
+    // Retain collection amount limits alongside the safe-integer snapshot validation.
+    this.requireWholeVnd(invoice.partsTotal, 'Parts total');
     const fixHomePartsTotal = this.requireWholeVnd(invoice.fixHomePartsTotal, 'FixHome parts total');
-    const technicianPartsTotal = this.requireWholeVnd(invoice.technicianPartsTotal, 'Technician parts total');
-    const warrantyFeeTotal = this.requireWholeVnd(invoice.technicianPartWarrantyFeeTotal, 'Warranty fee total');
-    const shippingFee = this.requireWholeVnd(invoice.shippingFee ?? 0, 'Shipping fee');
-    const grandTotal = this.requireWholeVnd(invoice.grandTotal, 'Invoice amount');
+    this.requireWholeVnd(invoice.technicianPartsTotal, 'Technician parts total');
+    this.requireWholeVnd(invoice.technicianPartWarrantyFeeTotal, 'Warranty fee total');
+    this.requireWholeVnd(invoice.shippingFee ?? 0, 'Shipping fee');
+    this.requireWholeVnd(invoice.grandTotal, 'Invoice amount');
     const commissionAmount = this.requireWholeVnd(
       invoice.commissionAmount,
       'Commission amount',
     );
-    if (partsTotal !== fixHomePartsTotal + technicianPartsTotal || grandTotal !== laborTotal + partsTotal + warrantyFeeTotal + shippingFee) {
-      throw new BusinessException(
-        ErrorCodes.CONFLICT,
-        'Invoice total snapshot is inconsistent',
-      );
-    }
+    const financial = readInvoiceFinancialSnapshot(invoice);
     // The rate frozen on the invoice is the snapshot (BRX-026). Comparing
     // with a constant broke every payment once an admin changed the rate.
     const commissionRate = Number(invoice.commissionRateSnapshot);
@@ -3023,7 +3020,7 @@ export class FinanceService {
     const existingPlatformDue = await platformDueRepository.findOne({
       where: { serviceOrderId: order.id },
     });
-    const platformAmount = commissionAmount + fixHomePartsTotal + shippingFee;
+    const platformAmount = financial.platformDue;
     if (existingPlatformDue) {
       if (
         Number(existingPlatformDue.dueAmount) !== platformAmount ||

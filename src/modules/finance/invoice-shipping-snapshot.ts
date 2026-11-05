@@ -10,7 +10,12 @@ export interface InvoiceShippingSnapshot {
   technicianShippingShare?: unknown;
 }
 
-export function readInvoiceShippingSnapshot(invoice: InvoiceShippingSnapshot): {
+/** Shipment inputs must come from a server-verified immutable source, never a client verdict.
+ * This checks arithmetic only; it does not prove shipment identity, approval or completeness. */
+export function readInvoiceShippingSnapshot(
+  invoice: InvoiceShippingSnapshot,
+  shipments?: readonly InvoiceShippingSnapshot[],
+): {
   policyVersion: ShippingPolicyVersion;
   shippingFee: number;
   customerShippingShare: number;
@@ -32,6 +37,8 @@ export function readInvoiceShippingSnapshot(invoice: InvoiceShippingSnapshot): {
     if (!Number.isSafeInteger(parsed) || parsed < 0) invalid();
     return parsed;
   };
+  if (!invoice || typeof invoice !== 'object' || Array.isArray(invoice))
+    invalid();
   // Undefined version is only the pre-migration object shape. SQL rows always have a version.
   const policyVersion =
     invoice.shippingPolicyVersion === undefined
@@ -45,10 +52,31 @@ export function readInvoiceShippingSnapshot(invoice: InvoiceShippingSnapshot): {
       ? 0
       : invoice.shippingFee,
   );
-  const shares = calculateShippingShares(
+  let shares = calculateShippingShares(
     shippingFee,
     policyVersion as ShippingPolicyVersion,
   );
+  if (shipments !== undefined) {
+    if (!Array.isArray(shipments) || shipments.length === 0) invalid();
+    let total = 0n;
+    let customer = 0n;
+    let technician = 0n;
+    for (const shipment of shipments) {
+      if (!shipment || shipment.shippingFee === undefined) invalid();
+      const snapshot = readInvoiceShippingSnapshot(shipment);
+      if (snapshot.policyVersion !== policyVersion) invalid();
+      total += BigInt(snapshot.shippingFee);
+      customer += BigInt(snapshot.customerShippingShare);
+      technician += BigInt(snapshot.technicianShippingShare);
+    }
+    // Per-shipment rounding is authoritative for arithmetic; do not split total S again.
+    // Equality to a safe shippingFee bounds all nonnegative subtotals before conversion.
+    if (total !== BigInt(shippingFee)) invalid();
+    shares = {
+      customerShippingShare: Number(customer),
+      technicianShippingShare: Number(technician),
+    };
+  }
   const absent =
     invoice.customerShippingShare == null &&
     invoice.technicianShippingShare == null;

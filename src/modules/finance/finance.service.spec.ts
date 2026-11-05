@@ -484,4 +484,10 @@ describe('Dues follow the invoice formula', () => {
     expect(commissionDues[0]).toMatchObject({ status: CommissionDueStatus.PAID, dueAmount: 10000 });
     expect(platformDues).toHaveLength(0);
   });
+
+  it('rejects a commission exceeding the labor budget', async () => {
+    await expect(settle({
+      commissionRateSnapshot: 1.1, commissionAmount: 110000,
+    }, cash)).rejects.toThrow();
+  });
 });

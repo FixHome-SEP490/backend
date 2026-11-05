@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { FinanceService } from './finance.service';
 import { SettlementService } from '../wallet/settlement.service';
+import { settleCustodyOnline } from '../wallet/custody-settlement';
 import { Invoice } from '../service-orders/entities/invoice.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { Booking } from '../bookings/entities/booking.entity';
@@ -112,6 +113,18 @@ describe('W3 financial cutover remains closed in real consumer entrypoints', () 
     await expect(loadVisitCharge(manager as any, 'group')).rejects.toThrow(
       closed,
     );
+  });
+
+  it('custody rejects W3 before any wallet or payout ledger access', async () => {
+    const manager = { find: vi.fn(), findOne: vi.fn(), insert: vi.fn() };
+    const wallet = { getOrCreateWallet: vi.fn(), mutateBalance: vi.fn() };
+    await expect(settleCustodyOnline(manager as any, { id: 'order' } as any,
+      invoice() as any, wallet as any)).rejects.toThrow(closed);
+    expect(manager.find).not.toHaveBeenCalled();
+    expect(manager.findOne).not.toHaveBeenCalled();
+    expect(manager.insert).not.toHaveBeenCalled();
+    expect(wallet.getOrCreateWallet).not.toHaveBeenCalled();
+    expect(wallet.mutateBalance).not.toHaveBeenCalled();
   });
 
   it('voucher funding refuses W3 before it can infer funding entitlement', () => {
