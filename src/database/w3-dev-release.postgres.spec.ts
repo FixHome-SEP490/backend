@@ -461,11 +461,11 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
       }
     });
 
-    it('refuses DDL replay when the schema exists but a ledger row is missing', async () => {
+    it('rejects non-prefix W3 ledger loss before attempting DDL replay', async () => {
       await db.query('DELETE FROM public.migrations WHERE name=$1', [
         W3_MIGRATIONS[3],
       ]);
-      await expect(runW3DevGate(db)).rejects.toThrow('refusing DDL replay');
+      await expect(runW3DevGate(db)).rejects.toThrow('W3 migration ledger order is invalid');
       expect(
         (
           await db.query(
