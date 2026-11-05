@@ -22,6 +22,11 @@ export enum WarrantyNotCoveredReason {
   EXPIRED = 'expired',
   CANNOT_REPRODUCE = 'cannot_reproduce',
   CUSTOMER_UNAVAILABLE = 'customer_unavailable',
+  /** Someone other than the FixHome technician repaired or cleaned the item since. */
+  THIRD_PARTY_REPAIR = 'third_party_repair',
+  /** Disaster, fire, flood, lightning or similar event outside anyone's control. */
+  FORCE_MAJEURE = 'force_majeure',
+  TRANSPORT_DAMAGE = 'transport_damage',
   OTHER = 'other',
 }
 

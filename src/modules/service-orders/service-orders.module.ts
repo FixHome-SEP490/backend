@@ -10,9 +10,14 @@ import { WarrantyClaimsService } from './warranty-claims.service';
 import { WarrantyClaimsTechnicianController } from './warranty-claims-technician.controller';
 import { WarrantyClaimsTechnicianService } from './warranty-claims-technician.service';
 import { WarrantyClaimReadService } from './warranty-claim-read.service';
+import { WarrantyClaimDetailService } from './warranty-claim-detail.service';
 import { WarrantyClaimsManagerController } from './warranty-claims-manager.controller';
 import { WarrantyClaimsManagerService } from './warranty-claims-manager.service';
 import { WarrantyNotifier } from './warranty-notifier.service';
+import { WarrantyCostService } from './warranty-cost.service';
+import { WarrantySweepService } from './warranty-sweep.service';
+import { PartRequestsModule } from '../part-requests/part-requests.module';
+import { CustomerWalletModule } from '../customer-wallet/customer-wallet.module';
 import { WarrantyVisit } from './entities/warranty-visit.entity';
 import { Booking } from '../bookings/entities/booking.entity';
 import { SupportCasesModule } from '../support-cases/support-cases.module';
@@ -48,6 +53,8 @@ import { VouchersModule } from '../vouchers/vouchers.module';
     SupportCasesModule,
     ReputationModule,
     VouchersModule,
+    PartRequestsModule,
+    CustomerWalletModule,
     TypeOrmModule.forFeature([
       ServiceOrder,
       TechnicianAssignment,
@@ -83,7 +90,10 @@ import { VouchersModule } from '../vouchers/vouchers.module';
     WarrantyClaimsTechnicianService,
     WarrantyClaimsManagerService,
     WarrantyClaimReadService,
+    WarrantyClaimDetailService,
     WarrantyNotifier,
+    WarrantyCostService,
+    WarrantySweepService,
   ],
   exports: [ServiceOrdersService],
 })

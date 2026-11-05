@@ -25,9 +25,11 @@ import {
   QueryWarrantyClaimsDto,
   QueryWarrantyStatsDto,
   RejectWarrantyClaimDto,
+  ReviewWarrantyDeclineDto,
   StaffWarrantyClaimDto,
   TechnicianWarrantyStatDto,
 } from './dto/warranty-claim.dto';
+import { WarrantyClaimDetailService } from './warranty-claim-detail.service';
 import { WarrantyClaimsManagerService } from './warranty-claims-manager.service';
 
 type Req = { user: { id: string; role: string } };
@@ -39,7 +41,10 @@ type Req = { user: { id: string; role: string } };
 @RequirePermission('support:read_all')
 @ApiBearerAuth()
 export class WarrantyClaimsManagerController {
-  constructor(private readonly service: WarrantyClaimsManagerService) {}
+  constructor(
+    private readonly service: WarrantyClaimsManagerService,
+    private readonly detail: WarrantyClaimDetailService,
+  ) {}
 
   @Get()
   @ApiOperation({ summary: 'Manager: warranty claim queue' })
@@ -71,10 +76,10 @@ export class WarrantyClaimsManagerController {
   }
 
   @Get(':claimId')
-  @ApiOperation({ summary: 'Manager: one warranty claim with order, customer, coverage and visit' })
+  @ApiOperation({ summary: 'Manager: one warranty claim with everything needed to judge it (decision, original job, visits, part, history)' })
   @ApiNotFoundResponse({ description: 'Claim not found' })
   async get(@Param('claimId', ParseUUIDPipe) claimId: string) {
-    return { data: await this.service.get(claimId) };
+    return { data: await this.detail.get(claimId) };
   }
 
   @Post(':claimId/assign')
@@ -115,6 +120,20 @@ export class WarrantyClaimsManagerController {
     @Req() req: Req,
   ) {
     return { data: await this.service.reject(claimId, dto, req.user) };
+  }
+
+  @Post(':claimId/review-decline')
+  @Roles(Role.SERVICE_MANAGER)
+  @RequirePermission('support:resolve')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Manager: judge a decline or missed response; not justified costs the technician reputation' })
+  @ApiConflictResponse({ description: 'Nothing is waiting for review' })
+  async reviewDecline(
+    @Param('claimId', ParseUUIDPipe) claimId: string,
+    @Body() dto: ReviewWarrantyDeclineDto,
+    @Req() req: Req,
+  ) {
+    return { data: await this.service.reviewDecline(claimId, dto, req.user) };
   }
 
   @Post(':claimId/close')

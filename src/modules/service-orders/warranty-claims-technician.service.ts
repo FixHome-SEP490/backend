@@ -1,14 +1,22 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants/error-codes';
 import {
   WarrantyClaimStatus,
   WarrantyCustomerPrompt,
+  WarrantyDeclineReason,
   WarrantyInspectionResult,
   WarrantyVisitStatus,
 } from '../../shared/enums';
+import { Address } from '../users/entities/address.entity';
+import { Booking } from '../bookings/entities/booking.entity';
+import { distanceToBooking, servesArea, technicianOrigin } from '../bookings/technician-location';
+import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
+import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
+import { ServiceOrder } from './entities/service-order.entity';
+import { WarrantyCoverage } from './entities/warranty-coverage.entity';
 import {
   AcceptWarrantyClaimDto,
   CheckInWarrantyVisitDto,
@@ -22,6 +30,9 @@ import { WarrantyVisit } from './entities/warranty-visit.entity';
 import { WarrantyClaimReadService } from './warranty-claim-read.service';
 import { WarrantyNotifier } from './warranty-notifier.service';
 import type { OrderActor } from './order-access';
+
+// ponytail: fixed window; make it a system_configs key if the ops team wants to tune it.
+const LATE_DECLINE_WINDOW_MS = 24 * 3600_000;
 
 const conflict = (message: string) => new BusinessException(ErrorCodes.CONFLICT, message);
 const invalid = (message: string) => new BusinessException(ErrorCodes.VALIDATION_FAILED, message);
@@ -49,6 +60,14 @@ export class WarrantyClaimsTechnicianService {
       take: pageSize,
     });
     return { items: await this.reader.toStaffViews(claims), total };
+  }
+
+  /** One claim of mine; a claim handed back or assigned to someone else is simply not found. */
+  async getMine(claimId: string, technician: OrderActor): Promise<StaffWarrantyClaimDto> {
+    const claim = await this.claimRepo.findOne({ where: { id: claimId, technicianId: technician.id }, relations: ['technician'] });
+    if (!claim) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Không tìm thấy yêu cầu bảo hành.');
+    const [view] = await this.reader.toStaffViews([claim]);
+    return view;
   }
 
   async accept(claimId: string, dto: AcceptWarrantyClaimDto, technician: OrderActor): Promise<StaffWarrantyClaimDto> {
@@ -83,6 +102,12 @@ export class WarrantyClaimsTechnicianService {
 
   async decline(claimId: string, dto: DeclineWarrantyClaimDto, technician: OrderActor): Promise<StaffWarrantyClaimDto> {
     const claim = await this.ownClaim(claimId, technician.id, WarrantyClaimStatus.SUBMITTED);
+    const verdict = await this.declineVerdict(this.claimRepo.manager, claim, technician.id, dto.reasonCode);
+    // Close to expiry only a reason the system can verify lets the technician step back.
+    const coverage = await this.claimRepo.manager.findOneBy(WarrantyCoverage, { id: claim.warrantyCoverageId });
+    if (verdict === 'pending' && coverage && new Date(coverage.expiresAt).getTime() - Date.now() < LATE_DECLINE_WINDOW_MS) {
+      throw invalid('Sát hạn bảo hành, chỉ được từ chối khi đang nghỉ phép hoặc ngoài khu vực phục vụ. Vui lòng liên hệ quản lý dịch vụ.');
+    }
     const updated = await this.claimRepo.update(
       { id: claim.id, status: WarrantyClaimStatus.SUBMITTED, technicianId: technician.id },
       {
@@ -91,16 +116,40 @@ export class WarrantyClaimsTechnicianService {
         declineReasonCode: dto.reasonCode,
         declineNote: dto.note ?? null,
         declinedAt: new Date(),
+        // A decline the system could not verify waits for a manager to judge it before it costs reputation.
+        declineReview: verdict === 'valid' ? 'valid' : 'pending',
       },
     );
     if (updated.affected !== 1) throw conflict('Yêu cầu bảo hành đã được xử lý.');
     await this.notifier.toManagers(
       'Cần phân công lại yêu cầu bảo hành',
-      `Kỹ thuật viên không nhận yêu cầu bảo hành (lý do: ${dto.reasonCode}). Vui lòng phân công kỹ thuật viên khác.`,
+      `Kỹ thuật viên không nhận yêu cầu bảo hành (lý do: ${dto.reasonCode}${verdict === 'pending' ? ', chưa xác minh được' : ', đã xác minh'}). Vui lòng phân công kỹ thuật viên khác.`,
       'WARRANTY_REASSIGN_NEEDED',
       claim.serviceOrderId,
     );
     return this.viewOf(claim.id);
+  }
+
+  /** On leave and out of area can be checked against the technician's own records; the rest cannot. */
+  private async declineVerdict(manager: EntityManager, claim: WarrantyClaim, technicianId: string, reason: WarrantyDeclineReason): Promise<'valid' | 'pending'> {
+    const profile = await manager.findOneBy(TechnicianProfile, { userId: technicianId });
+    if (!profile) return 'pending';
+    if (reason === WarrantyDeclineReason.ON_LEAVE) {
+      const suspended = profile.workSuspendedUntil && new Date(profile.workSuspendedUntil) > new Date();
+      return !profile.isAvailable || suspended ? 'valid' : 'pending';
+    }
+    if (reason === WarrantyDeclineReason.OUT_OF_AREA) {
+      const order = await manager.findOneBy(ServiceOrder, { id: claim.serviceOrderId });
+      const booking = order ? await manager.findOneBy(Booking, { id: order.bookingId }) : null;
+      if (!booking) return 'pending';
+      const address = await manager.findOneBy(Address, { userId: technicianId, isDefault: true });
+      const areas = await manager.find(TechnicianServiceArea, { where: { technicianId: profile.id } });
+      const origin = technicianOrigin('scheduled', profile, address, 0);
+      const distance = distanceToBooking(origin, booking);
+      const outside = !servesArea(areas, booking) || (distance != null && distance > Number(profile.serviceRadiusKm));
+      return outside ? 'valid' : 'pending';
+    }
+    return 'pending';
   }
 
   async checkIn(claimId: string, dto: CheckInWarrantyVisitDto, technician: OrderActor): Promise<StaffWarrantyClaimDto> {
@@ -129,6 +178,9 @@ export class WarrantyClaimsTechnicianService {
     const notCovered = dto.result === WarrantyInspectionResult.NOT_COVERED;
     if (notCovered && !dto.evidenceRefs?.length) {
       throw invalid('Cần ít nhất một ảnh hoặc video làm bằng chứng khi kết luận không bảo hành.');
+    }
+    if (dto.result === WarrantyInspectionResult.COVERED_PART && !dto.evidenceRefs?.length) {
+      throw invalid('Cần ít nhất một ảnh hoặc video của linh kiện hỏng khi kết luận lỗi linh kiện.');
     }
     const visit = await this.latestVisit(claim.id, technician.id, [WarrantyVisitStatus.CHECKED_IN]);
 
@@ -169,6 +221,7 @@ export class WarrantyClaimsTechnicianService {
         { id: claim.id, status: WarrantyClaimStatus.IN_PROGRESS, technicianId: technician.id },
         {
           status: WarrantyClaimStatus.AWAITING_CUSTOMER,
+          awaitingSince: new Date(),
           awaitingPrompt: WarrantyCustomerPrompt.COMPLETION,
           customerResponse: null,
           customerRespondedAt: null,

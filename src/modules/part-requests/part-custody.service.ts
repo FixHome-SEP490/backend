@@ -1,4 +1,6 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
+import { WarehouseFulfillmentService } from './warehouse-fulfillment.service';
+import { Warehouse } from '../warehouses/entities';
 import { createHash, randomUUID } from 'crypto';
 import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
@@ -39,9 +41,9 @@ type LegacyManualReviewQueryRow = {
 
 @Injectable()
 export class PartCustodyService {
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(private readonly dataSource: DataSource, @Optional() private readonly warehouseFulfillment?: WarehouseFulfillmentService) {}
 
-  /** Called ONLY by successful QR receive, in the same transaction as receivedAt. */
+  /** Legacy QR receive or W2 physical SM issue; caller supplies its physical timestamp in the same transaction. */
   async enrollHandover(manager: EntityManager, request: PartRequest, order: ServiceOrder): Promise<void> {
     const activation = await custodyActivation(manager);
     if (!activation || !request.receivedAt || request.receivedAt <= activation.activatedAt! ||
@@ -322,15 +324,27 @@ export class PartCustodyService {
       const order = await manager.findOne(ServiceOrder, { where: { id: reference.serviceOrderId }, lock: { mode: 'pessimistic_write' } });
       if (!order) throw new NotFoundException();
       await lockCustodyTechnician(manager, reference.technicianId);
+      // Same Order -> Technician -> Request -> Allocation order as W2 issue/receive/cancel.
+      if (this.warehouseFulfillment) await manager.findOne(PartRequest, { where: { id: requestId }, lock: { mode: 'pessimistic_write' } });
+      const allocation = await this.warehouseFulfillment?.allocation(manager, requestId);
+      if (allocation && kind !== 'declare_return') await this.warehouseFulfillment!.requireManager(manager, allocation, actor, false);
       const ids = { partRequestId: requestId, partRequestItemId: itemId };
       const command: PartCustodyCommand = kind === 'report_discrepancy'
         ? { ...body as PartReturnDiscrepancyDto, ...ids, kind }
         : { ...body as PartReturnDto, ...ids, kind };
       const result = await this.execute(manager, itemId, command, actor, order);
+      if (command.kind === 'accept_return' && !result.replayed && allocation) {
+        const item = await manager.findOne(PartRequestItem, { where: { id: itemId, partRequestId: requestId } });
+        if (!item) throw new NotFoundException();
+        await this.warehouseFulfillment!.restockReturn(manager, requestId, item, command, actor);
+      }
       if (command.kind === 'declare_return' && !result.replayed) {
-        // Return routes authorize Service Managers globally, without an assigned manager/area.
+        const assignedWarehouse = allocation?.warehouseId ? await manager.findOne(Warehouse, { where: { id: allocation.warehouseId } }) : null;
+        if (allocation?.warehouseId && !assignedWarehouse) throw new NotFoundException('Không tìm thấy kho đã cấp linh kiện.');
+        // Legacy recipients remain global; W2 declarations target only the current warehouse SM.
         const recipients = await manager.find(User, {
-          where: { role: Role.SERVICE_MANAGER, isActive: true, status: AccountStatus.ACTIVE },
+          where: { role: Role.SERVICE_MANAGER, isActive: true, status: AccountStatus.ACTIVE,
+            ...(assignedWarehouse ? { id: assignedWarehouse.responsibleUserId } : {}) },
           select: { id: true },
         });
         // Commit notices with the ledger/idempotency entry. The existing DB trigger publishes

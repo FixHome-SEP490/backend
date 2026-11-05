@@ -26,6 +26,7 @@ export class WarrantyCoverage extends BaseEntity {
   @Column({
     type: 'enum',
     enum: WarrantyStatus,
+    enumName: 'warranty_status_enum',
     default: WarrantyStatus.ACTIVE,
   })
   status: WarrantyStatus;

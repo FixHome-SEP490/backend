@@ -9,6 +9,7 @@ import { PartReturnDiscrepancyDto, PartReturnDto } from './dto/part-return.dto';
 import { PartCustodyService } from './part-custody.service';
 import { PartCustodyActor } from './part-custody.types';
 import { LegacyManualReviewDto } from './dto/legacy-manual-review.dto';
+import { RiskLimit } from '../../common/rate-limit/risk-rate-limit';
 
 @ApiTags('Part Returns')
 @ApiBearerAuth()
@@ -67,6 +68,7 @@ export class PartReturnsController {
   }
 
   @Post('part-requests/:requestId/items/:itemId/accept-return')
+  @RiskLimit('warehouse-stock')
   @HttpCode(200)
   @Roles(Role.SERVICE_MANAGER)
   async accept(@Param('requestId', ParseUUIDPipe) requestId: string, @Param('itemId', ParseUUIDPipe) itemId: string,

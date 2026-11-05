@@ -4,9 +4,11 @@ import { ErrorCodes } from '../../shared/constants';
 import { PartRequestStatus, PartRequestType, PartSource, PartUsageStatus } from '../../shared/enums';
 import { PartRequest } from './entities/part-request.entity';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
+import { releaseWarehouseReservations } from './warehouse-fulfillment.service';
 
 /** Caller holds the Service Order write lock, also acquired by every parts mutation. */
 export async function closeOrderPartRequests(manager: EntityManager, orderId: string, cancelled: boolean): Promise<void> {
+  if (cancelled) await releaseWarehouseReservations(manager, { serviceOrderId: orderId });
   // On completion only the finishing technician's received parts are settled.
   // Parts a replaced technician picked up stay RECEIVED, so the warehouse still
   // sees them as not returned.
@@ -29,6 +31,7 @@ export async function closeOrderPartRequests(manager: EntityManager, orderId: st
  * request for the warehouse to recover.
  */
 export async function releaseOutgoingTechnicianPartRequests(manager: EntityManager, orderId: string, technicianId: string): Promise<void> {
+  await releaseWarehouseReservations(manager, { serviceOrderId: orderId, technicianId });
   await manager.update(PartRequest, {
     serviceOrderId: orderId,
     technicianId,
@@ -38,7 +41,8 @@ export async function releaseOutgoingTechnicianPartRequests(manager: EntityManag
 
 /** The requests that gate completion: those of the technician holding the order. */
 export async function holderPartRequests(manager: EntityManager, orderId: string, requests?: PartRequest[]): Promise<PartRequest[]> {
-  const all = requests ?? await manager.find(PartRequest, { where: { serviceOrderId: orderId }, relations: ['items'] });
+  const all = (requests ?? await manager.find(PartRequest, { where: { serviceOrderId: orderId }, relations: ['items'] }))
+    .filter(request => request.requestType !== PartRequestType.WARRANTY);
   const holder = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: orderId, isActive: true });
   return holder ? all.filter(request => request.technicianId === holder.technicianId) : all;
 }

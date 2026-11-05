@@ -21,6 +21,7 @@ import { WarrantyClaimsService } from './warranty-claims.service';
 import { WarrantyClaim } from './entities/warranty-claim.entity';
 import { WarrantyCoverage } from './entities/warranty-coverage.entity';
 import { TechnicianAssignment } from './entities/technician-assignment.entity';
+import { User } from '../users/entities/user.entity';
 
 const CUSTOMER = { id: 'customer-1', role: Role.CUSTOMER };
 const ORDER_ID = 'order-1';
@@ -54,6 +55,7 @@ const makeService = (options: {
   assignment?: unknown;
   claim?: unknown;
   forbidden?: boolean;
+  technicianActive?: boolean;
 } = {}) => {
   const order = {
     id: ORDER_ID,
@@ -92,8 +94,11 @@ const makeService = (options: {
   const assignmentRepo = {
     findOne: vi.fn().mockResolvedValue('assignment' in options ? options.assignment : { technicianId: 'tech-1' }),
   };
+  const userRepo = {
+    findOne: vi.fn().mockImplementation(async ({ where }: any) => ('technicianActive' in options && !options.technicianActive ? null : { id: where.id })),
+  };
   const supportCases = { openCase: vi.fn().mockResolvedValue({ id: 'case-9' }) };
-  const notifier = { toUser: vi.fn().mockResolvedValue(undefined) };
+  const notifier = { toUser: vi.fn().mockResolvedValue(undefined), toManagers: vi.fn().mockResolvedValue(undefined) };
   const dataSource = {
     manager,
     transaction: vi.fn(async (_isolation: string, cb: any) => cb({
@@ -101,6 +106,7 @@ const makeService = (options: {
         if (entity === WarrantyCoverage) return coverageRepo;
         if (entity === WarrantyClaim) return claimRepo;
         if (entity === TechnicianAssignment) return assignmentRepo;
+        if (entity === User) return userRepo;
         throw new Error('Unexpected transaction repository');
       },
     })),
@@ -169,6 +175,15 @@ describe('WarrantyClaimsService.create', () => {
       'WARRANTY_CLAIM_SUBMITTED',
       ORDER_ID,
     );
+  });
+
+  it('leaves the claim unassigned and tells the managers when the technician who did the job is no longer active', async () => {
+    const { service, claimRepo, notifier } = makeService({ technicianActive: false });
+
+    await service.create(ORDER_ID, createDto(), CUSTOMER);
+
+    expect(claimRepo.save).toHaveBeenCalledWith(expect.objectContaining({ technicianId: null }));
+    expect(notifier.toManagers).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'WARRANTY_REASSIGN_NEEDED', ORDER_ID);
   });
 
   it('rejects an order that is not completed', async () => {

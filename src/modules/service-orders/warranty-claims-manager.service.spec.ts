@@ -16,6 +16,7 @@ import {
   CloseWarrantyClaimDto,
   QueryWarrantyClaimsDto,
   RejectWarrantyClaimDto,
+  ReviewWarrantyDeclineDto,
 } from './dto/warranty-claim.dto';
 import { WarrantyClaimsManagerController } from './warranty-claims-manager.controller';
 import { WarrantyClaimsManagerService } from './warranty-claims-manager.service';
@@ -64,6 +65,13 @@ const makeService = (options: { claim?: unknown; visits?: unknown[]; technician?
       { id: 'tech-2', fullName: 'Kỹ thuật viên B' },
     ]),
   };
+  const decisionTx = {
+    getRepository: () => ({ update: claimRepo.update }),
+    findOneBy: vi.fn().mockResolvedValue(null),
+  };
+  const dataSource = { transaction: vi.fn(async (cb: any) => cb(decisionTx)) };
+  const cost = { settleUnfixed: vi.fn().mockResolvedValue(25000), penalize: vi.fn().mockResolvedValue(undefined) };
+  const partRequests = { createWarrantyRequest: vi.fn().mockResolvedValue({ id: 'pr-1' }), settleWarrantyRequest: vi.fn().mockResolvedValue(undefined) };
   const reader = { toStaffViews: vi.fn().mockImplementation(async (claims: any[]) => claims.map((c) => ({ id: c.id }))) };
   const notifier = { toUser: vi.fn().mockResolvedValue(undefined), toManagers: vi.fn() };
   const auditLog = { log: vi.fn().mockResolvedValue(undefined) };
@@ -74,8 +82,11 @@ const makeService = (options: { claim?: unknown; visits?: unknown[]; technician?
     reader as any,
     notifier as any,
     auditLog as any,
+    dataSource as any,
+    cost as any,
+    partRequests as any,
   );
-  return { service, claimRepo, claimTx, visitTx, visitRepo, userRepo, reader, notifier, auditLog };
+  return { service, claimRepo, claimTx, visitTx, visitRepo, userRepo, reader, notifier, auditLog, decisionTx, cost, partRequests };
 };
 
 describe('manager warranty queue', () => {
@@ -129,7 +140,7 @@ describe('manager assign', () => {
 
     expect(claimTx.update).toHaveBeenCalledWith(
       { id: 'claim-1', status: WarrantyClaimStatus.ACCEPTED },
-      { technicianId: 'tech-2', status: WarrantyClaimStatus.SUBMITTED },
+      { technicianId: 'tech-2', status: WarrantyClaimStatus.SUBMITTED, lastReminderAt: null },
     );
     expect(visitTx.update).toHaveBeenCalledWith(
       expect.objectContaining({ warrantyClaimId: 'claim-1' }),
@@ -211,10 +222,24 @@ describe('manager approve', () => {
       noReason.service.approve('claim-1', { result: WarrantyInspectionResult.NOT_COVERED, customerNote: 'Linh kiện đã hao mòn tự nhiên.' }, SM),
     ).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
 
+    const noOverrideReason = makeService();
+    await expect(
+      noOverrideReason.service.approve(
+        'claim-1',
+        { result: WarrantyInspectionResult.NOT_COVERED, reasonCode: WarrantyNotCoveredReason.NORMAL_WEAR, customerNote: 'Linh kiện đã hao mòn tự nhiên.' },
+        SM,
+      ),
+    ).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+
     const ok = makeService();
     await ok.service.approve(
       'claim-1',
-      { result: WarrantyInspectionResult.NOT_COVERED, reasonCode: WarrantyNotCoveredReason.NORMAL_WEAR, customerNote: 'Linh kiện đã hao mòn tự nhiên.' },
+      {
+        result: WarrantyInspectionResult.NOT_COVERED,
+        reasonCode: WarrantyNotCoveredReason.NORMAL_WEAR,
+        customerNote: 'Linh kiện đã hao mòn tự nhiên.',
+        overrideReason: 'Ảnh cho thấy linh kiện đã mòn đều theo thời gian.',
+      },
       SM,
     );
     expect(ok.claimRepo.update).toHaveBeenCalledWith(
@@ -233,6 +258,145 @@ describe('manager approve', () => {
     const race = makeService();
     race.claimRepo.update.mockResolvedValueOnce({ affected: 0 });
     await expect(race.service.approve('claim-1', {}, SM)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+  });
+});
+
+describe('manager approve: who pays for the part', () => {
+  const FIXHOME_LINE = { id: 'line-1', partSource: 'fixhome', sourceItemId: 'qi-1', quantity: 2 };
+
+  it('hands the technician a free FixHome part when the fault is the part', async () => {
+    const { service, decisionTx, partRequests } = makeService();
+    decisionTx.findOneBy
+      .mockResolvedValueOnce({ id: 'cov-1', invoiceItemId: 'line-1' })
+      .mockResolvedValueOnce(FIXHOME_LINE)
+      .mockResolvedValueOnce({ id: 'qi-1', partCatalogId: 'part-9' });
+
+    await service.approve('claim-1', {}, SM);
+
+    expect(partRequests.createWarrantyRequest).toHaveBeenCalledWith(
+      decisionTx,
+      expect.objectContaining({ items: [{ partCatalogId: 'part-9', quantity: 2 }] }),
+    );
+  });
+
+  it('leaves a part the technician bought, or a labor line, to the technician', async () => {
+    const own = makeService();
+    own.decisionTx.findOneBy
+      .mockResolvedValueOnce({ id: 'cov-1', invoiceItemId: 'line-1' })
+      .mockResolvedValueOnce({ id: 'line-1', partSource: 'technician', quantity: 1 });
+    await own.service.approve('claim-1', {}, SM);
+    expect(own.partRequests.createWarrantyRequest).not.toHaveBeenCalled();
+
+    const labor = makeService();
+    await labor.service.approve('claim-1', {}, SM);
+    expect(labor.partRequests.createWarrantyRequest).not.toHaveBeenCalled();
+  });
+
+  it('lets the manager pick a part for a workmanship fault; who pays is decided by the inspection of the faulty part', async () => {
+    const { service, decisionTx, partRequests } = makeService({
+      visits: [makeVisit({ proposedResult: WarrantyInspectionResult.COVERED_WORKMANSHIP })],
+    });
+
+    await service.approve('claim-1', { replacementParts: [{ partCatalogId: 'part-9', quantity: 1 }] }, SM);
+
+    expect(partRequests.createWarrantyRequest).toHaveBeenCalledWith(
+      decisionTx,
+      expect.objectContaining({ items: [{ partCatalogId: 'part-9', quantity: 1 }] }),
+    );
+  });
+
+  it('does not hand out a part for a workmanship fault unless the manager chooses one', async () => {
+    const { service, partRequests } = makeService({
+      visits: [makeVisit({ proposedResult: WarrantyInspectionResult.COVERED_WORKMANSHIP })],
+    });
+    await service.approve('claim-1', {}, SM);
+    expect(partRequests.createWarrantyRequest).not.toHaveBeenCalled();
+  });
+
+  it('fails the whole approval when the FixHome part cannot be identified', async () => {
+    const { service, decisionTx } = makeService();
+    decisionTx.findOneBy
+      .mockResolvedValueOnce({ id: 'cov-1', invoiceItemId: 'line-1' })
+      .mockResolvedValueOnce({ ...FIXHOME_LINE, sourceItemId: null });
+    await expect(service.approve('claim-1', {}, SM)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+  });
+});
+
+describe('manager review of a decline or missed response', () => {
+  it('costs the technician reputation only when the manager says the decline was not justified', async () => {
+    const invalid = makeService({ claim: makeClaim({ status: WarrantyClaimStatus.SUBMITTED, technicianId: null, declineReview: 'pending', declinedByTechnicianId: 'tech-1' }) });
+    await invalid.service.reviewDecline('claim-1', Object.assign(new ReviewWarrantyDeclineDto(), { valid: false, note: 'Lịch của kỹ thuật viên còn trống.' }), SM);
+    expect(invalid.claimRepo.update).toHaveBeenCalledWith({ id: 'claim-1', declineReview: 'pending' }, { declineReview: 'invalid' });
+    expect(invalid.cost.penalize).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ id: 'claim-1' }), 'decline', 'sm-1', expect.any(String));
+
+    const valid = makeService({ claim: makeClaim({ status: WarrantyClaimStatus.SUBMITTED, declineReview: 'pending' }) });
+    await valid.service.reviewDecline('claim-1', Object.assign(new ReviewWarrantyDeclineDto(), { valid: true, note: 'Có đơn xin nghỉ được duyệt.' }), SM);
+    expect(valid.claimRepo.update).toHaveBeenCalledWith({ id: 'claim-1', declineReview: 'pending' }, { declineReview: 'valid' });
+    expect(valid.cost.penalize).not.toHaveBeenCalled();
+  });
+
+  it('treats a flagged no-show as a no-show, not a decline', async () => {
+    const { service, cost } = makeService({
+      // The claim may already be with someone else; the verdict is about the technician who did not show.
+      claim: makeClaim({ status: WarrantyClaimStatus.SUBMITTED, technicianId: 'tech-2', declineReview: 'pending', declineReasonCode: 'no_show', declinedByTechnicianId: 'tech-1', noShowFlaggedAt: new Date() }),
+    });
+    await service.reviewDecline('claim-1', Object.assign(new ReviewWarrantyDeclineDto(), { valid: false, note: 'Không đến và không báo.' }), SM);
+    expect(cost.penalize).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'no_show', 'sm-1', expect.any(String));
+  });
+
+  it('has nothing to review unless a decline is pending, and loses a race cleanly', async () => {
+    const none = makeService({ claim: makeClaim({ declineReview: null }) });
+    await expect(none.service.reviewDecline('claim-1', Object.assign(new ReviewWarrantyDeclineDto(), { valid: false, note: 'Không có gì để xét.' }), SM))
+      .rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+
+    const race = makeService({ claim: makeClaim({ declineReview: 'pending' }) });
+    race.claimRepo.update.mockResolvedValueOnce({ affected: 0 });
+    await expect(race.service.reviewDecline('claim-1', Object.assign(new ReviewWarrantyDeclineDto(), { valid: false, note: 'Đã có người xét.' }), SM))
+      .rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+    expect(race.cost.penalize).not.toHaveBeenCalled();
+  });
+});
+
+describe('manager close: the item could not be fixed', () => {
+  const inProgress = () => makeClaim({ status: WarrantyClaimStatus.IN_PROGRESS, finalResult: WarrantyInspectionResult.COVERED_WORKMANSHIP, reviewedByManagerId: 'sm-1' });
+
+  it('refunds the customer wallet, charges the original technician, costs reputation and settles the part request in one commit', async () => {
+    const { service, claimRepo, cost, partRequests, decisionTx, notifier } = makeService({ claim: inProgress() });
+
+    await service.close('claim-1', { outcome: 'unfixed', note: 'Đã thử hai lần nhưng không khắc phục được.', refundAmount: 25000 }, SM);
+
+    expect(claimRepo.update).toHaveBeenCalledWith(
+      { id: 'claim-1', status: WarrantyClaimStatus.IN_PROGRESS },
+      expect.objectContaining({ status: WarrantyClaimStatus.RESOLVED, outcomeCode: 'unfixed', resolvedAt: expect.any(Date) }),
+    );
+    expect(cost.settleUnfixed).toHaveBeenCalledWith(decisionTx, expect.objectContaining({ id: 'claim-1' }), 25000);
+    expect(claimRepo.update).toHaveBeenCalledWith({ id: 'claim-1' }, { refundAmount: 25000 });
+    expect(cost.penalize).toHaveBeenCalledWith(decisionTx, expect.objectContaining({ id: 'claim-1' }), 'unfixed', 'sm-1', expect.any(String));
+    expect(partRequests.settleWarrantyRequest).toHaveBeenCalledWith(decisionTx, 'claim-1');
+    expect(notifier.toUser).toHaveBeenCalledWith('customer-1', expect.any(String), expect.stringContaining('25.000'), 'WARRANTY_DECISION_MADE', 'order-1');
+  });
+
+  it('always needs a note, even when the customer agreed, and refuses a claim that was never covered', async () => {
+    const agreed = makeService({ claim: makeClaim({ status: WarrantyClaimStatus.AWAITING_CUSTOMER, customerResponse: 'agreed', finalResult: WarrantyInspectionResult.COVERED_PART }) });
+    await expect(agreed.service.close('claim-1', { outcome: 'unfixed' }, SM)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+
+    const notCovered = makeService({ claim: makeClaim({ status: WarrantyClaimStatus.DISPUTED, finalResult: WarrantyInspectionResult.NOT_COVERED, reviewedByManagerId: 'sm-9' }) });
+    await expect(notCovered.service.close('claim-1', { outcome: 'unfixed', note: 'Không thuộc bảo hành nên không hoàn.' }, SM))
+      .rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+  });
+
+  it('commits nothing when the refund fails', async () => {
+    const { service, cost, notifier } = makeService({ claim: inProgress() });
+    cost.settleUnfixed.mockRejectedValueOnce(new Error('wallet down'));
+    await expect(service.close('claim-1', { outcome: 'unfixed', note: 'Không khắc phục được trong hạn.' }, SM)).rejects.toThrow('wallet down');
+    expect(cost.penalize).not.toHaveBeenCalled();
+    expect(notifier.toUser).not.toHaveBeenCalled();
+  });
+
+  it('accepts the new outcome and a whole-VND refund in the DTO only', async () => {
+    expect(await validate(Object.assign(new CloseWarrantyClaimDto(), { outcome: 'unfixed', note: 'Không khắc phục được.', refundAmount: 25000 }))).toHaveLength(0);
+    expect(await validate(Object.assign(new CloseWarrantyClaimDto(), { outcome: 'unfixed', refundAmount: 0 }))).not.toHaveLength(0);
+    expect(await validate(Object.assign(new CloseWarrantyClaimDto(), { outcome: 'unfixed', refundAmount: 1.5 }))).not.toHaveLength(0);
   });
 });
 

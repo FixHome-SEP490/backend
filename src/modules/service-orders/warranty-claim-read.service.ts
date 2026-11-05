@@ -4,6 +4,7 @@ import { In, Repository } from 'typeorm';
 import { Booking } from '../bookings/entities/booking.entity';
 import { User } from '../users/entities/user.entity';
 import { StaffWarrantyClaimDto } from './dto/warranty-claim.dto';
+import { InvoiceItem } from './entities/invoice-item.entity';
 import { ServiceOrder } from './entities/service-order.entity';
 import { WarrantyClaim } from './entities/warranty-claim.entity';
 import { WarrantyCoverage } from './entities/warranty-coverage.entity';
@@ -19,6 +20,7 @@ export class WarrantyClaimReadService {
     @InjectRepository(User) private readonly userRepo: Repository<User>,
     @InjectRepository(WarrantyCoverage) private readonly coverageRepo: Repository<WarrantyCoverage>,
     @InjectRepository(WarrantyVisit) private readonly visitRepo: Repository<WarrantyVisit>,
+    @InjectRepository(InvoiceItem) private readonly invoiceItemRepo: Repository<InvoiceItem>,
   ) {}
 
   async toStaffViews(claims: WarrantyClaim[]): Promise<StaffWarrantyClaimDto[]> {
@@ -38,6 +40,9 @@ export class WarrantyClaimReadService {
     const coverages = await this.coverageRepo.find({
       where: { id: In(unique(claims.map((c) => c.warrantyCoverageId))) },
     });
+    const itemIds = unique(coverages.map((c) => c.invoiceItemId).filter((id): id is string => !!id));
+    const items = itemIds.length ? await this.invoiceItemRepo.find({ where: { id: In(itemIds) } }) : [];
+    const itemName = new Map(items.map((item) => [item.id, item.description]));
     const visits = await this.visitRepo.find({
       where: { warrantyClaimId: In(claims.map((c) => c.id)) },
       order: { createdAt: 'DESC' },
@@ -63,6 +68,7 @@ export class WarrantyClaimReadService {
         order: {
           id: claim.serviceOrderId,
           code: order?.code ?? '',
+          bookingId: order?.bookingId ?? '',
           serviceName: booking?.serviceNameSnapshot ?? '',
           addressSummary: booking?.addressTextSnapshot ?? '',
           customerName: customer?.fullName ?? '',
@@ -71,11 +77,17 @@ export class WarrantyClaimReadService {
         coverage: coverage
           ? {
               id: coverage.id,
-              itemDescription: coverage.note || 'Bảo hành dịch vụ',
+              // What the customer is covered for: the invoice line, else the note, else a generic name.
+              itemDescription: itemName.get(coverage.invoiceItemId ?? '') || coverage.note || 'Bảo hành dịch vụ',
               expiresAt: coverage.expiresAt,
             }
           : null,
         visit: visit ? toVisitView(visit) : null,
+        declineReview: claim.declineReview ?? null,
+        declineReasonCode: claim.declineReasonCode ?? null,
+        outcomeCode: claim.outcomeCode ?? null,
+        refundAmount: claim.refundAmount ?? null,
+        noShowFlaggedAt: claim.noShowFlaggedAt ?? null,
       };
     });
   }

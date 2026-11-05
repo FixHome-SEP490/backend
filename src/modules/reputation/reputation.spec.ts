@@ -117,6 +117,41 @@ describe('ReputationService.penalizeReviewedCase', () => {
   });
 });
 
+describe('ReputationService.penalizeWarranty', () => {
+  const input = { claimId: 'claim-1', cause: 'unfixed' as const, technicianId: 't1', serviceOrderId: 'order-1', actorId: 'sm-1', reason: 'không khắc phục được trong hạn bảo hành' };
+
+  it('takes the warranty deduction once, attributed to the manager, and says why', async () => {
+    const s = setup({ id: 't1', role: Role.TECHNICIAN, reputationPoints: 75 });
+
+    const event = await s.service.penalizeWarranty(s.manager as never, input);
+
+    expect(pointsOf(s.updates)).toBe(70);
+    expect(event).toMatchObject({ kind: 'violation', warrantyClaimId: 'claim-1', warrantyCause: 'unfixed', actorUserId: 'sm-1', delta: -5, serviceOrderId: 'order-1' });
+    expect(s.inserted[0]).toMatchObject({ userId: 't1', type: 'REPUTATION_CHANGED', referenceType: 'WARRANTY_CLAIM', referenceId: 'claim-1' });
+    expect(String(s.inserted[0].message)).toContain('bảo hành');
+    expect(String(s.inserted[0].message)).not.toContain('Huỷ đơn');
+  });
+
+  it('does nothing the second time for the same claim and cause', async () => {
+    const s = setup({ id: 't1', role: Role.TECHNICIAN, reputationPoints: 75 });
+    s.manager.findOne.mockResolvedValueOnce({ id: 'earlier-event' } as never);
+
+    expect(await s.service.penalizeWarranty(s.manager as never, input)).toBeNull();
+    expect(s.updates).toHaveLength(0);
+    expect(s.inserted).toHaveLength(0);
+  });
+
+  it('only ever applies to a technician and reads the deduction from the configuration', async () => {
+    const customer = setup({ id: 't1', role: Role.CUSTOMER, reputationPoints: 100 });
+    expect(await customer.service.penalizeWarranty(customer.manager as never, input)).toBeNull();
+    expect(customer.updates).toHaveLength(0);
+
+    const s = setup({ id: 't1', role: Role.TECHNICIAN, reputationPoints: 100 });
+    await s.service.penalizeWarranty(s.manager as never, input);
+    expect((s as any).service['configService'].getInt).toHaveBeenCalledWith('reputation.warranty_violation_points', 5);
+  });
+});
+
 describe('ReputationService.adjust', () => {
   const staff = { id: 'sm-1', role: Role.SERVICE_MANAGER };
 
