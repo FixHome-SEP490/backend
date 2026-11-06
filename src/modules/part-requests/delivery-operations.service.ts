@@ -237,7 +237,7 @@ export class DeliveryOperationsService {
     });
     const [termsHead] = terms
       ? await m.query(
-          'SELECT *, source_snapshot=w3_fee_source_snapshot(part_request_id) AS source_current FROM delivery_fee_terms WHERE part_request_id=$1 ORDER BY result_version DESC LIMIT 1',
+          'SELECT *, (source_snapshot=w3_fee_source_snapshot(part_request_id) AND w3_prequote_commission_current(service_order_id)) AS source_current FROM delivery_fee_terms WHERE part_request_id=$1 ORDER BY result_version DESC LIMIT 1',
           [id],
         )
       : [];
@@ -657,7 +657,7 @@ export class DeliveryOperationsService {
       )
         return conflict('DELIVERY_TERMS_WAREHOUSE_AUTHORITY_CHANGED');
       const [prior] = await m.query(
-        'SELECT *, source_snapshot=w3_fee_source_snapshot(part_request_id) AS source_current FROM delivery_fee_terms WHERE part_request_id=$1 AND command_id=$2',
+        'SELECT *, (source_snapshot=w3_fee_source_snapshot(part_request_id) AND w3_prequote_commission_current(service_order_id)) AS source_current FROM delivery_fee_terms WHERE part_request_id=$1 AND command_id=$2',
         [id, body.commandId],
       );
       if (prior) {

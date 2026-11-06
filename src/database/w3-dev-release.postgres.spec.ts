@@ -10,6 +10,7 @@ import { W3DeliveryOperatingPolicy1793466000006 } from './migrations/17934660000
 import { WarehouseDeliveryPhysical1793466000007 } from './migrations/1793466000007-WarehouseDeliveryPhysical';
 import { W3DeliveryPolicyLifecycle1793466000009 } from './migrations/1793466000009-W3DeliveryPolicyLifecycle';
 import { DeliveryConditionalFeeTerms1793466000010 } from './migrations/1793466000010-DeliveryConditionalFeeTerms';
+import { W3PrequoteCommission1793466000011 } from './migrations/1793466000011-W3PrequoteCommission';
 import {
   CASH_MIGRATIONS,
   runW3DevGate,
@@ -43,6 +44,7 @@ const w3MigrationClasses: MigrationClass[] = [
 if (ZeroFeeOperations) w3MigrationClasses.push(ZeroFeeOperations);
 w3MigrationClasses.push(W3DeliveryPolicyLifecycle1793466000009);
 w3MigrationClasses.push(DeliveryConditionalFeeTerms1793466000010);
+w3MigrationClasses.push(W3PrequoteCommission1793466000011);
 
 // CI-only: creates a fresh database on the CI PostgreSQL service at loopback.
 // It never reads .env, DATABASE_* or a shared DEV connection string.
@@ -134,15 +136,17 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
         status text, responsible_user_id uuid);
       CREATE TABLE public.quotations(id uuid PRIMARY KEY, status text, decided_at timestamptz,
         service_order_id uuid, technician_id uuid, version integer);
-      CREATE TABLE public.additional_cost_requests(id uuid PRIMARY KEY, status text, decided_at timestamptz,
+      CREATE TABLE public.additional_cost_requests(id uuid PRIMARY KEY, status text, decided_at timestamptz,supersedes_id uuid,total_labor_delta bigint,
         service_order_id uuid, technician_id uuid, decided_by_customer_id uuid,
         shipping_fee bigint NOT NULL DEFAULT 0, fulfillment_method text);
-      CREATE TABLE public.bookings(id uuid PRIMARY KEY, customer_id uuid);
+      CREATE TABLE public.bookings(id uuid PRIMARY KEY, customer_id uuid,pricing_mode_snapshot text,fixed_unit_price_snapshot numeric,quantity integer,scope_snapshot text);
+      CREATE TABLE public.quotation_items(id uuid PRIMARY KEY,quotation_id uuid,type text,description text,quantity integer,unit_price bigint,line_total bigint);
+      CREATE TABLE public.system_configs(key varchar(128) PRIMARY KEY,value text,value_type text,updated_at timestamptz,updated_by_user_id uuid);
       CREATE TABLE public.fixhome_parts(id uuid PRIMARY KEY DEFAULT uuid_generate_v4());
       CREATE TABLE public.part_request_items(id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
         part_request_id uuid, part_catalog_id uuid, part_source text, quantity integer);
       CREATE TABLE public.additional_cost_items(id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
-        request_id uuid, type text, part_source text, part_catalog_id uuid, quantity integer);
+        request_id uuid, type text,description text, part_source text, part_catalog_id uuid, quantity integer,unit_price bigint,line_total bigint);
       CREATE TABLE public.audit_logs(id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), resource_type text,
         resource_id text, actor_user_id uuid, actor_role text, action text, before jsonb, after jsonb);
       CREATE TABLE public.roles(id uuid PRIMARY KEY, code text);
@@ -321,6 +325,56 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
           )
         )[0],
       ).toEqual({ terms: null, ledger: 0 });
+    }, 30000);
+
+    it('rolls back 0011 and the pending chain atomically on DDL failure; empty down preserves 0010', async () => {
+      const original = db.migrations.find((m) => m.name === W3_MIGRATIONS[7])!;
+      const index = db.migrations.indexOf(original);
+      db.migrations[index] = {
+        name: original.name,
+        up: async (q) => {
+          await original.up(q);
+          throw new Error('fault after 0011 DDL');
+        },
+        down: (q) => original.down(q),
+      };
+      try {
+        await expect(runW3DevGate(db)).rejects.toThrow('fault after 0011 DDL');
+      } finally {
+        db.migrations[index] = original;
+      }
+      expect(
+        (
+          await db.query(
+            "SELECT to_regclass('public.w3_order_commission_snapshots') AS c",
+          )
+        )[0].c,
+      ).toBeNull();
+      const runner = db.createQueryRunner();
+      await runner.connect();
+      await runner.startTransaction();
+      try {
+        for (const Migration of w3MigrationClasses)
+          await new Migration().up(runner);
+        await original.down(runner);
+        expect(
+          (
+            await runner.query(
+              "SELECT to_regclass('public.delivery_fee_terms') AS terms,to_regclass('public.w3_order_commission_snapshots') AS c",
+            )
+          )[0],
+        ).toMatchObject({ c: null });
+        expect(
+          (
+            await runner.query(
+              "SELECT to_regclass('public.delivery_fee_terms') AS terms",
+            )
+          )[0].terms,
+        ).toBeTruthy();
+      } finally {
+        await runner.rollbackTransaction();
+        await runner.release();
+      }
     }, 30000);
 
     it('applies the exact W3 order once, keeps legacy invoices closed and replays without DDL', async () => {
@@ -595,14 +649,94 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
       expect(await runW3DevGate(db)).toEqual([]);
     });
 
-    it('refuses 0010 DDL replay, disabled protections and API grants', async () => {
+    it('refuses 0011 replay, disabled guards, function grants and private table grants', async () => {
       await db.query('DELETE FROM public.migrations WHERE name=$1', [
-        W3_MIGRATIONS[6],
+        W3_MIGRATIONS[7],
+      ]);
+      await expect(runW3DevGate(db)).rejects.toThrow('refusing DDL replay');
+      await db.query(
+        'INSERT INTO public.migrations(timestamp,name) VALUES($1,$2)',
+        [1793466000011, W3_MIGRATIONS[7]],
+      );
+      await db.query(
+        'ALTER TABLE public.delivery_fee_terms DISABLE TRIGGER w3_fee_terms_zz_commission',
+      );
+      await expect(runW3DevGate(db)).rejects.toThrow(
+        'prequote commission schema proof incomplete',
+      );
+      await db.query(
+        'ALTER TABLE public.delivery_fee_terms ENABLE TRIGGER w3_fee_terms_zz_commission',
+      );
+      await db.query(
+        'GRANT EXECUTE ON FUNCTION public.w3_approved_labor_source(uuid) TO anon',
+      );
+      await expect(runW3DevGate(db)).rejects.toThrow(
+        'Data API role can execute W3 prequote commission function',
+      );
+      await db.query(
+        'REVOKE EXECUTE ON FUNCTION public.w3_approved_labor_source(uuid) FROM anon',
+      );
+      await db.query(
+        'GRANT SELECT ON public.w3_order_commission_snapshots TO authenticated',
+      );
+      await expect(runW3DevGate(db)).rejects.toThrow(
+        'Data API role has W3 private table access',
+      );
+      await db.query(
+        'REVOKE SELECT ON public.w3_order_commission_snapshots FROM authenticated',
+      );
+      expect(await runW3DevGate(db)).toEqual([]);
+    });
+
+    it.each(
+      ['PUBLIC', 'anon', 'authenticated', 'service_role'].flatMap((grantee) =>
+        ['USAGE', 'SELECT', 'UPDATE'].map((privilege) => ({
+          grantee,
+          privilege,
+        })),
+      ),
+    )(
+      'rejects $grantee $privilege on the commission sequence and passes after revocation',
+      async ({ grantee, privilege }) => {
+        const sequence = 'public.w3_commission_config_versions_revision_seq';
+        expect(await runW3DevGate(db)).toEqual([]);
+        await db.query(
+          `GRANT ${privilege} ON SEQUENCE ${sequence} TO ${grantee}`,
+        );
+        try {
+          if (grantee !== 'PUBLIC') {
+            const [effective] = await db.query(
+              'SELECT has_sequence_privilege($1,$2,$3) AS allowed',
+              [grantee, sequence, privilege],
+            );
+            expect(effective.allowed).toBe(true);
+          }
+          await expect(runW3DevGate(db)).rejects.toThrow(
+            grantee === 'PUBLIC'
+              ? 'W3 prequote commission sequence ACL incomplete'
+              : 'Data API role has W3 prequote commission sequence access',
+          );
+        } finally {
+          await db.query(
+            `REVOKE ${privilege} ON SEQUENCE ${sequence} FROM ${grantee}`,
+          );
+        }
+        expect(await runW3DevGate(db)).toEqual([]);
+      },
+    );
+
+    it('refuses 0010 DDL replay, disabled protections and API grants', async () => {
+      await db.query('DELETE FROM public.migrations WHERE name=ANY($1)', [
+        W3_MIGRATIONS.slice(6),
       ]);
       await expect(runW3DevGate(db)).rejects.toThrow('refusing DDL replay');
       await db.query(
         'INSERT INTO public.migrations(timestamp,name) VALUES($1,$2)',
         [1793466000010, W3_MIGRATIONS[6]],
+      );
+      await db.query(
+        'INSERT INTO public.migrations(timestamp,name) VALUES($1,$2)',
+        [1793466000011, W3_MIGRATIONS[7]],
       );
       await db.query(
         'ALTER TABLE public.delivery_fee_terms DISABLE TRIGGER w3_fee_terms_immutable',

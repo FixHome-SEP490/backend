@@ -72,6 +72,8 @@ describe.skipIf(
       ),
     );
     await db.runMigrations();
+    await db.query(`INSERT INTO system_configs(key,value,value_type) VALUES ('commission.rate_bps','1000','int')
+      ON CONFLICT(key) DO UPDATE SET value='1000',value_type='int'`);
     const runtime = createRequire(resolve('package.json'));
     store = new (runtime(
       resolve('dist/modules/part-requests/warehouse-delivery-store.service.js'),
@@ -117,6 +119,8 @@ describe.skipIf(
       serviceId,
       description: 'CI physical fixture',
       status: 'matched',
+      pricingModeSnapshot: 'fixed_price',
+      fixedUnitPriceSnapshot: 100000,
     });
     const order = await save('ServiceOrder', {
       bookingId: booking.id,
@@ -229,6 +233,7 @@ describe.skipIf(
       assignment,
       cost,
       order,
+      booking,
       customer,
       part,
     };
@@ -608,6 +613,200 @@ describe.skipIf(
       );
     return { ...f, body, state: result.state, consent };
   }
+  it('freezes approved L and versioned config C before quote, binds all terms, and refuses history rewrite/down', async () => {
+    const f = await positiveTerms();
+    const [snapshot] = await db.query(
+      'SELECT * FROM w3_order_commission_snapshots WHERE service_order_id=$1',
+      [f.order.id],
+    );
+    expect(snapshot).toMatchObject({
+      labor_total: '100000',
+      commission_amount: '10000',
+      rate_bps: 1000,
+    });
+    expect(snapshot.labor_source.booking.id).toBe(f.booking.id);
+    expect(snapshot.labor_fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(snapshot.config_version_id).toBeTruthy();
+    const result = await f.consent(f.state, f.customerActor);
+    const rows = await db.query(
+      'SELECT commission_order_id FROM delivery_fee_terms WHERE part_request_id=$1',
+      [f.request.id],
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.commission_order_id === f.order.id)).toBe(true);
+    expect(result.state.financialExecution).toBe('BLOCKED');
+    expect((await f.service.readTerms(f.request.id, f.customerActor)).blockers).toEqual([
+      'COMMISSION_NOT_FROZEN', 'DEDUCTIONS_LEDGER_SOURCE_REQUIRED', 'SELLER_TAX_PAYMENT_POLICY_REQUIRED',
+    ]);
+    for (const sql of [
+      'UPDATE w3_order_commission_snapshots SET labor_total=labor_total',
+      'DELETE FROM w3_order_commission_snapshots',
+      'TRUNCATE w3_order_commission_snapshots',
+      'UPDATE w3_commission_config_versions SET snapshot=snapshot',
+      'TRUNCATE w3_commission_config_versions',
+    ])
+      await expect(db.query(sql)).rejects.toThrow();
+    const runner = db.createQueryRunner();
+    await runner.connect();
+    await runner.startTransaction();
+    try {
+      const migration = db.migrations.find(
+        (m) => m.name === 'W3PrequoteCommission1793466000011',
+      )!;
+      await expect(migration.down(runner)).rejects.toThrow(
+        'Refusing to discard W3 commission history',
+      );
+    } finally {
+      await runner.rollbackTransaction();
+      await runner.release();
+    }
+  });
+  it('keeps frozen C across config drift, invalidates consent/read/replay even if updated_at is preserved', async () => {
+    const f = await positiveTerms();
+    const [before] = await db.query(
+      'SELECT * FROM w3_order_commission_snapshots WHERE service_order_id=$1',
+      [f.order.id],
+    );
+    await db.query(
+      "UPDATE system_configs SET value='2000' WHERE key='commission.rate_bps'",
+    );
+    try {
+      expect(
+        (await f.service.readTerms(f.request.id, f.customerActor)).invalidated,
+      ).toBe(true);
+      await expect(f.consent(f.state, f.actor)).rejects.toThrow();
+      await expect(
+        f.service.recordTerms(f.request.id, 'PROPOSE', f.body, f.managerActor),
+      ).rejects.toThrow();
+      expect(
+        (
+          await db.query(
+            'SELECT * FROM w3_order_commission_snapshots WHERE service_order_id=$1',
+            [f.order.id],
+          )
+        )[0],
+      ).toEqual(before);
+    } finally {
+      await db.query(
+        "UPDATE system_configs SET value='1000' WHERE key='commission.rate_bps'",
+      );
+    }
+    // Same value and timestamp do not restore a version that has been replaced.
+    expect(
+      (await f.service.readTerms(f.request.id, f.customerActor)).invalidated,
+    ).toBe(true);
+  });
+  it('rejects changed approved labor source even when total is unchanged, without replacing C', async () => {
+    const f = await positiveTerms();
+    await db.query('UPDATE bookings SET scope_snapshot=$1 WHERE id=$2', [
+      'changed approved labor scope',
+      f.booking.id,
+    ]);
+    expect(
+      (await f.service.readTerms(f.request.id, f.customerActor)).invalidated,
+    ).toBe(true);
+    await expect(f.consent(f.state, f.customerActor)).rejects.toThrow();
+    expect(
+      (
+        await db.query(
+          'SELECT commission_amount FROM w3_order_commission_snapshots WHERE service_order_id=$1',
+          [f.order.id],
+        )
+      )[0].commission_amount,
+    ).toBe('10000');
+  });
+  it('rolls back a first quote AND its C freeze when strict audit fails', async () => {
+    const f = await operationalFixture(20);
+    const e = await f.upload('QUOTE');
+    await db.query(`CREATE FUNCTION w3_test_fail_c_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.resource_type='delivery_fee_terms' THEN RAISE EXCEPTION 'injected C audit failure'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER w3_test_fail_c_audit BEFORE INSERT ON audit_logs FOR EACH ROW EXECUTE FUNCTION w3_test_fail_c_audit()`);
+    try {
+      await expect(
+        f.service.recordTerms(
+          f.request.id,
+          'PROPOSE',
+          {
+            commandId: randomUUID(),
+            expectedVersion: 0,
+            warehouseId: f.warehouse.id,
+            evidenceId: e.evidenceId,
+            courierReference: 'ci-c-rollback',
+            totalShippingFee: 20,
+          },
+          f.managerActor,
+        ),
+      ).rejects.toThrow('injected C audit failure');
+      expect(
+        (
+          await db.query(
+            'SELECT count(*)::int AS n FROM w3_order_commission_snapshots WHERE service_order_id=$1',
+            [f.order.id],
+          )
+        )[0].n,
+      ).toBe(0);
+    } finally {
+      await db.query(
+        'DROP TRIGGER w3_test_fail_c_audit ON audit_logs; DROP FUNCTION w3_test_fail_c_audit()',
+      );
+    }
+  });
+  it('rejects fractional approved labor VND instead of rounding it to a commission base', async () => {
+    const f = await operationalFixture(20);
+    await db.query(
+      'UPDATE bookings SET fixed_unit_price_snapshot=100000.50 WHERE id=$1',
+      [f.booking.id],
+    );
+    const e = await f.upload('QUOTE');
+    await expect(
+      f.service.recordTerms(
+        f.request.id,
+        'PROPOSE',
+        {
+          commandId: randomUUID(),
+          expectedVersion: 0,
+          warehouseId: f.warehouse.id,
+          evidenceId: e.evidenceId,
+          courierReference: 'ci-fractional-labor',
+          totalShippingFee: 20,
+        },
+        f.managerActor,
+      ),
+    ).rejects.toThrow();
+    expect(
+      (
+        await db.query(
+          'SELECT count(*)::int AS n FROM w3_order_commission_snapshots WHERE service_order_id=$1',
+          [f.order.id],
+        )
+      )[0].n,
+    ).toBe(0);
+  });
+  it('freezes approved inspection LABOR plus approved delta using integer half-up, excluding parts/shipping', async () => {
+    const f = await operationalFixture(20);
+    await db.query("UPDATE bookings SET pricing_mode_snapshot='inspection_required',fixed_unit_price_snapshot=NULL WHERE id=$1", [f.booking.id]);
+    const quotation = await save('Quotation', { serviceOrderId: f.order.id, technicianId: f.actor.id,
+      status: 'approved', version: 1, decidedAt: new Date(), laborTotal: 101 });
+    await save('QuotationItem', { quotationId: quotation.id, type: 'labor', description: 'CI approved labor', quantity: 1, unitPrice: 101, lineTotal: 101 });
+    await save('AdditionalCostItem', { requestId: f.cost.id, type: 'labor', description: 'CI approved delta', quantity: 2, unitPrice: 2, lineTotal: 4 });
+    await db.query('UPDATE additional_cost_requests SET total_labor_delta=4 WHERE id=$1', [f.cost.id]);
+    const e = await f.upload('QUOTE');
+    await f.service.recordTerms(f.request.id, 'PROPOSE', { commandId: randomUUID(), expectedVersion: 0,
+      warehouseId: f.warehouse.id, evidenceId: e.evidenceId, courierReference: 'ci-inspection-labor', totalShippingFee: 20 }, f.managerActor);
+    const [snapshot] = await db.query('SELECT * FROM w3_order_commission_snapshots WHERE service_order_id=$1', [f.order.id]);
+    expect(snapshot).toMatchObject({ labor_total: '105', commission_amount: '11' });
+    expect(snapshot.labor_source.quotation).toMatchObject({ id: quotation.id, version: 1 });
+  });
+  it('serializes concurrent first positive proposals into one C freeze and one command receipt', async () => {
+    const f = await operationalFixture(20);
+    const e = await f.upload('QUOTE');
+    const body = { commandId: randomUUID(), expectedVersion: 0, warehouseId: f.warehouse.id,
+      evidenceId: e.evidenceId, courierReference: 'ci-first-freeze-race', totalShippingFee: 20 };
+    const results = await Promise.all([1,2].map(() => f.service.recordTerms(f.request.id, 'PROPOSE', body, f.managerActor)));
+    expect(results.filter(r => r.replayed)).toHaveLength(1);
+    expect((await db.query('SELECT count(*)::int AS n FROM w3_order_commission_snapshots WHERE service_order_id=$1', [f.order.id]))[0].n).toBe(1);
+    expect((await db.query('SELECT count(*)::int AS n FROM delivery_fee_terms WHERE part_request_id=$1', [f.request.id]))[0].n).toBe(1);
+  });
   it('persists positive 70/30 terms, separate consents and lower actual without enabling financial or physical execution', async () => {
     const f = await positiveTerms();
     expect(f.state.quote).toMatchObject({
