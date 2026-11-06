@@ -266,7 +266,11 @@ export class DeliveryOperationsService {
     } catch {
       return conflict('DELIVERY_WHOLE_SOURCE_REQUIRED');
     }
-    // This is a ZERO spending budget, never a claim that an order has no deductions.
+    // No canonical all-delivery coverage/current heads or approved L/C/D ledger exists here.
+    // A local quote's netLaborAfterShipping (or the pure aggregate assessment) cannot authorize
+    // spending. Future consumption of assessDeliveryOrderShippingLaborBudget must read those
+    // sources under the ServiceOrder lock above and retain CAS + the independent Finance gate.
+    // ZERO spending only: never claim that siblings, labor or deductions are zero.
     if (
       !explicitDatabaseZero(cost.shippingFee) ||
       !explicitDatabaseZero(request.shippingFee)

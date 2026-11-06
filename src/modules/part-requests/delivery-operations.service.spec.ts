@@ -284,6 +284,74 @@ function fixture() {
 }
 
 describe('authenticated delivery operations admission', () => {
+  it.each(['cost', 'request'] as const)(
+    'does not consume local zero spending as aggregate authority when %s has positive shipping',
+    async (source) => {
+      const f = fixture();
+      f[source].shippingFee = 20_000;
+      await expect(f.propose()).rejects.toMatchObject({
+        status: 409,
+        response: { details: { blocker: 'FINANCE_LEDGER_SOURCE_REQUIRED' } },
+      });
+      expect(f.rows('DeliveryConsentCommandRecord')).toHaveLength(0);
+      expect(f.rows('DeliveryShippingProposal')).toHaveLength(0);
+      expect(f.movements).toHaveLength(0);
+    },
+  );
+  it('keeps positive proposal and actual commands blocked before any transaction or ledger write', async () => {
+    const transaction = vi.fn();
+    const service = new DeliveryOperationsService(
+      { transaction } as any,
+      {} as any,
+    );
+    const actor = { id: randomUUID(), role: Role.SERVICE_MANAGER };
+    await expect(
+      service.propose(
+        randomUUID(),
+        {
+          commandId: randomUUID(),
+          expectedVersion: 0,
+          warehouseId: randomUUID(),
+          evidenceId: randomUUID(),
+          courierReference: 'positive-quote',
+          totalShippingFee: 1,
+        },
+        actor,
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { details: { blocker: 'FINANCE_LEDGER_SOURCE_REQUIRED' } },
+    });
+    await expect(
+      service.actual(
+        randomUUID(),
+        {
+          commandId: randomUUID(),
+          expectedVersion: 3,
+          quoteVersion: 1,
+          evidenceId: randomUUID(),
+          totalShippingFee: 1,
+        },
+        actor,
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { details: { blocker: 'FINANCE_LEDGER_SOURCE_REQUIRED' } },
+    });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+  it('allows explicit zero spending alongside an unknown sibling without reporting a verified order budget', async () => {
+    const f = fixture();
+    f.rows('PartRequest').push({
+      ...f.request,
+      id: randomUUID(),
+      shippingFee: null,
+    });
+    const result = await f.propose();
+    expect(result.quote?.laborBudget).toBe('UNVERIFIED');
+    expect(result.financialExecution).toBe('BLOCKED');
+    expect(result.quote).not.toHaveProperty('netLaborAfterShipping');
+  });
   it('fails closed when the independent approved fee is missing rather than treating it as zero', async () => {
     const f = fixture();
     f.cost.shippingFee = null;
