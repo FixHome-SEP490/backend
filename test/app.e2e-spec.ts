@@ -1283,6 +1283,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     // these protected EMPTY schemas first, before resetting the legacy fixture.
     // No production immutability trigger is disabled by this disposable-schema replay.
     const protectedMigrations = [
+      'W3DeliveryPolicyLifecycle1793466000009',
       'DeliveryZeroFeeOperations1793466000008',
       'WarehouseDeliveryPhysical1793466000007',
       'W3DeliveryOperatingPolicy1793466000006',
@@ -1618,6 +1619,93 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
         .expect(200);
       expect(current.body.data.draft.id).toBe(head.id);
       expect(current.body.data.financialExecution).toBe('BLOCKED');
+    });
+
+    it('requires JWT, current config:update and exact own server preview for operating activation', async () => {
+      const path = `${base}/versions/${head.id}`;
+      const body = { expectedRevision: 2, previewId: randomUUID(), acknowledged: true };
+      for (const action of ['preview', 'activate', 'retire']) {
+        await http().post(`${path}/${action}`).send(body).expect(401);
+        await http().post(`${path}/${action}`).set('Authorization', bearer(customer)).send(body).expect(403);
+      }
+      await http().post(`${path}/activate`).set('Authorization', bearer(admin)).send(body).expect(409);
+      await http().post(`${path}/activate`).set('Authorization', bearer(admin))
+        .send({ ...body, legal: { status: 'VERIFIED', evidenceRef: 'fake' } }).expect(400);
+      const preview = await http().post(`${path}/preview`).set('Authorization', bearer(admin))
+        .send({ expectedRevision: 2, samples: [] }).expect(200);
+      const receipt = preview.body.data.preview;
+      expect(receipt.draftId).toBe(head.id);
+      expect(receipt.impact).toMatchObject({ policyRevision: 2, policyStatus: 'DRAFT', financialExecution: 'BLOCKED' });
+      const other = await db.getRepository('User').save({ email: `${randomUUID()}@example.test`, passwordHash: 'CI_ONLY_NON_LOGIN_CREDENTIAL', fullName: 'Other policy Admin', role: 'admin', status: 'active', isActive: true });
+      const token = jwt.sign({ sub: other.id, role: 'admin' }, { secret: accessSecret, expiresIn: '15m' });
+      await http().post(`${path}/activate`).set('Authorization', `Bearer ${token}`)
+        .send({ ...body, previewId: receipt.id }).expect(409);
+      await http().post(`${path}/activate`).set('Authorization', bearer(admin))
+        .send({ ...body, expectedRevision: 1, previewId: receipt.id }).expect(409);
+      const [removed]: [{ role_id: string; permission_id: string }[], number] = await db.query(`DELETE FROM role_permissions rp USING roles r, permissions p
+        WHERE rp.role_id=r.id AND rp.permission_id=p.id AND r.code='admin' AND p.code='config:update' RETURNING rp.role_id,rp.permission_id`);
+      try {
+        await http().post(`${path}/activate`).set('Authorization', bearer(admin)).send({ ...body, previewId: receipt.id }).expect(403);
+      } finally {
+        for (const row of removed) await db.query('INSERT INTO role_permissions(role_id,permission_id) VALUES($1,$2)',[row.role_id,row.permission_id]);
+      }
+      const attempts = await Promise.all([1,2].map(() => http().post(`${path}/activate`).set('Authorization', bearer(admin)).send({ ...body, previewId: receipt.id })));
+      expect(attempts.map(r => r.status).sort()).toEqual([200,409]);
+      const active = attempts.find(r => r.status === 200)!.body.data.version;
+      const [old] = await db.query('SELECT snapshot FROM w3_delivery_policy_versions WHERE id=$1',[head.id]);
+      expect(active.state).toEqual({ ...old.snapshot, status: 'ACTIVE', revision: 3 });
+      expect(active.activationPreviewId).toBe(receipt.id);
+      expect(attempts.find(r => r.status === 200)!.body.data.blockers).toContain('FINANCE_CUTOVER_CLOSED');
+      const current = await http().get(`${base}/current`).set('Authorization', bearer(admin)).expect(200);
+      expect(current.body.data.draft).toBeNull();
+      const history = await http().get(`${base}/history`).set('Authorization', bearer(admin)).expect(200);
+      expect(history.body.data.drafts.map((d: any) => d.state.revision)).toEqual([2,1]);
+      head = active;
+    });
+
+    it('keeps policy, preview and audit append-only without preventing unrelated audit writes', async () => {
+      const before = await count('w3_delivery_policy_versions');
+      for (const sql of [
+        'UPDATE w3_delivery_policy_versions SET revision=revision',
+        'DELETE FROM w3_delivery_policy_versions',
+        'TRUNCATE w3_delivery_policy_versions',
+        'UPDATE w3_delivery_policy_previews SET impact=impact',
+        'DELETE FROM w3_delivery_policy_previews',
+        'TRUNCATE w3_delivery_policy_previews',
+        "UPDATE audit_logs SET action=action WHERE resource_type='w3_delivery_policy'",
+        "DELETE FROM audit_logs WHERE resource_type='w3_delivery_policy_preview'",
+        'TRUNCATE audit_logs',
+      ]) await expect(db.query(sql)).rejects.toThrow();
+      await expect(db.query(`INSERT INTO audit_logs(actor_role,action,resource_type,resource_id) VALUES('admin','FAKE','w3_delivery_policy',$1)`,[randomUUID()])).rejects.toThrow();
+      const unrelated = await db.getRepository('AuditLog').save({ actorRole: 'admin', action: 'CI_UNRELATED', resourceType: 'ci_unrelated' });
+      await db.query('UPDATE audit_logs SET action=$1 WHERE id=$2',['CI_UNRELATED_UPDATED',unrelated.id]);
+      await db.query('DELETE FROM audit_logs WHERE id=$1',[unrelated.id]);
+      expect(await count('w3_delivery_policy_versions')).toBe(before);
+      const rows = await db.query(`SELECT relname,relrowsecurity FROM pg_class WHERE oid IN ('w3_delivery_policy_versions'::regclass,'w3_delivery_policy_previews'::regclass)`);
+      expect(rows).toHaveLength(2);
+      expect(rows.every((r: any) => r.relrowsecurity)).toBe(true);
+    });
+
+    it('retires ACTIVE without a content bump, then permits only the additive API to write the next draft', async () => {
+      const previous = head;
+      const retired = await http().post(`${base}/versions/${head.id}/retire`).set('Authorization', bearer(admin)).send({ expectedRevision: 3 }).expect(200);
+      expect(retired.body.data.version.state).toMatchObject({ status: 'RETIRED', revision: 4 });
+      const [old] = await db.query('SELECT snapshot FROM w3_delivery_policy_versions WHERE id=$1',[previous.id]);
+      expect(retired.body.data.version.state.policy).toEqual(old.snapshot.policy);
+      const next = await http().post(`${base}/versions/drafts`).set('Authorization', bearer(admin)).send({ expectedRevision: 4, parameters: params }).expect(201);
+      head = next.body.data.version;
+      expect(head.state).toMatchObject({ status: 'DRAFT', revision: 5, policy: { version: 3 } });
+      const current = await http().get(`${base}/current`).set('Authorization', bearer(admin)).expect(200);
+      expect(current.body.data.draft).toBeNull();
+      await http().patch(`${base}/drafts/${head.id}`).set('Authorization', bearer(admin)).send({ expectedRevision: 5, parameters: params }).expect(409);
+      const live = await http().get(`${base}/versions/current`).set('Authorization', bearer(admin)).expect(200);
+      expect(live.body.data.version.id).toBe(head.id);
+      const history = await http().get(`${base}/versions/history`).set('Authorization', bearer(admin)).expect(200);
+      expect(history.body.data.versions.map((v: any) => v.state.status)).toEqual(['DRAFT','RETIRED','ACTIVE','DRAFT','DRAFT']);
+      const [gate] = await db.query('SELECT enabled FROM warehouse_delivery_gate');
+      expect(gate.enabled).toBe(false);
+      const [closed] = await db.query(`SELECT count(*)::int AS n FROM pg_constraint WHERE conrelid='invoices'::regclass AND conname='ck_invoice_shipping_cutover_closed'`);
+      expect(closed.n).toBe(1);
     });
   });
 

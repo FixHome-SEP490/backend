@@ -7,6 +7,7 @@ import {
 import { plainToInstance, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
+  Equals,
   IsArray,
   IsDefined,
   IsInt,
@@ -64,6 +65,34 @@ export class ReviseW3DeliveryPolicyDraftDto {
   @ValidateNested()
   @Type(() => W3DeliveryPolicyParametersDto)
   parameters: W3DeliveryPolicyParametersDto;
+}
+
+export class CreateW3DeliveryPolicyVersionDto {
+  @IsInt()
+  @Min(0)
+  @Max(W3_MAX_REVISION)
+  expectedRevision: number;
+
+  @IsDefined()
+  @IsObject()
+  @ValidateNested()
+  @Type(() => W3DeliveryPolicyParametersDto)
+  parameters: W3DeliveryPolicyParametersDto;
+}
+
+export class TransitionW3DeliveryPolicyDto {
+  @IsInt()
+  @Min(1)
+  @Max(W3_MAX_REVISION)
+  expectedRevision: number;
+}
+
+export class ActivateW3DeliveryPolicyDto extends TransitionW3DeliveryPolicyDto {
+  @IsUUID('4')
+  previewId: string;
+
+  @Equals(true)
+  acknowledged: true;
 }
 
 export class W3DeliveryPolicyHistoryDto {
@@ -125,6 +154,14 @@ export class PreviewW3DeliveryPolicyDto {
   samples: W3DeliveryPolicyImpactSampleDto[];
 }
 
+export class PreviewW3DeliveryPolicyVersionDto extends TransitionW3DeliveryPolicyDto {
+  @IsArray()
+  @ArrayMaxSize(100)
+  @ValidateNested({ each: true })
+  @Type(() => W3DeliveryPolicyImpactSampleDto)
+  samples: W3DeliveryPolicyImpactSampleDto[];
+}
+
 const inputPrototypes = [
   Object.prototype,
   null,
@@ -132,6 +169,10 @@ const inputPrototypes = [
     W3DeliveryPolicyParametersDto,
     CreateW3DeliveryPolicyDraftDto,
     ReviseW3DeliveryPolicyDraftDto,
+    CreateW3DeliveryPolicyVersionDto,
+    TransitionW3DeliveryPolicyDto,
+    ActivateW3DeliveryPolicyDto,
+    PreviewW3DeliveryPolicyVersionDto,
     W3DeliveryPolicyHistoryDto,
     W3DeliveryPolicyImpactSampleDto,
     PreviewW3DeliveryPolicyDto,
