@@ -613,6 +613,136 @@ describe.skipIf(
       );
     return { ...f, body, state: result.state, consent };
   }
+
+  // The database owner is a test-fixture recorder, never a Finance approver.
+  const preparation = (f: any, overrides = {}) => ({
+    service_order_id: f.order.id,
+    command_id: randomUUID(),
+    expected_revision: 0,
+    actor_user_id: f.managerActor.id,
+    mandate_ref: 'preparation:unapproved-mandate',
+    statement_ref: 'private-evidence:ci-d-statement',
+    statement_digest: 'a'.repeat(64),
+    explicit_zero: true,
+    entries: [],
+    ...overrides,
+  });
+  const appendPreparation = async (row: Record<string, unknown>) => {
+    const keys = Object.keys(row);
+    return db.query(
+      `INSERT INTO w3_deduction_preparations(${keys.join(',')}) VALUES (${keys.map((_, i) => `$${i + 1}`).join(',')}) RETURNING *`,
+      keys.map((k) => k === 'entries' ? JSON.stringify(row[k]) : row[k]),
+    );
+  };
+  const readiness = async (id: string) =>
+    (await db.query('SELECT w3_finance_readiness($1) AS result', [id]))[0].result;
+
+  it('diagnoses missing D as unknown and recorded zero as unapproved, never finance-ready', async () => {
+    const f = await positiveTerms();
+    expect(await readiness(f.order.id)).toMatchObject({
+      mode: 'PREPARATORY_ONLY', financialExecution: 'BLOCKED',
+      commission: 'CURRENT_PREPARATION', deductionState: 'NOT_RECORDED',
+      recordedDeductions: null, approvedDeductions: null, laborBudget: null,
+      aggregateBudgetVerified: false,
+    });
+    const [row] = await appendPreparation(preparation(f));
+    expect(row).toMatchObject({ revision: 1, recorded_total: '0',
+      actor_role: 'service_manager', financial_execution: 'BLOCKED',
+      mode: 'PREPARATORY_ONLY', verification: 'RECORDED_NOT_VERIFIED' });
+    expect(row.commission_snapshot.service_order_id).toBe(f.order.id);
+    expect(row.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(await readiness(f.order.id)).toMatchObject({
+      deductionState: 'RECORDED_UNAPPROVED', deductionRevision: 1,
+      recordedDeductions: 0, approvedDeductions: null, laborBudget: null,
+      financialExecution: 'BLOCKED', aggregateBudgetVerified: false,
+    });
+    // Neither recording D nor read-only diagnostics change the public contract.
+    expect((await f.service.readTerms(f.request.id, f.customerActor)).blockers).toEqual([
+      'COMMISSION_NOT_FROZEN', 'DEDUCTIONS_LEDGER_SOURCE_REQUIRED', 'SELLER_TAX_PAYMENT_POLICY_REQUIRED',
+    ]);
+    expect(await readiness(randomUUID())).toBeNull();
+    expect(await db.getRepository('Invoice').countBy({ serviceOrderId: f.order.id })).toBe(0);
+    expect(JSON.stringify(await readiness(f.order.id))).not.toMatch(/statement_ref|statement_digest|actor_user_id|mandate_ref/);
+    const runner = db.createQueryRunner();
+    await runner.connect(); await runner.startTransaction();
+    try {
+      const migration = db.migrations.find((m) => m.name === 'W3DeductionPreparation1793466000012')!;
+      await expect(migration.down(runner)).rejects.toThrow('Refusing to discard W3 deduction preparation history');
+    } finally { await runner.rollbackTransaction(); await runner.release(); }
+  });
+
+  it('keeps full-statement revisions immutable and serializes same-order CAS races', async () => {
+    const f = await positiveTerms();
+    const row = preparation(f);
+    await appendPreparation(row);
+    await expect(appendPreparation(row)).rejects.toThrow('W3_D_PREPARATION_CAS_CONFLICT');
+    const entry = { entryId: 'deduction-1', category: 'TAX_WITHHOLDING', amount: 19,
+      evidenceRef: 'private-evidence:deduction-1', contentDigest: 'b'.repeat(64) };
+    const attempts = await Promise.allSettled([
+      appendPreparation(preparation(f, { expected_revision: 1, explicit_zero: false, entries: [entry] })),
+      appendPreparation(preparation(f, { expected_revision: 1, explicit_zero: false, entries: [{ ...entry, amount: 23 }] })),
+    ]);
+    expect(attempts.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(attempts.filter((r) => r.status === 'rejected')).toHaveLength(1);
+    const rejected = attempts.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect(rejected.reason.message).toContain('W3_D_PREPARATION_CAS_CONFLICT');
+    const rows = await db.query('SELECT * FROM w3_deduction_preparations WHERE service_order_id=$1 ORDER BY revision', [f.order.id]);
+    expect(rows).toHaveLength(2);
+    expect(rows[0].recorded_total).toBe('0');
+    expect(['19', '23']).toContain(rows[1].recorded_total);
+    const [replacement] = await appendPreparation(preparation(f, { expected_revision: 2 }));
+    expect(replacement.revision).toBe(3);
+    expect((await readiness(f.order.id)).recordedDeductions).toBe(0);
+    expect(await db.query('SELECT revision FROM w3_deduction_preparations WHERE service_order_id=$1', [f.order.id])).toHaveLength(3);
+    for (const sql of [
+      'UPDATE w3_deduction_preparations SET recorded_total=recorded_total WHERE service_order_id=$1',
+      'DELETE FROM w3_deduction_preparations WHERE service_order_id=$1',
+    ]) await expect(db.query(sql, [f.order.id])).rejects.toThrow('append-only');
+    await expect(db.query('TRUNCATE w3_deduction_preparations')).rejects.toThrow('append-only');
+  });
+
+  it('rejects malformed D, implicit zero, unapproved categories, forged approval and missing actor evidence', async () => {
+    const f = await positiveTerms();
+    const entry = { entryId: 'deduction-1', category: 'LABOR_ADJUSTMENT', amount: 1,
+      evidenceRef: 'private-evidence:deduction-1', contentDigest: 'b'.repeat(64) };
+    for (const override of [
+      { explicit_zero: false }, { explicit_zero: null }, { entries: null },
+      { statement_ref: '' }, { statement_digest: 'fake' }, { mandate_ref: '' },
+      { actor_user_id: randomUUID() }, { expected_revision: -1 },
+      { financial_execution: 'ENABLED' }, { mode: 'LIVE' }, { verification: 'FINANCE_APPROVED' },
+      { explicit_zero: false, entries: [{ ...entry, category: 'COMMISSION' }] },
+      { explicit_zero: false, entries: [{ ...entry, amount: 0 }] },
+      { explicit_zero: false, entries: [{ ...entry, amount: 1.5 }] },
+      { explicit_zero: false, entries: [{ ...entry, amount: '1' }] },
+      { explicit_zero: false, entries: [{ ...entry, evidenceRef: null }] },
+      { explicit_zero: false, entries: [{ ...entry, approved: true }] },
+      { explicit_zero: false, entries: [entry, entry] },
+      { explicit_zero: false, entries: [{ ...entry, amount: 9007199254740991 }, { ...entry, entryId: 'other' }] },
+    ]) await expect(appendPreparation(preparation(f, override))).rejects.toThrow();
+    expect((await readiness(f.order.id)).recordedDeductions).toBeNull();
+  });
+
+  it('marks D stale after labor drift, preserves history and refuses new preparation on stale C', async () => {
+    const f = await positiveTerms();
+    await appendPreparation(preparation(f));
+    await db.query('UPDATE bookings SET fixed_unit_price_snapshot=100001 WHERE id=$1', [f.booking.id]);
+    expect(await readiness(f.order.id)).toMatchObject({
+      commission: 'STALE_PREPARATION', deductionState: 'STALE_COMMISSION',
+      recordedDeductions: 0, approvedDeductions: null, financialExecution: 'BLOCKED',
+    });
+    await expect(appendPreparation(preparation(f, { expected_revision: 1 }))).rejects.toThrow('W3_D_PREPARATION_CURRENT_COMMISSION_REQUIRED');
+    expect((await db.query('SELECT count(*)::int AS n FROM w3_deduction_preparations WHERE service_order_id=$1', [f.order.id]))[0].n).toBe(1);
+  });
+
+  it('does not create C or default D to zero when no positive conditional terms exist', async () => {
+    const f = await operationalFixture();
+    expect(await readiness(f.order.id)).toMatchObject({
+      commission: 'NOT_RECORDED', deductionState: 'NOT_RECORDED', recordedDeductions: null,
+      explicitZero: null, approvedDeductions: null, financialExecution: 'BLOCKED',
+    });
+    await expect(appendPreparation(preparation(f))).rejects.toThrow('W3_D_PREPARATION_CURRENT_COMMISSION_REQUIRED');
+    expect((await db.query('SELECT count(*)::int AS n FROM w3_order_commission_snapshots WHERE service_order_id=$1', [f.order.id]))[0].n).toBe(0);
+  });
   it('freezes approved L and versioned config C before quote, binds all terms, and refuses history rewrite/down', async () => {
     const f = await positiveTerms();
     const [snapshot] = await db.query(

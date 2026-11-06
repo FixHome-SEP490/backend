@@ -11,6 +11,7 @@ import { WarehouseDeliveryPhysical1793466000007 } from './migrations/17934660000
 import { W3DeliveryPolicyLifecycle1793466000009 } from './migrations/1793466000009-W3DeliveryPolicyLifecycle';
 import { DeliveryConditionalFeeTerms1793466000010 } from './migrations/1793466000010-DeliveryConditionalFeeTerms';
 import { W3PrequoteCommission1793466000011 } from './migrations/1793466000011-W3PrequoteCommission';
+import { W3DeductionPreparation1793466000012 } from './migrations/1793466000012-W3DeductionPreparation';
 import {
   CASH_MIGRATIONS,
   runW3DevGate,
@@ -45,6 +46,7 @@ if (ZeroFeeOperations) w3MigrationClasses.push(ZeroFeeOperations);
 w3MigrationClasses.push(W3DeliveryPolicyLifecycle1793466000009);
 w3MigrationClasses.push(DeliveryConditionalFeeTerms1793466000010);
 w3MigrationClasses.push(W3PrequoteCommission1793466000011);
+w3MigrationClasses.push(W3DeductionPreparation1793466000012);
 
 // CI-only: creates a fresh database on the CI PostgreSQL service at loopback.
 // It never reads .env, DATABASE_* or a shared DEV connection string.
@@ -356,6 +358,7 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
       try {
         for (const Migration of w3MigrationClasses)
           await new Migration().up(runner);
+        await new W3DeductionPreparation1793466000012().down(runner);
         await original.down(runner);
         expect(
           (
@@ -374,6 +377,57 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
       } finally {
         await runner.rollbackTransaction();
         await runner.release();
+      }
+    }, 30000);
+
+    it('rolls back 0012 together with pending migrations and refuses partial 0012 replay', async () => {
+      const original = db.migrations.find((m) => m.name === W3_MIGRATIONS[8])!;
+      const index = db.migrations.indexOf(original);
+      db.migrations[index] = {
+        name: original.name,
+        down: (q) => original.down(q),
+        up: async (q) => {
+          await original.up(q);
+          throw new Error('fault after 0012 DDL');
+        },
+      };
+      try {
+        await expect(runW3DevGate(db)).rejects.toThrow('fault after 0012 DDL');
+      } finally {
+        db.migrations[index] = original;
+      }
+      expect(
+        (
+          await db.query(
+            "SELECT to_regclass('public.w3_deduction_preparations') AS d",
+          )
+        )[0].d,
+      ).toBeNull();
+      const runner = db.createQueryRunner();
+      await runner.connect();
+      await runner.startTransaction();
+      try {
+        for (const Migration of w3MigrationClasses)
+          await new Migration().up(runner);
+        await original.down(runner);
+        expect(
+          (
+            await runner.query(
+              "SELECT to_regclass('public.w3_order_commission_snapshots') AS c",
+            )
+          )[0].c,
+        ).toBeTruthy();
+      } finally {
+        await runner.rollbackTransaction();
+        await runner.release();
+      }
+      await db.query(
+        'CREATE FUNCTION public.w3_finance_readiness(uuid) RETURNS jsonb LANGUAGE sql AS $$ SELECT NULL::jsonb $$',
+      );
+      try {
+        await expect(runW3DevGate(db)).rejects.toThrow('refusing DDL replay');
+      } finally {
+        await db.query('DROP FUNCTION public.w3_finance_readiness(uuid)');
       }
     }, 30000);
 
@@ -649,15 +703,144 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
       expect(await runW3DevGate(db)).toEqual([]);
     });
 
+    it.each(['PUBLIC', 'anon', 'authenticated', 'service_role'])(
+      'refuses every 0012 table privilege and function EXECUTE granted to %s',
+      async (role) => {
+        for (const privilege of [
+          'SELECT',
+          'INSERT',
+          'UPDATE',
+          'DELETE',
+          'TRUNCATE',
+          'REFERENCES',
+          'TRIGGER',
+        ]) {
+          await db.query(
+            `GRANT ${privilege} ON public.w3_deduction_preparations TO ${role}`,
+          );
+          try {
+            await expect(runW3DevGate(db)).rejects.toThrow(
+              /deduction preparation/i,
+            );
+          } finally {
+            await db.query(
+              `REVOKE ${privilege} ON public.w3_deduction_preparations FROM ${role}`,
+            );
+          }
+        }
+        for (const fn of [
+          'w3_finance_readiness(uuid)',
+          'w3_deduction_preparation_guard()',
+        ]) {
+          await db.query(`GRANT EXECUTE ON FUNCTION public.${fn} TO ${role}`);
+          try {
+            await expect(runW3DevGate(db)).rejects.toThrow(
+              /deduction preparation/i,
+            );
+          } finally {
+            await db.query(
+              `REVOKE EXECUTE ON FUNCTION public.${fn} FROM ${role}`,
+            );
+          }
+        }
+        expect(await runW3DevGate(db)).toEqual([]);
+      },
+      30000,
+    );
+
+    it('rejects 0012 disabled guards, RLS drift, policies and column grants', async () => {
+      for (const trigger of [
+        'w3_d_preparation_guard',
+        'w3_d_preparation_immutable',
+        'w3_d_preparation_no_truncate',
+      ]) {
+        await db.query(
+          `ALTER TABLE public.w3_deduction_preparations DISABLE TRIGGER ${trigger}`,
+        );
+        try {
+          await expect(runW3DevGate(db)).rejects.toThrow(
+            /deduction preparation/i,
+          );
+        } finally {
+          await db.query(
+            `ALTER TABLE public.w3_deduction_preparations ENABLE TRIGGER ${trigger}`,
+          );
+        }
+      }
+      await db.query(
+        'ALTER TABLE public.w3_deduction_preparations DISABLE ROW LEVEL SECURITY',
+      );
+      try {
+        await expect(runW3DevGate(db)).rejects.toThrow(
+          /deduction preparation/i,
+        );
+      } finally {
+        await db.query(
+          'ALTER TABLE public.w3_deduction_preparations ENABLE ROW LEVEL SECURITY',
+        );
+      }
+      await db.query(
+        'CREATE POLICY unexpected ON public.w3_deduction_preparations USING (true)',
+      );
+      try {
+        await expect(runW3DevGate(db)).rejects.toThrow(
+          /deduction preparation/i,
+        );
+      } finally {
+        await db.query(
+          'DROP POLICY unexpected ON public.w3_deduction_preparations',
+        );
+      }
+      await db.query(
+        'GRANT SELECT(statement_ref) ON public.w3_deduction_preparations TO authenticated',
+      );
+      try {
+        await expect(runW3DevGate(db)).rejects.toThrow(
+          /deduction preparation/i,
+        );
+      } finally {
+        await db.query(
+          'REVOKE SELECT(statement_ref) ON public.w3_deduction_preparations FROM authenticated',
+        );
+      }
+      expect(await runW3DevGate(db)).toEqual([]);
+    }, 30000);
+
+    it.each(['anon', 'authenticated', 'service_role'])(
+      'denies actual SQL access to 0012 evidence and diagnostics for %s',
+      async (role) => {
+        const runner = db.createQueryRunner();
+        await runner.connect();
+        try {
+          for (const sql of [
+            'SELECT * FROM public.w3_deduction_preparations',
+            'INSERT INTO public.w3_deduction_preparations DEFAULT VALUES',
+            'SELECT public.w3_finance_readiness(NULL::uuid)',
+          ]) {
+            await runner.startTransaction();
+            await runner.query(`SET LOCAL ROLE ${role}`);
+            await expect(runner.query(sql)).rejects.toThrow(
+              'permission denied',
+            );
+            await runner.rollbackTransaction();
+          }
+        } finally {
+          if (runner.isTransactionActive) await runner.rollbackTransaction();
+          await runner.release();
+        }
+      },
+    );
+
     it('refuses 0011 replay, disabled guards, function grants and private table grants', async () => {
-      await db.query('DELETE FROM public.migrations WHERE name=$1', [
-        W3_MIGRATIONS[7],
+      await db.query('DELETE FROM public.migrations WHERE name=ANY($1)', [
+        W3_MIGRATIONS.slice(7),
       ]);
       await expect(runW3DevGate(db)).rejects.toThrow('refusing DDL replay');
-      await db.query(
-        'INSERT INTO public.migrations(timestamp,name) VALUES($1,$2)',
-        [1793466000011, W3_MIGRATIONS[7]],
-      );
+      for (const name of W3_MIGRATIONS.slice(7))
+        await db.query(
+          'INSERT INTO public.migrations(timestamp,name) VALUES($1,$2)',
+          [Number(name.slice(-13)), name],
+        );
       await db.query(
         'ALTER TABLE public.delivery_fee_terms DISABLE TRIGGER w3_fee_terms_zz_commission',
       );
@@ -730,14 +913,11 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
         W3_MIGRATIONS.slice(6),
       ]);
       await expect(runW3DevGate(db)).rejects.toThrow('refusing DDL replay');
-      await db.query(
-        'INSERT INTO public.migrations(timestamp,name) VALUES($1,$2)',
-        [1793466000010, W3_MIGRATIONS[6]],
-      );
-      await db.query(
-        'INSERT INTO public.migrations(timestamp,name) VALUES($1,$2)',
-        [1793466000011, W3_MIGRATIONS[7]],
-      );
+      for (const name of W3_MIGRATIONS.slice(6))
+        await db.query(
+          'INSERT INTO public.migrations(timestamp,name) VALUES($1,$2)',
+          [Number(name.slice(-13)), name],
+        );
       await db.query(
         'ALTER TABLE public.delivery_fee_terms DISABLE TRIGGER w3_fee_terms_immutable',
       );
