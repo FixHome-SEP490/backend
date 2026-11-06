@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-07 03:28 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-live-payment-integration-20261107
+> Cập nhật lần cuối: 2026-11-07 03:42 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-live-payment-integration-20261107
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -520,6 +520,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-07 03:42 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Expose frozen W3 70/30 shipping snapshot trên InvoiceResponseDto (read-only, backward-compat); 8 unit PASS, lint/typecheck/build PASS, không schema/migration.
 - 2026-11-07 03:28 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Task5 backend release qualification: DEV gate nhận 0014/0015 theo thứ tự, proof bridge/invoice/ACL/replay và negative dirty ledger; PostgreSQL 16 cô lập 42 PASS, không apply DEV.
 - 2026-11-07 03:17 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Task4 manual bank PENDING và Admin exact unique receipt confirm, idempotent/replay/strict audit; focused 11 và finance 579 PASS, chưa PG/HTTP/rollout.
 - 2026-11-07 02:29 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Task3 slice invoice W3 và DB provenance, USED sau receipt, narrow collection/settlement; endpoint/UAT và rollout chưa kiểm chứng.
@@ -559,4 +560,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-02 14:24 (UTC+7) | foxonworld | foxonworld/fixhome-rebook-voucher-history-be-20261102 | Expose header Date qua CORS cho đồng hồ voucher Web, giữ chính sách origin/credentials/methods.
 - 2026-11-02 10:21 (UTC+7) | foxonworld | foxonworld/fixhome-rebook-voucher-history-be-20261102 | Thêm urgent interruption opt-in và lịch sử thợ inactive gồm child nhóm, giữ receipt/PII/tiền cũ, ghi hợp đồng consumer và giới hạn PostgreSQL/runtime.
 - 2026-11-02 01:00 (UTC+7) | foxonworld | foxonworld/fixhome-qa-seven-issues-be-20261102 | Sửa upload onsite ADDITIONAL, quyền đọc UNKNOWN trả kho sau STOP và projection trạng thái VisitGroup; giữ nghĩa vụ cũ và ghi giới hạn consumer/runtime.
-- 2026-11-01 22:41 (UTC+7) | ToanAltF4 | fix/address-strict-text-coords | Địa chỉ lưu bắt buộc đủ cặp lat, lng hợp lệ và chữ địa chỉ sạch, từ chối emoji, ký tự vô hình, điều khiển, thẻ HTML với câu tiếng Việt (lỗi 29, PO 01/11/2026)
