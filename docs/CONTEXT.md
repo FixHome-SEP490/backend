@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-06 12:36 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-finance-aggregate-20261106
+> Cập nhật lần cuối: 2026-11-06 12:41 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-finance-aggregate-20261106
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -487,8 +487,9 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
-- 2026-11-06 10:39 (UTC+7) | foxonworld | foxonworld/fixhome-w3-admin-lifecycle-20261106 | Thêm W3 B3b operating-only lifecycle với preview receipt/Admin/CAS/audit bất biến, migration tiến 0009 và gate/CI fixture; giữ DRAFT API Web cũ và finance BLOCKED, PostgreSQL/consumer/release chờ Lead.
+- 2026-11-06 12:41 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-aggregate-20261106 | Hợp nhất Admin lifecycle và Finance aggregate vào PR #200, bảo toàn policy 0009 cùng hai mục 20–21, kiểm lại tài liệu tích hợp.
 - 2026-11-06 10:44 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-aggregate-20261106 | Thêm kiểm ngân sách phần thợ tổng hợp theo toàn bộ DELIVERY source immutable, per-shipment rounding và guard không thiếu sibling; Finance vẫn BLOCKED, 47 focused/3973 full PASS, chưa chi tiền hay áp DB.
+- 2026-11-06 10:39 (UTC+7) | foxonworld | foxonworld/fixhome-w3-admin-lifecycle-20261106 | Thêm W3 B3b operating-only lifecycle với preview receipt/Admin/CAS/audit bất biến, migration tiến 0009 và gate/CI fixture; giữ DRAFT API Web cũ và finance BLOCKED, PostgreSQL/consumer/release chờ Lead.
 - 2026-11-06 02:07 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | Thêm operational zero-fee DELIVERY JWT/evidence/dual consent/stock/courier journal và migration tiến 0008; full unit 3897 PASS/58 skipped, lint/typecheck/build PASS, review độc lập; giữ phí dương/Finance/custody/billing chặn, PG/DEV/consumer chưa kiểm chứng.
 - 2026-11-06 02:01 (UTC+7) | foxonworld | foxonworld/fixhome-w3-dev-release-gate-20261106 | Thêm W3 DEV release gate cho đúng migration 0004–0008: prerequisite W1/W2/voucher, giữ cặp cash pending cho gate cũ, advisory lock/ledger một lần/một transaction/replay refusal, CI PostgreSQL harness và deploy order W3 → cash → restart; unit 6/6, typecheck/lint/build PASS, PG/shared DEV NOT VERIFIED.
 - 2026-11-06 00:15 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | W3 physical PostgreSQL CI #42071519421 phát hiện `jsonb @>` với [] chấp nhận quantities không rỗng dù gate đóng; thay bằng so sánh JSONB EXACT cho quantities/evidence [] và warehouse/SM/courier null, thêm negative E2E cả forged evidence. Chờ CI PostgreSQL chạy lại; Finance/physical vẫn BLOCKED, không shared DEV migration.
@@ -526,5 +527,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-10-31 16:30 (UTC+7) | Hgnv11 | dev | Dữ liệu đơn trả thêm bookingMedia (ảnh/video khách gửi lúc đặt, dạng riêng tư không kèm url) để kỹ thuật viên đang giữ đơn xem lại; nội dung vẫn đọc qua /bookings/:bookingId/media đã cho phép kỹ thuật viên giữ đơn.
 - 2026-10-31 14:32 (UTC+7) | Hgnv11 | dev | overrun-release trả thêm mô tả và mã ảnh của báo trễ cho đúng thợ đã gửi để xem lại; đơn của khách không có; chưa kiểm chứng PostgreSQL và Web/Mobile.
 - 2026-10-31 14:02 (UTC+7) | Hgnv11 | dev | overrun-release chọn đơn đang làm là đơn chưa bàn giao rồi đơn cập nhật gần nhất khi thợ giữ nhiều đơn đang sửa; chưa kiểm chứng PostgreSQL và Web/Mobile.
-- 2026-10-31 13:04 (UTC+7) | Hgnv11 | dev | Đơn trả về có delayNotice và không lộ id nội bộ; ẩn hồ sơ technician_delay khỏi danh sách hỗ trợ của khách và thợ; chưa kiểm chứng PostgreSQL và Web/Mobile.
-- 2026-10-31 11:29 (UTC+7) | Hgnv11 | dev | Báo trễ và nhả đơn kế tiếp bắt buộc lý do, 1-3 ảnh, xác nhận; ghi hồ sơ technician_delay cho quản lý dịch vụ xem; đổi body overrun-release (400 nếu thiếu); migration 003 chưa chạy; chưa kiểm chứng PostgreSQL và Web/Mobile.
