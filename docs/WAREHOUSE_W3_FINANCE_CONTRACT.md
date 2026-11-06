@@ -1230,3 +1230,66 @@ Không commit/push/merge/deploy/migrate shared DB trong writer này. Lead review
 chạy GitHub CI PostgreSQL và xử lý release DEV. Sau apply 0009 và release binary mới,
 restart Backend trước runtime QA; Web phase mới cần build/release/hard-refresh để dùng
 lifecycle additive. Mobile/AI/Production ngoài phạm vi. **SAFE_TO_ACTIVATE_FINANCE=NO.**
+
+## 21. Aggregate shipping labor budget — preparatory source, 06/11/2026
+
+Worktree `fixhome-w3-finance-aggregate-20261106`, base `e507653`.
+`finance/order-shipping-labor-budget.policy.ts` thêm helper thuần
+`assessOrderShippingLaborBudget`, schema `W3_ORDER_SHIPPING_LABOR_BUDGET_V1`.
+Input phải khai rõ order, L/C/D, tập `deliveryRequestIds` cần tính và đúng một immutable
+quote head cho mỗi request. Helper kiểm coverage, scope, version, số nguyên VND an toàn,
+policy W3 và share từng shipment; cộng **t đã snapshot của từng delivery** bằng BigInt,
+đòi `L-C-D-sum(t)>=0`, không clamp hoặc lấy NONLABOR/voucher bù thiếu.
+Hai shipment S=1 vẫn cho tổng c=2,t=0, không chia lại tổng S=2.
+Output chỉ số học, đóng băng và luôn `financialExecution=BLOCKED`.
+
+`assessDeliveryOrderShippingLaborBudget` trong consent domain là adapter chuẩn bị:
+replay/kiểm từng `DeliveryConsentState` bằng receipt hiện có trước khi chuyển các
+quote head sang helper. Không dùng budget riêng của một quote làm budget chung của order.
+Exact retry trên cùng canonical head không tăng tổng; gửi lặp head, kể cả cùng payload
+hoặc hai quote version của cùng request, bị từ chối. Không tự chọn MAX(version), dedup,
+coi thiếu sibling là 0 hoặc dùng trạng thái physical làm bằng chứng financial release.
+REVISE chỉ thay head khi future adapter đã chứng minh replacement bằng canonical DB evidence.
+Actual giảm vẫn giữ quote ceiling trong phần commitment; RELEASED/invalidated/cancelled
+không tự nhả tiền. Nghĩa vụ courier cũ chưa giải quyết phải tiếp tục được tính; nếu một
+request có nhiều nghĩa vụ chưa giải quyết thì chưa đủ canonical model để consume helper.
+Không xóa lịch sử hoặc tự tạo release/debit ledger cho các trường hợp này.
+
+**Chưa nối aggregate vào live spending transaction.** Hash/receipt domain và hai danh sách
+đầu vào không chứng minh DB completeness, freshness, current head hoặc Finance approval.
+Adapter tương lai phải đọc cả coverage/head và approved L/C/D dưới cùng khóa ServiceOrder
+đã có trong `DeliveryOperationsService.scope`, rồi kiểm lại CAS trước ghi. Mọi writer thay
+commitment phải dùng cùng khóa; cần PostgreSQL concurrency/rollback tests trước cutover.
+Không nhận danh sách/verdict từ client hoặc dùng owner preview NON_ATOMIC làm authority.
+
+Consumption live hiện có vẫn fail closed: `source()` đòi explicit phí 0 ở cả AdditionalCost
+và PartRequest; POST proposal/actual dương vẫn chặn `FINANCE_LEDGER_SOURCE_REQUIRED`.
+Không gọi aggregate với danh sách sibling rỗng tự dựng. Zero-spending sentinel không chứng
+minh L/C/D hoặc sibling bằng 0; public quote tiếp tục `laborBudget=UNVERIFIED`.
+Không sửa W1/W2/PICKUP, legacy invoice, shipping reader, Finance cutover, migration,
+Admin policy/system-config, ENV hoặc consumer Web/Mobile/AI.
+
+Review BA/PM: đúng phạm vi source arithmetic, chưa hoàn thành positive shipping hoặc full W3.
+Tech Lead/Senior: tái dùng split và receipt replay hiện có, không dependency/schema/API mới.
+Security: fail closed coverage/duplicate/shape, không mở quyền/tiền hoặc tin client verdict.
+Tester/QA: test thật trên domain/aggregate, service dùng persistence double; không coi đó là
+bằng chứng row lock PostgreSQL, courier hoặc tiền thật. Đây là tự review, chưa có independent
+Finance/legal signoff.
+
+Blocker còn lại: canonical aggregate commitment/release source, ledger L/C/D và D>0,
+seller-of-record/tax/consent, courier payable, refund/funding/custody và invoice aggregate
+CHECK/cutover. PostgreSQL/E2E/concurrency, HTTP/provider, Docker/health, shared DEV và Web
+runtime **NOT VERIFIED**. Không apply schema, ghi DB, commit/push/PR/merge/deploy.
+`docs/CONTEXT.md` ngoài allowlist writer; Lead phải cập nhật theo section 0 trong cùng PR
+tích hợp. Sau integration/release được duyệt, restart Backend trước runtime QA.
+
+Kiểm chứng Node **24.15.0** (Node 20.19.5 theo `.nvmrc`: NOT VERIFIED): genuine RED
+18 helper tests và 6 consent-adapter tests với implementation stub, sau đó GREEN.
+Focused regression **21 files / 396 tests PASS**; `npm run typecheck`, `npm run build`
+và `npm run lint` **PASS** (0 errors, 4 warning cũ). Focused ba spec aggregate/consent
+adapter/operations: **47 PASS**. Full `npm test -- --maxWorkers=4`, TZ UTC, đã kết thúc
+trước yêu cầu hủy của Lead: exit 0, **310 files passed / 6 skipped; 3973 tests passed /
+68 skipped**, runner 112,61 giây; không chạy lại. Prettier ba file mới và
+`git diff --check` **PASS**. Các kết quả này không mở Finance hoặc thay PG/runtime evidence.
+
+**PREPARATORY SOURCE COMPLETE; SAFE_TO_ACTIVATE_FINANCE=NO.**

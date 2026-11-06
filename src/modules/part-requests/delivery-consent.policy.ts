@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Role } from '../../shared/enums';
 import { calculateShippingShares } from '../finance/shipping-finance.policy';
+import { assessOrderShippingLaborBudget } from '../finance/order-shipping-labor-budget.policy';
 
 /** Phase A values only. Scope, budgets and evidence references MUST come from future server reads.
  * Hashes identify content, not signed/persisted proof. No dispatch or financial authority exists here. */
@@ -284,6 +285,8 @@ function quoteFor(
   command: DeliveryProposalCommand,
   quoteVersion: number,
 ): DeliveryQuote {
+  // Local quote feasibility only. This cannot authorize spending on a shared order;
+  // the future trusted transaction must assess ALL canonical delivery commitments.
   const shares = calculateShippingShares(
     command.totalShippingFee,
     'W3_70_30_V1',
@@ -486,4 +489,36 @@ export function applyDeliveryCommand(
     normalizeCommand(commandInput),
     normalizeActor(actorInput),
   );
+}
+
+/** Preparatory arithmetic adapter, NOT live spending authority. The future caller must
+ * derive coverage/current heads under the Order lock and CAS, never from a request/preview.
+ * Keep quote CEILINGS reserved even when actual is lower or physical stock is released.
+ * Financial release/replacement requires canonical DB evidence + an approved ledger lifecycle. */
+export function assessDeliveryOrderShippingLaborBudget(
+  serviceOrderId: string,
+  budget: DeliveryLaborBudget,
+  deliveryRequestIds: readonly string[],
+  states: readonly DeliveryConsentState[],
+): ReturnType<typeof assessOrderShippingLaborBudget> {
+  const b = normalizeBudget(budget);
+  if (!Array.isArray(states)) fail('ORDER_LABOR_SOURCE_REQUIRED');
+  return assessOrderShippingLaborBudget({
+    version: 'W3_ORDER_SHIPPING_LABOR_BUDGET_V1',
+    serviceOrderId,
+    ...b,
+    deliveryRequestIds,
+    deliveries: states.map((state) => {
+      validateState(state);
+      return {
+        serviceOrderId: state.scope.serviceOrderId,
+        partRequestId: state.scope.partRequestId,
+        quoteVersion: state.quote.quoteVersion,
+        shippingPolicyVersion: state.quote.policyVersion,
+        shippingFee: state.quote.totalShippingFee,
+        customerShippingShare: state.quote.customerShippingShare,
+        technicianShippingShare: state.quote.technicianShippingShare,
+      };
+    }),
+  });
 }
