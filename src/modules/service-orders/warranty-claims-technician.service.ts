@@ -186,7 +186,7 @@ export class WarrantyClaimsTechnicianService {
       throw invalid('Cần ít nhất một ảnh hoặc video của linh kiện hỏng khi kết luận lỗi linh kiện.');
     }
     const visit = await this.latestVisit(claim.id, technician.id, [WarrantyVisitStatus.CHECKED_IN]);
-    const faultyIds = dto.result === WarrantyInspectionResult.COVERED_PART ? await this.faultyPartLines(claim.serviceOrderId, dto.faultyInvoiceItemIds ?? []) : null;
+    const faulty = dto.result === WarrantyInspectionResult.COVERED_PART ? await this.faultyPartLines(claim.serviceOrderId, dto.faultyInvoiceItemIds ?? [], dto.faultyQuantities) : null;
 
     await this.claimRepo.manager.transaction(async (manager) => {
       const updated = await manager
@@ -204,7 +204,8 @@ export class WarrantyClaimsTechnicianService {
           notCoveredReasonCode: notCovered ? (dto.notCoveredReasonCode ?? null) : null,
           findings: dto.findings,
           evidenceRefs: dto.evidenceRefs?.length ? dto.evidenceRefs : null,
-          faultyInvoiceItemIds: faultyIds,
+          faultyInvoiceItemIds: faulty?.ids ?? null,
+          faultyQuantities: faulty?.quantities ?? null,
         },
       );
     });
@@ -218,15 +219,23 @@ export class WarrantyClaimsTechnicianService {
   }
 
   /** The faulty lines must be part lines of the original job's own invoice, so a technician cannot name a stranger's part. */
-  private async faultyPartLines(serviceOrderId: string, ids: string[]): Promise<string[]> {
+  private async faultyPartLines(serviceOrderId: string, ids: string[], quantities?: Record<string, number>): Promise<{ ids: string[]; quantities: Record<string, number> | null }> {
     const unique = [...new Set(ids)];
     if (!unique.length) throw invalid('Chọn ít nhất một linh kiện bị hỏng.');
     const manager = this.claimRepo.manager;
     const invoice = await manager.findOneBy(Invoice, { serviceOrderId });
     const lines = invoice ? await manager.find(InvoiceItem, { where: { invoiceId: invoice.id, type: CostItemType.PARTS_EQUIPMENT } }) : [];
-    const valid = new Set(lines.map((line) => line.id));
-    if (unique.some((id) => !valid.has(id))) throw invalid('Linh kiện được chọn không thuộc đơn sửa chữa gốc.');
-    return unique;
+    const bought = new Map(lines.map((line) => [line.id, line.quantity]));
+    if (unique.some((id) => !bought.has(id))) throw invalid('Linh kiện được chọn không thuộc đơn sửa chữa gốc.');
+    if (!quantities) return { ids: unique, quantities: null };
+    const counted: Record<string, number> = {};
+    for (const id of unique) {
+      const n = quantities[id] ?? bought.get(id)!;
+      if (!Number.isInteger(n) || n < 1 || n > bought.get(id)!) throw invalid('Số lượng linh kiện hỏng không hợp lệ.');
+      counted[id] = n;
+    }
+    if (Object.keys(quantities).some((id) => !unique.includes(id))) throw invalid('Số lượng linh kiện hỏng không hợp lệ.');
+    return { ids: unique, quantities: counted };
   }
 
   async complete(claimId: string, dto: CompleteWarrantyReServiceDto, technician: OrderActor): Promise<StaffWarrantyClaimDto> {

@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-06 17:00 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-finance-governance-20261106
+> Cập nhật lần cuối: 2026-11-07 00:25 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -497,6 +497,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-07 00:25 (UTC+7) | Hgnv11 | dev | Bảo hành: thợ khai số lượng linh kiện hỏng của từng dòng (`faultyQuantities`, cột `warranty_visits.faulty_quantities`, migration 1793466000020); cấp lại linh kiện chỉ theo số hỏng, mặc định cả dòng
 - 2026-11-06 17:00 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-governance-20261106 | Sửa P2 release gate bỏ lọt sequence ACL; PG RED 12/GREEN 28, typecheck/lint/build PASS; không mở W3 tiền.
 
 - 2026-11-06 16:49 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-governance-20261106 | C prequote/config version 0011 và simulation owner 1–5; full unit 4031, full E2E 237, final focused 124/PG gate 16/W3 E2E 77 PASS; mọi money execution BLOCKED.
@@ -538,4 +539,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-01 19:13 (UTC+7) | ToanAltF4 | fix/warranty-expired-status | GET /service-orders/:id/warranties trả expired cho bảo hành active đã qua expires_at, tính khi đọc, không ghi DB; yêu cầu bảo hành sau hạn vẫn lưu submitted với submitted_after_expiry (lỗi tìm thấy 01/11 ở TC-WAR-003).
 - 2026-11-01 18:33 (UTC+7) | ToanAltF4 | fix/candidates-empty-reason-envelope | Lý do danh sách thợ rỗng chuyển vào meta.emptyReason để tới được client, thợ không có vị trí không còn che OUTSIDE_COVERAGE, danh sách lượt nhiều thiết bị trả arrivedAt từng máy
 - 2026-11-01 18:10 (UTC+7) | ToanAltF4 | fix/audit-actor-uuid-filter | Lọc theo id người dùng (actorUserId nhật ký, userId strike, technicianId yêu cầu linh kiện và bảo hành, assignedManagerId hỗ trợ, userId thông báo) nhận mọi UUID dạng chuẩn 8-4-4-4-12, kể cả id seed kiểu a0000000-0000-0000-0000-000000000001 mà @IsUUID() từ chối (lỗi 31). Chuỗi tự do vẫn trả 400.
-- 2026-10-31 17:58 (UTC+7) | Hgnv11 | dev | Danh sách lượt nhiều thiết bị của kỹ thuật viên (assigned-page) không còn ẩn cả lượt khi một máy bị khách từ chối báo giá (quote_declined, phân công đã tắt) trong lúc máy còn lại vẫn đang sửa.

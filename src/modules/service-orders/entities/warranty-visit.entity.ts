@@ -59,6 +59,10 @@ export class WarrantyVisit extends BaseEntity {
   @Column({ name: 'faulty_invoice_item_ids', type: 'jsonb', nullable: true })
   faultyInvoiceItemIds: string[] | null;
 
+  /** How many of each faulty line are faulty (line id → count); null means the whole line. */
+  @Column({ name: 'faulty_quantities', type: 'jsonb', nullable: true })
+  faultyQuantities: Record<string, number> | null;
+
   @Column({ name: 're_service_notes', type: 'text', nullable: true })
   reServiceNotes: string | null;
 

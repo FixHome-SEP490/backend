@@ -233,6 +233,20 @@ describe('technician warranty commands', () => {
     expect(labor.visitTx.update).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ faultyInvoiceItemIds: null }));
   });
 
+  it('stores how many of a x3 line are faulty and refuses more than were bought', async () => {
+    const claim = makeClaim({ status: WarrantyClaimStatus.ACCEPTED });
+    const visits = [makeVisit({ status: WarrantyVisitStatus.CHECKED_IN })];
+    const partLines = [{ id: LINE_1, quantity: 3 }];
+    const base = { result: WarrantyInspectionResult.COVERED_PART, findings: 'Linh kiện bị nứt ở mối ghép', evidenceRefs: ['photo-1'], faultyInvoiceItemIds: [LINE_1] };
+    const ok = makeService({ claim, visits, partLines });
+    await ok.service.propose('claim-1', { ...base, faultyQuantities: { [LINE_1]: 1 } }, TECH);
+    expect(ok.visitTx.update).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ faultyQuantities: { [LINE_1]: 1 } }));
+    for (const bad of [4, 0, 1.5]) {
+      const over = makeService({ claim, visits, partLines });
+      await expect(over.service.propose('claim-1', { ...base, faultyQuantities: { [LINE_1]: bad } }, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+    }
+  });
+
   it('proposes a conclusion only after check-in and moves the claim to inspected for manager approval', async () => {
     const early = makeService({ claim: makeClaim({ status: WarrantyClaimStatus.ACCEPTED }) });
     await expect(

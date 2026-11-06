@@ -200,7 +200,7 @@ export class WarrantyClaimsManagerService {
           ? (await tx.findOneBy(QuotationItem, { id: line.sourceItemId })) ?? (await tx.findOneBy(AdditionalCostItem, { id: line.sourceItemId }))
           : null;
         if (!source?.partCatalogId) throw invalid('Chọn linh kiện FixHome cấp cho lần bảo hành này.');
-        merged.set(source.partCatalogId, (merged.get(source.partCatalogId) ?? 0) + line.quantity);
+        merged.set(source.partCatalogId, (merged.get(source.partCatalogId) ?? 0) + (visit.faultyQuantities?.[line.id] ?? line.quantity));
       }
       parts = [...merged].map(([partCatalogId, quantity]) => ({ partCatalogId, quantity }));
     }
