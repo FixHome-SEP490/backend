@@ -553,12 +553,12 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
     });
 
     it.skipIf(!ZeroFeeOperations)(
-      'refuses 0008 DDL replay when the additive schema exists but its ledger row is missing',
+      'refuses non-prefix 0008 and 0009 ledger loss before any replay',
       async () => {
         await db.query('DELETE FROM public.migrations WHERE name=ANY($1)', [
           W3_MIGRATIONS.slice(4),
         ]);
-        await expect(runW3DevGate(db)).rejects.toThrow('refusing DDL replay');
+        await expect(runW3DevGate(db)).rejects.toThrow('W3 delivery policy schema proof incomplete');
         expect(
           (
             await db.query(
@@ -576,7 +576,7 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
     );
 
     it.skipIf(!ZeroFeeOperations)(
-      'refuses a partial 0008 schema when only residual guards remain without the tables',
+      'refuses a partial 0008 schema with missing 0008 and 0009 ledger',
       async () => {
         await db.query('DELETE FROM public.migrations WHERE name=ANY($1)', [
           W3_MIGRATIONS.slice(4),
@@ -584,7 +584,8 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
         await db.query(
           'DROP TABLE public.delivery_shipping_proposals, public.delivery_operation_evidence',
         );
-        await expect(runW3DevGate(db)).rejects.toThrow('refusing DDL replay');
+        // The newer lifecycle schema is detected as inconsistent with the truncated ledger first.
+        await expect(runW3DevGate(db)).rejects.toThrow('W3 delivery policy schema proof incomplete');
         expect(
           (
             await db.query(
