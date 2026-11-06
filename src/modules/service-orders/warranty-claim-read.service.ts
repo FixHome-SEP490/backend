@@ -4,6 +4,7 @@ import { In, Repository } from 'typeorm';
 import { CostItemType } from '../../shared/enums';
 import { Booking } from '../bookings/entities/booking.entity';
 import { PartRequest } from '../part-requests/entities/part-request.entity';
+import { PartRequestItem } from '../part-requests/entities/part-request-item.entity';
 import { User } from '../users/entities/user.entity';
 import { StaffWarrantyClaimDto } from './dto/warranty-claim.dto';
 import { Invoice } from './entities/invoice.entity';
@@ -60,6 +61,7 @@ export class WarrantyClaimReadService {
     const orderOfInvoice = new Map(invoices.map((i) => [i.id, i.serviceOrderId]));
     const requests = await manager.find(PartRequest, { where: { warrantyClaimId: In(claims.map((c) => c.id)) } });
     const requestByClaim = new Map(requests.map((r) => [r.warrantyClaimId as string, r]));
+    const requestItems = requests.length ? await manager.find(PartRequestItem, { where: { partRequestId: In(requests.map((r) => r.id)) } }) : [];
 
     const orderById = new Map(orders.map((o) => [o.id, o]));
     const bookingById = new Map(bookings.map((b) => [b.id, b]));
@@ -111,6 +113,7 @@ export class WarrantyClaimReadService {
                 id: r.id, status: r.status, faultyReturnDueAt: r.faultyReturnDueAt ?? null, faultyReturnedAt: r.faultyReturnedAt ?? null,
                 faultyReturnChargedAt: r.faultyReturnChargedAt ?? null, faultyInspectionResult: r.faultyInspectionResult ?? null,
                 chargeTechnician: r.chargeTechnician,
+                items: requestItems.filter((i) => i.partRequestId === r.id).map((i) => ({ id: i.id, name: i.partNameSnapshot, quantity: i.quantity, usageStatus: i.usageStatus })),
               };
             })()
           : null,

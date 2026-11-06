@@ -76,7 +76,7 @@ describe('WarrantyClaimReadService', () => {
     });
     expect(view.partRequest).toEqual({
       id: 'pr-1', status: 'received', faultyReturnDueAt: new Date('2026-11-12T00:00:00.000Z'), faultyReturnedAt: null,
-      faultyReturnChargedAt: null, faultyInspectionResult: null, chargeTechnician: false,
+      faultyReturnChargedAt: null, faultyInspectionResult: null, chargeTechnician: false, items: [],
     });
     expect(view.coverage).toMatchObject({ id: 'cov-1', itemDescription: 'Vòi sen' });
     expect(view.visit?.id).toBe('visit-new');
