@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-07 00:24 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-admin-shipping-zero-cap-20261106
+> Cập nhật lần cuối: 2026-11-07 00:36 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-admin-shipping-zero-cap-20261106
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -513,6 +513,9 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-07 00:36 (UTC+7) | foxonworld | foxonworld/fixhome-w3-admin-shipping-zero-cap-20261106 | Merge W3 admin zero-cap and warranty partial-quantity changes; retain 40 newest context entries.
+- 2026-11-07 00:25 (UTC+7) | Hgnv11 | dev | Bảo hành: thợ khai số lượng linh kiện hỏng của từng dòng (`faultyQuantities`, cột `warranty_visits.faulty_quantities`, migration 1793466000020); cấp lại linh kiện chỉ theo số hỏng, mặc định cả dòng
+
 - 2026-11-07 00:24 (UTC+7) | foxonworld | foxonworld/fixhome-w3-admin-shipping-zero-cap-20261106 | Sửa P2 PR204 bằng public W3_SHIPPING_CAP_EXCEEDED/409, giữ details private và global filter; thêm real-filter/HTTP regression, tiền BLOCKED.
 - 2026-11-07 00:13 (UTC+7) | foxonworld | foxonworld/fixhome-w3-admin-shipping-zero-cap-20261106 | Thêm Admin W3 shipping cap 0013 mặc định 0, strict audit/locks và chặn quote mới; giữ historical consent, zero physical/W1/W2 và money BLOCKED; contract mục 25.
 - 2026-11-06 18:14 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-readiness-20261106 | Sửa P2 race D bằng transaction locks theo 0011; PG delivery 44/gate 37/context 9 và quality checks PASS; Finance BLOCKED, Lead giữ release.
@@ -551,5 +554,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-01 21:07 (UTC+7) | ToanAltF4 | fix/vnpay-attempt-expiry | Link VNPay mới có vnp_ExpireDate 15 phút và lưu expires_at; tiền mặt đóng lượt VNPay quá hạn cộng 15 phút ân hạn, IPN thành công muộn mở support case (lỗi 39)
 - 2026-11-01 20:53 (UTC+7) | ToanAltF4 | fix/skill-evidence-exists | Gắn bằng chứng kỹ năng của thợ và chứng chỉ admin cấp lúc duyệt chỉ nhận tệp đã thật sự tải lên kho kyc-private dưới thư mục của chính thợ (trước đây chỉ kiểm đường dẫn, đường dẫn bịa vẫn 201), cùng objectExists như KYC ở PR 178.
 - 2026-11-01 20:35 (UTC+7) | ToanAltF4 | fix/visit-candidates-empty-reason | Gộp dev mới (KYC #178) vào nhánh lý do danh sách thợ rỗng của lượt nhiều thiết bị, không đổi hành vi
-- 2026-11-01 20:13 (UTC+7) | ToanAltF4 | fix/kyc-uploaded-documents | Gửi KYC khách và thợ bị từ chối khi ảnh chưa thật sự tải lên kho kyc-private của chính người gửi (DEF-r2-mobile-01, trước đây đường dẫn bịa vẫn 201); KYC khách không còn ghi họ tên, ngày sinh, giới tính, CCCD, địa chỉ vào hồ sơ lúc gửi, chỉ ghi khi admin duyệt. Bằng chứng kỹ năng của thợ vẫn chỉ kiểm đường dẫn.
-- 2026-11-01 19:43 (UTC+7) | ToanAltF4 | fix/visit-candidates-empty-reason | GET /visit-groups/:id/technician-candidates?diagnostics=1 trả meta.emptyReason cùng logic với đặt lịch một máy (OUTSIDE_COVERAGE, TIME_UNAVAILABLE, BOOKING_LOCATION_MISSING, UNAVAILABLE), bỏ diagnostics vẫn chỉ trả data cho mobile

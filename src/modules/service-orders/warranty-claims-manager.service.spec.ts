@@ -280,6 +280,14 @@ describe('manager approve: who pays for the part', () => {
     );
   });
 
+  it('supplies only the faulty count of a line, not the whole line', async () => {
+    const { service, decisionTx, partRequests } = makeService({ visits: [makeVisit({ faultyInvoiceItemIds: ['line-1'], faultyQuantities: { 'line-1': 1 } })] });
+    decisionTx.find.mockResolvedValue([FIXHOME_LINE]);
+    decisionTx.findOneBy.mockResolvedValueOnce({ id: 'qi-1', partCatalogId: 'part-9' });
+    await service.approve('claim-1', {}, SM);
+    expect(partRequests.createWarrantyRequest).toHaveBeenCalledWith(decisionTx, expect.objectContaining({ items: [{ partCatalogId: 'part-9', quantity: 1 }] }));
+  });
+
   it('leaves a part the technician bought, or an inspection that named no part line, to the technician', async () => {
     const own = makeService({ visits: [makeVisit({ faultyInvoiceItemIds: ['line-1'] })] });
     own.decisionTx.find.mockResolvedValue([{ id: 'line-1', partSource: 'technician', quantity: 1 }]);

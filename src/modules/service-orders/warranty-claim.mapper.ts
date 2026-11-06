@@ -34,6 +34,7 @@ export function toVisitView(visit: WarrantyVisit): WarrantyVisitViewDto {
     findings: visit.findings ?? null,
     evidenceRefs: visit.evidenceRefs ?? null,
     faultyInvoiceItemIds: visit.faultyInvoiceItemIds ?? null,
+    faultyQuantities: visit.faultyQuantities ?? null,
     reServiceNotes: visit.reServiceNotes ?? null,
     reServiceEvidenceRefs: visit.reServiceEvidenceRefs ?? null,
     completedAt: visit.completedAt ?? null,

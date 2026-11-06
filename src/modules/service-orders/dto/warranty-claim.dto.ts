@@ -10,6 +10,7 @@ import {
   IsInt,
   IsLatitude,
   IsLongitude,
+  IsObject,
   IsOptional,
   IsString,
   IsUUID,
@@ -195,6 +196,11 @@ export class ProposeWarrantyInspectionDto {
   @ArrayMaxSize(20)
   @IsCanonicalUuid({ each: true })
   faultyInvoiceItemIds?: string[];
+
+  @ApiPropertyOptional({ type: 'object', additionalProperties: { type: 'integer' }, description: 'How many of each faulty line are faulty (line id → count, 1..quantity bought); omitted = the whole line' })
+  @IsOptional()
+  @IsObject()
+  faultyQuantities?: Record<string, number>;
 }
 
 export class CompleteWarrantyReServiceDto {
@@ -242,6 +248,9 @@ export class WarrantyVisitViewDto {
 
   @ApiPropertyOptional({ type: [String], nullable: true, description: 'Invoice lines of the original job the technician says are faulty' })
   faultyInvoiceItemIds: string[] | null;
+
+  @ApiPropertyOptional({ type: 'object', additionalProperties: { type: 'integer' }, nullable: true })
+  faultyQuantities: Record<string, number> | null;
 
   @ApiPropertyOptional({ nullable: true })
   reServiceNotes: string | null;

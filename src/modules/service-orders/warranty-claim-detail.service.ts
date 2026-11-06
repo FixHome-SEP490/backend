@@ -56,6 +56,8 @@ export interface WarrantyClaimDetailDto extends StaffWarrantyClaimDto {
         covered: boolean;
         /** The technician named this line as faulty when proposing a part fault. */
         faulty: boolean;
+        /** How many of this line are faulty (the whole line unless the technician said fewer). */
+        faultyQuantity: number;
       }[];
     };
     coverage: { id: string; startsAt: Date; expiresAt: Date; warrantyDays: number; status: string } | null;
@@ -100,6 +102,7 @@ export class WarrantyClaimDetailService {
     const coverage = await manager.findOneBy(WarrantyCoverage, { id: claim.warrantyCoverageId });
     const visits = await manager.find(WarrantyVisit, { where: { warrantyClaimId: claim.id }, order: { createdAt: 'ASC' } });
     const faultyIds = new Set(visits.flatMap((v) => v.faultyInvoiceItemIds ?? []));
+    const faultyQuantities = visits.reduce<Record<string, number>>((all, v) => ({ ...all, ...(v.faultyQuantities ?? {}) }), {});
     const request = await manager.findOneBy(PartRequest, { warrantyClaimId: claim.id });
     const requestItems = request ? await manager.find(PartRequestItem, { where: { partRequestId: request.id } }) : [];
     const others = await manager.find(WarrantyClaim, { where: { serviceOrderId: claim.serviceOrderId, id: Not(claim.id) }, order: { submittedAt: 'DESC' }, take: 10 });
@@ -149,6 +152,7 @@ export class WarrantyClaimDetailService {
             partSource: l.partSource ?? null, partWarrantyOption: l.partWarrantyOption ?? null,
             covered: coverage?.invoiceItemId === l.id,
             faulty: faultyIds.has(l.id),
+            faultyQuantity: faultyIds.has(l.id) ? (faultyQuantities[l.id] ?? l.quantity) : 0,
           })),
         },
         coverage: coverage
