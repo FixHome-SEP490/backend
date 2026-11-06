@@ -1628,3 +1628,168 @@ Follow-up verification: full `warehouse-delivery-physical.e2e-spec.ts` **44/44 P
 `w3-dev-release.postgres.spec.ts` **37/37 PASS**, context/planner **9/9 PASS**;
 `npm run typecheck`, `npm run lint`, `npm run build`, `git diff --check` **PASS**
 (4 lint warning cũ). Không chạy lại broad full suites trong follow-up focused này.
+
+## 25. Admin W3 shipping safety cap — 0013 (07/11/2026)
+
+Base `origin/dev 15306b6`. Owner: “tôi phê duyệt hết, admin có thể config nếu ko phù hợp
+chỉnh 0đ hết” là **BUSINESS direction**, không phải Finance/legal signoff, seller/tax
+issuer/courier payee approval, funding hoặc mandate. Ma trận signoff mục 24 vẫn NOT SIGNED.
+**0 cap không miễn nghĩa vụ trả phí vận chuyển thực tế; SAFE_TO_ACTIVATE_FINANCE=NO.**
+
+### Nguồn tin cậy và phạm vi đã lần theo trước implementation
+
+- `QuotationsService.createAdditionalCost`/`saveAdditional` nhận phí DELIVERY riêng; quyết định của
+  khách lưu approved AdditionalCost. `PartRequestsService.createAdditionalRequestFromApprovedCost`
+  giữ phí nguồn; chỉ request ADDITIONAL DELIVERY mới chứa toàn SKU nguồn mới được W3 enroll.
+  Legacy/deficit/PICKUP không tự trở thành W3. Không sửa các writer hoặc phí nguồn này.
+- Controller `/part-requests/:id/delivery/terms/proposal` gọi
+  `DeliveryOperationsService.recordTerms(PROPOSE)`: đây là writer quote dương/revision W3
+  thực sự. `scope` xác thực actor hiện hành, owner/assignment/cohort/SM của kho; `source`
+  đọc AdditionalCost APPROVED đúng khách/thợ/order, toàn SKU và phí request khớp nguồn.
+  0010/0011 tiếp tục kiểm nguồn/C/CAS/consent/audit dưới Order lock. Giá trị body chỉ là
+  đề nghị, không được thay nguồn hoặc tự cấp thẩm quyền.
+- `/delivery/proposal` là writer vận hành zero-only. Body dương được kiểm cap sau
+  authorization/scope, rồi vẫn `FINANCE_LEDGER_SOURCE_REQUIRED` dù nằm trong cap.
+  `source`/`bound`, actual và physical luôn giữ gate positive spending hiện có.
+- Không có live persistent financial COMMIT/RELEASE writer: helper mục 23 chỉ
+  `SIMULATION_ONLY`. Không đưa cap vào simulation để biến nó thành authorization.
+
+### Admin config và lỗi ổn định
+
+Migration additive `W3ShippingSafetyCap1793466000013` chỉ seed một row
+`system_configs`: `w3.shipping.max_new_fee_vnd`, `value='0'`, `value_type='int'`, mô tả
+tiếng Việt nêu rõ cap 0 chặn phí dương mới, không xóa nghĩa vụ hoặc mở thanh toán.
+Không bảng/function/grant/role/env/dependency mới, không backfill và không sửa 0010–0012.
+
+GET/PATCH `/api/v1/admin/config/w3.shipping.max_new_fee_vnd` tái dùng flow hiện hành;
+`effectStatus=ACTIVE`. PATCH body `{ "value": "0" }` hoặc integer string canonical
+trong `[0,100000000]` VND. Trần kỹ thuật không phải mức phí được Finance duyệt.
+Số âm, phần lẻ, whitespace, leading zero, exponent, số quá trần hoặc value không phải
+string bị từ chối 400. `commission.rate_bps=0` vẫn độc lập; operating policy
+`feeCeilingVnd=0` vẫn chỉ NON_EXECUTABLE_PREVIEW/review threshold.
+
+JWT + Role.ADMIN + `config:update` giữ nguyên ở controller. Riêng cap recheck user active
+và grant thật, uncached, dưới SHARE locks trong transaction; khóa row config UPDATE,
+đọc before-value sau khóa, save và strict `CONFIG_UPDATE` audit cùng transaction.
+Audit lỗi rollback toàn bộ, trả 503. Thiếu config trả 404, không tự tạo row. Các Admin
+update đồng thời serialize; lần sau cùng giữ khóa thắng, audit nối đúng before/after.
+Không thêm CAS field hoặc thay semantics các config key khác.
+
+Quote/revision W3 mới dùng `assertW3NewShippingFee` đọc trực tiếp row config với SHARE
+lock giữ tới quote commit. Không dùng `BusinessConfigService` cache 60 giây; cache của
+instance khác không có authority. Thiếu row/type/value sai dùng effective cap 0;
+lỗi DB chặn request, không fallback cap dương. Admin UPDATE và quote serialize trên
+cùng row. Quote dương vượt cap trả HTTP **409**, public
+`error.code=W3_SHIPPING_CAP_EXCEEDED`. Global `HttpExceptionFilter` không expose
+`BusinessException.details`: không có public `details`, `blocker` hoặc `maxNewFeeVnd`
+trong response. Diagnostics details chỉ giữ nội bộ, không phải public API contract.
+Thông báo tiếng Việt; không tự đổi phí thành 0, không tạo C/terms/audit thành công.
+
+Cap chỉ kiểm **NEW PROPOSE/revision** trước journal INSERT; exact-command replay giữ
+receipt cũ và mọi kiểm source drift hiện có. Hạ cap không invalidate/read lại giá, chặn
+consent/actual của quote lịch sử hoặc xóa lịch sử. Revision mới phải qua cap hiện tại.
+Consent không tạo quote/commitment tiền mới; các consent/actual đó vẫn conditional,
+`financialExecution=BLOCKED`, budget null, `paymentVerified=false`. Không đổi EXACT ba
+public blockers/bốn totals. Positive physical, invoice/payment/wallet/deduction/payout/
+settlement/refund/custody không được mở bởi cap dương hoặc Admin config 0.
+Zero physical dùng nguồn thực sự có phí 0 và dual consent/evidence/CAS cũ; không kiểm
+cap để biến phí thực tế còn thiếu/dương thành 0. W1/W2/legacy không đọc key này.
+
+### Migration gate, consumer và verification
+
+Whitelist DEV tiến đến 0013; prerequisite kiểm thêm cột `system_configs.description`.
+Marker config row chặn pending replay, ledger/applied proof kiểm row/type/range. Gate
+giữ advisory lock, transaction DDL/ledger và cash pair/prerequisites cũ. Up không
+ON CONFLICT overwrite; down chỉ xóa row default chưa có updated-by/audit, có history
+phải forward fix. Fixture rollback app thêm 0013 trước 0012. Deploy order W3 → cash →
+restart không đổi; **không deploy/apply shared DEV trong task này**.
+
+Đã đọc Web `src/pages/console/admin/AdminConfigPage.vue`: unknown key dùng mô tả DB,
+type/effectStatus server và cùng endpoint; chưa có min/max metadata riêng, backend vẫn
+validate. Mobile source không thấy consumer Admin config/W3 terms. Không sửa consumer;
+Web/Mobile/browser adoption/runtime và context các repo tiêu thụ **NOT VERIFIED**.
+
+Local TDD: RED 7 ca quote vượt/missing/malformed cap, RED registry/range; RED planner
+0013 và PG default-row. GREEN có zero/nonzero bounds, không rewrite, source/ownership,
+auth/JWT/role/permission revoked khi cache còn nóng, audit rollback/concurrent update,
+quote/Admin wait edges thật (`pg_blocking_pids`) cả hai chiều, cache instance khác stale,
+historical replay/consent/actual và zero physical tại cap 0. PostgreSQL 16 disposable
+chỉ loopback, không `.env`, không provider thật. Kết quả cuối tại `docs/CONTEXT.md`.
+
+Tự review BA/PM/Tech Lead/Senior/Security/QA/DevOps bởi một implementer, không review
+độc lập hoặc Finance/legal signature. GitHub CI, shared DEV, Docker Compose `/health`,
+provider thật, Web/Mobile và Node 20.19.5 **NOT VERIFIED**. Sau release/migration được
+duyệt riêng cần restart Backend trước runtime QA; không dùng Compose task này vì DB
+cấu hình chung nằm ngoài phạm vi. Chỉ một local commit; không push/PR/merge/deploy.
+
+
+Kết quả lịch sử tại commit `153973f`, Node 24.15.0 / PostgreSQL 16 disposable
+(không phải verification cho follow-up P2 bên dưới):
+
+| Gate | Trạng thái | Bằng chứng |
+| --- | --- | --- |
+| `npm test -- --maxWorkers=4 --silent`, TZ UTC | PASS | 311 files, 4060 tests; 6 files/97 tests skipped |
+| `npm run lint` | PASS | 0 error, 4 warning hiện hữu |
+| `npm run typecheck`, `npm run build` | PASS | exit 0 |
+| `npx vitest run src/database/w3-dev-release.postgres.spec.ts --reporter=dot`, CI/W3_DEV_ISOLATED_PG | PASS | 39/39; rollback/default/description/replay/down và toàn bộ W3 gate |
+| `npx vitest run --config vitest.config.e2e.ts test/warehouse-delivery-physical.e2e-spec.ts --reporter=dot`, CI/GITHUB_ACTIONS | PASS | 50/50, có HTTP/JWT/permission, audit rollback, row-lock concurrency và zero physical |
+| `npm audit --omit=dev --audit-level=high` | PASS | Không high/critical; 12 moderate hiện hữu, không đổi dependencies |
+| `npm run test:e2e -- --silent` full | NOT VERIFIED | Rerun exit 1: 147 PASS/39 skipped, 1 unhandled worker error; xem giới hạn dưới |
+| Focused services/config metadata/planner/context (5 files) | PASS | 80/80 sau thay đổi cuối |
+
+Full E2E lần đầu không GREEN: `app.e2e-spec.ts` không có kết quả hoàn chỉnh và để lại
+schema `member1_e2e_*` chứa `urgency_level_enum`. Migration lịch sử
+`Phase3to8BusinessLogic1725894000000` kiểm `pg_type.typname` không theo namespace;
+những suite sau bỏ qua CREATE TYPE rồi lỗi `type "urgency_level_enum" does not exist`
+ở bước CREATE bookings trong schema riêng. Các suite setup lỗi: delivery-consent-storage,
+warehouse-fulfillment, web-accept-isolated, w3-delivery-policy-store và warehouse-w3-finance.
+Đã xác nhận enum ở schema fixture còn lại trong đúng container dùng một lần, không phải
+shared DEV; nguyên nhân worker app không hoàn tất chưa xác định, không kết luận là code
+regression hoặc đã loại trừ mọi regression. Không sửa migration lịch sử, harness/gate
+hoặc assertions để né lỗi. Lead cần GitHub CI container sạch; focused W3/gate PASS
+không thay cho full E2E GREEN.
+
+Rerun full E2E sau khi dọn đúng schema tổng hợp còn lại trong disposable container:
+7 files/147 tests PASS, 4 files/39 tests skipped, 1 unhandled error, exit 1 (144 giây).
+Không còn năm lỗi setup enum kể trên; lỗi còn lại là
+`[vitest-pool]: Worker forks emitted error`, caused by `Worker exited unexpectedly`.
+App worker vẫn không có kết quả hoàn chỉnh và để lại schema test. Bằng chứng này phân
+biệt lỗi setup do enum từ fixture còn sót với worker failure chưa rõ nguyên nhân;
+không dùng nó để xác nhận không còn regression. Full E2E vẫn **NOT VERIFIED**;
+không retry tiếp hoặc sửa test infrastructure ngoài phạm vi. GitHub CI container sạch
+là bước tiếp theo của Lead. Lint/typecheck/build/diff và audit high gate cuối PASS.
+
+
+### P2 follow-up PR #204 — public error code (07/11/2026)
+
+Review độc lập phát hiện commit `153973f` dùng generic CONFLICT trong exception và
+hứa details công khai nhưng global filter đã loại details; service-only assertions
+không chứng minh được public error contract. Thêm đúng
+`ErrorCodes.W3_SHIPPING_CAP_EXCEEDED` map HTTP 409 và dùng code đó ở cap helper.
+Giữ nguyên global filter và mọi module khác; không expose diagnostics bằng blanket
+forwarding. Response public chỉ có code riêng và thông báo tiếng Việt trong envelope
+hiện có, không trả max fee/cap, blocker, source/payee IDs hoặc details.
+
+TDD RED 3 ca nhận CONFLICT thay mã riêng; GREEN sau fix. Hai test trực tiếp gọi
+`HttpExceptionFilter` ở production/development assert exact response và chặn cả
+synthetic private diagnostics được bổ sung vào internal details. Một Nest/Supertest
+HTTP smoke dùng cap helper/BusinessException/filter thật, persistence double, không
+phải DB/JWT authorization test. Existing service tests vẫn giữ internal details.
+Không migration/schema/env/dependency mới, không sửa gate, W1/W2, zero flows,
+phí/consent lịch sử hoặc payments; `financialExecution=BLOCKED` giữ nguyên.
+
+Full broad E2E Windows không chạy lại theo chỉ đạo Lead; GitHub CI trên follow-up
+head là bước tiếp theo, không coi kết quả lịch sử phía trên là head PASS. Web/Mobile,
+provider, shared DEV và Docker health **NOT VERIFIED**. Chỉ follow-up local commit,
+không push/PR/merge/deploy; sau release được duyệt cần restart Backend trước runtime QA.
+
+
+Verification follow-up P2 (head source sau fix, Node 24.15.0):
+
+| Lệnh/gate | Kết quả |
+| --- | --- |
+| Vitest focused cap/filter/Admin config/metadata/delivery/shipping-finance/planner/context, `--reporter=dot` | PASS — 8 files/112 tests, gồm 3 regression mới |
+| `npx vitest run src/database/w3-dev-release.postgres.spec.ts --reporter=dot`, CI/W3_DEV_ISOLATED_PG=1 | PASS — 39/39 trên PostgreSQL 16 disposable |
+| `npm run lint` | PASS — 0 error/4 warning cũ |
+| `npm run typecheck`, `npm run build`, `git diff --check` | PASS — exit 0 |
+| Full unit/full broad E2E/GitHub CI follow-up | NOT VERIFIED — chỉ focused local theo scope Lead, CI chạy riêng trên head mới |

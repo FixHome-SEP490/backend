@@ -15,6 +15,9 @@ function fixture() {
     rows(type).push(row);
     return row;
   };
+  const cap = seed('SystemConfig', {
+    key: 'w3.shipping.max_new_fee_vnd', value: '20000', valueType: 'int',
+  });
   const user = (role: Role) =>
     seed('User', { id: randomUUID(), role, isActive: true, status: 'active' });
   const customer = user(Role.CUSTOMER),
@@ -116,6 +119,8 @@ function fixture() {
       return { affected: 1 };
     },
     query: vi.fn(async (sql: string, args: any[]) => {
+      if (sql.startsWith('INSERT INTO delivery_fee_terms'))
+        return [{ state: { version: 1, financialExecution: 'BLOCKED' } }];
       if (sql.includes('SELECT enabled')) return [{ enabled: false }];
       if (sql.includes('FROM delivery_shipping_proposals'))
         return rows('DeliveryShippingProposal').length
@@ -280,6 +285,7 @@ function fixture() {
     propose,
     sign,
     ready,
+    cap,
   };
 }
 
@@ -292,6 +298,27 @@ describe('conditional positive shipping terms (no financial authority)', () => {
     courierReference: 'conditional-courier-quote',
     totalShippingFee: 20_000,
     ...extra,
+  });
+  it.each(['0', '19999', '-1', '20000x', '9007199254740992'])('blocks NEW positive terms at cap %s without rewriting the approved fee', async (value) => {
+    const f = fixture();
+    f.cap.value = value;
+    f.cost.shippingFee = f.request.shippingFee = 20000;
+    const e = await f.upload('QUOTE');
+    await expect(f.service.recordTerms(f.request.id, 'PROPOSE', proposal(f, { evidenceId: e.evidenceId }), f.actor(f.sm)))
+      .rejects.toMatchObject({ status: 409, response: { details: { blocker: 'W3_SHIPPING_CAP_EXCEEDED' } } });
+    expect(f.cost.shippingFee).toBe(20000);
+    expect(f.request.shippingFee).toBe(20000);
+    expect(f.rows('AuditLog')).toHaveLength(0);
+    expect(f.movements).toHaveLength(0);
+  });
+  it.each(['missing', 'wrong type'])('fails closed with %s cap', async (mode) => {
+    const f = fixture();
+    if (mode === 'missing') f.rows('SystemConfig').splice(0);
+    else f.cap.valueType = 'string';
+    f.cost.shippingFee = f.request.shippingFee = 20000;
+    const e = await f.upload('QUOTE');
+    await expect(f.service.recordTerms(f.request.id, 'PROPOSE', proposal(f, { evidenceId: e.evidenceId }), f.actor(f.sm)))
+      .rejects.toMatchObject({ response: { details: { blocker: 'W3_SHIPPING_CAP_EXCEEDED' } } });
   });
   it('records only server-bound approved terms, without fabricating L/C/D or stock authority', async () => {
     const f = fixture();
@@ -404,20 +431,18 @@ describe('authenticated delivery operations admission', () => {
       expect(f.movements).toHaveLength(0);
     },
   );
-  it('keeps positive proposal and actual commands blocked before any transaction or ledger write', async () => {
-    const transaction = vi.fn();
-    const service = new DeliveryOperationsService(
-      { transaction } as any,
-      {} as any,
-    );
-    const actor = { id: randomUUID(), role: Role.SERVICE_MANAGER };
+  it.each(['0', '20000'])('keeps positive operations blocked at cap %s, including below-cap fees', async (cap) => {
+    const f = fixture();
+    f.cap.value = cap;
+    const service = f.service;
+    const actor = f.actor(f.sm);
     await expect(
       service.propose(
-        randomUUID(),
+        f.request.id,
         {
           commandId: randomUUID(),
           expectedVersion: 0,
-          warehouseId: randomUUID(),
+          warehouseId: f.warehouse.id,
           evidenceId: randomUUID(),
           courierReference: 'positive-quote',
           totalShippingFee: 1,
@@ -426,7 +451,7 @@ describe('authenticated delivery operations admission', () => {
       ),
     ).rejects.toMatchObject({
       status: 409,
-      response: { details: { blocker: 'FINANCE_LEDGER_SOURCE_REQUIRED' } },
+      response: { details: { blocker: cap === '0' ? 'W3_SHIPPING_CAP_EXCEEDED' : 'FINANCE_LEDGER_SOURCE_REQUIRED' } },
     });
     await expect(
       service.actual(
@@ -444,7 +469,8 @@ describe('authenticated delivery operations admission', () => {
       status: 409,
       response: { details: { blocker: 'FINANCE_LEDGER_SOURCE_REQUIRED' } },
     });
-    expect(transaction).not.toHaveBeenCalled();
+    expect(f.rows('DeliveryShippingProposal')).toHaveLength(0);
+    expect(f.movements).toHaveLength(0);
   });
   it('allows explicit zero spending alongside an unknown sibling without reporting a verified order budget', async () => {
     const f = fixture();

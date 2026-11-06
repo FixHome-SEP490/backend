@@ -12,6 +12,7 @@ import { W3DeliveryPolicyLifecycle1793466000009 } from './migrations/17934660000
 import { DeliveryConditionalFeeTerms1793466000010 } from './migrations/1793466000010-DeliveryConditionalFeeTerms';
 import { W3PrequoteCommission1793466000011 } from './migrations/1793466000011-W3PrequoteCommission';
 import { W3DeductionPreparation1793466000012 } from './migrations/1793466000012-W3DeductionPreparation';
+import { W3ShippingSafetyCap1793466000013 } from './migrations/1793466000013-W3ShippingSafetyCap';
 import {
   CASH_MIGRATIONS,
   runW3DevGate,
@@ -47,6 +48,7 @@ w3MigrationClasses.push(W3DeliveryPolicyLifecycle1793466000009);
 w3MigrationClasses.push(DeliveryConditionalFeeTerms1793466000010);
 w3MigrationClasses.push(W3PrequoteCommission1793466000011);
 w3MigrationClasses.push(W3DeductionPreparation1793466000012);
+w3MigrationClasses.push(W3ShippingSafetyCap1793466000013);
 
 // CI-only: creates a fresh database on the CI PostgreSQL service at loopback.
 // It never reads .env, DATABASE_* or a shared DEV connection string.
@@ -143,7 +145,7 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
         shipping_fee bigint NOT NULL DEFAULT 0, fulfillment_method text);
       CREATE TABLE public.bookings(id uuid PRIMARY KEY, customer_id uuid,pricing_mode_snapshot text,fixed_unit_price_snapshot numeric,quantity integer,scope_snapshot text);
       CREATE TABLE public.quotation_items(id uuid PRIMARY KEY,quotation_id uuid,type text,description text,quantity integer,unit_price bigint,line_total bigint);
-      CREATE TABLE public.system_configs(key varchar(128) PRIMARY KEY,value text,value_type text,updated_at timestamptz,updated_by_user_id uuid);
+      CREATE TABLE public.system_configs(key varchar(128) PRIMARY KEY,value text,value_type text,description text,updated_at timestamptz,updated_by_user_id uuid);
       CREATE TABLE public.fixhome_parts(id uuid PRIMARY KEY DEFAULT uuid_generate_v4());
       CREATE TABLE public.part_request_items(id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
         part_request_id uuid, part_catalog_id uuid, part_source text, quantity integer);
@@ -431,6 +433,21 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
       }
     }, 30000);
 
+    it('rolls back 0013 with its ledger and refuses an unledgered config row', async () => {
+      const original = db.migrations.find(m => m.name === 'W3ShippingSafetyCap1793466000013')!;
+      const index = db.migrations.indexOf(original);
+      db.migrations[index] = { name: original.name, down: q => original.down(q), up: async q => {
+        await original.up(q); throw new Error('fault after 0013 config');
+      } };
+      try { await expect(runW3DevGate(db)).rejects.toThrow('fault after 0013 config'); }
+      finally { db.migrations[index] = original; }
+      expect(await db.query("SELECT key FROM system_configs WHERE key='w3.shipping.max_new_fee_vnd'")).toEqual([]);
+      expect((await db.query('SELECT count(*)::int AS n FROM migrations WHERE name=ANY($1)', [W3_MIGRATIONS]))[0].n).toBe(0);
+      await db.query("INSERT INTO system_configs(key,value,value_type) VALUES ('w3.shipping.max_new_fee_vnd','17','int')");
+      try { await expect(runW3DevGate(db)).rejects.toThrow('refusing DDL replay'); }
+      finally { await db.query("DELETE FROM system_configs WHERE key='w3.shipping.max_new_fee_vnd'"); }
+    }, 30000);
+
     it('applies the exact W3 order once, keeps legacy invoices closed and replays without DDL', async () => {
       const invoiceId = randomUUID();
       await db.query(
@@ -447,6 +464,8 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
       );
       try {
         expect(await runW3DevGate(db)).toEqual([...W3_MIGRATIONS]);
+        expect(await db.query("SELECT value,value_type,description FROM system_configs WHERE key='w3.shipping.max_new_fee_vnd'"))
+          .toEqual([{ value: '0', value_type: 'int', description: 'Trần phí giao W3 mới (₫); 0 = chặn phí dương mới, không xóa nghĩa vụ phí thực tế hay mở thanh toán.' }]);
       } finally {
         await db.query(
           'ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM anon,authenticated,service_role',
@@ -573,6 +592,35 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
       );
       expect(zeroFeeGuards.movement_guard).toContain('warehouse_stock');
       expect(zeroFeeGuards.movement_closed).not.toContain('warehouse_stock');
+    }, 30000);
+
+    it('checks cap configuration, preserves Admin changes on replay and refuses down after audit', async () => {
+      for (const value of ['-1', '1.5', '100000001', '20000x']) {
+        await db.query("UPDATE system_configs SET value=$1 WHERE key='w3.shipping.max_new_fee_vnd'", [value]);
+        await expect(runW3DevGate(db)).rejects.toThrow('W3 shipping safety cap missing or invalid');
+      }
+      await db.query("UPDATE system_configs SET value='17' WHERE key='w3.shipping.max_new_fee_vnd'");
+      expect(await runW3DevGate(db)).toEqual([]);
+      expect((await db.query("SELECT value FROM system_configs WHERE key='w3.shipping.max_new_fee_vnd'"))[0].value).toBe('17');
+      const migration = new W3ShippingSafetyCap1793466000013();
+      const q = db.createQueryRunner();
+      await q.connect();
+      try {
+        await expect(migration.down(q)).rejects.toThrow('has history');
+        await db.query("UPDATE system_configs SET value='0' WHERE key='w3.shipping.max_new_fee_vnd'");
+        await db.query("INSERT INTO audit_logs(resource_type,resource_id) VALUES ('system_config','w3.shipping.max_new_fee_vnd')");
+        await expect(migration.down(q)).rejects.toThrow('has history');
+        await db.query("DELETE FROM audit_logs WHERE resource_type='system_config' AND resource_id='w3.shipping.max_new_fee_vnd'");
+        await q.startTransaction();
+        await migration.down(q);
+        await q.commitTransaction();
+        await expect(runW3DevGate(db)).rejects.toThrow('W3 shipping safety cap missing or invalid');
+        await migration.up(q);
+      } finally {
+        if (q.isTransactionActive) await q.rollbackTransaction();
+        await q.release();
+      }
+      expect(await runW3DevGate(db)).toEqual([]);
     }, 30000);
 
     it('refuses an unknown pending migration without running it', async () => {

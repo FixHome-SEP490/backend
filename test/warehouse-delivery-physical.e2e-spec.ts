@@ -3,7 +3,7 @@ import 'reflect-metadata';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { DataSource } from 'typeorm';
 import { Test } from '@nestjs/testing';
 import { JwtModule, JwtService } from '@nestjs/jwt';
@@ -92,6 +92,11 @@ describe.skipIf(
       })
     ).id;
   }, 60000);
+  beforeEach(async () => {
+    // Explicit nonzero test-fixture upper bound for existing conditional-terms tests.
+    // Production migration defaults to zero; this never opens financial execution.
+    await db.query("UPDATE system_configs SET value='20000' WHERE key='w3.shipping.max_new_fee_vnd'");
+  });
   afterAll(async () => {
     if (db?.isInitialized) await db.destroy();
     if (root?.isInitialized) {
@@ -613,6 +618,153 @@ describe.skipIf(
       );
     return { ...f, body, state: result.state, consent };
   }
+
+  const capKey = 'w3.shipping.max_new_fee_vnd';
+  const runtimeClass = (path: string, name: string) => createRequire(resolve('package.json'))(resolve(`dist/${path}.js`))[name];
+  async function capAdminFixture() {
+    const admin = await save('User', { email: `${randomUUID()}@example.test`, passwordHash: 'ci-no-login',
+      fullName: 'CI cap admin', role: Role.ADMIN, status: 'active', isActive: true });
+    await db.query("INSERT INTO roles(code,name) VALUES ('admin','CI admin') ON CONFLICT(code) DO NOTHING");
+    await db.query("INSERT INTO permissions(code,resource,action) VALUES ('config:update','config','update') ON CONFLICT(code) DO NOTHING");
+    const grant = () => db.query(`INSERT INTO role_permissions(role_id,permission_id)
+      SELECT r.id,p.id FROM roles r,permissions p WHERE r.code='admin' AND p.code='config:update' ON CONFLICT DO NOTHING`);
+    await grant();
+    const Business = runtimeClass('modules/system-config/business-config.service', 'BusinessConfigService');
+    const Audit = runtimeClass('modules/audit-log/audit-log.service', 'AuditLogService');
+    const Admin = runtimeClass('modules/system-config/admin-config.service', 'AdminConfigService');
+    const business = new Business(db.getRepository('SystemConfig'));
+    const service = new Admin(business, new Audit(db.getRepository('AuditLog')), db);
+    return { admin, service, business, grant, update: (value: string) => service.update(capKey, value, admin.id, Role.ADMIN) };
+  }
+
+  it('rejects new W3 positive quotes at zero cap without changing the approved source or creating C', async () => {
+    const f = await operationalFixture(20);
+    await db.query('UPDATE system_configs SET value=$1 WHERE key=$2', ['0', capKey]);
+    const e = await f.upload('QUOTE');
+    const body = { commandId: randomUUID(), expectedVersion: 0, warehouseId: f.warehouse.id,
+      evidenceId: e.evidenceId, courierReference: 'ci-cap', totalShippingFee: 20 };
+    await expect(f.service.recordTerms(f.request.id, 'PROPOSE', body, f.managerActor)).rejects.toMatchObject({
+      response: { details: { blocker: 'W3_SHIPPING_CAP_EXCEEDED', maxNewFeeVnd: 0 } } });
+    expect((await db.query('SELECT shipping_fee FROM additional_cost_requests WHERE id=$1', [f.cost.id]))[0].shipping_fee).toBe('20');
+    expect((await db.query('SELECT count(*)::int AS n FROM delivery_fee_terms WHERE part_request_id=$1', [f.request.id]))[0].n).toBe(0);
+    expect((await db.query('SELECT count(*)::int AS n FROM w3_order_commission_snapshots WHERE service_order_id=$1', [f.order.id]))[0].n).toBe(0);
+  });
+
+  it('keeps historical replay/consents and actual unchanged after lowering cap, but blocks a NEW revision', async () => {
+    const f = await positiveTerms(20);
+    const a = await capAdminFixture();
+    const Business = runtimeClass('modules/system-config/business-config.service', 'BusinessConfigService');
+    const independentCache = new Business(db.getRepository('SystemConfig'));
+    expect(await independentCache.get(capKey)).toBe('20000');
+    await a.update('0');
+    expect(await independentCache.get(capKey)).toBe('20000'); // Other process caches can still be stale.
+    expect((await f.service.recordTerms(f.request.id, 'PROPOSE', f.body, f.managerActor)).replayed).toBe(true);
+    let state = (await f.consent(f.state, f.customerActor)).state;
+    state = (await f.consent(state, f.actor)).state;
+    expect(state.financialExecution).toBe('BLOCKED');
+    const e = await f.upload('QUOTE', f.managerActor, 2, 'new quote');
+    await expect(f.service.recordTerms(f.request.id, 'PROPOSE', { ...f.body, commandId: randomUUID(),
+      expectedVersion: state.version, evidenceId: e.evidenceId }, f.managerActor)).rejects.toMatchObject({
+      response: { details: { blocker: 'W3_SHIPPING_CAP_EXCEEDED' } } });
+    const actual = await f.upload('ACTUAL');
+    expect((await f.service.recordTerms(f.request.id, 'RECORD_ACTUAL', { commandId: randomUUID(),
+      expectedVersion: state.version, quoteVersion: 1, totalShippingFee: 20, evidenceId: actual.evidenceId }, f.managerActor)).state)
+      .toMatchObject({ financialExecution: 'BLOCKED', paymentVerified: false });
+    await expect(f.service.physical(f.request.id, 'RESERVE', { commandId: randomUUID(), expectedVersion: 0 }, f.actor))
+      .rejects.toMatchObject({ response: { details: { blocker: 'FINANCE_LEDGER_SOURCE_REQUIRED' } } });
+    expect((await f.service.readTerms(f.request.id, f.customerActor)).invalidated).toBe(false);
+  });
+
+  it('serializes concurrent Admin updates with accurate before/after audits and rolls back on audit failure', async () => {
+    const a = await capAdminFixture();
+    await a.update('0');
+    await Promise.all([a.update('100'), a.update('200')]);
+    const rows = await db.query(`SELECT before,after FROM audit_logs WHERE actor_user_id=$1 AND resource_id=$2 ORDER BY created_at,id`, [a.admin.id, capKey]);
+    expect(rows).toHaveLength(3);
+    const changed = rows.filter((r: any) => r.after.value !== '0');
+    const first = changed.find((r: any) => r.before.value === '0');
+    expect(first).toBeDefined();
+    expect(changed.find((r: any) => r !== first).before.value).toBe(first.after.value);
+    const [config] = await db.query('SELECT value FROM system_configs WHERE key=$1', [capKey]);
+    expect(config.value).toBe(changed.find((r: any) => r !== first).after.value);
+    await db.query(`CREATE FUNCTION w3_test_cap_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.resource_id='w3.shipping.max_new_fee_vnd' THEN RAISE EXCEPTION 'injected cap audit failure'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER w3_test_cap_audit_fail BEFORE INSERT ON audit_logs FOR EACH ROW EXECUTE FUNCTION w3_test_cap_audit_fail()`);
+    try { await expect(a.update('300')).rejects.toMatchObject({ status: 503 }); }
+    finally { await db.query('DROP TRIGGER w3_test_cap_audit_fail ON audit_logs; DROP FUNCTION w3_test_cap_audit_fail()'); }
+    expect((await db.query('SELECT value FROM system_configs WHERE key=$1', [capKey]))[0]).toEqual(config);
+    expect((await db.query('SELECT count(*)::int AS n FROM audit_logs WHERE actor_user_id=$1 AND resource_id=$2', [a.admin.id, capKey]))[0].n).toBe(3);
+    expect((await a.update('100000000')).effectStatus).toBe('ACTIVE');
+    expect((await a.update('0')).value).toBe('0');
+  });
+
+  it.each(['quote-first', 'admin-first'])('serializes the cap with a concurrent quote (%s) across PostgreSQL sessions', async (order) => {
+    const readCap = runtimeClass('modules/system-config/w3-shipping-safety-cap', 'assertW3NewShippingFee');
+    const reader = db.createQueryRunner(), writer = db.createQueryRunner();
+    await reader.connect(); await writer.connect();
+    await reader.startTransaction(); await writer.startTransaction();
+    const r = (await reader.query('SELECT pg_backend_pid() AS pid'))[0].pid;
+    const w = (await writer.query('SELECT pg_backend_pid() AS pid'))[0].pid;
+    let pending: Promise<unknown> | undefined;
+    try {
+      if (order === 'quote-first') {
+        await readCap(reader.manager, 20000);
+        pending = writer.query('UPDATE system_configs SET value=$1 WHERE key=$2', ['0', capKey]);
+        await waitForBlocker(db, w, r);
+        await reader.commitTransaction();
+        await pending; await writer.commitTransaction();
+      } else {
+        await writer.query('UPDATE system_configs SET value=$1 WHERE key=$2', ['0', capKey]);
+        pending = readCap(reader.manager, 20000);
+        const result = expect(pending).rejects.toMatchObject({ response: { details: { blocker: 'W3_SHIPPING_CAP_EXCEEDED' } } });
+        await waitForBlocker(db, r, w);
+        await writer.commitTransaction(); await result;
+      }
+    } finally {
+      if (reader.isTransactionActive) await reader.rollbackTransaction();
+      if (writer.isTransactionActive) await writer.rollbackTransaction();
+      if (pending) await pending.catch(() => {});
+      await reader.release(); await writer.release();
+    }
+  });
+
+  it('enforces real JWT/Admin/config:update, DTO and uncached DB authorization on the existing Admin endpoint', async () => {
+    const a = await capAdminFixture();
+    const Controller = runtimeClass('modules/system-config/admin-config.controller', 'AdminConfigController');
+    const Admin = runtimeClass('modules/system-config/admin-config.service', 'AdminConfigService');
+    const Strategy = runtimeClass('modules/auth/strategies/jwt.strategy', 'JwtStrategy');
+    const UserEntity = runtimeClass('modules/users/entities/user.entity', 'User');
+    const Rbac = runtimeClass('modules/rbac/rbac.service', 'RbacService');
+    const rbac = new Rbac(db.getRepository('RolePermission'), db.getRepository('UserScope'));
+    const key = randomUUID();
+    const module = await Test.createTestingModule({ imports: [JwtModule.register({ secret: key })], controllers: [Controller],
+      providers: [Strategy, { provide: Admin, useValue: a.service }, { provide: Rbac, useValue: rbac },
+        { provide: ConfigService, useValue: { getOrThrow: () => key } },
+        { provide: getRepositoryToken(UserEntity), useValue: db.getRepository('User') }] }).compile();
+    const app = module.createNestApplication();
+    app.setGlobalPrefix('api/v1');
+    app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }));
+    await app.init();
+    const token = (id: string) => `Bearer ${module.get(JwtService).sign({ sub: id, role: Role.ADMIN })}`;
+    const path = `/api/v1/admin/config/${capKey}`;
+    const patch = (id = a.admin.id) => request(app.getHttpServer()).patch(path).set('Authorization', token(id));
+    const sm = await save('User', { email: `${randomUUID()}@example.test`, passwordHash: 'ci-no-login', fullName: 'CI SM',
+      role: Role.SERVICE_MANAGER, status: 'active', isActive: true });
+    try {
+      await request(app.getHttpServer()).patch(path).send({ value: '0' }).expect(401);
+      await patch(sm.id).send({ value: '0' }).expect(403); // Token role cannot confer DB role.
+      for (const value of ['-1', '100000001', '1.5', ' 0', '00', '1e2']) await patch().send({ value }).expect(400);
+      await patch().send({ value: '0', financialExecution: 'ALLOWED' }).expect(400);
+      await patch().send({ value: 0 }).expect(400);
+      await patch().send({ value: '0' }).expect(200);
+      await db.query(`DELETE FROM role_permissions WHERE role_id=(SELECT id FROM roles WHERE code='admin')
+        AND permission_id=(SELECT id FROM permissions WHERE code='config:update')`);
+      await patch().send({ value: '1' }).expect(403); // Even with a warm RBAC cache.
+      await a.grant();
+      await db.query("UPDATE users SET is_active=false WHERE id=$1", [a.admin.id]);
+      await patch().send({ value: '1' }).expect(401);
+    } finally { await a.grant(); await app.close(); }
+  });
 
   // The database owner is a test-fixture recorder, never a Finance approver.
   const preparation = (f: any, overrides = {}) => ({
@@ -1493,6 +1645,7 @@ describe.skipIf(
     }
   });
   it('operates zero-fee reservation, courier issue/dispatch and technician receipt with DB-owned deltas', async () => {
+    await db.query('UPDATE system_configs SET value=$1 WHERE key=$2', ['0', capKey]);
     const f = await operationalFixture();
     const body = { commandId: randomUUID(), expectedVersion: 0 };
     await f.service.physical(f.request.id, 'RESERVE', body, f.actor);

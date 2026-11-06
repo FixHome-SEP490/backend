@@ -29,6 +29,11 @@ const appliedWithoutCash = appliedBeforeW3.filter(
 );
 
 describe('W3 DEV migration whitelist', () => {
+  it('recognizes 0013 as the only pending migration after the 0012 prefix', () => {
+    const cap = 'W3ShippingSafetyCap1793466000013';
+    expect(W3_MIGRATIONS.at(-1)).toBe(cap);
+    expect(planW3DevMigrations(image.filter(name => name !== cap), image)).toEqual([cap]);
+  });
   it('accepts the exact W3 order and returns only pending W3 migrations', () => {
     expect(planW3DevMigrations(appliedBeforeW3, image)).toEqual([
       ...W3_MIGRATIONS,
@@ -126,10 +131,10 @@ describe('W3 DEV migration whitelist', () => {
     ).toThrow('W3 migration ledger order is invalid');
   });
 
-  it('upgrades an applied 0011 prefix with only 0012 and rejects an image missing 0012', () => {
+  it('upgrades an applied 0011 prefix through 0013 and rejects an incomplete image', () => {
     const preparation = 'W3DeductionPreparation1793466000012';
-    const beforePreparation = image.filter((name) => name !== preparation);
-    expect(planW3DevMigrations(beforePreparation, image)).toEqual([preparation]);
+    const beforePreparation = image.filter((name) => name !== preparation && name !== 'W3ShippingSafetyCap1793466000013');
+    expect(planW3DevMigrations(beforePreparation, image)).toEqual([preparation, 'W3ShippingSafetyCap1793466000013']);
     expect(() => planW3DevMigrations(beforePreparation, beforePreparation)).toThrow(
       'W3 migrations missing from image',
     );

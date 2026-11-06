@@ -16,6 +16,7 @@ import {
   ApiOkResponse,
   ApiOperation,
   ApiParam,
+  ApiServiceUnavailableResponse,
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
@@ -78,7 +79,10 @@ export class AdminConfigController {
     summary: 'Admin: Update a config key value (typed/per-key validation)',
     description:
       'Validates the value against the key\'s declared type and allowed range before saving. ' +
-      'Writes an audit log entry with before/after values.',
+      'Writes an audit log entry with before/after values. ' +
+      'w3.shipping.max_new_fee_vnd accepts canonical integer strings 0..100000000 VND: ' +
+      'upper bound on NEW W3 shipping quotes only; 0 rejects new positive fees. ' +
+      'Uses transactional authorization/audit; never changes old terms or authorizes payment.',
   })
   @ApiParam({ name: 'key', example: 'commission.rate_bps' })
   @ApiOkResponse({
@@ -89,6 +93,7 @@ export class AdminConfigController {
   @ApiUnauthorizedResponse({ description: 'Authentication required' })
   @ApiForbiddenResponse({ description: 'Config update permission required' })
   @ApiNotFoundResponse({ description: 'Config key not found' })
+  @ApiServiceUnavailableResponse({ description: 'W3 cap transaction or strict audit unavailable; no update committed' })
   async update(
     @Param('key') key: string,
     @Body() dto: UpdateConfigDto,

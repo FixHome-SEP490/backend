@@ -1282,7 +1282,14 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     // Empty W3 append-only tables still prohibit TRUNCATE CASCADE. Revert
     // these protected EMPTY schemas first, before resetting the legacy fixture.
     // No production immutability trigger is disabled by this disposable-schema replay.
+    // Unwind newer migrations (e.g. warranty 0020) before W3 0013.
+    const laterAppliedMigrations: Array<{ name: string }> = await db.query(
+      'SELECT name FROM migrations WHERE timestamp > $1 ORDER BY timestamp DESC',
+      [1793466000013],
+    );
     const protectedMigrations = [
+      ...laterAppliedMigrations.map((row) => row.name),
+      'W3ShippingSafetyCap1793466000013',
       'W3DeductionPreparation1793466000012',
       'W3PrequoteCommission1793466000011',
       'DeliveryConditionalFeeTerms1793466000010',

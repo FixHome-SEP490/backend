@@ -36,6 +36,7 @@ import {
 } from './warehouse-delivery.policy';
 import { canonicalWarehouseQuantities } from './warehouse-fulfillment.rules';
 import { WarehouseDeliveryStock } from './warehouse-delivery-stock.service';
+import { assertW3NewShippingFee } from '../system-config/w3-shipping-safety-cap';
 
 type Actor = { id: string; role: string };
 type Identity = { commandId: string; expectedVersion: number };
@@ -677,6 +678,9 @@ export class DeliveryOperationsService {
           return conflict('DELIVERY_TERMS_SOURCE_CHANGED');
         return { state: publicTerms(prior.state), replayed: true };
       }
+      // Existing receipts/consents remain historical. Only a new quote/revision
+      // takes the current cap; it cannot authorize spending or rewrite the source.
+      if (kind === 'PROPOSE') await assertW3NewShippingFee(m, body.totalShippingFee);
       if (kind !== 'CONSENT') {
         const e = await this.evidence(
           m,
@@ -788,12 +792,14 @@ export class DeliveryOperationsService {
       body.totalShippingFee < 0
     )
       throw new BadRequestException('Thông tin phí giao không hợp lệ.');
-    if (body.totalShippingFee !== 0)
-      return conflict('FINANCE_LEDGER_SOURCE_REQUIRED');
     if (actor.role !== Role.SERVICE_MANAGER) return denied();
     return this.run(async (m) => {
       const s = await this.scope(m, id, actor, body.warehouseId);
       await this.open(m, s);
+      if (body.totalShippingFee !== 0) {
+        await assertW3NewShippingFee(m, body.totalShippingFee);
+        return conflict('FINANCE_LEDGER_SOURCE_REQUIRED');
+      }
       const facts = await this.source(m, s);
       const head = await m.findOne(WarehouseDeliveryEvent, {
         where: { partRequestId: id },
