@@ -16,6 +16,31 @@ const base = {
 };
 
 describe('shipping finance integer ledger', () => {
+  // Characterize the real invoice policy; these are existing GREEN baselines, not live W3 authorization.
+  it.each([
+    { shippingFee: 30_000, commissionAmount: 20_000, customer: 21_000, technician: 9_000, gross: 221_000, cashDebit: 50_000, onlineCredit: 171_000 },
+    { shippingFee: 30_000, commissionAmount: 0, customer: 21_000, technician: 9_000, gross: 221_000, cashDebit: 30_000, onlineCredit: 191_000 },
+    { shippingFee: 0, commissionAmount: 20_000, customer: 0, technician: 0, gross: 200_000, cashDebit: 20_000, onlineCredit: 180_000 },
+    { shippingFee: 0, commissionAmount: 0, customer: 0, technician: 0, gross: 200_000, cashDebit: 0, onlineCredit: 200_000 },
+  ])('golden 200000 labor: shipping=$shippingFee commission=$commissionAmount', (golden) => {
+    const result = computeInvoiceFinancialComponents({
+      ...base,
+      laborTotal: 200_000,
+      shippingFee: golden.shippingFee,
+      commissionAmount: golden.commissionAmount,
+    });
+    expect(result).toEqual({
+      customerShippingShare: golden.customer,
+      technicianShippingShare: golden.technician,
+      grandTotal: golden.gross,
+      platformDue: golden.cashDebit,
+      netLabor: golden.onlineCredit,
+      nonlabor: 0,
+      technicianPayout: golden.onlineCredit,
+    });
+    expect(result.grandTotal - result.platformDue).toBe(golden.onlineCredit);
+  });
+
   it('splits 20000 and reconciles cash, online and custody labor', () => {
     expect(calculateShippingShares(20_000, 'W3_70_30_V1')).toEqual({
       customerShippingShare: 14_000,

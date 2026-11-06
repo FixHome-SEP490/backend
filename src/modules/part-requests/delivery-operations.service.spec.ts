@@ -417,6 +417,30 @@ describe('conditional positive shipping terms (no financial authority)', () => {
 });
 
 describe('authenticated delivery operations admission', () => {
+  it('golden approved 30000 shipping remains physically blocked even with an explicit 30000 cap', async () => {
+    const f = fixture();
+    f.cap.value = '30000';
+    f.cost.shippingFee = f.request.shippingFee = 30_000;
+    const evidence = await f.upload('QUOTE');
+    await expect(f.service.propose(f.request.id, {
+      commandId: randomUUID(),
+      expectedVersion: 0,
+      warehouseId: f.warehouse.id,
+      evidenceId: evidence.evidenceId,
+      courierReference: 'capstone-approved-30000',
+      totalShippingFee: 30_000,
+    }, f.actor(f.sm))).rejects.toMatchObject({
+      status: 409,
+      response: { details: { blocker: 'FINANCE_LEDGER_SOURCE_REQUIRED' } },
+    });
+    expect(f.rows('DeliveryShippingProposal')).toHaveLength(0);
+    expect(f.rows('DeliveryConsentCommandRecord')).toHaveLength(0);
+    expect(f.rows('WarehouseDeliveryEvent')).toHaveLength(0);
+    expect(f.movements).toHaveLength(0);
+    expect(f.stocks.map(({ onHand, reserved }) => ({ onHand, reserved })))
+      .toEqual([{ onHand: 3, reserved: 0 }, { onHand: 3, reserved: 0 }]);
+  });
+
   it.each(['cost', 'request'] as const)(
     'does not consume local zero spending as aggregate authority when %s has positive shipping',
     async (source) => {

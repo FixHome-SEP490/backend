@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-07 00:36 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-admin-shipping-zero-cap-20261106
+> Cập nhật lần cuối: 2026-11-07 01:52 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-live-payment-integration-20261107
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -93,6 +93,8 @@ Ba điều không đổi giữa các repo:
 Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức của nhóm). Mâu thuẫn giữa code và tài liệu thì ghi vào mục 8 và hỏi PO, không tự quyết.
 
 ## 3. Trạng thái hiện tại
+
+W3 capstone payment Task1 (base `295d5f7`): audit nguồn tại `docs/W3_CAPSTONE_AUDIT.md`; chỉ thêm tests/docs, không mở tiền hoặc sửa runtime/migration/Web. Golden policy thật 200k/20k/30k cho gross221k, cash50k, online171k; zero fee/commission và 2 shipment 1 VND cùng order. Focused baseline 112 PASS, sau thêm 118 PASS; full unit 4071 PASS/98 skipped; PostgreSQL 16 disposable gate 40/40 PASS, gồm INSERT W3 bị CHECK 0004 từ chối. Positive physical vẫn bị chặn dù cap đủ; 0010 evidence stage, 0008 invoice cho cohort chưa hủy/completion/usage cần forward migration hẹp Task2/3. Admin payments chỉ đọc, chưa có direct bank receipt confirmation. Web source `1132d25` có positive DeliveryTermsPanel và zero-only DeliveryOperationsPanel; browser/Mobile/DEV/provider NOT VERIFIED. Lint/typecheck/build PASS (5 warning lint cũ). Task2–5 chưa bắt đầu; không PR/push/merge/deploy.
 
 W3 cap P2 follow-up PR #204 (07/11/2026, base `153973f`): đổi riêng code của cap sang `W3_SHIPPING_CAP_EXCEEDED`/HTTP 409 để qua global filter; giữ internal diagnostics nhưng không hứa public details/max fee. Global filter, gate/migration, W1/W2, zero physical, audit/auth và financialExecution BLOCKED không đổi. TDD có real-filter và Nest HTTP envelope regression; broad E2E Windows không rerun theo Lead, chờ GitHub CI head mới. Kiểm chứng follow-up: focused 8 files/112 tests và W3 PG gate 39/39 PASS; lint/typecheck/build/diff PASS (4 warning lint cũ). Full unit/full broad E2E và CI follow-up NOT VERIFIED; chỉ focused theo Lead. Chi tiết mục 25 hợp đồng W3.
 
@@ -442,6 +444,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 8. Việc đang dở và rủi ro đã biết
 
+- W3 payment capstone: Task1 audit/golden xong trong phạm vi source/tests; chưa active payment W3. Task2 bridge terms–physical/evidence cần forward migration; Task3 snapshot từng shipment và scoped invoice/order/usage/consumer gates; Task4 Admin bank receipt chưa tồn tại; Task5 Web/CI/DEV UAT. Chi tiết nguồn và PR slices: `docs/W3_CAPSTONE_AUDIT.md`. Không bỏ guard toàn cục hoặc dùng quote totals làm actual.
+
 - W3 shipping cap 0013 chỉ local: Lead cần CI/preflight/migration riêng trước restart Backend; không dùng Admin cap làm Finance authorization hoặc reset fee. Shared DEV, Compose `/health`, provider, Web/Mobile browser và Node 20.19.5 NOT VERIFIED. Chưa có live spending commitment/refund/courier/funding authority; giữ các blockers mục 24–25 hợp đồng W3.
 
 - W3 B3b chưa release: GitHub CI phải xác minh migration 0009, preview/audit append-only, JWT/RBAC/CAS/rollback và RLS/grants; chưa ghi shared DEV. Web phải tích hợp `/versions/*`, parse revision riêng contentVersion và gửi server preview receipt + acknowledged=true; chưa sửa consumer trong writer này. Finance/positive fee/seller/tax/refund/custody/disbursement vẫn BLOCKED. Sau Lead apply schema/release phải restart Backend trước runtime QA.
@@ -513,9 +517,9 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-07 01:52 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Ghi audit Task1 W3 payment, golden arithmetic, CHECK PostgreSQL và blocker physical/invoice/completion; chưa mở money cutover.
 - 2026-11-07 00:36 (UTC+7) | foxonworld | foxonworld/fixhome-w3-admin-shipping-zero-cap-20261106 | Merge W3 admin zero-cap and warranty partial-quantity changes; retain 40 newest context entries.
 - 2026-11-07 00:25 (UTC+7) | Hgnv11 | dev | Bảo hành: thợ khai số lượng linh kiện hỏng của từng dòng (`faultyQuantities`, cột `warranty_visits.faulty_quantities`, migration 1793466000020); cấp lại linh kiện chỉ theo số hỏng, mặc định cả dòng
-
 - 2026-11-07 00:24 (UTC+7) | foxonworld | foxonworld/fixhome-w3-admin-shipping-zero-cap-20261106 | Sửa P2 PR204 bằng public W3_SHIPPING_CAP_EXCEEDED/409, giữ details private và global filter; thêm real-filter/HTTP regression, tiền BLOCKED.
 - 2026-11-07 00:13 (UTC+7) | foxonworld | foxonworld/fixhome-w3-admin-shipping-zero-cap-20261106 | Thêm Admin W3 shipping cap 0013 mặc định 0, strict audit/locks và chặn quote mới; giữ historical consent, zero physical/W1/W2 và money BLOCKED; contract mục 25.
 - 2026-11-06 18:14 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-readiness-20261106 | Sửa P2 race D bằng transaction locks theo 0011; PG delivery 44/gate 37/context 9 và quality checks PASS; Finance BLOCKED, Lead giữ release.
@@ -553,4 +557,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-01 21:25 (UTC+7) | ToanAltF4 | feat/ai-diagnostic-state | Lưu trạng thái chẩn đoán AI có version, bảng ai_chat_turns chống tin lặp, pastJobs có trạng thái COMPLETED/SCHEDULED
 - 2026-11-01 21:07 (UTC+7) | ToanAltF4 | fix/vnpay-attempt-expiry | Link VNPay mới có vnp_ExpireDate 15 phút và lưu expires_at; tiền mặt đóng lượt VNPay quá hạn cộng 15 phút ân hạn, IPN thành công muộn mở support case (lỗi 39)
 - 2026-11-01 20:53 (UTC+7) | ToanAltF4 | fix/skill-evidence-exists | Gắn bằng chứng kỹ năng của thợ và chứng chỉ admin cấp lúc duyệt chỉ nhận tệp đã thật sự tải lên kho kyc-private dưới thư mục của chính thợ (trước đây chỉ kiểm đường dẫn, đường dẫn bịa vẫn 201), cùng objectExists như KYC ở PR 178.
-- 2026-11-01 20:35 (UTC+7) | ToanAltF4 | fix/visit-candidates-empty-reason | Gộp dev mới (KYC #178) vào nhánh lý do danh sách thợ rỗng của lượt nhiều thiết bị, không đổi hành vi

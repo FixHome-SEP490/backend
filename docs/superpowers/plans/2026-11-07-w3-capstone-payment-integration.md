@@ -41,10 +41,12 @@
 
 **Interfaces:** Produces a verified path matrix for: additional-cost approval, `/delivery/terms` vs `/delivery` journals, invoice generation, cash intent, paid online, wallet settlement, schema CHECK and Web consumer contract.
 
-- [ ] Inspect exact named code and current schema/CI; document confirmed W3 blockers, legacy use and DB constraints. Audit whether direct bank transfer exists (do not invent).
-- [ ] Write RED regression tests for 200k/20k/30k split cash=50k, online=171k, 0 commission and 2x 1-VND shipment half-up. Run focused test, note RED/green where existing pure policy already works.
-- [ ] Refine spec with non-guessing source choices and bounded PR sequence. Keep old `w3-cutover.spec.ts` blocking tests until the specific cutover task replaces them.
-- [ ] Run baseline targeted tests, lint/typecheck/build; record results and baseline statuses. Commit `docs/audit: map W3 payment integration and golden baseline`.
+- [x] Inspect exact named code and current schema/CI; document confirmed W3 blockers, legacy use and DB constraints. Audit whether direct bank transfer exists (do not invent).
+- [x] Write RED regression tests for 200k/20k/30k split cash=50k, online=171k, 0 commission and 2x 1-VND shipment half-up. Run focused test, note RED/green where existing pure policy already works.
+- [x] Refine spec with non-guessing source choices and bounded PR sequence. Keep old `w3-cutover.spec.ts` blocking tests until the specific cutover task replaces them.
+- [x] Run baseline targeted tests, lint/typecheck/build; record results and baseline statuses. Commit `docs/audit: map W3 payment integration and golden baseline`.
+
+Task1 evidence: `docs/W3_CAPSTONE_AUDIT.md`. Existing GREEN baseline (không tạo RED giả), không thay production; focused 118 PASS, isolated PostgreSQL 40 PASS, full unit 4071 PASS/98 skipped, lint/typecheck/build/context/diff PASS. Task2–5 chưa bắt đầu.
 
 ### Task 2: Enable positive-fee operational W3 delivery after two consents
 

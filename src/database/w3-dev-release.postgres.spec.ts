@@ -448,6 +448,30 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
       finally { await db.query("DELETE FROM system_configs WHERE key='w3.shipping.max_new_fee_vnd'"); }
     }, 30000);
 
+    it('0004 rejects a correctly split W3 invoice INSERT by its closed CHECK, while legacy positive shipping inserts', async () => {
+      const runner = db.createQueryRunner();
+      await runner.connect();
+      await runner.startTransaction();
+      try {
+        await new WarehouseDeliverySplit1793466000004().up(runner);
+        const insert = `INSERT INTO public.invoices(service_order_id,labor_total,parts_total,
+          fixhome_parts_total,technician_parts_total,technician_part_warranty_fee_total,
+          shipping_fee,grand_total,commission_base,commission_rate_snapshot,commission_amount,
+          shipping_policy_version,customer_shipping_share,technician_shipping_share)
+          VALUES ($1,200000,0,0,0,0,30000,$2,200000,0.1,20000,$3,$4,$5)`;
+        await runner.query(insert, [randomUUID(), 230000, 'LEGACY_100_0', 30000, 0]);
+        await expect(
+          runner.query(insert, [randomUUID(), 221000, 'W3_70_30_V1', 21000, 9000]),
+        ).rejects.toMatchObject({
+          driverError: { code: '23514', constraint: 'ck_invoice_shipping_cutover_closed' },
+        });
+      } finally {
+        // Includes the migration and accepted legacy row; never persists test invoices.
+        await runner.rollbackTransaction();
+        await runner.release();
+      }
+    });
+
     it('applies the exact W3 order once, keeps legacy invoices closed and replays without DDL', async () => {
       const invoiceId = randomUUID();
       await db.query(
