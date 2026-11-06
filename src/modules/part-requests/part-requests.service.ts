@@ -1009,7 +1009,12 @@ export class PartRequestsService {
         );
       }
 
-      if (request.status !== PartRequestStatus.RECEIVED) {
+      const w3Received = request.status === PartRequestStatus.REQUESTED && request.fulfillmentMethod === 'delivery'
+        && (await manager.query('SELECT w3_received_request($1) AS received', [request.id]))[0]?.received === true;
+      if (w3Received && (dto.usageStatus !== PartUsageStatus.USED || dto.usedQty !== undefined)) {
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Luồng giao linh kiện này chỉ hỗ trợ ghi nhận dùng toàn bộ sau khi nhận. Vui lòng liên hệ FixHome để trả linh kiện.');
+      }
+      if (request.status !== PartRequestStatus.RECEIVED && !w3Received) {
         throw new BusinessException(
           ErrorCodes.ORDER_INVALID_TRANSITION,
           'Can only update item usage after parts have been RECEIVED',

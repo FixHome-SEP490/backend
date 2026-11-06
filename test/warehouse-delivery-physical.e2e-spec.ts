@@ -580,8 +580,9 @@ describe.skipIf(
     );
     return { ...f, service, managerActor, customerActor, warehouse, upload };
   }
-  async function positiveTerms(fee = 20000, labor?: number) {
+  async function positiveTerms(fee = 20000, labor?: number, freeParts = false) {
     const f = await operationalFixture(fee);
+    if (freeParts) await db.query('UPDATE additional_cost_items SET unit_price=0,line_total=0 WHERE request_id=$1',[f.cost.id]);
     if (labor !== undefined) await db.query('UPDATE bookings SET fixed_unit_price_snapshot=$2 WHERE id=$1', [f.booking.id,labor]);
     const e = await f.upload('QUOTE');
     const body = {
@@ -620,9 +621,50 @@ describe.skipIf(
     return { ...f, body, state: result.state, consent };
   }
 
+  const maxFee = (fee: number) => Math.max(1, fee);
   const capKey = 'w3.shipping.max_new_fee_vnd';
-  async function confirmedPositive(fee = 20000, labor?: number) {
-    const f = await positiveTerms(fee, labor);
+  async function receipt(f: any) {
+    await f.service.physical(f.request.id, 'RESERVE', {commandId:randomUUID(),expectedVersion:0},f.actor);
+    for (const [index, kind] of ['ISSUE_TO_COURIER','COURIER_DISPATCH','TECHNICIAN_RECEIPT'].entries()) {
+      const actor = kind === 'TECHNICIAN_RECEIPT' ? f.actor : f.managerActor;
+      const evidence = await f.upload(kind,actor);
+      await f.service.physical(f.request.id,kind as any,{commandId:randomUUID(),expectedVersion:index+1,evidenceId:evidence.evidenceId},actor);
+    }
+  }
+  async function freezeInvoice(f: any) {
+    const Service = runtimeClass('modules/service-orders/service-orders.service','ServiceOrdersService');
+    const service = Object.create(Service.prototype);
+    service.configService = { getInt: async () => Number((await db.query("SELECT value FROM system_configs WHERE key='commission.rate_bps'"))[0].value) };
+    return db.transaction(async m => {
+      await m.query('SELECT id FROM service_orders WHERE id=$1 FOR UPDATE',[f.order.id]);
+      const invoice = await service.generateInvoice(f.order.id,m);
+      await m.query('UPDATE service_orders SET completion_requested_at=now() WHERE id=$1',[f.order.id]);
+      return invoice;
+    });
+  }
+  it.each([[30000,1000,221000,21000,9000],[0,1000,200000,0,0],[30000,0,221000,21000,9000]])(
+    'Task3 freezes actual receipt S=%i Cbps=%i before requesting completion', async (fee,bps,gross,c,t) => {
+      await db.query("UPDATE system_configs SET value='30000' WHERE key='w3.shipping.max_new_fee_vnd'");
+      await db.query("UPDATE system_configs SET value=$1 WHERE key='commission.rate_bps'",[String(bps)]);
+      try {
+        const f = await confirmedPositive(fee,200000);
+        await expect(freezeInvoice(f)).rejects.toThrow();
+        await receipt(f);
+        await db.query("UPDATE part_request_items SET usage_status='used' WHERE part_request_id=$1",[f.request.id]);
+        // Fixture parts are 2 x 1000. Keep them real and separately asserted.
+        const invoice = await freezeInvoice(f);
+        expect({...invoice,...Object.fromEntries(['shippingFee','grandTotal','commissionAmount','fixHomePartsTotal'].map(k=>[k,Number(invoice[k])]))}).toMatchObject({shippingPolicyVersion:'W3_70_30_V1',shippingFee:fee,
+          customerShippingShare:c,technicianShippingShare:t,grandTotal:gross+2000,
+          commissionAmount:200000*bps/10000,fixHomePartsTotal:2000});
+        expect(invoice.shippingShipments).toHaveLength(1);
+        expect((await db.query('SELECT w3_invoice_payment_verified($1) AS ok',[invoice.id]))[0].ok).toBe(true);
+        await expect(db.query('UPDATE invoices SET shipping_shipments=\'[]\'::jsonb WHERE id=$1',[invoice.id])).rejects.toThrow();
+        await expect(db.query("UPDATE part_request_items SET usage_status='returned' WHERE part_request_id=$1",[f.request.id])).rejects.toThrow();
+        expect((await freezeInvoice(f)).id).toBe(invoice.id);
+      } finally { await db.query("UPDATE system_configs SET value='1000' WHERE key='commission.rate_bps'"); }
+    });
+  async function confirmedPositive(fee = 20000, labor?: number, freeParts = false) {
+    const f = await positiveTerms(maxFee(fee), labor, freeParts);
     let state = (await f.consent(f.state, f.customerActor)).state;
     state = (await f.consent(state, f.actor)).state;
     const evidence = await f.upload('ACTUAL');
@@ -632,6 +674,41 @@ describe.skipIf(
     }, f.managerActor);
     return f;
   }
+  it.each(['cash','online'])('Task3 %s posts real paid invoice and technician wallet exactly once', async rail => {
+    await db.query("UPDATE system_configs SET value='30000' WHERE key='w3.shipping.max_new_fee_vnd'");
+    const f = await confirmedPositive(30000,200000,true);
+    await receipt(f);
+    await db.query("UPDATE part_request_items SET usage_status='used' WHERE part_request_id=$1",[f.request.id]);
+    const invoice = await freezeInvoice(f);
+    expect(Number(invoice.grandTotal)).toBe(221000);
+    const Wallet = runtimeClass('modules/wallet/wallet.service','WalletService');
+    const Business = runtimeClass('modules/system-config/business-config.service','BusinessConfigService');
+    const wallet = new Wallet(undefined,undefined,undefined,undefined,db,new Business(db.getRepository('SystemConfig')),{});
+    const Settlement = runtimeClass('modules/wallet/settlement.service','SettlementService');
+    const settlement = new Settlement(wallet,db);
+    const Finance = runtimeClass('modules/finance/finance.service','FinanceService');
+    const finance = Object.create(Finance.prototype);
+    finance.settlementService=settlement;
+    let cash: any;
+    if (rail==='cash') cash=await save('CashSettlement',{serviceOrderId:f.order.id,declaredByTechnicianId:f.actor.id,
+      declaredAmount:221000,status:'confirmed',confirmedByCustomerId:f.customer.id,confirmedAmount:221000,confirmedAt:new Date()});
+    const pay=()=>db.transaction(async m=>{
+      const row=await m.getRepository('Invoice').findOneOrFail({where:{id:invoice.id},lock:{mode:'pessimistic_write'}});
+      await m.query('SELECT id FROM service_orders WHERE id=$1 FOR UPDATE',[f.order.id]);
+      if(row.paymentStatus==='paid') return;
+      if(rail==='cash') await finance.applyConfirmedCash(m,{order:await m.getRepository('ServiceOrder').findOneByOrFail({id:f.order.id}),invoice:row,settlement:cash,actor:f.actor,now:new Date()});
+      else await finance.markInvoicePaidOnline(m,row,f.customer.id,new Date());
+    });
+    await Promise.all([pay(),pay()]);
+    await Promise.all([settlement.trySettleOrder(f.order.id),settlement.trySettleOrder(f.order.id)]);
+    expect((await db.getRepository('Invoice').findOneByOrFail({id:invoice.id})).paymentStatus).toBe('paid');
+    expect((await db.getRepository('ServiceOrder').findOneByOrFail({id:f.order.id})).status).toBe('completed');
+    const tx=await db.getRepository('WalletTransaction').findBy({referenceId:f.order.id,referenceType:'SERVICE_ORDER'});
+    expect(tx).toHaveLength(1);
+    expect(tx[0].type).toBe(rail==='cash'?'PLATFORM_FEE':'ONLINE_EARNING');
+    expect(Number(tx[0].amount)).toBe(rail==='cash'?50000:171000);
+    expect(Number((await db.getRepository('Wallet').findOneByOrFail({technicianId:f.actor.id})).balance)).toBe(rail==='cash'?-50000:171000);
+  });
   it('positive physical rejects missing consents/actual, source drift, authority drift and insufficient labor', async () => {
     const missing = await positiveTerms();
     const reserve = (f: any) => f.service.physical(f.request.id, 'RESERVE', {commandId:randomUUID(),expectedVersion:0}, f.actor);

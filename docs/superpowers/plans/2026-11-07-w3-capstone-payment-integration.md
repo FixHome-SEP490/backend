@@ -79,6 +79,8 @@ Task2 evidence: migration 0014 + canonical terms physical/stock; service/PG RED�
 - [ ] Read W3 invoice snapshot rigorously; implement strict narrow W3 guard at all payment entry points, including group/voucher or deliberately explicit unsupported subpaths with clear user-facing messages. Avoid global bypass and wire existing settlement posting once.
 - [ ] Run PostgreSQL, full finance/legacy/W3 tests and CI. Commit.
 
+Task3 local slice (07/11/2026): invoice writer/forward0015 immutable per-request provenance + receipt/actual checks và core paid cash/online settlement đã triển khai; chưa đánh dấu toàn Task3 hoàn tất. Unit regression 2×1 VND với L=C=0 đã GREEN; full unit4073 PASS/98 skipped, PostgreSQL physical/invoice/core paid cash+online59/59 PASS. Guard legacy giữ đóng; unsupported group/voucher/refund/custody giữ chặn. Còn PG CashFirst/customer-wallet/VNPay endpoint integration, hai actual shipments cùng order, negative invoice/hold matrix, consumer parity và release gate proof; xem Task3 audit. Không push/merge/deploy.
+
 ### Task 4: Direct manual transfer receipt, refund and Admin configuration
 
 **Files:** `src/modules/finance/*` (new small Admin-only confirmation controller/service), additive payment receipt migration only if existing payment attempts cannot model verified manual transfer safely; `src/modules/system-config/*` only for clarifying cap semantics; tests.

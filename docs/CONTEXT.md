@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-07 02:12 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-live-payment-integration-20261107
+> Cập nhật lần cuối: 2026-11-07 02:29 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-live-payment-integration-20261107
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -93,6 +93,8 @@ Ba điều không đổi giữa các repo:
 Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức của nhóm). Mâu thuẫn giữa code và tài liệu thì ghi vào mục 8 và hỏi PO, không tự quyết.
 
 ## 3. Trạng thái hiện tại
+
+W3 Task3 slice local: migration forward `1793466000015-W3InvoicePaymentEnable` freeze `shipping_shipments` theo canonical terms/actual + TECHNICIAN_RECEIVED; DB kiểm exact provenance, tổng share từng request, C/L và snapshot bất biến. Giữ legacy request status/receivedAt; chỉ USED toàn bộ sau receipt, projection nội bộ phục vụ billing/completion. Writer trước completionRequestedAt; money consumer phải kiểm invoice đã lưu bằng DB predicate, giữ group/voucher/refund/custody chặn. Settlement W3 không gọi legacy custody helper, chỉ đi tiếp khi DB xác nhận không custody/group; Order lock và wallet key cũ giữ posting một lần. Kiểm chứng: PG physical/invoice/core paid cash+online 59/59 PASS; full unit4073 PASS/98 skipped; lint0 errors/5 warning cũ, typecheck/build/context/diff PASS. Đây là Task3 một phần, chưa release: CashFirst receipt API, customer-wallet debit/VNPay signed callback W3, nhiều shipment thực cùng order, refund và Web/Mobile UAT còn NOT VERIFIED. DEV gate vẫn dừng 0013, không deployable. Xem audit/plan; không shared DB/provider/push/merge/deploy.
 
 W3 capstone Task2 (base `9b8c147`): migration forward `W3PositivePhysicalDelivery1793466000014` bind physical event vào exact `delivery_fee_terms.result_version`; canonical dual consent/actual, approved whole-source freshness/assignment/warehouse và budget L-C-Σt dưới Order lock. Giữ CAS, stage evidence, atomic stock/deferred completeness, append-only và zero route; không tạo proposal zero giả. Budget tính cả sibling quote chưa actual, chặn thiếu coverage/stale source và statement D nonzero chưa đối soát. PostgreSQL physical 54/54 PASS; full unit 4072 PASS/98 skipped, focused 118 PASS; typecheck/build/lint PASS (5 warning cũ). Terms envelope giữ BLOCKED/null/false, receipt chưa đổi legacy receivedAt/status/usage. Invoice/cash/VNPay/wallet/completion/custody không mở; Task3–5 chưa làm. Task1 audit/golden tại `docs/W3_CAPSTONE_AUDIT.md`. Không ghi DB chung/push/merge/deploy. DEV gate whitelist hiện dừng 0013, từ chối pending 0014; rollout/gate update thuộc Task5, chưa deployable.
 
@@ -516,6 +518,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-07 02:29 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Task3 slice invoice W3 và DB provenance, USED sau receipt, narrow collection/settlement; endpoint/UAT và rollout chưa kiểm chứng.
 - 2026-11-07 02:12 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Ghi Task2 positive terms sang physical/stock bằng migration 0014, PostgreSQL 54 PASS; giữ tiền và DEV gate đóng, Task3 chưa triển khai.
 - 2026-11-07 01:52 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Ghi audit Task1 W3 payment, golden arithmetic, CHECK PostgreSQL và blocker physical/invoice/completion; chưa mở money cutover.
 - 2026-11-07 00:36 (UTC+7) | foxonworld | foxonworld/fixhome-w3-admin-shipping-zero-cap-20261106 | Merge W3 admin zero-cap and warranty partial-quantity changes; retain 40 newest context entries.
@@ -555,4 +558,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-01 22:41 (UTC+7) | ToanAltF4 | fix/address-strict-text-coords | Địa chỉ lưu bắt buộc đủ cặp lat, lng hợp lệ và chữ địa chỉ sạch, từ chối emoji, ký tự vô hình, điều khiển, thẻ HTML với câu tiếng Việt (lỗi 29, PO 01/11/2026)
 - 2026-11-01 21:56 (UTC+7) | foxonworld | foxonworld/fixhome-group-stop-be-20261101 | Thêm contact evidence bền vững, group stop nguyên tử/idempotent, staff correlation và rebook subset; giữ nghĩa vụ cũ và giới hạn PostgreSQL/runtime.
 - 2026-11-01 21:25 (UTC+7) | ToanAltF4 | feat/ai-diagnostic-state | Lưu trạng thái chẩn đoán AI có version, bảng ai_chat_turns chống tin lặp, pastJobs có trạng thái COMPLETED/SCHEDULED
-- 2026-11-01 21:07 (UTC+7) | ToanAltF4 | fix/vnpay-attempt-expiry | Link VNPay mới có vnp_ExpireDate 15 phút và lưu expires_at; tiền mặt đóng lượt VNPay quá hạn cộng 15 phút ân hạn, IPN thành công muộn mở support case (lỗi 39)

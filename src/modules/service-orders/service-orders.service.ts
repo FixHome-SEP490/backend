@@ -1,3 +1,4 @@
+import { readInvoiceFinancialSnapshot } from '../finance/invoice-financial-snapshot';
 import { andWhereTextMatches } from '../../shared/utils/list-search';
 import { checkPendingVisitQuota, lockPendingVisitCustomer } from '../bookings/pending-visit-quota';
 import { NO_DEPARTURE_CANCEL_REASON } from './no-departure';
@@ -2111,7 +2112,10 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     }
 
     const partsTotal = fixHomePartsTotal + technicianPartsTotal;
-    const shippingFee = additionalCosts.reduce((sum, cost) => sum + (
+    const shippingShipments = requests.some(r => r.fulfillmentMethod === 'delivery')
+      ? (await manager.query('SELECT w3_invoice_shipping_source($1) AS shipments', [orderId]))[0]?.shipments ?? null
+      : null;
+    const shippingFee = shippingShipments ? shippingShipments.reduce((sum: number, line: { shippingFee: number }) => sum + line.shippingFee, 0) : additionalCosts.reduce((sum, cost) => sum + (
       requests.some(r => r.additionalCostId === cost.id && r.receivedAt && r.fulfillmentMethod === 'delivery' && ['received', 'completed'].includes(r.status))
         ? Number(cost.shippingFee || 0) : 0), 0);
 
@@ -2121,13 +2125,14 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     if (commissionRateSnapshot < 0 || commissionRateSnapshot > 1) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid commission configuration');
     const commissionAmount = Math.round(laborTotal * commissionRateSnapshot);
 
-    // W3 cutover is deliberately closed: new invoices explicitly freeze LEGACY.
-    // No ENV flag may reinterpret approved costs or historical invoices.
-    const shippingPolicyVersion = 'LEGACY_100_0' as const;
-    const financial = computeInvoiceFinancialComponents({ policyVersion: shippingPolicyVersion,
+    const shippingPolicyVersion = shippingShipments ? 'W3_70_30_V1' as const : 'LEGACY_100_0' as const;
+    const financial = shippingShipments ? null : computeInvoiceFinancialComponents({ policyVersion: shippingPolicyVersion,
       laborTotal, commissionAmount, fixHomePartsTotal, technicianPartsTotal,
       technicianPartWarrantyFeeTotal, shippingFee, knownLaborDeductions: 0 });
-    const { grandTotal, customerShippingShare, technicianShippingShare } = financial;
+    const customerShippingShare = shippingShipments ? shippingShipments.reduce((sum: number, line: { customerShippingShare: number }) => sum + line.customerShippingShare, 0) : financial!.customerShippingShare;
+    const technicianShippingShare = shippingFee - customerShippingShare;
+    if (laborTotal - commissionAmount - technicianShippingShare < 0) throw new BusinessException(ErrorCodes.CONFLICT, 'Tiền công không đủ chi trả phí giao đã chốt.');
+    const grandTotal = laborTotal + partsTotal + technicianPartWarrantyFeeTotal + customerShippingShare;
 
     // Create invoice
     const invoice = manager.create(Invoice, {
@@ -2141,6 +2146,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       shippingPolicyVersion,
       customerShippingShare,
       technicianShippingShare,
+      shippingShipments,
       grandTotal,
       commissionBase,
       commissionRateSnapshot,
@@ -2148,6 +2154,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       paymentStatus: PaymentStatus.UNPAID,
       issuedAt: new Date(),
     });
+    if (shippingShipments) readInvoiceFinancialSnapshot(invoice, shippingShipments);
     const savedInvoice = await manager.save(Invoice, invoice);
 
     // Create invoice items
