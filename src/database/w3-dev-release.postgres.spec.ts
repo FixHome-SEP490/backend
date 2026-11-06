@@ -516,7 +516,8 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
       await db.query('DELETE FROM public.migrations WHERE name=$1', [
         W3_MIGRATIONS[5],
       ]);
-      await expect(runW3DevGate(db)).rejects.toThrow('refusing DDL replay');
+      // The 0006 DRAFT-only schema proof fails before any DDL replay marker is consulted.
+      await expect(runW3DevGate(db)).rejects.toThrow('W3 delivery policy schema proof incomplete');
       await db.query(
         'INSERT INTO public.migrations(timestamp,name) VALUES($1,$2)',
         [1793466000009, W3_MIGRATIONS[5]],
