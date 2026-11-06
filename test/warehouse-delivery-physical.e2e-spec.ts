@@ -533,7 +533,7 @@ describe.skipIf(
           size: Buffer.byteLength(bytes),
         },
         actor,
-        shippingFee > 0,
+        shippingFee > 0 && ['QUOTE', 'ACTUAL'].includes(purpose),
       );
     if (shippingFee > 0)
       return { ...f, service, managerActor, customerActor, warehouse, upload };
@@ -580,8 +580,9 @@ describe.skipIf(
     );
     return { ...f, service, managerActor, customerActor, warehouse, upload };
   }
-  async function positiveTerms(fee = 20000) {
+  async function positiveTerms(fee = 20000, labor?: number) {
     const f = await operationalFixture(fee);
+    if (labor !== undefined) await db.query('UPDATE bookings SET fixed_unit_price_snapshot=$2 WHERE id=$1', [f.booking.id,labor]);
     const e = await f.upload('QUOTE');
     const body = {
       commandId: randomUUID(),
@@ -620,6 +621,83 @@ describe.skipIf(
   }
 
   const capKey = 'w3.shipping.max_new_fee_vnd';
+  async function confirmedPositive(fee = 20000, labor?: number) {
+    const f = await positiveTerms(fee, labor);
+    let state = (await f.consent(f.state, f.customerActor)).state;
+    state = (await f.consent(state, f.actor)).state;
+    const evidence = await f.upload('ACTUAL');
+    await f.service.recordTerms(f.request.id, 'RECORD_ACTUAL', {
+      commandId: randomUUID(), expectedVersion: state.version, quoteVersion: 1,
+      totalShippingFee: fee, evidenceId: evidence.evidenceId,
+    }, f.managerActor);
+    return f;
+  }
+  it('positive physical rejects missing consents/actual, source drift, authority drift and insufficient labor', async () => {
+    const missing = await positiveTerms();
+    const reserve = (f: any) => f.service.physical(f.request.id, 'RESERVE', {commandId:randomUUID(),expectedVersion:0}, f.actor);
+    await expect(reserve(missing)).rejects.toThrow();
+    const drift = await confirmedPositive();
+    await db.query('UPDATE additional_cost_requests SET reason=$2 WHERE id=$1', [drift.cost.id, 'changed source']);
+    await expect(reserve(drift)).rejects.toThrow();
+    const authority = await confirmedPositive();
+    await db.query("UPDATE warehouses SET status='inactive' WHERE id=$1", [authority.warehouse.id]);
+    await expect(reserve(authority)).rejects.toThrow();
+    const budget = await operationalFixture(20000);
+    // L=1000 before C freeze; t=6000 must fail even though cap/source allow the quote.
+    await db.query('UPDATE bookings SET fixed_unit_price_snapshot=1000 WHERE id=$1', [budget.booking.id]);
+    const ev = await budget.upload('QUOTE');
+    let st = (await budget.service.recordTerms(budget.request.id, 'PROPOSE', {commandId:randomUUID(),expectedVersion:0,warehouseId:budget.warehouse.id,evidenceId:ev.evidenceId,courierReference:'budget',totalShippingFee:20000}, budget.managerActor)).state;
+    for (const actor of [budget.customerActor,budget.actor]) {
+      st = (await budget.service.recordTerms(budget.request.id,'CONSENT',{commandId:randomUUID(),expectedVersion:st.version,quoteVersion:1,quoteFingerprint:st.quote!.fingerprint,totalShippingFee:20000,shippingShare:actor.role==='customer'?14000:6000,accepted:true},actor)).state;
+    }
+    const actual = await budget.upload('ACTUAL');
+    await budget.service.recordTerms(budget.request.id,'RECORD_ACTUAL',{commandId:randomUUID(),expectedVersion:3,quoteVersion:1,totalShippingFee:20000,evidenceId:actual.evidenceId},budget.managerActor);
+    await expect(reserve(budget)).rejects.toMatchObject({response:{details:{blocker:'DELIVERY_ORDER_LABOR_BUDGET_EXCEEDED'}}});
+    for (const f of [missing,drift,authority,budget]) expect(await eventCount(f.request.id)).toBe(0);
+  });
+  it('positive reserve serializes exact replay and competing CAS; rejects replay after source authority drifts', async () => {
+    const f = await confirmedPositive();
+    const body = {commandId:randomUUID(),expectedVersion:0};
+    const results = await Promise.all([1,2].map(() => f.service.physical(f.request.id,'RESERVE',body,f.actor)));
+    expect(results.map(r=>r.replayed).sort()).toEqual([false,true]);
+    await expect(f.service.physical(f.request.id,'RESERVE',{...body,commandId:randomUUID()},f.actor)).rejects.toThrow();
+    expect(await eventCount(f.request.id)).toBe(1);
+    expect((await db.getRepository('WarehouseStock').findOneByOrFail({warehouseId:f.warehouse.id})).reserved).toBe(2);
+    await expect(db.query('UPDATE additional_cost_requests SET reason=$2 WHERE id=$1',[f.cost.id,'forged'])).rejects.toThrow('immutable');
+    await db.query("UPDATE users SET is_active=false WHERE id=$1",[f.customer.id]);
+    await expect(f.service.physical(f.request.id,'RESERVE',body,f.actor)).rejects.toThrow();
+  });
+  it('positive raw SQL requires exact terms version, snapshot and complete movements; failures roll back stock', async () => {
+    const f = await confirmedPositive();
+    const snapshot = {version:1,status:'RESERVED',reason:null,warehouseId:f.warehouse.id,responsibleUserId:f.managerActor.id,
+      quantities:[{partId:f.part.id,quantity:2}],courierReference:null,evidence:[]};
+    const insert = (m: any, version: number|null, value=snapshot) => m.query(`INSERT INTO warehouse_delivery_events
+      (part_request_id,command_id,actor_user_id,actor_role,kind,expected_version,result_version,fingerprint,snapshot,fee_terms_version)
+      VALUES($1,$2,$3,'technician','RESERVE',0,1,$4,$5::jsonb,$6)`,[f.request.id,randomUUID(),f.actor.id,'a'.repeat(64),JSON.stringify(value),version]);
+    await expect(db.transaction(m=>insert(m,null))).rejects.toThrow('DELIVERY_TERMS_VERSION_MISMATCH');
+    await expect(db.transaction(m=>insert(m,3))).rejects.toThrow('DELIVERY_TERMS_VERSION_MISMATCH');
+    await expect(db.transaction(m=>insert(m,4,{...snapshot,quantities:[{partId:f.part.id,quantity:1}]}))).rejects.toThrow('snapshot mismatch');
+    await expect(db.transaction(m=>insert(m,4))).rejects.toThrow('Incomplete delivery movement journal');
+    expect(await eventCount(f.request.id)).toBe(0);
+    expect((await db.getRepository('WarehouseStock').findOneByOrFail({warehouseId:f.warehouse.id})).reserved).toBe(0);
+  });
+  it('positive budget includes sibling quote commitments, not only the executing shipment', async () => {
+    const f = await confirmedPositive(20000,10000); // L-C=9000; each shipment t=6000.
+    const cost = await save('AdditionalCostRequest',{...f.cost,id:randomUUID(),reason:'sibling approved source'});
+    await save('AdditionalCostItem',{requestId:cost.id,type:'parts_equipment',description:'sibling part',partSource:'fixhome',partCatalogId:f.part.id,quantity:2,unitPrice:1000,lineTotal:2000});
+    const sibling = await db.transaction(async m=>{
+      const r = await m.getRepository('PartRequest').save({serviceOrderId:f.order.id,technicianId:f.actor.id,requestType:'additional',fulfillmentMethod:'delivery',additionalCostId:cost.id,shippingFee:20000,status:'requested'});
+      await m.getRepository('PartRequestItem').save({partRequestId:r.id,partCatalogId:f.part.id,partSource:'fixhome',partNameSnapshot:'sibling part',quantity:2,unitPriceSnapshot:1000});
+      await m.query('INSERT INTO warehouse_delivery_cohorts(part_request_id,service_order_id,technician_id) VALUES($1,$2,$3)',[r.id,f.order.id,f.actor.id]);
+      return r;
+    });
+    const reserve=()=>f.service.physical(f.request.id,'RESERVE',{commandId:randomUUID(),expectedVersion:0},f.actor);
+    await expect(reserve()).rejects.toMatchObject({response:{details:{blocker:'DELIVERY_ORDER_BUDGET_COVERAGE_REQUIRED'}}});
+    const evidence=await f.service.upload(sibling.id,f.warehouse.id,'QUOTE',1,{buffer:Buffer.from('sibling'),size:7,mimetype:'image/jpeg'},f.managerActor,true);
+    await f.service.recordTerms(sibling.id,'PROPOSE',{commandId:randomUUID(),expectedVersion:0,warehouseId:f.warehouse.id,evidenceId:evidence.evidenceId,courierReference:'sibling',totalShippingFee:20000},f.managerActor);
+    await expect(reserve()).rejects.toMatchObject({response:{details:{blocker:'DELIVERY_ORDER_LABOR_BUDGET_EXCEEDED'}}});
+    expect(await eventCount(f.request.id)).toBe(0);
+  });
   const runtimeClass = (path: string, name: string) => createRequire(resolve('package.json'))(resolve(`dist/${path}.js`))[name];
   async function capAdminFixture() {
     const admin = await save('User', { email: `${randomUUID()}@example.test`, passwordHash: 'ci-no-login',
@@ -670,8 +748,8 @@ describe.skipIf(
     expect((await f.service.recordTerms(f.request.id, 'RECORD_ACTUAL', { commandId: randomUUID(),
       expectedVersion: state.version, quoteVersion: 1, totalShippingFee: 20, evidenceId: actual.evidenceId }, f.managerActor)).state)
       .toMatchObject({ financialExecution: 'BLOCKED', paymentVerified: false });
-    await expect(f.service.physical(f.request.id, 'RESERVE', { commandId: randomUUID(), expectedVersion: 0 }, f.actor))
-      .rejects.toMatchObject({ response: { details: { blocker: 'FINANCE_LEDGER_SOURCE_REQUIRED' } } });
+    expect((await f.service.physical(f.request.id, 'RESERVE', { commandId: randomUUID(), expectedVersion: 0 }, f.actor)).state.status)
+      .toBe('RESERVED');
     expect((await f.service.readTerms(f.request.id, f.customerActor)).invalidated).toBe(false);
   });
 
@@ -1169,7 +1247,7 @@ describe.skipIf(
     expect((await db.query('SELECT count(*)::int AS n FROM w3_order_commission_snapshots WHERE service_order_id=$1', [f.order.id]))[0].n).toBe(1);
     expect((await db.query('SELECT count(*)::int AS n FROM delivery_fee_terms WHERE part_request_id=$1', [f.request.id]))[0].n).toBe(1);
   });
-  it('persists positive 70/30 terms, separate consents and lower actual without enabling financial or physical execution', async () => {
+  it('persists positive terms and executes the physical lifecycle once, leaving finance closed', async () => {
     const f = await positiveTerms();
     expect(f.state.quote).toMatchObject({
       totalShippingFee: 20000,
@@ -1253,15 +1331,26 @@ describe.skipIf(
     expect(
       (await f.service.readTerms(f.request.id, f.customerActor)).invalidated,
     ).toBe(false);
-    await expect(
-      f.service.physical(
+    const reserveBody = { commandId: randomUUID(), expectedVersion: 0 };
+    const reserved = await f.service.physical(
         f.request.id,
         'RESERVE',
-        { commandId: randomUUID(), expectedVersion: 0 },
+        reserveBody,
         f.actor,
-      ),
-    ).rejects.toThrow();
-    expect(await eventCount(f.request.id)).toBe(0);
+      );
+    expect(reserved.state.status).toBe('RESERVED');
+    expect((await f.service.physical(f.request.id, 'RESERVE', reserveBody, f.actor)).replayed).toBe(true);
+    for (const [index, kind] of ['ISSUE_TO_COURIER', 'COURIER_DISPATCH', 'TECHNICIAN_RECEIPT'].entries()) {
+      const actor = kind === 'TECHNICIAN_RECEIPT' ? f.actor : f.managerActor;
+      const evidence = await f.upload(kind, actor);
+      const result = await f.service.physical(f.request.id, kind as any, {
+        commandId: randomUUID(), expectedVersion: index + 1, evidenceId: evidence.evidenceId,
+      }, actor);
+      expect(result.state.version).toBe(index + 2);
+    }
+    expect(await eventCount(f.request.id)).toBe(4);
+    expect((await db.query('SELECT fee_terms_version FROM warehouse_delivery_events WHERE part_request_id=$1', [f.request.id])).map((r: any) => r.fee_terms_version)).toEqual([4,4,4,4]);
+    expect((await db.query('SELECT count(*)::int AS n FROM delivery_shipping_proposals WHERE part_request_id=$1', [f.request.id]))[0].n).toBe(0);
     expect(
       await db.getRepository('Invoice').countBy({ serviceOrderId: f.order.id }),
     ).toBe(0);
@@ -1270,7 +1359,9 @@ describe.skipIf(
         await db
           .getRepository('WarehouseStock')
           .findOneByOrFail({ warehouseId: f.warehouse.id })
-      ).reserved,
+      ).onHand,
+    ).toBe(1);
+    expect((await db.getRepository('WarehouseStock').findOneByOrFail({warehouseId:f.warehouse.id})).reserved
     ).toBe(0);
   });
   it('serializes positive terms CAS and exact-command retry, and rolls back a failed audit', async () => {

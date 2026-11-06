@@ -290,6 +290,28 @@ function fixture() {
 }
 
 describe('conditional positive shipping terms (no financial authority)', () => {
+  it('uses confirmed canonical positive terms for physical reserve without a legacy proposal', async () => {
+    const f = fixture();
+    f.cost.shippingFee = f.request.shippingFee = 20000;
+    const terms = { result_version: 4, source_current: true, state: {
+      version: 4, customerConsented: true, technicianConsented: true,
+      quote: { quoteVersion: 1, totalShippingFee: 20000, warehouseId: f.warehouse.id,
+        responsibleUserId: f.sm.id, assignmentId: f.assignment.id, courierReference: 'positive', },
+      actual: { quoteVersion: 1, totalShippingFee: 18000 },
+    }};
+    const original = f.manager.query.getMockImplementation()!;
+    f.manager.query.mockImplementation(async (sql: string, args: any[]) => {
+      if (sql.includes('FROM delivery_fee_terms')) return [terms];
+      if (sql.includes('admitted') && sql.includes('warehouse_delivery_events')) return [{ admitted: true }];
+      if (sql.includes('w3_positive_physical_terms')) return [{ state: terms.state }];
+      return original(sql, args);
+    });
+    const r = await f.service.physical(f.request.id, 'RESERVE', {commandId: randomUUID(), expectedVersion: 0}, f.actor(f.tech));
+    expect(r.state.status).toBe('RESERVED');
+    expect(f.movements).toHaveLength(2);
+    expect(f.rows('WarehouseDeliveryEvent')[0].feeTermsVersion).toBe(4);
+    expect(f.rows('DeliveryShippingProposal')).toHaveLength(0);
+  });
   const proposal = (f: ReturnType<typeof fixture>, extra = {}) => ({
     commandId: randomUUID(),
     expectedVersion: 0,

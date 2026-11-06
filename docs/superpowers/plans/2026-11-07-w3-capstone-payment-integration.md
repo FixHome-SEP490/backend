@@ -57,10 +57,12 @@ Task1 evidence: `docs/W3_CAPSTONE_AUDIT.md`. Existing GREEN baseline (không t�
 
 **Interfaces:** `approved W3 actual per request` derived server-side from canonical `delivery_fee_terms` head with verified approved cost, both consents, actual<=source/quote and physical status.
 
-- [ ] Test RED: quote dương within Admin cap → dual consent customer/tech → actual → stock RESERVE/ISSUE/DISPATCH/RECEIPT; prior zero-fee path unchanged; missing/expired consent reject; replay and CAS safe.
-- [ ] Use 0010 `/delivery/terms` as monetary authority; physical journal 0005/warehouse stocks as physical authority. Never make two independent chargeable fee sources or accept client verdict.
-- [ ] Replace `FINANCE_LEDGER_SOURCE_REQUIRED` solely for W3 verified positive path; validate source under order lock, budget L-C-Σt, cap applies only NEW quote/revision; enforce source/quote/actual/evidence matching, snapshots.
-- [ ] Run positive/zero/race/legacy focused tests. Commit isolated Task 2 change.
+- [x] Test RED: quote dương within Admin cap → dual consent customer/tech → actual → stock RESERVE/ISSUE/DISPATCH/RECEIPT; prior zero-fee path unchanged; missing/expired consent reject; replay and CAS safe.
+- [x] Use 0010 `/delivery/terms` as monetary authority; physical journal 0005/warehouse stocks as physical authority. Never make two independent chargeable fee sources or accept client verdict.
+- [x] Replace `FINANCE_LEDGER_SOURCE_REQUIRED` solely for W3 verified positive path; validate source under order lock, budget L-C-Σt, cap applies only NEW quote/revision; enforce source/quote/actual/evidence matching, snapshots.
+- [x] Run positive/zero/race/legacy focused tests. Commit isolated Task 2 change.
+
+Task2 evidence: migration 0014 + canonical terms physical/stock; service/PG RED→GREEN, PostgreSQL physical 54 PASS, full unit 4072 PASS/98 skipped, focused 118 PASS. Invoice/payment remain closed. DEV gate still rejects pending 0014; rollout/schema proof belongs to Task5. No shared DB/push/deploy.
 
 ### Task 3: Freeze W3 invoice 70/30 and narrowly enable collection
 

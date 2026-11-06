@@ -119,7 +119,7 @@ const publicTerms = (state: any) =>
       }
     : null;
 
-/** Authenticated zero-fee operations; positive spending requires a Finance-approved ledger. */
+/** Physical operations use either legacy zero consent or canonical positive fee terms. */
 @Injectable()
 export class DeliveryOperationsService {
   private readonly consents = new DeliveryConsentStoreService();
@@ -153,7 +153,6 @@ export class DeliveryOperationsService {
     id: string,
     actor: Actor,
     warehouseId?: string,
-    terms = false,
   ) {
     if (
       !uuid.test(id) ||
@@ -236,15 +235,14 @@ export class DeliveryOperationsService {
       where: { partRequestId: id },
       order: { quoteVersion: 'DESC' },
     });
-    const [termsHead] = terms
-      ? await m.query(
-          'SELECT *, (source_snapshot=w3_fee_source_snapshot(part_request_id) AND w3_prequote_commission_current(service_order_id)) AS source_current FROM delivery_fee_terms WHERE part_request_id=$1 ORDER BY result_version DESC LIMIT 1',
-          [id],
-        )
-      : [];
+    const [termsHead] = await m.query(
+      'SELECT *, (source_snapshot=w3_fee_source_snapshot(part_request_id) AND w3_prequote_commission_current(service_order_id)) AS source_current FROM delivery_fee_terms WHERE part_request_id=$1 ORDER BY result_version DESC LIMIT 1',
+      [id],
+    );
     const boundWarehouseId =
       warehouseId ??
-      (terms ? termsHead?.state?.quote?.warehouseId : proposal?.warehouseId);
+      termsHead?.state?.quote?.warehouseId ??
+      proposal?.warehouseId;
     const warehouse = boundWarehouseId
       ? await m.findOne(Warehouse, {
           where: { id: boundWarehouseId },
@@ -322,11 +320,9 @@ export class DeliveryOperationsService {
     } catch {
       return conflict('DELIVERY_WHOLE_SOURCE_REQUIRED');
     }
-    // No canonical spending commitments or approved L/C/D ledger exists here.
-    // A local quote's netLaborAfterShipping (or the pure aggregate assessment) cannot authorize
-    // spending. Future consumption of assessDeliveryOrderShippingLaborBudget must read those
-    // sources under the ServiceOrder lock above and retain CAS + the independent Finance gate.
-    // ZERO spending only: never claim that siblings, labor or deductions are zero.
+    // Legacy proposals stay zero-only. Positive physical admission separately consumes
+    // canonical terms and the DB whole-order labor budget under the same Order lock.
+    // Neither path authorizes invoice/payment execution.
     if (
       !terms &&
       (!explicitDatabaseZero(cost.shippingFee) ||
@@ -516,20 +512,21 @@ export class DeliveryOperationsService {
       return denied();
     this.storage.validate(file);
     const ref = await this.run(async (m) => {
-      const s = await this.scope(m, id, actor, warehouseId, terms);
+      const s = await this.scope(m, id, actor, warehouseId);
       await this.open(m, s);
       return s.order.id;
     });
     const privateObjectRef = await this.storage.upload(ref, actor.id, file);
     try {
       return await this.run(async (m) => {
-        const s = await this.scope(m, id, actor, warehouseId, terms);
+        const s = await this.scope(m, id, actor, warehouseId);
         await this.open(m, s);
         if (
           purpose !== 'QUOTE' &&
           (terms
             ? s.termsHead?.state?.quote?.warehouseId
-            : s.proposal?.warehouseId) !== warehouseId
+            : (s.termsHead?.state?.quote?.warehouseId ??
+              s.proposal?.warehouseId)) !== warehouseId
         )
           return conflict('DELIVERY_EVIDENCE_WAREHOUSE_MISMATCH');
         const row = {
@@ -635,7 +632,6 @@ export class DeliveryOperationsService {
         kind === 'PROPOSE'
           ? (body as ShippingProposalInput).warehouseId
           : undefined,
-        true,
       );
       await this.open(m, s);
       const facts = await this.source(m, s, true);
@@ -680,7 +676,8 @@ export class DeliveryOperationsService {
       }
       // Existing receipts/consents remain historical. Only a new quote/revision
       // takes the current cap; it cannot authorize spending or rewrite the source.
-      if (kind === 'PROPOSE') await assertW3NewShippingFee(m, body.totalShippingFee);
+      if (kind === 'PROPOSE')
+        await assertW3NewShippingFee(m, body.totalShippingFee);
       if (kind !== 'CONSENT') {
         const e = await this.evidence(
           m,
@@ -727,7 +724,7 @@ export class DeliveryOperationsService {
 
   async readTerms(id: string, actor: Actor) {
     return this.run(async (m) => {
-      const s = await this.scope(m, id, actor, undefined, true);
+      const s = await this.scope(m, id, actor);
       const sm = s.warehouse
         ? await m.findOne(User, {
             where: { id: s.warehouse.responsibleUserId },
@@ -1041,6 +1038,13 @@ export class DeliveryOperationsService {
       if (prior) {
         if (prior.fingerprint !== fingerprint)
           conflict('DELIVERY_COMMAND_CONFLICT');
+        if (s.termsHead && kind !== 'RELEASE') {
+          await this.open(m, s);
+          await this.source(m, s, true);
+          await m.query('SELECT w3_positive_physical_terms($1) AS state', [id]);
+          if (prior.feeTermsVersion !== s.termsHead.result_version)
+            conflict('DELIVERY_TERMS_VERSION_MISMATCH');
+        }
         return { state: prior.snapshot, replayed: true };
       }
       const head = await m.findOne(WarehouseDeliveryEvent, {
@@ -1050,22 +1054,40 @@ export class DeliveryOperationsService {
       if ((head?.resultVersion ?? 0) !== body.expectedVersion)
         return conflict('DELIVERY_CAS_CONFLICT');
       let state: DeliveryPhysicalState;
+      let feeTermsVersion: number | null = null;
       if (kind === 'RELEASE') {
         if (!head || s.warehouse?.id !== head.snapshot.warehouseId)
           return conflict('DELIVERY_RELEASE_FORBIDDEN');
         state = advanceDelivery(head.snapshot, kind, null);
+        feeTermsVersion = head.feeTermsVersion ?? null;
       } else {
         await this.open(m, s);
-        const consent = await this.consents.read(m, id);
-        const facts = await this.bound(m, s, consent);
+        const positive = !!s.termsHead;
+        const consent = positive ? null : await this.consents.read(m, id);
+        const facts = positive
+          ? await this.source(m, s, true)
+          : await this.bound(m, s, consent);
+        const [confirmed] = positive
+          ? await m.query('SELECT w3_positive_physical_terms($1) AS state', [
+              id,
+            ])
+          : [];
+        const quote = positive ? confirmed?.state?.quote : consent?.quote;
         if (
-          !consent?.customerConsent ||
-          !consent.technicianConsent ||
-          !consent.actual ||
-          consent.quote.totalShippingFee !== 0 ||
-          consent.actual.totalShippingFee !== 0
+          positive
+            ? !confirmed?.state ||
+              !s.termsHead.source_current ||
+              quote?.assignmentId !== s.assignment.id ||
+              quote?.warehouseId !== s.warehouse?.id ||
+              quote?.responsibleUserId !== s.warehouse?.responsibleUserId
+            : !consent?.customerConsent ||
+              !consent.technicianConsent ||
+              !consent.actual ||
+              consent.quote.totalShippingFee !== 0 ||
+              consent.actual.totalShippingFee !== 0
         )
           return conflict('DELIVERY_DUAL_CONSENT_AND_ACTUAL_REQUIRED');
+        if (positive) feeTermsVersion = s.termsHead.result_version;
         if (kind === 'RESERVE') {
           if (
             head &&
@@ -1077,7 +1099,7 @@ export class DeliveryOperationsService {
           const stocks = await m.query(
             `SELECT warehouse_id AS "warehouseId",part_id AS "partId",on_hand AS "onHand",reserved FROM warehouse_stock
             WHERE warehouse_id=$1 AND part_id=ANY($2::uuid[]) ORDER BY part_id FOR UPDATE`,
-            [s.proposal!.warehouseId, facts.quantities.map((q) => q.partId)],
+            [s.warehouse!.id, facts.quantities.map((q) => q.partId)],
           );
           state = {
             ...assessDeliveryStock({
@@ -1102,7 +1124,7 @@ export class DeliveryOperationsService {
             s,
             body.evidenceId!,
             kind,
-            consent.quote.quoteVersion,
+            quote!.quoteVersion,
             actor,
           );
           if (
@@ -1112,13 +1134,16 @@ export class DeliveryOperationsService {
           )
             return conflict('DELIVERY_DISTINCT_STAGE_EVIDENCE_REQUIRED');
           state = advanceDelivery(head.snapshot, kind, {
-            courierReference: s.proposal!.courierReference,
+            courierReference: positive
+              ? quote.courierReference
+              : s.proposal!.courierReference,
             evidenceRef: `delivery-operation-evidence:${e.id}`,
             contentDigest: e.contentDigest,
           });
         }
       }
       await m.insert(WarehouseDeliveryEvent, {
+        feeTermsVersion,
         partRequestId: id,
         commandId: body.commandId,
         actorUserId: actor.id,
