@@ -2,7 +2,7 @@
 
 Ngày: 04/11/2026. Nguồn: official dev `ba703298`, owner order W3 04/11/2026.
 Trạng thái hiện hành: **SOURCE ZERO-FEE OPERATIONS + CONDITIONAL TERMS; FINANCIAL EXECUTION BLOCKED**.
-Mục 1–21 là các checkpoint trước đây; mục 22 cập nhật nguồn thẩm quyền, API conditional terms và migration 0010. Không phải full W3 hoặc activation DEV.
+Mục 1–22 là các checkpoint trước đây; mục 23 cập nhật quyết định owner 1–5, C prequote và migration 0011. Không phải full W3 hoặc activation DEV.
 Team Finance phải review độc lập
 trước release. Không apply migration, đổi ENV hay ghi shared DB trong task này.
 
@@ -1401,3 +1401,112 @@ read-only reviewer xác nhận P2 ACL đã sửa, không thấy critical/P1 tron
 Tester/QA/QC: RED→GREEN cho service thiếu feature, whitelist 0010, timezone và default ACL;
 tests DB không thay provider/Finance signoff. DevOps: không release, Lead áp migration và
 restart Backend trước runtime QA. Đây là hoàn tất scope conditional terms, không hoàn tất money W3.
+
+## 23. Owner decisions 1–5 — C prequote và policy preparatory (06/11/2026)
+
+Base `origin/dev b9ab0988` (PR #201), chỉ Backend worktree governance. Quyết định owner
+trong working plan `FIXHOME_W3_FINANCE_OWNER_DECISIONS_20261106_PLAN.md` ngày 06/11/2026
+thay phần W3 chưa quyết định ở checkpoint cũ; không thay policy refund legacy/voucher.
+Không sửa Web/Mobile/AI, Production, migration 0004–0010 hoặc quyền hiện có.
+
+| Quyết định | Source bàn giao | Giới hạn thực thi |
+| --- | --- | --- |
+| 1. FixHome thu khách c=70% actual, trừ t=30% actual từ tiền công thợ và trả full actual S cho courier | Tái dùng `shipping-finance.policy.ts`; actual classifier dùng split từng shipment | Chỉ policy; không courier payable/charge/payout, không giả người nhận tiền |
+| 2. Freeze C trước positive quote; D riêng, kể cả explicit verified zero | `0011-W3PrequoteCommission`, `w3_approved_labor_source`, hook PostgreSQL trên conditional terms; D attestation trong `w3-finance-preparation.policy.ts` | C là snapshot preparatory thật. D chỉ SIMULATION_ONLY; chưa có actor/category/đích hạch toán được duyệt, không có API hoặc mutation D live |
+| 3. L-C-D-sum(t) âm phải block/revise, không nợ/âm ví/voucher bù | `simulateW3Commitments` dùng aggregate helper hiện có, journal COMMIT/RELEASE và order CAS/replay | Chỉ giả định toàn bộ journal; chưa có persistent spending/release ledger. Live positive shipment và financial admission vẫn BLOCKED |
+| 4. Genuine actual <= current quote ceiling VÀ approved source ceiling; vượt trần phải revise + renew BOTH consents | `classifyW3Actual` kiểm riêng hai trần và hai fingerprint; 0010 manual actual vẫn giữ nguyên | Manual record không trở thành courier verification. Classifier không settle hoặc ghi lại actual live |
+| 5. Trước dispatch nhả commitment thật, refund chỉ remaining actual funding về original rail; sau dispatch manual courier review | Simulation release chỉ đúng request/quote trước dispatch; `classifyW3Cancellation` phân loại funding/rail/evidence | Không nhả stock/custody/tiền thật; mọi refundExecution BLOCKED. Không đổi legacy wallet-only refunds hoặc suy thiếu records = chưa thu |
+
+**Quyết định 6 UNKNOWN:** seller of record, tax/invoice issuer, courier liability/payee
+vẫn cần Finance/legal ký. Owner duyệt 1–5 không cấp thẩm quyền kế toán hoặc role FINANCE.
+
+### Transaction C và source drift
+
+`ServiceOrdersService.generateInvoice` vẫn giữ logic legacy và freeze lúc invoice, không
+consume C preparatory để phát hành hóa đơn W3. `FinanceService.ensureFinancialDues`,
+settlement/custody, group invoices, wallet/VNPay/cash/voucher và global cutover giữ nguyên.
+
+0011 thêm hai bảng private append-only có RLS/no policy và revoke PUBLIC/Data API:
+
+- `w3_commission_config_versions`: version UUID + revision identity, lưu rõ value/type,
+  updatedAt/by của `commission.rate_bps`. Trigger ghi version mới khi cấu hình được ghi/xóa,
+  kể cả value được khôi phục và updatedAt bị giữ nguyên. Không dùng cache/getInt/default;
+  nếu chưa có version, lần positive proposal đầu capture config hiện có dưới khóa dòng config.
+- `w3_order_commission_snapshots`: một row/order, approved L/source JSON + SHA-256,
+  config version/value bps, C half-up integer, first terms FK deferred. Freeze chỉ trong
+  INSERT conditional proposal đã qua actor/source/evidence/CAS guard 0010; không có write API.
+
+Hook BEFORE INSERT mới chạy sau guard 0010 theo tên trigger, vẫn Order → Technician →
+Request rồi khóa config và các dòng nguồn tiền công. PostgreSQL đọc fixed Booking snapshot
+hoặc đúng một Quotation APPROVED có decidedAt/current technician, cộng LABOR AdditionalCost
+APPROVED đúng customer/technician. Fingerprint giữ booking/scope, assignment, quote version,
+approval metadata và item IDs/quantity/unit price/line total; không lấy order total, parts,
+shipping hoặc giá khảo sát làm L. Từ chối thiếu nguồn, quote ambiguous, giá lẻ, số âm hoặc tràn.
+Mọi dòng LABOR và tổng cuối phải nguyên VND; không dựa vào cast bigint tự làm tròn.
+
+Terms mới gắn `commission_order_id` bằng DB, quote fingerprint bind source/config/C.
+Strict audit 0010 cùng transaction và deferred first-terms FK làm quote lỗi không để lại C.
+Giữ snapshot C bất biến khi config/L drift; từ chối proposal/revise/consent/actual mới.
+GET invalidates terms và replay bị chặn khi nguồn đã drift, kể cả rate quay về value cũ.
+Không tự refreeze C hoặc khôi phục consent. Reconciliation/versioned labor revision sau
+drift cần thiết kế forward được Finance/Lead duyệt; hiện fail closed.
+
+Terms 0010 có từ trước không backfill C: đọc sẽ invalidated; không lấy config hôm nay
+làm snapshot quá khứ hoặc thêm C vào order đã có terms. `laborBudget=null`, D unknown,
+`aggregateBudgetVerified=false` và financialExecution BLOCKED vẫn giữ.
+Public GET `/delivery/terms` giữ nguyên EXACT ba blocker PR201/consumer Web PR217:
+`COMMISSION_NOT_FROZEN`, `DEDUCTIONS_LEDGER_SOURCE_REQUIRED`, `SELLER_TAX_PAYMENT_POLICY_REQUIRED`.
+Blocker đầu vẫn mô tả financial cutover chưa duyệt, không phải khẳng định bảng preparatory
+không có C. Không đổi array length/order hoặc public read shape trong Backend-only release;
+readiness contract mới cần Web adapter PR phối hợp riêng.
+`recordedConditionalCeilings` cũng giữ đúng bốn khóa `{count,shipping,customer,technician}`.
+Lead báo parser Web PR217 chỉ allowlist ba khóa (thiếu customer), cần Web PR riêng;
+Backend không bỏ khóa canonical để né lỗi consumer. Web runtime/parity vẫn NOT VERIFIED.
+
+### Simulation và unblockers
+
+Policy mới không có runtime caller/provider/HTTP/DB writer. Prefix `SIMULATED_*` và output
+`SIMULATION_ONLY` bắt buộc phân biệt giả định với xác minh thật. D gồm một statement đầy đủ
+gắn order/C fingerprint/revision, actor/mandate/evidence và từng entry/category/evidence;
+empty entries chỉ hợp lệ khi explicitZero=true và vẫn có statement/thẩm quyền giả định.
+Không gán role thật từ chuỗi mandate. COMMIT chỉ S>0, cộng stored shares từng shipment;
+exact replay không giữ lần hai, stale CAS/duplicate/thiếu commitment/wrong quote bị chặn.
+Actual giảm không tự release ceiling. RELEASE sau dispatch hoặc unknown bị chặn;
+không gọi physical RELEASED là financial release. Funding phải riêng từng payment proof,
+không trùng và không vượt remaining funded amount; classifier không tạo refund receipt.
+
+Để live còn cần: actor + taxonomy + evidence/attestation D chuẩn (gồm 0), persistent
+whole-order commitment/release và tất cả writer dùng cùng khóa, genuine courier verifier,
+funding/payment allocations + original-rail refund adapters/reconciliation, quyết định 6,
+invoice/group/custody cutover và review Finance/legal độc lập. Không có tiền mới được mở.
+
+### Migration/release và verification
+
+DEV gate whitelist tới 0011, kiểm prerequisite labor/config columns, RLS, constraints,
+trigger/deferred FK, function/table ACL và replay markers. `test/app.e2e-spec.ts`
+protectedMigrations có 0011 trước 0010. Empty down được kiểm trên PostgreSQL; down từ chối
+khi có C/config version history, không xóa lịch sử để rollback. Sau config write mới cũng
+không downgrade 0011: dùng forward fix. Không tự apply shared DEV hoặc Docker Compose.
+
+Tự review BA/PM/Tech Lead/Senior/Security/QA/DevOps trong một implementer, không phải Finance
+signoff độc lập. Kết quả lệnh cuối tại `docs/CONTEXT.md`. PostgreSQL là container 16 dùng
+một lần, không đọc `.env`; storage là provider double, không là courier/payment proof.
+Shared DEV/schema/app restart, Docker Compose `/health`, Web/Mobile/runtime/provider thật,
+GitHub CI và Node 20.19.5: **NOT VERIFIED**. Chạy local trên Node 24.15.0.
+Lead kiểm review/CI/preflight và apply 0011 trước restart Backend nếu release được duyệt.
+**PREPARATORY ONLY; SAFE_TO_ACTIVATE_FINANCE=NO.**
+
+Kiểm chứng writer trên Node 24.15.0 / PostgreSQL 16 cô lập (06/11/2026):
+
+| Lệnh/gate | Kết quả |
+| --- | --- |
+| `npm test -- --maxWorkers=4 --silent`, TZ UTC | PASS — 311 files, 4031 tests; 6 files/73 tests skipped |
+| `npm run test:e2e -- --silent`, CI/GITHUB_ACTIONS, loopback disposable PG | PASS — 8 files, 237 tests; 4 files/39 tests skipped |
+| Final Vitest focused finance/delivery/controller/cutover/gate/context | PASS — 8 files, 124 tests |
+| Final `w3-dev-release.postgres.spec.ts`, CI=true/W3_DEV_ISOLATED_PG=1 | PASS — 16 tests, 0011 rollback/empty down/replay/RLS/ACL/guard tampering |
+| Final four W3/warehouse E2E specs, CI/GITHUB_ACTIONS | PASS — 4 files, 77 tests; có fixed/inspection+delta C, fractional VND, initial race/replay, config/L drift, audit rollback và exact public blockers |
+| `npm run typecheck`, `npm run build`, `npm run lint` | PASS — lint 0 errors/4 warning cũ |
+
+Full-suite runs hoàn tất trước hai ca inspection/initial-race cuối và source description
+fingerprint; focused 77/124 cùng build/typecheck/lint là verification sau thay đổi cuối.
+Không dùng skipped tests hoặc evidence local làm GitHub CI/shared DEV PASS.

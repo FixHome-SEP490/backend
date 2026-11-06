@@ -11,6 +11,7 @@ export const W3_MIGRATIONS = [
   'DeliveryZeroFeeOperations1793466000008',
   'W3DeliveryPolicyLifecycle1793466000009',
   'DeliveryConditionalFeeTerms1793466000010',
+  'W3PrequoteCommission1793466000011',
 ] as const;
 
 const FINANCE_PREREQUISITES = [
@@ -50,6 +51,8 @@ interface TablePrivilege {
 }
 
 const REQUIRED_APP_PRIVILEGES: TablePrivilege[] = [
+  { table: 'w3_order_commission_snapshots', privileges: ['SELECT'] },
+  { table: 'w3_commission_config_versions', privileges: ['SELECT'] },
   { table: 'delivery_fee_terms', privileges: ['SELECT', 'INSERT'] },
   {
     table: 'delivery_consent_sessions',
@@ -190,6 +193,17 @@ async function assertPrerequisiteSchema(db: DataSource): Promise<void> {
     throw new Error('W3 prerequisite base tables missing');
   }
 
+  const [financeSource] = await db.query(`SELECT
+    to_regclass('public.system_configs') IS NOT NULL AS config,
+    to_regclass('public.quotation_items') IS NOT NULL AS quotation_items,
+    (SELECT count(*)=20 FROM information_schema.columns WHERE table_schema='public' AND
+      ((table_name='system_configs' AND column_name IN ('key','value','value_type','updated_at','updated_by_user_id'))
+      OR (table_name='bookings' AND column_name IN ('pricing_mode_snapshot','fixed_unit_price_snapshot','quantity','scope_snapshot'))
+      OR (table_name='quotation_items' AND column_name IN ('quotation_id','type','description','quantity','unit_price','line_total'))
+      OR (table_name='additional_cost_items' AND column_name IN ('description','unit_price','line_total'))
+      OR (table_name='additional_cost_requests' AND column_name IN ('supersedes_id','total_labor_delta')))) AS columns`);
+  if (!financeSource || Object.values(financeSource).some((v) => v !== true))
+    throw new Error('W3 prequote commission prerequisite source incomplete');
   const [prior] = await db.query(`SELECT
     EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
       AND table_name='voucher_campaigns' AND column_name='status') AS voucher_lifecycle,
@@ -267,6 +281,15 @@ function imageMigrationNames(db: DataSource): string[] {
 }
 
 const W3_MARKERS: Record<string, string> = {
+  [W3_MIGRATIONS[7]]: `SELECT (to_regclass('public.w3_order_commission_snapshots') IS NOT NULL
+    OR to_regclass('public.w3_commission_config_versions') IS NOT NULL
+    OR to_regprocedure('public.w3_prequote_commission_guard()') IS NOT NULL
+    OR to_regprocedure('public.w3_approved_labor_source(uuid)') IS NOT NULL
+    OR to_regprocedure('public.w3_prequote_commission_current(uuid)') IS NOT NULL
+    OR to_regprocedure('public.w3_commission_config_capture()') IS NOT NULL
+    OR to_regprocedure('public.w3_commission_config_snapshot()') IS NOT NULL
+    OR EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public'
+      AND table_name='delivery_fee_terms' AND column_name='commission_order_id')) AS present`,
   [W3_MIGRATIONS[6]]: `SELECT (to_regclass('public.delivery_fee_terms') IS NOT NULL
     OR to_regclass('public.ix_delivery_fee_terms_order') IS NOT NULL
     OR to_regprocedure('public.w3_fee_terms_guard()') IS NOT NULL
@@ -963,6 +986,7 @@ async function verifyAppliedW3Schema(
   if (applied.has(W3_MIGRATIONS[4])) await verifyZeroFeeSchema(db);
   if (applied.has(W3_MIGRATIONS[5])) await verifyPolicyLifecycleSchema(db);
   if (applied.has(W3_MIGRATIONS[6])) await verifyFeeTermsSchema(db);
+  if (applied.has(W3_MIGRATIONS[7])) await verifyPrequoteCommissionSchema(db);
 }
 
 async function verifyW3Schema(db: DataSource): Promise<void> {
@@ -973,6 +997,59 @@ async function verifyW3Schema(db: DataSource): Promise<void> {
   await verifyZeroFeeSchema(db);
   await verifyPolicyLifecycleSchema(db);
   await verifyFeeTermsSchema(db);
+  await verifyPrequoteCommissionSchema(db);
+}
+
+async function verifyPrequoteCommissionSchema(db: DataSource): Promise<void> {
+  const [proof] = await db.query(`SELECT
+    (SELECT count(*)=2 FROM pg_class WHERE oid IN (to_regclass('public.w3_order_commission_snapshots'),to_regclass('public.w3_commission_config_versions')) AND relrowsecurity) AS rls,
+    NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid IN (to_regclass('public.w3_order_commission_snapshots'),to_regclass('public.w3_commission_config_versions'))) AS no_policies,
+    (SELECT count(*)=8 FROM pg_trigger WHERE (tgrelid=to_regclass('public.w3_order_commission_snapshots') AND tgname IN ('w3_order_commission_guard','w3_order_commission_immutable','w3_order_commission_no_truncate'))
+      OR (tgrelid=to_regclass('public.w3_commission_config_versions') AND tgname IN ('w3_commission_config_version_guard','w3_commission_config_immutable','w3_commission_config_no_truncate'))
+      OR (tgrelid=to_regclass('public.system_configs') AND tgname='w3_commission_config_capture')
+      OR (tgrelid=to_regclass('public.delivery_fee_terms') AND tgname='w3_fee_terms_zz_commission')) AS triggers_present,
+    NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgname IN ('w3_order_commission_guard','w3_order_commission_immutable','w3_order_commission_no_truncate',
+      'w3_commission_config_version_guard','w3_commission_config_immutable','w3_commission_config_no_truncate','w3_commission_config_capture','w3_fee_terms_zz_commission')
+      AND tgenabled<>'O' AND tgrelid IN (to_regclass('public.w3_order_commission_snapshots'),to_regclass('public.w3_commission_config_versions'),to_regclass('public.system_configs'),to_regclass('public.delivery_fee_terms'))) AS triggers_enabled,
+    EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('public.w3_order_commission_snapshots') AND conname='fk_w3_commission_first_terms' AND convalidated AND condeferrable AND condeferred) AS deferred_terms,
+    (SELECT count(*)=8 FROM pg_constraint WHERE conrelid=to_regclass('public.w3_order_commission_snapshots') AND convalidated) AS snapshot_constraints,
+    EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('public.delivery_fee_terms') AND conname='ck_w3_terms_commission_scope' AND convalidated) AS terms_scope,
+    EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('public.delivery_fee_terms') AND conname='delivery_fee_terms_commission_order_id_fkey' AND convalidated) AS terms_fk,
+    (SELECT count(*)=2 FROM pg_proc WHERE oid IN (to_regprocedure('public.w3_approved_labor_source(uuid)'),to_regprocedure('public.w3_commission_config_snapshot()')) AND proconfig @> ARRAY['TimeZone=UTC']) AS canonical_timezone,
+    EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid=to_regclass('public.delivery_fee_terms') AND attname='commission_order_id' AND NOT attisdropped) AS terms_binding,
+    EXISTS(SELECT 1 FROM pg_index WHERE indrelid=to_regclass('public.w3_order_commission_snapshots') AND indisprimary AND indisvalid) AS order_unique,
+    (SELECT count(*)=2 FROM pg_constraint WHERE conrelid=to_regclass('public.w3_commission_config_versions') AND contype IN ('p','u') AND convalidated) AS config_version_unique`);
+  if (!proof || Object.values(proof).some((v) => v !== true))
+    throw new Error('W3 prequote commission schema proof incomplete');
+  const names = [
+    'w3_commission_config_snapshot',
+    'w3_commission_config_capture',
+    'w3_approved_labor_source',
+    'w3_prequote_commission_current',
+    'w3_prequote_commission_guard',
+  ];
+  const functions = await db.query(
+    `SELECT p.oid, EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+    WHERE a.grantee=0 AND a.privilege_type='EXECUTE') AS exposed FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname='public' AND p.proname=ANY($1)`,
+    [names],
+  );
+  if (functions.length !== names.length || functions.some((f) => f.exposed))
+    throw new Error('W3 prequote commission function ACL incomplete');
+  const roles = await db.query(
+    "SELECT rolname FROM pg_roles WHERE rolname IN ('anon','authenticated','service_role')",
+  );
+  for (const { rolname } of roles)
+    for (const fn of functions) {
+      const [access] = await db.query(
+        "SELECT has_function_privilege($1,$2::oid,'EXECUTE') AS allowed",
+        [rolname, fn.oid],
+      );
+      if (access?.allowed)
+        throw new Error(
+          'Data API role can execute W3 prequote commission function',
+        );
+    }
 }
 
 async function verifyFeeTermsSchema(db: DataSource): Promise<void> {

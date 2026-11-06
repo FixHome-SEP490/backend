@@ -1283,6 +1283,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     // these protected EMPTY schemas first, before resetting the legacy fixture.
     // No production immutability trigger is disabled by this disposable-schema replay.
     const protectedMigrations = [
+      'W3PrequoteCommission1793466000011',
       'DeliveryConditionalFeeTerms1793466000010',
       'W3DeliveryPolicyLifecycle1793466000009',
       'DeliveryZeroFeeOperations1793466000008',
