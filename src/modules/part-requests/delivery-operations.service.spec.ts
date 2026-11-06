@@ -283,6 +283,112 @@ function fixture() {
   };
 }
 
+describe('conditional positive shipping terms (no financial authority)', () => {
+  const proposal = (f: ReturnType<typeof fixture>, extra = {}) => ({
+    commandId: randomUUID(),
+    expectedVersion: 0,
+    warehouseId: f.warehouse.id,
+    evidenceId: randomUUID(),
+    courierReference: 'conditional-courier-quote',
+    totalShippingFee: 20_000,
+    ...extra,
+  });
+  it('records only server-bound approved terms, without fabricating L/C/D or stock authority', async () => {
+    const f = fixture();
+    f.cost.shippingFee = f.request.shippingFee = 20_000;
+    const e = await f.upload('QUOTE');
+    const body = proposal(f, { evidenceId: e.evidenceId });
+    const original = f.manager.query.getMockImplementation()!;
+    const state = {
+      financialExecution: 'BLOCKED',
+      laborBudget: null,
+      version: 1,
+    };
+    f.manager.query.mockImplementation(async (sql: string, args: any[]) =>
+      sql.startsWith('INSERT INTO delivery_fee_terms')
+        ? [{ state }]
+        : original(sql, args),
+    );
+    const result = await f.service.recordTerms(
+      f.request.id,
+      'PROPOSE',
+      body,
+      f.actor(f.sm),
+    );
+    expect(result).toMatchObject({ state, replayed: false });
+    expect(
+      f.manager.query.mock.calls.find(([sql]: any) =>
+        sql.startsWith('INSERT INTO delivery_fee_terms'),
+      )?.[1],
+    ).toEqual(
+      expect.arrayContaining([
+        f.request.id,
+        f.order.id,
+        f.sm.id,
+        'service_manager',
+        'PROPOSE',
+      ]),
+    );
+    expect(f.rows('DeliveryConsentCommandRecord')).toHaveLength(0);
+    expect(f.movements).toHaveLength(0);
+  });
+  it.each(['customer', 'tech'] as const)(
+    'denies %s proposing terms before journal insertion',
+    async (role) => {
+      const f = fixture();
+      await expect(
+        f.service.recordTerms(
+          f.request.id,
+          'PROPOSE',
+          proposal(f),
+          f.actor(f[role]),
+        ),
+      ).rejects.toMatchObject({ status: 404 });
+      expect(
+        f.manager.query.mock.calls.some(([sql]: any) =>
+          sql.startsWith('INSERT INTO delivery_fee_terms'),
+        ),
+      ).toBe(false);
+    },
+  );
+  it.each([null, false, '20000x', -1, 0])(
+    'does not infer approved positive shipping from %s',
+    async (fee) => {
+      const f = fixture();
+      f.cost.shippingFee = fee as any;
+      await expect(
+        f.service.recordTerms(
+          f.request.id,
+          'PROPOSE',
+          proposal(f),
+          f.actor(f.sm),
+        ),
+      ).rejects.toMatchObject({ status: 409 });
+    },
+  );
+  it('rejects actor, budget and execution verdict injection', async () => {
+    const f = fixture();
+    await expect(
+      f.service.recordTerms(
+        f.request.id,
+        'PROPOSE',
+        proposal(f, {
+          budget: { laborTotal: 100000 },
+          financialExecution: 'ALLOWED',
+        }),
+        f.actor(f.sm),
+      ),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+  it('keeps SQL failures visible and does not turn them into approval or empty terms', async () => {
+    const f = fixture();
+    f.manager.query.mockRejectedValue(new Error('database unavailable'));
+    await expect(
+      f.service.readTerms(f.request.id, f.actor(f.customer)),
+    ).rejects.toThrow('database unavailable');
+  });
+});
+
 describe('authenticated delivery operations admission', () => {
   it.each(['cost', 'request'] as const)(
     'does not consume local zero spending as aggregate authority when %s has positive shipping',

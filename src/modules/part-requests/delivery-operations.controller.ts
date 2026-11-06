@@ -80,6 +80,95 @@ export class DeliveryOperationsController {
   private actor(req: AuthenticatedRequest) {
     return { id: req.user.id, role: req.user.role };
   }
+  @Get('terms')
+  @Header('Cache-Control', 'no-store')
+  async terms(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return { data: await this.service.readTerms(id, this.actor(req)) };
+  }
+  @Post('terms/proposal')
+  @RiskLimit('warehouse-stock')
+  @Roles(Role.SERVICE_MANAGER)
+  @Header('Cache-Control', 'no-store')
+  async proposeTerms(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: ShippingProposalDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return {
+      data: await this.service.recordTerms(
+        id,
+        'PROPOSE',
+        { ...body },
+        this.actor(req),
+      ),
+    };
+  }
+  @Post('terms/consent')
+  @RiskLimit('warehouse-stock')
+  @Roles(Role.CUSTOMER, Role.TECHNICIAN)
+  @Header('Cache-Control', 'no-store')
+  async consentTerms(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: ShippingConsentDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return {
+      data: await this.service.recordTerms(
+        id,
+        'CONSENT',
+        { ...body },
+        this.actor(req),
+      ),
+    };
+  }
+  @Post('terms/actual')
+  @RiskLimit('warehouse-stock')
+  @Roles(Role.SERVICE_MANAGER)
+  @Header('Cache-Control', 'no-store')
+  async actualTerms(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: DeliveryActualDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return {
+      data: await this.service.recordTerms(
+        id,
+        'RECORD_ACTUAL',
+        { ...body },
+        this.actor(req),
+      ),
+    };
+  }
+  @Post('terms/evidence')
+  @RiskLimit('media-upload')
+  @Roles(Role.SERVICE_MANAGER)
+  @Header('Cache-Control', 'no-store')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 3 },
+    }),
+  )
+  async uploadTerms(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: DeliveryUploadDto,
+    @UploadedFile() file: EvidenceFile,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return {
+      data: await this.service.upload(
+        id,
+        body.warehouseId,
+        body.purpose,
+        body.quoteVersion,
+        file,
+        this.actor(req),
+        true,
+      ),
+    };
+  }
   @Get()
   @Header('Cache-Control', 'no-store')
   async read(

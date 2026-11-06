@@ -10,6 +10,7 @@ export const W3_MIGRATIONS = [
   'WarehouseDeliveryPhysical1793466000007',
   'DeliveryZeroFeeOperations1793466000008',
   'W3DeliveryPolicyLifecycle1793466000009',
+  'DeliveryConditionalFeeTerms1793466000010',
 ] as const;
 
 const FINANCE_PREREQUISITES = [
@@ -49,6 +50,7 @@ interface TablePrivilege {
 }
 
 const REQUIRED_APP_PRIVILEGES: TablePrivilege[] = [
+  { table: 'delivery_fee_terms', privileges: ['SELECT', 'INSERT'] },
   {
     table: 'delivery_consent_sessions',
     privileges: ['SELECT', 'INSERT', 'UPDATE'],
@@ -265,6 +267,14 @@ function imageMigrationNames(db: DataSource): string[] {
 }
 
 const W3_MARKERS: Record<string, string> = {
+  [W3_MIGRATIONS[6]]: `SELECT (to_regclass('public.delivery_fee_terms') IS NOT NULL
+    OR to_regclass('public.ix_delivery_fee_terms_order') IS NOT NULL
+    OR to_regprocedure('public.w3_fee_terms_guard()') IS NOT NULL
+    OR to_regprocedure('public.w3_fee_source_snapshot(uuid)') IS NOT NULL
+    OR to_regprocedure('public.w3_fee_terms_complete()') IS NOT NULL
+    OR to_regprocedure('public.w3_fee_audit_protect()') IS NOT NULL
+    OR to_regclass('public.ux_w3_fee_terms_audit') IS NOT NULL
+    OR to_regprocedure('public.w3_live_evidence_guard_0008()') IS NOT NULL) AS present`,
   [W3_MIGRATIONS[5]]: `SELECT (
     to_regclass('public.w3_delivery_policy_previews') IS NOT NULL
     OR to_regclass('public.uq_w3_delivery_policy_draft_content') IS NOT NULL
@@ -952,6 +962,7 @@ async function verifyAppliedW3Schema(
   if (applied.has(W3_MIGRATIONS[3])) await verifyPhysicalSchema(db);
   if (applied.has(W3_MIGRATIONS[4])) await verifyZeroFeeSchema(db);
   if (applied.has(W3_MIGRATIONS[5])) await verifyPolicyLifecycleSchema(db);
+  if (applied.has(W3_MIGRATIONS[6])) await verifyFeeTermsSchema(db);
 }
 
 async function verifyW3Schema(db: DataSource): Promise<void> {
@@ -961,6 +972,90 @@ async function verifyW3Schema(db: DataSource): Promise<void> {
   await verifyPhysicalSchema(db);
   await verifyZeroFeeSchema(db);
   await verifyPolicyLifecycleSchema(db);
+  await verifyFeeTermsSchema(db);
+}
+
+async function verifyFeeTermsSchema(db: DataSource): Promise<void> {
+  const columns = [
+    'part_request_id',
+    'service_order_id',
+    'command_id',
+    'expected_version',
+    'result_version',
+    'actor_user_id',
+    'actor_role',
+    'kind',
+    'command_body',
+    'source_snapshot',
+    'state',
+    'created_at',
+  ];
+  const rows = await db.query(
+    `SELECT column_name FROM information_schema.columns WHERE table_schema='public'
+    AND table_name='delivery_fee_terms' AND column_name=ANY($1)`,
+    [columns],
+  );
+  const [proof] = await db.query(`SELECT
+    (SELECT relrowsecurity FROM pg_class WHERE oid=to_regclass('public.delivery_fee_terms')) AS rls,
+    NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=to_regclass('public.delivery_fee_terms')) AS no_policies,
+    to_regclass('public.ix_delivery_fee_terms_order') IS NOT NULL AS order_index,
+    EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('public.delivery_fee_terms') AND contype='p') AS primary_key,
+    EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('public.delivery_fee_terms') AND contype='u') AS command_unique,
+    (SELECT count(*)=8 FROM pg_constraint WHERE conrelid=to_regclass('public.delivery_fee_terms') AND convalidated
+      AND conname IN ('delivery_fee_terms_pkey','delivery_fee_terms_part_request_id_command_id_key',
+        'delivery_fee_terms_part_request_id_fkey','delivery_fee_terms_service_order_id_fkey','delivery_fee_terms_actor_user_id_fkey',
+        'ck_w3_fee_expected_version','ck_w3_fee_result_version','ck_w3_fee_kind')) AS constraints,
+    EXISTS(SELECT 1 FROM pg_proc WHERE oid=to_regprocedure('public.w3_fee_source_snapshot(uuid)')
+      AND proconfig @> ARRAY['TimeZone=UTC']) AS canonical_timezone,
+    (SELECT count(*)=4 FROM pg_trigger WHERE tgrelid=to_regclass('public.delivery_fee_terms')
+      AND tgname IN ('w3_fee_terms_guard','w3_fee_terms_immutable','w3_fee_terms_no_truncate','w3_fee_terms_complete') AND tgenabled='O') AS triggers,
+    EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('public.delivery_fee_terms') AND tgname='w3_fee_terms_complete'
+      AND tgdeferrable AND tginitdeferred) AS strict_audit,
+    (SELECT count(*)=2 FROM pg_trigger WHERE tgrelid=to_regclass('public.audit_logs')
+      AND tgname IN ('w3_fee_audit_protect','w3_fee_audit_no_truncate') AND tgenabled='O') AS audit_protected,
+    EXISTS(SELECT 1 FROM pg_index WHERE indexrelid=to_regclass('public.ux_w3_fee_terms_audit') AND indisunique AND indisvalid) AS audit_unique,
+    to_regprocedure('public.w3_live_evidence_guard_0008()') IS NOT NULL AS old_guard`);
+  if (
+    rows.length !== columns.length ||
+    !proof ||
+    Object.values(proof).some((v) => v !== true)
+  )
+    throw new Error('W3 conditional fee terms schema proof incomplete');
+  const fns = [
+    'w3_fee_source_snapshot',
+    'w3_fee_terms_guard',
+    'w3_live_evidence_guard',
+    'w3_fee_terms_complete',
+    'w3_fee_audit_protect',
+  ];
+  const functions = await db.query(
+    `SELECT p.proname, EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+    WHERE a.grantee=0 AND a.privilege_type='EXECUTE') AS exposed FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname='public' AND p.proname=ANY($1)`,
+    [fns],
+  );
+  if (functions.length !== fns.length || functions.some((r) => r.exposed))
+    throw new Error('W3 conditional fee terms function ACL incomplete');
+  const roles = await db.query(
+    "SELECT rolname FROM pg_roles WHERE rolname IN ('anon','authenticated','service_role')",
+  );
+  for (const { rolname } of roles)
+    for (const fn of [
+      'w3_fee_source_snapshot(uuid)',
+      'w3_fee_terms_guard()',
+      'w3_fee_terms_complete()',
+      'w3_fee_audit_protect()',
+      'w3_live_evidence_guard()',
+    ]) {
+      const [access] = await db.query(
+        "SELECT has_function_privilege($1,$2,'EXECUTE') AS allowed",
+        [rolname, `public.${fn}`],
+      );
+      if (access?.allowed)
+        throw new Error(
+          'Data API role can execute W3 conditional fee terms function',
+        );
+    }
 }
 
 async function verifyW3Grants(db: DataSource): Promise<void> {

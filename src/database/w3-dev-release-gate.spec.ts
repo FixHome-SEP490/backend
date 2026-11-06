@@ -100,7 +100,7 @@ describe('W3 DEV migration whitelist', () => {
 
   it('rejects missing, reordered or partially applied W3 migrations', () => {
     expect(W3_MIGRATIONS[W3_MIGRATIONS.length - 1]).toBe(
-      'W3DeliveryPolicyLifecycle1793466000009',
+      'DeliveryConditionalFeeTerms1793466000010',
     );
     expect(() =>
       planW3DevMigrations(

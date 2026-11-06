@@ -9,6 +9,7 @@ import { DeliveryConsentState1793466000005 } from './migrations/1793466000005-De
 import { W3DeliveryOperatingPolicy1793466000006 } from './migrations/1793466000006-W3DeliveryOperatingPolicy';
 import { WarehouseDeliveryPhysical1793466000007 } from './migrations/1793466000007-WarehouseDeliveryPhysical';
 import { W3DeliveryPolicyLifecycle1793466000009 } from './migrations/1793466000009-W3DeliveryPolicyLifecycle';
+import { DeliveryConditionalFeeTerms1793466000010 } from './migrations/1793466000010-DeliveryConditionalFeeTerms';
 import {
   CASH_MIGRATIONS,
   runW3DevGate,
@@ -41,6 +42,7 @@ const w3MigrationClasses: MigrationClass[] = [
 ];
 if (ZeroFeeOperations) w3MigrationClasses.push(ZeroFeeOperations);
 w3MigrationClasses.push(W3DeliveryPolicyLifecycle1793466000009);
+w3MigrationClasses.push(DeliveryConditionalFeeTerms1793466000010);
 
 // CI-only: creates a fresh database on the CI PostgreSQL service at loopback.
 // It never reads .env, DATABASE_* or a shared DEV connection string.
@@ -294,6 +296,33 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
       expect(proof).toEqual({ previews: null, guard: null, ledger: 0 });
     }, 30000);
 
+    it('rolls back 0010 and the pending chain atomically on DDL failure', async () => {
+      const index = db.migrations.findIndex((m) => m.name === W3_MIGRATIONS[6]);
+      const original = db.migrations[index];
+      db.migrations[index] = {
+        name: original.name,
+        up: async (q) => {
+          await original.up(q);
+          throw new Error('fault after 0010 DDL');
+        },
+        down: (q) => original.down(q),
+      };
+      try {
+        await expect(runW3DevGate(db)).rejects.toThrow('fault after 0010 DDL');
+      } finally {
+        db.migrations[index] = original;
+      }
+      expect(
+        (
+          await db.query(
+            `SELECT to_regclass('public.delivery_fee_terms') AS terms,
+        (SELECT count(*)::int FROM public.migrations WHERE name=ANY($1)) AS ledger`,
+            [W3_MIGRATIONS],
+          )
+        )[0],
+      ).toEqual({ terms: null, ledger: 0 });
+    }, 30000);
+
     it('applies the exact W3 order once, keeps legacy invoices closed and replays without DDL', async () => {
       const invoiceId = randomUUID();
       await db.query(
@@ -304,7 +333,17 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
         [invoiceId, randomUUID()],
       );
 
-      expect(await runW3DevGate(db)).toEqual([...W3_MIGRATIONS]);
+      // Explicit default role grants survive REVOKE FROM PUBLIC; 0010 must revoke each role.
+      await db.query(
+        'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO anon,authenticated,service_role',
+      );
+      try {
+        expect(await runW3DevGate(db)).toEqual([...W3_MIGRATIONS]);
+      } finally {
+        await db.query(
+          'ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM anon,authenticated,service_role',
+        );
+      }
       const [cashState] = await db.query(
         `SELECT count(*)::int AS n FROM public.migrations WHERE name=ANY($1)`,
         [CASH_MIGRATIONS],
@@ -362,6 +401,7 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
         'warehouse_delivery_movements',
         'delivery_operation_evidence',
         'delivery_shipping_proposals',
+        'delivery_fee_terms',
       ]) {
         const [rls] = await db.query(
           'SELECT relrowsecurity FROM pg_class WHERE oid=to_regclass($1)',
@@ -513,15 +553,18 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
     });
 
     it('refuses 0009 replay and detects missing preview protections and API grants', async () => {
-      await db.query('DELETE FROM public.migrations WHERE name=$1', [
-        W3_MIGRATIONS[5],
+      await db.query('DELETE FROM public.migrations WHERE name=ANY($1)', [
+        W3_MIGRATIONS.slice(5),
       ]);
       // The 0006 DRAFT-only schema proof fails before any DDL replay marker is consulted.
-      await expect(runW3DevGate(db)).rejects.toThrow('W3 delivery policy schema proof incomplete');
-      await db.query(
-        'INSERT INTO public.migrations(timestamp,name) VALUES($1,$2)',
-        [1793466000009, W3_MIGRATIONS[5]],
+      await expect(runW3DevGate(db)).rejects.toThrow(
+        'W3 delivery policy schema proof incomplete',
       );
+      for (const name of W3_MIGRATIONS.slice(5))
+        await db.query(
+          'INSERT INTO public.migrations(timestamp,name) VALUES($1,$2)',
+          [Number(name.slice(-13)), name],
+        );
       await db.query(
         'ALTER TABLE public.w3_delivery_policy_previews DISABLE TRIGGER w3_policy_previews_immutable',
       );
@@ -552,13 +595,41 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
       expect(await runW3DevGate(db)).toEqual([]);
     });
 
+    it('refuses 0010 DDL replay, disabled protections and API grants', async () => {
+      await db.query('DELETE FROM public.migrations WHERE name=$1', [
+        W3_MIGRATIONS[6],
+      ]);
+      await expect(runW3DevGate(db)).rejects.toThrow('refusing DDL replay');
+      await db.query(
+        'INSERT INTO public.migrations(timestamp,name) VALUES($1,$2)',
+        [1793466000010, W3_MIGRATIONS[6]],
+      );
+      await db.query(
+        'ALTER TABLE public.delivery_fee_terms DISABLE TRIGGER w3_fee_terms_immutable',
+      );
+      await expect(runW3DevGate(db)).rejects.toThrow(
+        'conditional fee terms schema proof incomplete',
+      );
+      await db.query(
+        'ALTER TABLE public.delivery_fee_terms ENABLE TRIGGER w3_fee_terms_immutable',
+      );
+      await db.query('GRANT SELECT ON public.delivery_fee_terms TO anon');
+      await expect(runW3DevGate(db)).rejects.toThrow(
+        'Data API role has W3 private table access',
+      );
+      await db.query('REVOKE SELECT ON public.delivery_fee_terms FROM anon');
+      expect(await runW3DevGate(db)).toEqual([]);
+    });
+
     it.skipIf(!ZeroFeeOperations)(
       'refuses non-prefix 0008 and 0009 ledger loss before any replay',
       async () => {
         await db.query('DELETE FROM public.migrations WHERE name=ANY($1)', [
           W3_MIGRATIONS.slice(4),
         ]);
-        await expect(runW3DevGate(db)).rejects.toThrow('W3 delivery policy schema proof incomplete');
+        await expect(runW3DevGate(db)).rejects.toThrow(
+          'W3 delivery policy schema proof incomplete',
+        );
         expect(
           (
             await db.query(
@@ -585,7 +656,9 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
           'DROP TABLE public.delivery_shipping_proposals, public.delivery_operation_evidence',
         );
         // The newer lifecycle schema is detected as inconsistent with the truncated ledger first.
-        await expect(runW3DevGate(db)).rejects.toThrow('W3 delivery policy schema proof incomplete');
+        await expect(runW3DevGate(db)).rejects.toThrow(
+          'W3 delivery policy schema proof incomplete',
+        );
         expect(
           (
             await db.query(
