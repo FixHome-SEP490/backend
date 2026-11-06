@@ -5,6 +5,9 @@ import { SystemConfig } from './entities/system-config.entity';
 import { BusinessConfigService } from './business-config.service';
 import { AdminConfigService } from './admin-config.service';
 import { AdminConfigController } from './admin-config.controller';
+import { W3DeliveryPolicyController } from './w3-delivery-policy-admin.controller';
+import { W3DeliveryPolicyService } from './w3-delivery-policy-admin.service';
+import { W3DeliveryPolicyStore } from './w3-delivery-policy-store.service';
 
 /**
  * Global module so that any service can inject BusinessConfigService
@@ -13,8 +16,8 @@ import { AdminConfigController } from './admin-config.controller';
 @Global()
 @Module({
   imports: [TypeOrmModule.forFeature([SystemConfig])],
-  controllers: [AdminConfigController],
-  providers: [BusinessConfigService, AdminConfigService],
+  controllers: [AdminConfigController, W3DeliveryPolicyController],
+  providers: [BusinessConfigService, AdminConfigService, W3DeliveryPolicyService, W3DeliveryPolicyStore],
   exports: [BusinessConfigService, AdminConfigService],
 })
 export class SystemConfigModule {}

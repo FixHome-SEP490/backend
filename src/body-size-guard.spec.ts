@@ -27,7 +27,7 @@ describe('Request body size', () => {
 
   it('lets a photo of several MB up on the file upload routes, as multipart only (fixed 10/10/2026)', () => {
     const form = 'multipart/form-data; boundary=x';
-    for (const url of ['/api/v1/media/booking-photo-upload', '/api/v1/media/upload', '/api/v1/service-orders/9b0c/evidence']) {
+    for (const url of ['/api/v1/media/booking-photo-upload', '/api/v1/media/upload', '/api/v1/service-orders/9b0c/evidence', '/api/v1/part-requests/9b0c/delivery/evidence']) {
       expect(run(url, 6 * MAX_FORM_BODY_BYTES, form)).toBeUndefined();
       expect(run(url, MAX_MULTIPART_BODY_BYTES + 1, form)).toBeInstanceOf(PayloadTooLargeException);
     }

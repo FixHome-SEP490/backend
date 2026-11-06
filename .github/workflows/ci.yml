@@ -54,6 +54,10 @@ jobs:
         run: npx vitest run src/database/cash-reputation.postgres.spec.ts
         env:
           CASH_REPUTATION_ISOLATED_PG: '1'
+      - name: Isolated W3 warehouse delivery PostgreSQL migration gate
+        run: npx vitest run src/database/w3-dev-release.postgres.spec.ts
+        env:
+          W3_DEV_ISOLATED_PG: '1'
       - name: Integration tests
         run: npm run test:e2e
         env:
@@ -118,10 +122,14 @@ jobs:
               exit 1
             fi
             # Prepare a new image while the previous DEV backend keeps serving.
-            # Fail closed unless the exact two cash/reputation migrations and
-            # database app-role safety preflight pass in the disposable one-off.
+            # Fail closed unless the exact W3 migrations 0004-0009, their
+            # prerequisites, schema/RLS/grants and the exact two cash/reputation
+            # migrations pass in disposable one-offs. W3 runs first and leaves
+            # the cash pair pending for its unchanged gate; neither gate touches
+            # Production.
             # On failure, DO NOT restart the working Backend container.
             docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml build backend
+            docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml run --rm --no-deps -e W3_DEV_RELEASE=1 backend node dist/database/w3-dev-release.js
             docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml run --rm --no-deps -e CASH_REPUTATION_DEV_RELEASE=1 -e CASH_FIRST_DEV_ACTIVATION="$activation" backend node dist/database/cash-reputation-dev-release.js
             docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml up -d --no-build backend
             active="$(docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml ps -q backend)"

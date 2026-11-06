@@ -18,6 +18,7 @@ import { WalletTransaction } from './entities';
 import { WalletService } from './wallet.service';
 import { p1CustodyEnabled } from '../part-requests/part-custody.policy';
 import { settleCustodyOnline } from './custody-settlement';
+import { assertShippingFinancialCutoverAllowed } from '../finance/invoice-shipping-snapshot';
 
 @Injectable()
 export class SettlementService {
@@ -64,6 +65,7 @@ export class SettlementService {
         return { settled: false, reason: 'PAYMENT_NOT_PAID' };
       }
 
+      assertShippingFinancialCutoverAllowed(invoice);
       const custodyResult = await settleCustodyOnline(manager, order, invoice, this.walletService);
       if (custodyResult) return custodyResult;
 

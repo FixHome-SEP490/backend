@@ -55,7 +55,8 @@ describe('Parts reconciliation at invoice freeze', () => {
     const service = Object.create(ServiceOrdersService.prototype);
     service.configService = { getInt: vi.fn().mockResolvedValue(1000) };
     const invoice = await service.generateInvoice('order', manager);
-    expect(invoice).toMatchObject({ partsTotal: 300, fixHomePartsTotal: 300, shippingFee: 25, grandTotal: 325, commissionAmount: 0 });
+    expect(invoice).toMatchObject({ partsTotal: 300, fixHomePartsTotal: 300, shippingFee: 25, grandTotal: 325, commissionAmount: 0,
+      shippingPolicyVersion: 'LEGACY_100_0', customerShippingShare: 25, technicianShippingShare: 0 });
     const lines = manager.insert.mock.calls.filter(([entity]) => entity === InvoiceItem).map(([, item]) => item);
     expect(lines.map(item => item.sourceItemId)).toEqual(['q1', 'q2', 'a1']);
     expect(lines.map(item => item.quantity)).toEqual([1, 1, 1]);

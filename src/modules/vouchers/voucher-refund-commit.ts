@@ -6,6 +6,7 @@ import { CustomerWallet } from '../customer-wallet/entities/customer-wallet.enti
 import { CustomerWalletTransaction } from '../customer-wallet/entities/customer-wallet-transaction.entity';
 import type { CustomerWalletService } from '../customer-wallet/customer-wallet.service';
 import { Invoice } from '../service-orders/entities/invoice.entity';
+import { assertShippingFinancialCutoverAllowed } from '../finance/invoice-shipping-snapshot';
 import { REFUND_CASE_TYPES } from '../support-cases/support-case-policy';
 import { SupportCase } from '../support-cases/entities/support-case.entity';
 import { User } from '../users/entities/user.entity';
@@ -62,6 +63,7 @@ export async function commitVerifiedVoucherSupportRefund(
     where: { serviceOrderId: sourceReference.serviceOrderId },
   });
   if (!invoiceReference) inconsistent();
+  assertShippingFinancialCutoverAllowed(invoiceReference);
   const matched: { id: string }[] = await manager.query(`
     SELECT id FROM public.voucher_payment_links
     WHERE allocation_snapshot @> $1::jsonb LIMIT 2
