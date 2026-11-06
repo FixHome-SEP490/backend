@@ -80,6 +80,43 @@ const publicQuote = (state: DeliveryConsentState | null) =>
         laborBudget: 'UNVERIFIED' as const,
       }
     : null;
+// The DB journal keeps authority IDs/evidence bindings private. Clients consent to monetary terms.
+const publicTerms = (state: any) =>
+  state
+    ? {
+        version: state.version,
+        scope: state.scope,
+        quote: state.quote
+          ? Object.fromEntries(
+              [
+                'quoteVersion',
+                'policyVersion',
+                'totalShippingFee',
+                'customerShippingShare',
+                'technicianShippingShare',
+                'fingerprint',
+              ].map((key) => [key, state.quote[key]]),
+            )
+          : null,
+        customerConsented: state.customerConsented,
+        technicianConsented: state.technicianConsented,
+        actual: state.actual
+          ? Object.fromEntries(
+              [
+                'quoteVersion',
+                'totalShippingFee',
+                'customerShippingShare',
+                'technicianShippingShare',
+                'verification',
+              ].map((key) => [key, state.actual[key]]),
+            )
+          : null,
+        financialExecution: 'BLOCKED',
+        laborBudget: null,
+        aggregateBudgetVerified: false,
+        paymentVerified: false,
+      }
+    : null;
 
 /** Authenticated zero-fee operations; positive spending requires a Finance-approved ledger. */
 @Injectable()
@@ -115,6 +152,7 @@ export class DeliveryOperationsService {
     id: string,
     actor: Actor,
     warehouseId?: string,
+    terms = false,
   ) {
     if (
       !uuid.test(id) ||
@@ -197,23 +235,40 @@ export class DeliveryOperationsService {
       where: { partRequestId: id },
       order: { quoteVersion: 'DESC' },
     });
-    const warehouse =
-      warehouseId || proposal?.warehouseId
-        ? await m.findOne(Warehouse, {
-            where: { id: warehouseId ?? proposal!.warehouseId },
-            lock: { mode: 'pessimistic_read' },
-          })
-        : null;
+    const [termsHead] = terms
+      ? await m.query(
+          'SELECT *, source_snapshot=w3_fee_source_snapshot(part_request_id) AS source_current FROM delivery_fee_terms WHERE part_request_id=$1 ORDER BY result_version DESC LIMIT 1',
+          [id],
+        )
+      : [];
+    const boundWarehouseId =
+      warehouseId ??
+      (terms ? termsHead?.state?.quote?.warehouseId : proposal?.warehouseId);
+    const warehouse = boundWarehouseId
+      ? await m.findOne(Warehouse, {
+          where: { id: boundWarehouseId },
+          lock: { mode: 'pessimistic_read' },
+        })
+      : null;
     if (
       actor.role === Role.SERVICE_MANAGER &&
       (!warehouse || warehouse.responsibleUserId !== actor.id)
     )
       return denied();
-    return { request, order, booking, assignment, proposal, warehouse };
+    return {
+      request,
+      order,
+      booking,
+      assignment,
+      proposal,
+      warehouse,
+      termsHead,
+    };
   }
   private async source(
     m: EntityManager,
     s: Awaited<ReturnType<DeliveryOperationsService['scope']>>,
+    terms = false,
   ) {
     const { request, order, booking } = s;
     if (
@@ -266,16 +321,28 @@ export class DeliveryOperationsService {
     } catch {
       return conflict('DELIVERY_WHOLE_SOURCE_REQUIRED');
     }
-    // No canonical all-delivery coverage/current heads or approved L/C/D ledger exists here.
+    // No canonical spending commitments or approved L/C/D ledger exists here.
     // A local quote's netLaborAfterShipping (or the pure aggregate assessment) cannot authorize
     // spending. Future consumption of assessDeliveryOrderShippingLaborBudget must read those
     // sources under the ServiceOrder lock above and retain CAS + the independent Finance gate.
     // ZERO spending only: never claim that siblings, labor or deductions are zero.
     if (
-      !explicitDatabaseZero(cost.shippingFee) ||
-      !explicitDatabaseZero(request.shippingFee)
+      !terms &&
+      (!explicitDatabaseZero(cost.shippingFee) ||
+        !explicitDatabaseZero(request.shippingFee))
     )
       return conflict('FINANCE_LEDGER_SOURCE_REQUIRED');
+    if (terms) {
+      const fee = cost.shippingFee as unknown;
+      if (
+        (typeof fee !== 'number' &&
+          !(typeof fee === 'string' && /^[1-9]\d*$/.test(fee))) ||
+        !Number.isSafeInteger(Number(fee)) ||
+        Number(fee) <= 0 ||
+        ![Number(fee), String(fee)].includes(request.shippingFee)
+      )
+        return conflict('DELIVERY_APPROVED_SHIPPING_SOURCE_REQUIRED');
+    }
     const contextDigest = hash({
       cost,
       items,
@@ -421,8 +488,10 @@ export class DeliveryOperationsService {
     quoteVersion: number,
     file: EvidenceFile,
     actor: Actor,
+    terms = false,
   ) {
     if (
+      (terms && !['QUOTE', 'ACTUAL'].includes(purpose)) ||
       !uuid.test(warehouseId) ||
       ![
         'QUOTE',
@@ -446,16 +515,21 @@ export class DeliveryOperationsService {
       return denied();
     this.storage.validate(file);
     const ref = await this.run(async (m) => {
-      const s = await this.scope(m, id, actor, warehouseId);
+      const s = await this.scope(m, id, actor, warehouseId, terms);
       await this.open(m, s);
       return s.order.id;
     });
     const privateObjectRef = await this.storage.upload(ref, actor.id, file);
     try {
       return await this.run(async (m) => {
-        const s = await this.scope(m, id, actor, warehouseId);
+        const s = await this.scope(m, id, actor, warehouseId, terms);
         await this.open(m, s);
-        if (purpose !== 'QUOTE' && s.proposal?.warehouseId !== warehouseId)
+        if (
+          purpose !== 'QUOTE' &&
+          (terms
+            ? s.termsHead?.state?.quote?.warehouseId
+            : s.proposal?.warehouseId) !== warehouseId
+        )
           return conflict('DELIVERY_EVIDENCE_WAREHOUSE_MISMATCH');
         const row = {
           id: randomUUID(),
@@ -493,6 +567,205 @@ export class DeliveryOperationsService {
       return {
         url: await this.storage.signedUrl(e.privateObjectRef),
         verification: 'UPLOADED_BYTES_NOT_COURIER_VERIFIED',
+      };
+    });
+  }
+
+  /** Conditional terms only. No L/C/D is invented and no spending authority is issued. */
+  async recordTerms(
+    id: string,
+    kind: 'PROPOSE' | 'CONSENT' | 'RECORD_ACTUAL',
+    body:
+      | ShippingProposalInput
+      | ShippingConsentInput
+      | (Identity & {
+          quoteVersion: number;
+          totalShippingFee: number;
+          evidenceId: string;
+        }),
+    actor: Actor,
+  ) {
+    const keys =
+      kind === 'PROPOSE'
+        ? [
+            'commandId',
+            'expectedVersion',
+            'warehouseId',
+            'evidenceId',
+            'courierReference',
+            'totalShippingFee',
+          ]
+        : kind === 'CONSENT'
+          ? [
+              'commandId',
+              'expectedVersion',
+              'quoteVersion',
+              'quoteFingerprint',
+              'totalShippingFee',
+              'shippingShare',
+              'accepted',
+            ]
+          : [
+              'commandId',
+              'expectedVersion',
+              'quoteVersion',
+              'totalShippingFee',
+              'evidenceId',
+            ];
+    this.input(body, keys);
+    this.identity(body);
+    if (
+      kind === 'CONSENT'
+        ? ![Role.CUSTOMER, Role.TECHNICIAN].includes(actor.role as Role)
+        : actor.role !== Role.SERVICE_MANAGER
+    )
+      return denied();
+    if (
+      !Number.isSafeInteger(body.totalShippingFee) ||
+      body.totalShippingFee < (kind === 'PROPOSE' ? 1 : 0)
+    )
+      throw new BadRequestException('Thông tin phí giao không hợp lệ.');
+    const canonicalBody = Object.fromEntries(keys.map((k) => [k, body[k]]));
+    return this.run(async (m) => {
+      const s = await this.scope(
+        m,
+        id,
+        actor,
+        kind === 'PROPOSE'
+          ? (body as ShippingProposalInput).warehouseId
+          : undefined,
+        true,
+      );
+      await this.open(m, s);
+      const facts = await this.source(m, s, true);
+      if (
+        kind === 'PROPOSE' &&
+        body.totalShippingFee > Number(facts.cost.shippingFee)
+      )
+        return conflict('DELIVERY_APPROVED_CEILING_EXCEEDED');
+      if (!s.warehouse || s.warehouse.status !== 'active')
+        return conflict('DELIVERY_TERMS_WAREHOUSE_AUTHORITY_CHANGED');
+      const sm = await m.findOne(User, {
+        where: { id: s.warehouse.responsibleUserId },
+        lock: { mode: 'pessimistic_read' },
+      });
+      if (
+        !sm ||
+        sm.role !== Role.SERVICE_MANAGER ||
+        !sm.isActive ||
+        sm.status !== 'active'
+      )
+        return conflict('DELIVERY_TERMS_WAREHOUSE_AUTHORITY_CHANGED');
+      const [prior] = await m.query(
+        'SELECT *, source_snapshot=w3_fee_source_snapshot(part_request_id) AS source_current FROM delivery_fee_terms WHERE part_request_id=$1 AND command_id=$2',
+        [id, body.commandId],
+      );
+      if (prior) {
+        if (
+          prior.actor_user_id !== actor.id ||
+          prior.actor_role !== actor.role ||
+          prior.kind !== kind ||
+          !isDeepStrictEqual(prior.command_body, canonicalBody)
+        )
+          return conflict('DELIVERY_COMMAND_CONFLICT');
+        if (
+          !prior.source_current ||
+          prior.state.quote.responsibleUserId !==
+            s.warehouse.responsibleUserId ||
+          prior.state.quote.assignmentId !== s.assignment.id
+        )
+          return conflict('DELIVERY_TERMS_SOURCE_CHANGED');
+        return { state: publicTerms(prior.state), replayed: true };
+      }
+      if (kind !== 'CONSENT') {
+        const e = await this.evidence(
+          m,
+          s,
+          body['evidenceId'],
+          kind === 'PROPOSE' ? 'QUOTE' : 'ACTUAL',
+          kind === 'PROPOSE'
+            ? (s.termsHead?.state.quote.quoteVersion ?? 0) + 1
+            : body['quoteVersion'],
+          actor,
+        );
+        if (!e) return conflict('DELIVERY_EVIDENCE_REQUIRED');
+      }
+      const [record] = await m.query(
+        `INSERT INTO delivery_fee_terms
+        (part_request_id,service_order_id,actor_user_id,actor_role,kind,command_id,expected_version,command_body)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb) RETURNING state`,
+        [
+          id,
+          s.order.id,
+          actor.id,
+          actor.role,
+          kind,
+          body.commandId,
+          body.expectedVersion,
+          JSON.stringify(canonicalBody),
+        ],
+      );
+      await m.insert(AuditLog, {
+        actorUserId: actor.id,
+        actorRole: actor.role,
+        action: `DELIVERY_FEE_TERMS_${kind}`,
+        resourceType: 'delivery_fee_terms',
+        resourceId: id,
+        after: {
+          commandId: body.commandId,
+          version: record.state.version,
+          financialExecution: 'BLOCKED',
+        },
+      });
+      return { state: publicTerms(record.state), replayed: false };
+    });
+  }
+
+  async readTerms(id: string, actor: Actor) {
+    return this.run(async (m) => {
+      const s = await this.scope(m, id, actor, undefined, true);
+      const sm = s.warehouse
+        ? await m.findOne(User, {
+            where: { id: s.warehouse.responsibleUserId },
+            lock: { mode: 'pessimistic_read' },
+          })
+        : null;
+      const invalidated =
+        !!s.termsHead &&
+        (!s.termsHead.source_current ||
+          s.request.status !== 'requested' ||
+          !['accepted', 'en_route', 'under_repair'].includes(s.order.status) ||
+          !!s.order.completionRequestedAt ||
+          !s.warehouse ||
+          s.warehouse.status !== 'active' ||
+          !sm ||
+          sm.role !== Role.SERVICE_MANAGER ||
+          !sm.isActive ||
+          sm.status !== 'active' ||
+          s.termsHead.state.quote.responsibleUserId !== sm.id ||
+          s.termsHead.state.quote.assignmentId !== s.assignment.id);
+      // Only expose this request's terms. Sibling identities/evidence/consents stay private.
+      const [totals] = await m.query(
+        `SELECT count(*)::int AS count,
+        coalesce(sum((x.state#>>'{quote,totalShippingFee}')::numeric),0)::text AS shipping,
+        coalesce(sum((x.state#>>'{quote,customerShippingShare}')::numeric),0)::text AS customer,
+        coalesce(sum((x.state#>>'{quote,technicianShippingShare}')::numeric),0)::text AS technician
+        FROM (SELECT DISTINCT ON (part_request_id) state FROM delivery_fee_terms
+          WHERE service_order_id=$1 ORDER BY part_request_id,result_version DESC) x`,
+        [s.order.id],
+      );
+      return {
+        state: publicTerms(s.termsHead?.state),
+        invalidated,
+        financialExecution: 'BLOCKED',
+        laborBudget: null,
+        aggregateBudgetVerified: false,
+        recordedConditionalCeilings: totals ?? null,
+        blockers: [
+          'COMMISSION_NOT_FROZEN',
+          'DEDUCTIONS_LEDGER_SOURCE_REQUIRED',
+          'SELLER_TAX_PAYMENT_POLICY_REQUIRED',
+        ],
       };
     });
   }

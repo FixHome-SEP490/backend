@@ -1,8 +1,8 @@
-# W3 DELIVERY — hợp đồng tài chính và operational zero-fee slice (chưa release)
+# W3 DELIVERY — zero-fee operations và conditional positive-fee terms (chưa release)
 
 Ngày: 04/11/2026. Nguồn: official dev `ba703298`, owner order W3 04/11/2026.
-Trạng thái hiện hành: **SOURCE ZERO-FEE OPERATIONS; KHÔNG PHẢI ACTIVATED DEV/FINANCE**.
-Mục 1–16 là checkpoint scaffold trước đây; mục 17 mô tả operational zero-fee; mục 20 bổ sung lifecycle cấu hình vận hành B3b.
+Trạng thái hiện hành: **SOURCE ZERO-FEE OPERATIONS + CONDITIONAL TERMS; FINANCIAL EXECUTION BLOCKED**.
+Mục 1–21 là các checkpoint trước đây; mục 22 cập nhật nguồn thẩm quyền, API conditional terms và migration 0010. Không phải full W3 hoặc activation DEV.
 Team Finance phải review độc lập
 trước release. Không apply migration, đổi ENV hay ghi shared DB trong task này.
 
@@ -1293,3 +1293,111 @@ trước yêu cầu hủy của Lead: exit 0, **310 files passed / 6 skipped; 39
 `git diff --check` **PASS**. Các kết quả này không mở Finance hoặc thay PG/runtime evidence.
 
 **PREPARATORY SOURCE COMPLETE; SAFE_TO_ACTIVATE_FINANCE=NO.**
+
+## 22. Conditional positive-fee terms — Backend 06/11/2026
+
+Scope cuối theo Lead: hoàn thiện migration `DeliveryConditionalFeeTerms1793466000010`,
+API điều khoản có điều kiện, kiểm thử và tài liệu; không triển khai kế toán/payment/refund
+chưa có quyết định. Không push, merge, deploy hoặc ghi shared DEV. Local commit được owner cho phép.
+
+### Nguồn thẩm quyền đã truy vết
+
+| Thành phần | Nguồn code hiện có | Kết luận cho W3 phí dương |
+| --- | --- | --- |
+| L | `ServiceOrdersService.generateInvoice`: Booking fixed-price snapshot hoặc dòng LABOR của Quotation APPROVED, cộng LABOR của AdditionalCost APPROVED | Có nguồn tiền công; không dùng order total/giá tham khảo hoặc tiền linh kiện để bù t |
+| C | Cùng hàm đọc `commission.rate_bps` lúc phát hành và lưu `Invoice.commissionRateSnapshot/commissionAmount` | Chưa có commission đóng băng trước giao hàng; invoice có sẵn lại làm delivery scope đóng. Không lấy cấu hình hiện hành làm C đã duyệt cho negotiation |
+| D | Chưa có ledger/order authority mô tả đầy đủ deduction và đích nhận | Không suy D=0 từ thiếu row hoặc dùng budget sentinel của zero-fee |
+| Phí giao riêng | AdditionalCost APPROVED, `decidedByCustomerId/decidedAt`, DELIVERY, shipping fee bằng PartRequest, full FixHome SKU/quantity và cohort mới | Đủ nguồn để ghi điều khoản phí, không đủ quyền chi hoặc lập hóa đơn W3 |
+| Actual courier | Private uploaded bytes + manual SM record | `RECORDED_NOT_EXTERNALLY_VERIFIED`; không chứng minh provider/courier/payee/payment hoặc phát sinh payable |
+| Invoice/dues | `generateInvoice`, `FinanceService.ensureFinancialDues`, immutable 0004 và `assertShippingFinancialCutoverAllowed` | Legacy vẫn 100/0. Không mở CHECK hoặc consumer guard; aggregate invoice W3 chưa được phép lưu |
+| Custody/payout | `settleCustodyOnline`, `SettlementService.trySettleOrder` | P1 legacy giữ L-C; W3 bị chặn trước ledger/wallet. CASH legacy có `allowNegative:true`, không được tái sử dụng làm W3 no-negative-wallet authority |
+| Refund/funding | SupportCase refund, `commitVerifiedVoucherSupportRefund`, voucher settlement evidence | Chỉ chính sách legacy/voucher hiện hữu; không suy seller/tax/refund hoặc courier settlement W3. Không tự hoàn tiền, bù nợ hay gọi payOS |
+
+`FinanceService.ensureFinancialDues` được gọi từ verified online và confirmed cash;
+wallet, VNPay, group, cash-intent và voucher đi qua các consumer đang giữ gate đóng.
+Không thay hành vi những luồng này hoặc đưa conditional journal vào earnings/dues/custody.
+
+### API đã có source, chưa release
+
+Base `/api/v1/part-requests/:id/delivery/terms`, JWT + RolesGuard + active DB role,
+customer ownership/current assignment/current warehouse SM. Giữ DTO, envelope và no-store hiện có.
+
+| Method/path | Actor | Input |
+| --- | --- | --- |
+| GET `/` | Customer owner, Technician active, SM kho của head | Terms của đúng request, invalidated flag và tổng conditional ceilings trong cùng order |
+| POST `/proposal` | SM của kho được chọn | DTO ShippingProposal hiện có; `totalShippingFee>0` và không vượt shipping fee riêng được khách duyệt; expectedVersion=0 cho initial, exact head cho revise |
+| POST `/consent` | Customer hoặc Technician đúng scope, mỗi bên chủ động một lần | DTO ShippingConsent hiện có; exact version/fingerprint/S/share và accepted=true |
+| POST `/actual` | SM của kho head | DTO DeliveryActual; actual không vượt quote ceiling, hai consent còn đúng head, chứng từ ACTUAL khác bytes QUOTE |
+| POST `/evidence` | SM của kho được chọn | Multipart DTO hiện có, chỉ QUOTE/ACTUAL; private storage, kiểm bytes/MIME/size, server digest và recheck scope sau upload |
+
+Evidence access dùng route private hiện có `/delivery/evidence/:evidenceId`.
+Không expose source_snapshot, assignment/SM/evidence IDs nội bộ trong monetary terms response.
+Revise trước actual tạo quote version mới và xóa hai consent/actual hiện hành; lịch sử giữ nguyên.
+Sau khi đã ghi actual, revise bị chặn `DELIVERY_TERMS_ACTUAL_RECONCILIATION_REQUIRED`,
+không tự coi nghĩa vụ courier đã được giải quyết. Exact command/payload replay trả ORIGINAL
+receipt sau kiểm lại quyền/source hiện hành; không phục hồi head hoặc ghi audit lần hai.
+Client phải GET lại sau conflict/kết quả chưa rõ, không tự rebase command.
+
+Mọi state có `scope=CONDITIONAL_TERMS_ONLY`, `financialExecution=BLOCKED`,
+`laborBudget=null`, `aggregateBudgetVerified=false`, `paymentVerified=false`.
+Consent là đồng ý điều khoản có điều kiện, không phải financial/legal activation.
+`invalidated=true` làm các consent lịch sử không còn dùng được; source/assignment/warehouse
+drift không được tự khôi phục bằng replay. ACTUAL vẫn chỉ ghi nhận thủ công.
+
+DB tính riêng từng quote/actual bằng NUMERIC nguyên: `c=floor((7*S+5)/10)`, `t=S-c`.
+GET cộng stored shares của từng request head dưới cùng ServiceOrder lock; trả chuỗi VND
+`recordedConditionalCeilings.{count,shipping,customer,technician}` để tránh tràn khi cộng.
+Hai delivery S=1 cho tổng c=2,t=0. Tập này chỉ là conditional terms đã ghi, **không phải**
+toàn bộ financial commitments/obligations hoặc budget đã duyệt; không coi sibling chưa ghi là 0.
+Actual giảm hoặc request hủy không tự nhả ceiling. Vì C/D còn thiếu, không gọi phép kiểm
+`sum(t)<=L-C-D` với số tự dựng và không cấp quyền spend sau phép cộng này.
+
+### Migration, bảo mật và release
+
+0010 thêm bảng private `delivery_fee_terms`, source snapshots và command/state journal bất biến.
+Trigger DB tự dựng state/fingerprint từ approved full-source và chứng từ, bỏ qua state do caller
+tự gán; khóa Order → Technician → Request → Cohort, kiểm exact CAS, actor và version.
+Fingerprint nguồn cố định timezone UTC để cùng timestamp không lệch giữa connection UTC/UTC+7.
+Strict audit đúng actor/command/version phải nằm cùng transaction; audit terms không UPDATE/
+DELETE/TRUNCATE. RLS không policy, revoke bảng và cả năm function khỏi PUBLIC cùng các Data API
+role hiện hữu, kể cả explicit default function grants. Không cấp quyền mới.
+Down từ chối khi có history; không sửa migration 0004–0009 hoặc lịch sử tiền cũ.
+Evidence guard giữ bản 0008 và chỉ thêm ACTUAL cho đúng conditional head; không mở physical gate.
+
+DEV preflight whitelist bảy migration 0004–0010, kiểm cột/constraint/index/trigger/deferred audit,
+timezone/function ACL/RLS/grants và replay markers 0010. Giữ prerequisite và cặp cash gate cũ.
+CI harness hiện hữu tự nạp 0010 qua migration glob; không thêm môi trường hay dependency.
+Positive RESERVE/ISSUE, legacy billing/completion, W3 invoice/payment/payout/refund vẫn đóng.
+
+Blocker chính xác để mở tiền: nguồn C versioned trước delivery; ledger D có bằng chứng cả trường
+hợp 0 và đích hạch toán; canonical spending commitment/release và kiểm ngân sách toàn order;
+seller-of-record/tax/payee/courier funding/payment/refund policy; invoice aggregate/custody/provider
+reconciliation được Finance duyệt. Không giải quyết các quyết định này trong scope 0010.
+
+Kiểm chứng cuối ghi cùng checkpoint trong `docs/CONTEXT.md`. Đã có PostgreSQL 16 cô lập,
+HTTP/JWT thật với provider storage double; đây không phải provider payment hoặc shared DEV proof.
+Reviewer chỉ đọc độc lập không thấy critical/P1; P2 explicit default function grant đã được tái hiện
+RED và sửa GREEN. Review không phải Finance/legal signoff. Lead phải kiểm CI/release và áp schema
+trước restart Backend; Docker/health DEV, Web/Mobile parity, provider thật và Node 20.19.5:
+**NOT VERIFIED**. Không tuyên bố full W3 hoặc active 70/30. **SAFE_TO_ACTIVATE_FINANCE=NO.**
+
+Gate cuối trên Node **24.15.0**, PostgreSQL **16** trong container dùng một lần, không đọc `.env`:
+
+| Kiểm tra | Kết quả |
+| --- | --- |
+| `npm run typecheck` | PASS |
+| `npm run lint` | PASS — 0 errors, 4 warning có sẵn |
+| `npm run build` trong script E2E | PASS |
+| `npm test` với 15 spec delivery/finance/custody/gate liên quan và `test/context-doc.spec.ts`, `--silent --maxWorkers=4`, TZ UTC | PASS — 16 files, 287 tests |
+| `npx vitest run src/database/w3-dev-release.postgres.spec.ts --silent`, CI=true, W3_DEV_ISOLATED_PG=1 | PASS — 14 tests, rollback 0010/ledger, replay, private grants, default function ACL |
+| `npm run test:e2e -- test/warehouse-delivery-physical.e2e-spec.ts test/warehouse-w3-finance.e2e-spec.ts test/delivery-consent-storage.e2e-spec.ts test/warehouse-fulfillment.e2e-spec.ts`, CI=true, GITHUB_ACTIONS=true, TZ UTC | PASS — 4 files, 70 tests, có HTTP/JWT/IDOR và PostgreSQL race/rollback |
+| `git diff --check` | PASS |
+| Full unit/E2E suites, GitHub CI trên commit mới | NOT VERIFIED — scope focused theo Lead |
+| Shared DEV migration/Docker Compose/health, provider thật, Web/Mobile, Node 20.19.5 | NOT VERIFIED |
+
+Review BA/PM: đúng conditional scope, không tự quyết payment/refund. Tech Lead/Senior:
+tái dùng module/DTO/storage, migration tiến và không dependency/ENV mới. Security: independent
+read-only reviewer xác nhận P2 ACL đã sửa, không thấy critical/P1 trong phần review.
+Tester/QA/QC: RED→GREEN cho service thiếu feature, whitelist 0010, timezone và default ACL;
+tests DB không thay provider/Finance signoff. DevOps: không release, Lead áp migration và
+restart Backend trước runtime QA. Đây là hoàn tất scope conditional terms, không hoàn tất money W3.

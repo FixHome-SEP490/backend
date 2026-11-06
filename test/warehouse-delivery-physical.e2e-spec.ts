@@ -5,6 +5,12 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DataSource } from 'typeorm';
+import { Test } from '@nestjs/testing';
+import { JwtModule, JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
+import { getRepositoryToken } from '@nestjs/typeorm';
+import { ValidationPipe } from '@nestjs/common';
+import request from 'supertest';
 import type { WarehouseDeliveryStore } from '../src/modules/part-requests/warehouse-delivery-store.service';
 import type { DeliveryOperationsService } from '../src/modules/part-requests/delivery-operations.service';
 import { DeliveryZeroFeeOperations1793466000008 } from '../src/database/migrations/1793466000008-DeliveryZeroFeeOperations';
@@ -94,7 +100,7 @@ describe.skipIf(
     }
   });
 
-  async function fixture(enroll = true, automatic = false) {
+  async function fixture(enroll = true, automatic = false, shippingFee = 0) {
     const user = (role: Role) =>
       save('User', {
         email: `${randomUUID()}@example.test`,
@@ -131,6 +137,7 @@ describe.skipIf(
       decidedByCustomerId: customer.id,
       expiresAt: new Date(Date.now() + 86400000),
       fulfillmentMethod: 'delivery',
+      shippingFee,
     });
     const part = await save('FixHomePart', {
       sku: randomUUID(),
@@ -173,7 +180,7 @@ describe.skipIf(
           tech.id,
           cost.id,
           'delivery',
-          0,
+          shippingFee,
           [
             {
               partCatalogId: part.id,
@@ -194,6 +201,7 @@ describe.skipIf(
         requestType: 'additional',
         fulfillmentMethod: 'delivery',
         additionalCostId: cost.id,
+        shippingFee,
       });
       await m.getRepository('PartRequestItem').save({
         partRequestId: r.id,
@@ -462,8 +470,8 @@ describe.skipIf(
     }
   });
 
-  async function operationalFixture() {
-    const f = await fixture(true, true);
+  async function operationalFixture(shippingFee = 0) {
+    const f = await fixture(true, true, shippingFee);
     const sm = await save('User', {
       email: `${randomUUID()}@example.test`,
       passwordHash: 'ci-no-login',
@@ -498,19 +506,27 @@ describe.skipIf(
     ).DeliveryOperationsService)(db, storage);
     const managerActor = { id: sm.id, role: Role.SERVICE_MANAGER };
     const customerActor = { id: f.customer.id, role: Role.CUSTOMER };
-    const upload = async (purpose: string, actor = managerActor) =>
+    const upload = async (
+      purpose: string,
+      actor = managerActor,
+      quoteVersion = 1,
+      bytes = purpose,
+    ) =>
       service.upload(
         f.request.id,
         warehouse.id,
         purpose,
-        1,
+        quoteVersion,
         {
-          buffer: Buffer.from(purpose),
+          buffer: Buffer.from(bytes),
           mimetype: 'image/jpeg',
-          size: Buffer.byteLength(purpose),
+          size: Buffer.byteLength(bytes),
         },
         actor,
+        shippingFee > 0,
       );
+    if (shippingFee > 0)
+      return { ...f, service, managerActor, customerActor, warehouse, upload };
     const evidence = await upload('QUOTE');
     let proposal = await service.propose(
       f.request.id,
@@ -554,6 +570,519 @@ describe.skipIf(
     );
     return { ...f, service, managerActor, customerActor, warehouse, upload };
   }
+  async function positiveTerms(fee = 20000) {
+    const f = await operationalFixture(fee);
+    const e = await f.upload('QUOTE');
+    const body = {
+      commandId: randomUUID(),
+      expectedVersion: 0,
+      warehouseId: f.warehouse.id,
+      evidenceId: e.evidenceId,
+      courierReference: 'ci-conditional-positive',
+      totalShippingFee: fee,
+    };
+    const result = await f.service.recordTerms(
+      f.request.id,
+      'PROPOSE',
+      body,
+      f.managerActor,
+    );
+    const consent = (state: any, actor: any, extra = {}) =>
+      f.service.recordTerms(
+        f.request.id,
+        'CONSENT',
+        {
+          commandId: randomUUID(),
+          expectedVersion: state.version,
+          quoteVersion: state.quote.quoteVersion,
+          quoteFingerprint: state.quote.fingerprint,
+          totalShippingFee: state.quote.totalShippingFee,
+          shippingShare:
+            actor.role === 'customer'
+              ? state.quote.customerShippingShare
+              : state.quote.technicianShippingShare,
+          accepted: true,
+          ...extra,
+        },
+        actor,
+      );
+    return { ...f, body, state: result.state, consent };
+  }
+  it('persists positive 70/30 terms, separate consents and lower actual without enabling financial or physical execution', async () => {
+    const f = await positiveTerms();
+    expect(f.state.quote).toMatchObject({
+      totalShippingFee: 20000,
+      customerShippingShare: 14000,
+      technicianShippingShare: 6000,
+    });
+    expect(f.state).toMatchObject({
+      laborBudget: null,
+      financialExecution: 'BLOCKED',
+      aggregateBudgetVerified: false,
+    });
+    expect(
+      (
+        await f.service.recordTerms(
+          f.request.id,
+          'PROPOSE',
+          f.body,
+          f.managerActor,
+        )
+      ).replayed,
+    ).toBe(true);
+    await expect(
+      f.consent(f.state, f.customerActor, { accepted: false }),
+    ).rejects.toThrow();
+    let state = (await f.consent(f.state, f.customerActor)).state;
+    expect(state.technicianConsented).toBe(false);
+    const e = await f.upload('ACTUAL');
+    const actual = {
+      commandId: randomUUID(),
+      expectedVersion: state.version,
+      quoteVersion: 1,
+      totalShippingFee: 18001,
+      evidenceId: e.evidenceId,
+    };
+    await expect(
+      f.service.recordTerms(
+        f.request.id,
+        'RECORD_ACTUAL',
+        actual,
+        f.managerActor,
+      ),
+    ).rejects.toThrow();
+    state = (await f.consent(state, f.actor)).state;
+    const recorded = await f.service.recordTerms(
+      f.request.id,
+      'RECORD_ACTUAL',
+      { ...actual, expectedVersion: state.version },
+      f.managerActor,
+    );
+    expect(recorded.state.actual).toMatchObject({
+      totalShippingFee: 18001,
+      customerShippingShare: 12601,
+      technicianShippingShare: 5400,
+      verification: 'RECORDED_NOT_EXTERNALLY_VERIFIED',
+    });
+    expect(recorded.state.quote).not.toHaveProperty('assignmentId');
+    expect(recorded.state.quote).not.toHaveProperty('responsibleUserId');
+    const revisedEvidence = await f.upload(
+      'QUOTE',
+      f.managerActor,
+      2,
+      'post-actual quote',
+    );
+    await expect(
+      f.service.recordTerms(
+        f.request.id,
+        'PROPOSE',
+        {
+          ...f.body,
+          commandId: randomUUID(),
+          expectedVersion: 4,
+          evidenceId: revisedEvidence.evidenceId,
+        },
+        f.managerActor,
+      ),
+    ).rejects.toMatchObject({
+      response: {
+        details: { blocker: 'DELIVERY_TERMS_ACTUAL_RECONCILIATION_REQUIRED' },
+      },
+    });
+    expect(
+      (await f.service.readTerms(f.request.id, f.customerActor)).invalidated,
+    ).toBe(false);
+    await expect(
+      f.service.physical(
+        f.request.id,
+        'RESERVE',
+        { commandId: randomUUID(), expectedVersion: 0 },
+        f.actor,
+      ),
+    ).rejects.toThrow();
+    expect(await eventCount(f.request.id)).toBe(0);
+    expect(
+      await db.getRepository('Invoice').countBy({ serviceOrderId: f.order.id }),
+    ).toBe(0);
+    expect(
+      (
+        await db
+          .getRepository('WarehouseStock')
+          .findOneByOrFail({ warehouseId: f.warehouse.id })
+      ).reserved,
+    ).toBe(0);
+  });
+  it('serializes positive terms CAS and exact-command retry, and rolls back a failed audit', async () => {
+    const f = await positiveTerms();
+    const race = await Promise.allSettled([
+      f.consent(f.state, f.customerActor),
+      f.consent(f.state, f.actor),
+    ]);
+    expect(race.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(race.filter((r) => r.status === 'rejected')).toHaveLength(1);
+    expect(
+      (await f.service.readTerms(f.request.id, f.customerActor)).invalidated,
+    ).toBe(false);
+    const [prior] = await db.query(
+      'SELECT *, source_snapshot=w3_fee_source_snapshot(part_request_id) AS source_current FROM delivery_fee_terms WHERE part_request_id=$1 AND command_id=$2',
+      [f.request.id, f.body.commandId],
+    );
+    expect(prior.source_current).toBe(true);
+    expect(prior.state.quote.responsibleUserId).toBe(f.managerActor.id);
+    expect(prior.state.quote.assignmentId).toBe(f.assignment.id);
+    const retry = await Promise.all([
+      f.service.recordTerms(f.request.id, 'PROPOSE', f.body, f.managerActor),
+      f.service.recordTerms(f.request.id, 'PROPOSE', f.body, f.managerActor),
+    ]);
+    expect(retry.every((r) => r.replayed)).toBe(true);
+    const g = await positiveTerms();
+    await db.query(`CREATE FUNCTION w3_test_fail_terms_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.resource_type='delivery_fee_terms' THEN RAISE EXCEPTION 'injected terms audit failure'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER w3_test_fail_terms_audit BEFORE INSERT ON audit_logs FOR EACH ROW EXECUTE FUNCTION w3_test_fail_terms_audit()`);
+    try {
+      await expect(g.consent(g.state, g.customerActor)).rejects.toThrow(
+        'injected terms audit failure',
+      );
+    } finally {
+      await db.query(
+        'DROP TRIGGER w3_test_fail_terms_audit ON audit_logs; DROP FUNCTION w3_test_fail_terms_audit()',
+      );
+    }
+    expect(
+      (await g.service.readTerms(g.request.id, g.customerActor)).state.version,
+    ).toBe(1);
+  });
+  it('invalidates stale source/assignment, rejects forged source, actual over ceiling, and keeps immutable history', async () => {
+    const f = await positiveTerms();
+    let state = (await f.consent(f.state, f.customerActor)).state;
+    state = (await f.consent(state, f.actor)).state;
+    const e = await f.upload('ACTUAL');
+    await expect(
+      f.service.recordTerms(
+        f.request.id,
+        'RECORD_ACTUAL',
+        {
+          commandId: randomUUID(),
+          expectedVersion: 3,
+          quoteVersion: 1,
+          totalShippingFee: 20001,
+          evidenceId: e.evidenceId,
+        },
+        f.managerActor,
+      ),
+    ).rejects.toThrow();
+    await db
+      .getRepository('AdditionalCostRequest')
+      .update(f.cost.id, { reason: 'CI source change' });
+    expect(
+      (await f.service.readTerms(f.request.id, f.customerActor)).invalidated,
+    ).toBe(true);
+    await expect(
+      f.service.recordTerms(f.request.id, 'PROPOSE', f.body, f.managerActor),
+    ).rejects.toThrow();
+    for (const sql of [
+      'UPDATE delivery_fee_terms SET state=state',
+      'DELETE FROM delivery_fee_terms',
+      'TRUNCATE delivery_fee_terms',
+    ])
+      await expect(db.query(sql)).rejects.toThrow();
+    expect(
+      (
+        await db.query(
+          "SELECT relrowsecurity FROM pg_class WHERE oid='delivery_fee_terms'::regclass",
+        )
+      )[0].relrowsecurity,
+    ).toBe(true);
+  });
+  it('revises pre-actual terms with fresh evidence and clears both prior consents; per-delivery S=1 keeps c=1,t=0', async () => {
+    const f = await positiveTerms(1);
+    expect(f.state.quote).toMatchObject({
+      customerShippingShare: 1,
+      technicianShippingShare: 0,
+    });
+    const state = (await f.consent(f.state, f.customerActor)).state;
+    const e = await f.upload('QUOTE', f.managerActor, 2, 'new quote bytes');
+    const revised = await f.service.recordTerms(
+      f.request.id,
+      'PROPOSE',
+      {
+        ...f.body,
+        commandId: randomUUID(),
+        expectedVersion: state.version,
+        evidenceId: e.evidenceId,
+      },
+      f.managerActor,
+    );
+    expect(revised.state).toMatchObject({
+      customerConsented: false,
+      technicianConsented: false,
+      actual: null,
+    });
+    expect(revised.state.quote.quoteVersion).toBe(2);
+    await expect(
+      f.consent(revised.state, f.actor, {
+        quoteFingerprint: f.state.quote.fingerprint,
+      }),
+    ).rejects.toThrow();
+  });
+  it('sums per-delivery stored conditional ceilings under the order lock without claiming a verified labor budget', async () => {
+    const f = await positiveTerms(1);
+    const cost = await save('AdditionalCostRequest', {
+      serviceOrderId: f.order.id,
+      technicianId: f.actor.id,
+      reason: 'CI independent sibling shipping source',
+      status: 'approved',
+      decidedAt: new Date(),
+      decidedByCustomerId: f.customer.id,
+      expiresAt: new Date(Date.now() + 86400000),
+      fulfillmentMethod: 'delivery',
+      shippingFee: 1,
+    });
+    await save('AdditionalCostItem', {
+      requestId: cost.id,
+      type: 'parts_equipment',
+      description: 'CI sibling part',
+      partSource: 'fixhome',
+      partCatalogId: f.part.id,
+      quantity: 2,
+      unitPrice: 1000,
+      lineTotal: 2000,
+    });
+    const sibling = await db.transaction(async (m) => {
+      const r = await m
+        .getRepository('PartRequest')
+        .save({
+          serviceOrderId: f.order.id,
+          technicianId: f.actor.id,
+          requestType: 'additional',
+          fulfillmentMethod: 'delivery',
+          additionalCostId: cost.id,
+          shippingFee: 1,
+        });
+      await m
+        .getRepository('PartRequestItem')
+        .save({
+          partRequestId: r.id,
+          partCatalogId: f.part.id,
+          partSource: 'fixhome',
+          partNameSnapshot: 'CI sibling part',
+          quantity: 2,
+          unitPriceSnapshot: 1000,
+        });
+      await store.enrollNew(m, r.id, f.actor);
+      return r;
+    });
+    const evidence = await f.service.upload(
+      sibling.id,
+      f.warehouse.id,
+      'QUOTE',
+      1,
+      { buffer: Buffer.from('sibling'), size: 7, mimetype: 'image/jpeg' },
+      f.managerActor,
+      true,
+    );
+    await f.service.recordTerms(
+      sibling.id,
+      'PROPOSE',
+      { ...f.body, commandId: randomUUID(), evidenceId: evidence.evidenceId },
+      f.managerActor,
+    );
+    const summary = await f.service.readTerms(f.request.id, f.customerActor);
+    expect(summary.recordedConditionalCeilings).toEqual({
+      count: 2,
+      shipping: '2',
+      customer: '2',
+      technician: '0',
+    });
+    expect(summary).toMatchObject({
+      laborBudget: null,
+      aggregateBudgetVerified: false,
+      financialExecution: 'BLOCKED',
+    });
+    await db
+      .getRepository('PartRequest')
+      .update(sibling.id, { status: 'cancelled' });
+    // Cancellation is not proof of financial release; recorded terms stay visible in the summary.
+    expect(
+      (await f.service.readTerms(f.request.id, f.customerActor))
+        .recordedConditionalCeilings,
+    ).toEqual(summary.recordedConditionalCeilings);
+  });
+
+  it('keeps source fingerprints identical across PostgreSQL session timezones', async () => {
+    const f = await positiveTerms();
+    const runner = db.createQueryRunner();
+    await runner.connect();
+    try {
+      for (const zone of ['UTC', 'Asia/Ho_Chi_Minh']) {
+        await runner.query(`SET TIME ZONE '${zone}'`);
+        expect(
+          (
+            await runner.query(
+              'SELECT source_snapshot=w3_fee_source_snapshot(part_request_id) AS same FROM delivery_fee_terms WHERE part_request_id=$1',
+              [f.request.id],
+            )
+          )[0].same,
+        ).toBe(true);
+      }
+    } finally {
+      await runner.query("SET TIME ZONE 'UTC'");
+      await runner.release();
+    }
+  });
+  it('requires a same-transaction strict audit and rejects direct body/verdict injection', async () => {
+    const f = await positiveTerms();
+    const e = await f.upload('QUOTE', f.managerActor, 2, 'direct SQL quote');
+    const body = {
+      ...f.body,
+      commandId: randomUUID(),
+      expectedVersion: 1,
+      evidenceId: e.evidenceId,
+    };
+    const insert = (payload: object) =>
+      db.query(
+        `INSERT INTO delivery_fee_terms
+      (part_request_id,service_order_id,command_id,expected_version,actor_user_id,actor_role,kind,command_body,state)
+      VALUES ($1,$2,$3,1,$4,'service_manager','PROPOSE',$5::jsonb,'{"financialExecution":"ALLOWED"}'::jsonb)`,
+        [
+          f.request.id,
+          f.order.id,
+          body.commandId,
+          f.managerActor.id,
+          JSON.stringify(payload),
+        ],
+      );
+    await expect(
+      insert({ ...body, budget: { knownApprovedDeductions: 0 } }),
+    ).rejects.toThrow('DELIVERY_TERMS_INVALID_COMMAND');
+    await expect(insert(body)).rejects.toThrow(
+      'DELIVERY_TERMS_STRICT_AUDIT_REQUIRED',
+    );
+    expect(
+      (
+        await db.query(
+          'SELECT count(*)::int AS n FROM delivery_fee_terms WHERE part_request_id=$1',
+          [f.request.id],
+        )
+      )[0].n,
+    ).toBe(1);
+    await expect(
+      db.query(
+        "UPDATE audit_logs SET action='forged' WHERE resource_type='delivery_fee_terms'",
+      ),
+    ).rejects.toThrow('audit is immutable');
+  });
+  it('enforces real HTTP/JWT/current DB role, DTO and ownership for positive fee terms', async () => {
+    const f = await positiveTerms();
+    const runtime = createRequire(resolve('package.json'));
+    const Controller = runtime(
+      resolve('dist/modules/part-requests/delivery-operations.controller.js'),
+    ).DeliveryOperationsController;
+    const Service = runtime(
+      resolve('dist/modules/part-requests/delivery-operations.service.js'),
+    ).DeliveryOperationsService;
+    const Strategy = runtime(
+      resolve('dist/modules/auth/strategies/jwt.strategy.js'),
+    ).JwtStrategy;
+    const UserEntity = runtime(
+      resolve('dist/modules/users/entities/user.entity.js'),
+    ).User;
+    const signingKey = randomUUID(); // Ephemeral isolated test key, never a provider credential.
+    const module = await Test.createTestingModule({
+      imports: [JwtModule.register({ secret: signingKey })],
+      controllers: [Controller],
+      providers: [
+        Strategy,
+        { provide: Service, useValue: f.service },
+        { provide: ConfigService, useValue: { getOrThrow: () => signingKey } },
+        {
+          provide: getRepositoryToken(UserEntity),
+          useValue: db.getRepository('User'),
+        },
+      ],
+    }).compile();
+    const app = module.createNestApplication();
+    app.setGlobalPrefix('api/v1');
+    app.useGlobalPipes(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    );
+    await app.init();
+    const token = (id: string, role = Role.ADMIN) =>
+      module.get(JwtService).sign({ sub: id, role });
+    const path = `/api/v1/part-requests/${f.request.id}/delivery/terms`;
+    const outsider = await save('User', {
+      email: `${randomUUID()}@example.test`,
+      passwordHash: 'ci-no-login',
+      fullName: 'CI other customer',
+      role: Role.CUSTOMER,
+      status: 'active',
+      isActive: true,
+    });
+    const admin = await save('User', {
+      email: `${randomUUID()}@example.test`,
+      passwordHash: 'ci-no-login',
+      fullName: 'CI terms admin',
+      role: Role.ADMIN,
+      status: 'active',
+      isActive: true,
+    });
+    try {
+      await request(app.getHttpServer()).get(path).expect(401);
+      await request(app.getHttpServer())
+        .get(path)
+        .set('Authorization', `Bearer ${token(admin.id, Role.CUSTOMER)}`)
+        .expect(403);
+      await request(app.getHttpServer())
+        .get(path)
+        .set('Authorization', `Bearer ${token(outsider.id)}`)
+        .expect(404);
+      await request(app.getHttpServer())
+        .get(path)
+        .set('Authorization', `Bearer ${token(f.customer.id)}`)
+        .expect(200)
+        .expect('Cache-Control', 'no-store');
+      const body = {
+        commandId: randomUUID(),
+        expectedVersion: 1,
+        quoteVersion: 1,
+        quoteFingerprint: f.state.quote.fingerprint,
+        totalShippingFee: 20000,
+        shippingShare: 14000,
+        accepted: true,
+      };
+      await request(app.getHttpServer())
+        .post(`${path}/consent`)
+        .set('Authorization', `Bearer ${token(f.customer.id)}`)
+        .send({ ...body, actorId: f.actor.id, budget: { laborTotal: 100000 } })
+        .expect(400);
+      await request(app.getHttpServer())
+        .post(`${path}/proposal`)
+        .set(
+          'Authorization',
+          `Bearer ${token(f.customer.id, Role.SERVICE_MANAGER)}`,
+        )
+        .send(f.body)
+        .expect(403);
+      await request(app.getHttpServer())
+        .post(`${path}/consent`)
+        .set('Authorization', `Bearer ${token(f.customer.id)}`)
+        .send(body)
+        .expect(201);
+      await db
+        .getRepository('User')
+        .update(f.customer.id, { status: 'locked' });
+      await request(app.getHttpServer())
+        .get(path)
+        .set('Authorization', `Bearer ${token(f.customer.id)}`)
+        .expect(401);
+    } finally {
+      await app.close();
+    }
+  });
   it('operates zero-fee reservation, courier issue/dispatch and technician receipt with DB-owned deltas', async () => {
     const f = await operationalFixture();
     const body = { commandId: randomUUID(), expectedVersion: 0 };
