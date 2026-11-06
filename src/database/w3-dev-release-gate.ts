@@ -14,6 +14,8 @@ export const W3_MIGRATIONS = [
   'W3PrequoteCommission1793466000011',
   'W3DeductionPreparation1793466000012',
   'W3ShippingSafetyCap1793466000013',
+  'W3PositivePhysicalDelivery1793466000014',
+  'W3InvoicePaymentEnable1793466000015',
 ] as const;
 
 const FINANCE_PREREQUISITES = [
@@ -190,7 +192,8 @@ async function assertPrerequisiteSchema(db: DataSource): Promise<void> {
     to_regclass('public.warehouse_fulfillment_commands') AS fulfillment_commands,
     to_regclass('public.warehouse_fulfillment_movements') AS fulfillment_movements,
     to_regclass('public.part_request_items') AS part_request_items,
-    to_regclass('public.additional_cost_items') AS additional_cost_items`);
+    to_regclass('public.additional_cost_items') AS additional_cost_items,
+    to_regclass('public.part_custodies') AS part_custodies`);
   if (!base || Object.values(base).some((value) => value === null)) {
     throw new Error('W3 prerequisite base tables missing');
   }
@@ -228,6 +231,8 @@ async function assertPrerequisiteSchema(db: DataSource): Promise<void> {
       AND table_name='quotations' AND column_name='version') AS quotation_version,
     EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
       AND table_name='bookings' AND column_name='customer_id') AS booking_customer,
+    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
+      AND table_name='bookings' AND column_name='visit_group_id') AS booking_visit_group,
     EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('public.stock_movements')
       AND tgname='protect_stock_movements' AND tgenabled='O') AS stock_guard,
     (SELECT relrowsecurity FROM pg_class WHERE oid=to_regclass('public.part_request_warehouse_allocations')) AS allocation_rls,
@@ -256,6 +261,8 @@ async function assertPrerequisiteSchema(db: DataSource): Promise<void> {
     EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
       AND table_name='part_request_items' AND column_name='quantity') AS item_quantity,
     EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
+      AND table_name='part_request_items' AND column_name='usage_status') AS item_usage_status,
+    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
       AND table_name='additional_cost_items' AND column_name='request_id') AS additional_item_request,
     EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
       AND table_name='additional_cost_items' AND column_name='type') AS additional_item_type,
@@ -283,6 +290,22 @@ function imageMigrationNames(db: DataSource): string[] {
 }
 
 const W3_MARKERS: Record<string, string> = {
+  [W3_MIGRATIONS[11]]: `SELECT (EXISTS(SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='invoices' AND column_name='shipping_shipments')
+    OR to_regprocedure('public.w3_received_request(uuid)') IS NOT NULL
+    OR to_regprocedure('public.w3_invoice_shipping_source(uuid)') IS NOT NULL
+    OR to_regprocedure('public.w3_invoice_shipping_totals(jsonb,bigint,bigint,bigint)') IS NOT NULL
+    OR to_regprocedure('public.w3_invoice_payment_verified(uuid)') IS NOT NULL
+    OR to_regprocedure('public.w3_invoice_provenance_immutable()') IS NOT NULL
+    OR EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('public.invoices')
+      AND tgname='w3_invoice_provenance_immutable')) AS present`,
+  [W3_MIGRATIONS[10]]: `SELECT (EXISTS(SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='warehouse_delivery_events'
+      AND column_name='fee_terms_version')
+    OR EXISTS(SELECT 1 FROM pg_constraint
+      WHERE conrelid=to_regclass('public.warehouse_delivery_events')
+        AND conname='fk_w3_physical_fee_terms')
+    OR to_regprocedure('public.w3_positive_physical_terms(uuid)') IS NOT NULL) AS present`,
   [W3_MIGRATIONS[9]]: `SELECT EXISTS(SELECT 1 FROM public.system_configs
     WHERE key='w3.shipping.max_new_fee_vnd') AS present`,
   [W3_MIGRATIONS[8]]: `SELECT (to_regclass('public.w3_deduction_preparations') IS NOT NULL
@@ -390,8 +413,13 @@ async function verifyInvoiceSchema(db: DataSource): Promise<void> {
       AND table_name='invoices' AND column_name='technician_shipping_share') AS technician_share,
     EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('public.invoices')
       AND conname='ck_invoice_shipping_policy') AS policy_check,
-    EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('public.invoices')
-      AND conname='ck_invoice_shipping_cutover_closed') AS cutover_check,
+    (EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('public.invoices')
+      AND conname='ck_invoice_shipping_cutover_closed')
+      OR (EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
+        AND table_name='invoices' AND column_name='shipping_shipments')
+        AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('public.invoices')
+          AND conname='ck_invoice_shipping_shares' AND convalidated
+          AND pg_get_constraintdef(oid) LIKE '%W3_70_30_V1%'))) AS cutover_check,
     EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('public.invoices')
       AND conname='ck_invoice_shipping_shares') AS shares_check,
     EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('public.invoices')
@@ -996,6 +1024,9 @@ async function verifyAppliedW3Schema(
   if (applied.has(W3_MIGRATIONS[7])) await verifyPrequoteCommissionSchema(db);
   if (applied.has(W3_MIGRATIONS[8])) await verifyDeductionPreparationSchema(db);
   if (applied.has(W3_MIGRATIONS[9])) await verifyShippingCap(db);
+  if (applied.has(W3_MIGRATIONS[10])) await verifyPositivePhysicalSchema(db);
+  if (applied.has(W3_MIGRATIONS[11]))
+    await verifyInvoicePaymentEnableSchema(db);
 }
 
 async function verifyW3Schema(db: DataSource): Promise<void> {
@@ -1009,6 +1040,8 @@ async function verifyW3Schema(db: DataSource): Promise<void> {
   await verifyPrequoteCommissionSchema(db);
   await verifyDeductionPreparationSchema(db);
   await verifyShippingCap(db);
+  await verifyPositivePhysicalSchema(db);
+  await verifyInvoicePaymentEnableSchema(db);
 }
 
 async function verifyShippingCap(db: DataSource): Promise<void> {
@@ -1017,6 +1050,140 @@ async function verifyShippingCap(db: DataSource): Promise<void> {
   if (!row || row.value_type !== 'int' || !/^(0|[1-9]\d{0,8})$/.test(row.value)
     || Number(row.value) > 100_000_000)
     throw new Error('W3 shipping safety cap missing or invalid; do not restart Backend');
+}
+
+/** 0014 binds physical events to the canonical fee-terms version. The old
+ * zero-only guards are replaced, so each replacement is inspected by content. */
+async function verifyPositivePhysicalSchema(db: DataSource): Promise<void> {
+  const [proof] = await db.query(`SELECT
+    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
+      AND table_name='warehouse_delivery_events' AND column_name='fee_terms_version'
+      AND data_type='integer' AND is_nullable='YES') AS terms_version_column,
+    EXISTS (SELECT 1 FROM pg_constraint
+      WHERE conrelid=to_regclass('public.warehouse_delivery_events')
+        AND conname='fk_w3_physical_fee_terms' AND contype='f' AND convalidated) AS terms_fk,
+    to_regprocedure('public.w3_positive_physical_terms(uuid)') IS NOT NULL AS terms_function,
+    (SELECT pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+      WHERE n.nspname='public' AND p.proname='guard_w3_delivery_event')
+      LIKE '%w3_positive_physical_terms%' AS event_guard,
+    (SELECT pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+      WHERE n.nspname='public' AND p.proname='guard_w3_delivery_movement')
+      LIKE '%w3_positive_physical_terms%' AS movement_guard,
+    (SELECT pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+      WHERE n.nspname='public' AND p.proname='w3_live_evidence_guard')
+      LIKE '%delivery_fee_terms%' AS evidence_guard,
+    (SELECT pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+      WHERE n.nspname='public' AND p.proname='w3_live_source_guard')
+      LIKE '%fee_terms_version%' AS source_guard`);
+  if (!proof || Object.values(proof).some((value) => value !== true)) {
+    throw new Error(
+      'W3 positive physical schema proof incomplete; do not restart Backend',
+    );
+  }
+
+  const [fn] = await db.query(`SELECT p.oid,p.prosecdef,
+    p.prorettype='jsonb'::regtype AS returns_jsonb,
+    EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+      WHERE a.grantee=0 AND a.privilege_type='EXECUTE') AS exposed
+    FROM pg_proc p WHERE p.oid=to_regprocedure('public.w3_positive_physical_terms(uuid)')`);
+  if (!fn || fn.prosecdef || !fn.returns_jsonb || fn.exposed) {
+    throw new Error('W3 positive physical function ACL invalid');
+  }
+  const roles = await db.query(
+    "SELECT rolname FROM pg_roles WHERE rolname IN ('anon','authenticated','service_role')",
+  );
+  for (const { rolname } of roles) {
+    const [access] = await db.query(
+      "SELECT has_function_privilege($1,'public.w3_positive_physical_terms(uuid)','EXECUTE') AS allowed",
+      [rolname],
+    );
+    if (access?.allowed) {
+      throw new Error(
+        'Data API role can execute W3 positive physical function',
+      );
+    }
+  }
+}
+
+/** 0015 replaces the closed cutover CHECK with a provenance-backed CHECK and
+ * replaces the invoice/order/item guards. Legacy rows remain LEGACY_100_0. */
+async function verifyInvoicePaymentEnableSchema(
+  db: DataSource,
+): Promise<void> {
+  const [proof] = await db.query(`SELECT
+    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
+      AND table_name='invoices' AND column_name='shipping_shipments'
+      AND data_type='jsonb' AND is_nullable='YES') AS shipments_column,
+    NOT EXISTS (SELECT 1 FROM pg_constraint
+      WHERE conrelid=to_regclass('public.invoices')
+        AND conname='ck_invoice_shipping_cutover_closed') AS cutover_open,
+    EXISTS (SELECT 1 FROM pg_constraint
+      WHERE conrelid=to_regclass('public.invoices')
+        AND conname='ck_invoice_shipping_shares' AND convalidated
+        AND pg_get_constraintdef(oid) LIKE '%W3_70_30_V1%') AS shares_check,
+    EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('public.invoices')
+      AND tgname='w3_invoice_provenance_immutable' AND tgenabled='O') AS provenance_trigger,
+    (SELECT count(*)=5 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+      WHERE n.nspname='public' AND p.oid IN (
+        to_regprocedure('public.w3_received_request(uuid)'),
+        to_regprocedure('public.w3_invoice_shipping_source(uuid)'),
+        to_regprocedure('public.w3_invoice_shipping_totals(jsonb,bigint,bigint,bigint)'),
+        to_regprocedure('public.w3_invoice_provenance_immutable()'),
+        to_regprocedure('public.w3_invoice_payment_verified(uuid)'))) AS functions,
+    (SELECT provolatile='i' FROM pg_proc
+      WHERE oid=to_regprocedure('public.w3_invoice_shipping_totals(jsonb,bigint,bigint,bigint)')) AS totals_immutable,
+    (SELECT provolatile='s' FROM pg_proc
+      WHERE oid=to_regprocedure('public.w3_invoice_payment_verified(uuid)')) AS payment_verified_stable,
+    (SELECT pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+      WHERE n.nspname='public' AND p.proname='w3_live_invoice_guard')
+      LIKE '%w3_invoice_shipping_source%' AS invoice_guard,
+    (SELECT pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+      WHERE n.nspname='public' AND p.proname='w3_live_order_guard')
+      LIKE '%w3_invoice_payment_verified%' AS order_guard,
+    (SELECT pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+      WHERE n.nspname='public' AND p.proname='w3_live_item_guard')
+      LIKE '%w3_received_request%' AS item_guard`);
+  if (!proof || Object.values(proof).some((value) => value !== true)) {
+    throw new Error(
+      'W3 invoice payment enable schema proof incomplete; do not restart Backend',
+    );
+  }
+
+  const functions = [
+    'w3_received_request(uuid)',
+    'w3_invoice_shipping_source(uuid)',
+    'w3_invoice_shipping_totals(jsonb,bigint,bigint,bigint)',
+    'w3_invoice_provenance_immutable()',
+    'w3_invoice_payment_verified(uuid)',
+  ];
+  const [publicAcl] = await db.query(`SELECT EXISTS(
+    SELECT 1 FROM pg_proc p, LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+    WHERE p.oid IN (
+      to_regprocedure('public.w3_received_request(uuid)'),
+      to_regprocedure('public.w3_invoice_shipping_source(uuid)'),
+      to_regprocedure('public.w3_invoice_shipping_totals(jsonb,bigint,bigint,bigint)'),
+      to_regprocedure('public.w3_invoice_provenance_immutable()'),
+      to_regprocedure('public.w3_invoice_payment_verified(uuid)'))
+      AND a.grantee=0 AND a.privilege_type='EXECUTE') AS exposed`);
+  if (publicAcl?.exposed) {
+    throw new Error('PUBLIC can execute W3 invoice payment function');
+  }
+  const roles = await db.query(
+    "SELECT rolname FROM pg_roles WHERE rolname IN ('anon','authenticated','service_role')",
+  );
+  for (const { rolname } of roles) {
+    for (const fn of functions) {
+      const [access] = await db.query(
+        "SELECT has_function_privilege($1,$2::regprocedure,'EXECUTE') AS allowed",
+        [rolname, `public.${fn}`],
+      );
+      if (access?.allowed) {
+        throw new Error(
+          'Data API role can execute W3 invoice payment function',
+        );
+      }
+    }
+  }
 }
 
 async function verifyDeductionPreparationSchema(db: DataSource): Promise<void> {

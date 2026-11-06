@@ -13,6 +13,8 @@ import { DeliveryConditionalFeeTerms1793466000010 } from './migrations/179346600
 import { W3PrequoteCommission1793466000011 } from './migrations/1793466000011-W3PrequoteCommission';
 import { W3DeductionPreparation1793466000012 } from './migrations/1793466000012-W3DeductionPreparation';
 import { W3ShippingSafetyCap1793466000013 } from './migrations/1793466000013-W3ShippingSafetyCap';
+import { W3PositivePhysicalDelivery1793466000014 } from './migrations/1793466000014-W3PositivePhysicalDelivery';
+import { W3InvoicePaymentEnable1793466000015 } from './migrations/1793466000015-W3InvoicePaymentEnable';
 import {
   CASH_MIGRATIONS,
   runW3DevGate,
@@ -49,6 +51,8 @@ w3MigrationClasses.push(DeliveryConditionalFeeTerms1793466000010);
 w3MigrationClasses.push(W3PrequoteCommission1793466000011);
 w3MigrationClasses.push(W3DeductionPreparation1793466000012);
 w3MigrationClasses.push(W3ShippingSafetyCap1793466000013);
+w3MigrationClasses.push(W3PositivePhysicalDelivery1793466000014);
+w3MigrationClasses.push(W3InvoicePaymentEnable1793466000015);
 
 // CI-only: creates a fresh database on the CI PostgreSQL service at loopback.
 // It never reads .env, DATABASE_* or a shared DEV connection string.
@@ -143,12 +147,15 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
       CREATE TABLE public.additional_cost_requests(id uuid PRIMARY KEY, status text, decided_at timestamptz,supersedes_id uuid,total_labor_delta bigint,
         service_order_id uuid, technician_id uuid, decided_by_customer_id uuid,
         shipping_fee bigint NOT NULL DEFAULT 0, fulfillment_method text);
-      CREATE TABLE public.bookings(id uuid PRIMARY KEY, customer_id uuid,pricing_mode_snapshot text,fixed_unit_price_snapshot numeric,quantity integer,scope_snapshot text);
+      CREATE TABLE public.bookings(id uuid PRIMARY KEY, customer_id uuid, visit_group_id uuid,pricing_mode_snapshot text,fixed_unit_price_snapshot numeric,quantity integer,scope_snapshot text);
       CREATE TABLE public.quotation_items(id uuid PRIMARY KEY,quotation_id uuid,type text,description text,quantity integer,unit_price bigint,line_total bigint);
       CREATE TABLE public.system_configs(key varchar(128) PRIMARY KEY,value text,value_type text,description text,updated_at timestamptz,updated_by_user_id uuid);
       CREATE TABLE public.fixhome_parts(id uuid PRIMARY KEY DEFAULT uuid_generate_v4());
       CREATE TABLE public.part_request_items(id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
-        part_request_id uuid, part_catalog_id uuid, part_source text, quantity integer);
+        part_request_id uuid, part_catalog_id uuid, part_source text, quantity integer,
+        usage_status text NOT NULL DEFAULT 'pending');
+      CREATE TABLE public.part_custodies(id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+        service_order_id uuid);
       CREATE TABLE public.additional_cost_items(id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
         request_id uuid, type text,description text, part_source text, part_catalog_id uuid, quantity integer,unit_price bigint,line_total bigint);
       CREATE TABLE public.audit_logs(id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), resource_type text,
@@ -1031,6 +1038,123 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
         expect(await runW3DevGate(db)).toEqual([]);
       },
     );
+
+    it('admits 0014/0015 and proves the positive bridge and invoice cutover guards', async () => {
+      const [bridge] = await db.query(`SELECT
+        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
+          AND table_name='warehouse_delivery_events' AND column_name='fee_terms_version'
+          AND data_type='integer' AND is_nullable='YES') AS terms_column,
+        EXISTS (SELECT 1 FROM pg_constraint
+          WHERE conrelid=to_regclass('public.warehouse_delivery_events')
+            AND conname='fk_w3_physical_fee_terms' AND convalidated) AS terms_fk,
+        to_regprocedure('public.w3_positive_physical_terms(uuid)') IS NOT NULL AS terms_function`);
+      expect(bridge).toEqual({
+        terms_column: true,
+        terms_fk: true,
+        terms_function: true,
+      });
+
+      const [cutover] = await db.query(`SELECT
+        EXISTS (SELECT 1 FROM pg_constraint
+          WHERE conrelid=to_regclass('public.invoices')
+            AND conname='ck_invoice_shipping_cutover_closed') AS legacy_closed,
+        EXISTS (SELECT 1 FROM pg_constraint
+          WHERE conrelid=to_regclass('public.invoices')
+            AND conname='ck_invoice_shipping_shares' AND convalidated
+            AND pg_get_constraintdef(oid) LIKE '%W3_70_30_V1%') AS provenance_check,
+        EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('public.invoices')
+          AND tgname='w3_invoice_provenance_immutable' AND tgenabled='O') AS provenance_trigger`);
+      expect(cutover).toEqual({
+        legacy_closed: false,
+        provenance_check: true,
+        provenance_trigger: true,
+      });
+
+      const runner = db.createQueryRunner();
+      await runner.connect();
+      await runner.startTransaction();
+      try {
+        const [legacy] = await runner.query(
+          `INSERT INTO public.invoices(id) VALUES($1)
+          RETURNING shipping_policy_version,shipping_shipments`,
+          [randomUUID()],
+        );
+        expect(legacy).toEqual({
+          shipping_policy_version: 'LEGACY_100_0',
+          shipping_shipments: null,
+        });
+        await expect(
+          runner.query(
+            `INSERT INTO public.invoices(service_order_id,shipping_policy_version,
+            shipping_fee,customer_shipping_share,technician_shipping_share,shipping_shipments)
+            VALUES($1,'W3_70_30_V1',1,1,0,'[{"partRequestId":"unsourced"}]'::jsonb)`,
+            [randomUUID()],
+          ),
+        ).rejects.toThrow('W3_SOURCE_REQUIRED');
+      } finally {
+        await runner.rollbackTransaction();
+        await runner.release();
+      }
+    }, 30000);
+
+    it('fails closed on missing 0014/0015 schema proof or a dirty ledger', async () => {
+      await db.query(
+        'ALTER TABLE public.warehouse_delivery_events DROP CONSTRAINT fk_w3_physical_fee_terms',
+      );
+      try {
+        await expect(runW3DevGate(db)).rejects.toThrow(
+          'W3 positive physical schema proof incomplete',
+        );
+      } finally {
+        await db.query(`ALTER TABLE public.warehouse_delivery_events
+          ADD CONSTRAINT fk_w3_physical_fee_terms
+          FOREIGN KEY(part_request_id,fee_terms_version)
+          REFERENCES public.delivery_fee_terms(part_request_id,result_version)`);
+      }
+      expect(await runW3DevGate(db)).toEqual([]);
+
+      await db.query(
+        'ALTER TABLE public.invoices DISABLE TRIGGER w3_invoice_provenance_immutable',
+      );
+      try {
+        await expect(runW3DevGate(db)).rejects.toThrow(
+          'W3 invoice payment enable schema proof incomplete',
+        );
+      } finally {
+        await db.query(
+          'ALTER TABLE public.invoices ENABLE TRIGGER w3_invoice_provenance_immutable',
+        );
+      }
+      expect(await runW3DevGate(db)).toEqual([]);
+
+      await db.query('DELETE FROM public.migrations WHERE name=$1', [
+        W3_MIGRATIONS[10],
+      ]);
+      try {
+        await expect(runW3DevGate(db)).rejects.toThrow(
+          'W3 migration ledger order is invalid',
+        );
+      } finally {
+        await db.query(
+          'INSERT INTO public.migrations(timestamp,name) VALUES($1,$2)',
+          [Number(W3_MIGRATIONS[10].slice(-13)), W3_MIGRATIONS[10]],
+        );
+      }
+      expect(await runW3DevGate(db)).toEqual([]);
+
+      await db.query('DELETE FROM public.migrations WHERE name=$1', [
+        W3_MIGRATIONS[11],
+      ]);
+      try {
+        await expect(runW3DevGate(db)).rejects.toThrow('refusing DDL replay');
+      } finally {
+        await db.query(
+          'INSERT INTO public.migrations(timestamp,name) VALUES($1,$2)',
+          [Number(W3_MIGRATIONS[11].slice(-13)), W3_MIGRATIONS[11]],
+        );
+      }
+      expect(await runW3DevGate(db)).toEqual([]);
+    }, 30000);
 
     it.skipIf(!ZeroFeeOperations)(
       'refuses a partial 0008 schema with missing 0008 and 0009 ledger',
