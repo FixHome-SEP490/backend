@@ -50,7 +50,10 @@ const make = (options: { claimStatus?: WarrantyClaimStatus; requestStatus?: Part
     save: vi.fn(async (_entity: unknown, value: unknown) => value),
     create: vi.fn((_entity: unknown, value: object) => ({ id: 'pr-new', ...value })),
   };
-  const cost = { chargeOnReceive: vi.fn().mockResolvedValue(undefined), creditReturned: vi.fn().mockResolvedValue(undefined) };
+  const cost = {
+    startReturnClock: vi.fn().mockResolvedValue(undefined), chargeForInstallation: vi.fn().mockResolvedValue(undefined),
+    refundUnreturned: vi.fn().mockResolvedValue(undefined), creditReturned: vi.fn().mockResolvedValue(undefined),
+  };
   const audit = { logWithManager: vi.fn().mockResolvedValue(undefined) };
   const service = new PartRequestsService(
     { transaction: vi.fn((cb: any) => cb(manager)) } as any, {} as any, {} as any, {} as any,
@@ -62,7 +65,7 @@ const make = (options: { claimStatus?: WarrantyClaimStatus; requestStatus?: Part
 };
 
 describe('createWarrantyRequest', () => {
-  it('keeps W2 commands out of Warranty on a completed order while preserving ModuleRef receive charging', async () => {
+  it('keeps W2 commands out of Warranty on a completed order while preserving ModuleRef receive clock', async () => {
     const warehouse = new WarehouseFulfillmentService();
     const reserve = vi.spyOn(warehouse, 'reserve');
     for (const kind of ['reserve', 'qr', 'handover'] as const) {
@@ -73,7 +76,7 @@ describe('createWarrantyRequest', () => {
     expect(reserve).not.toHaveBeenCalled();
     const f = make({ warehouse });
     await f.service.receiveByQr('pr-1', { qrToken: 'tok' }, TECH);
-    expect(f.cost.chargeOnReceive).toHaveBeenCalledOnce();
+    expect(f.cost.startReturnClock).toHaveBeenCalledOnce();
   });
   it('opens a request tied to the claim at the selling price; nobody is charged until the faulty part is inspected', async () => {
     const { service, manager, claim } = make();
@@ -119,81 +122,114 @@ describe('createWarrantyRequest', () => {
   });
 });
 
-describe('recordFaultyInspection and the READY gate', () => {
+describe('bringing the faulty part back and inspecting it', () => {
   const dto = (overrides: Record<string, unknown> = {}) => ({ result: 'manufacturer', ...overrides }) as any;
   const installation = { result: 'installation', note: 'Đấu sai cực dây nguồn, chân cắm cháy.', evidenceRefs: ['photo-1'] };
+  const returned = (f: ReturnType<typeof make>) => { f.request.faultyReturnedAt = new Date(); return f; };
+
+  it('hands over the replacement without waiting for the faulty part: the manager does not inspect first', async () => {
+    const f = make({ requestStatus: PartRequestStatus.REQUESTED });
+
+    await f.service.markReady('pr-1', SM);
+
+    expect(f.request.status).toBe(PartRequestStatus.READY);
+    expect(f.request.qrToken).toBeTruthy();
+  });
+
+  it('lets the technician report the faulty part back once the replacement is received; a repeat keeps the first record', async () => {
+    const f = make({ requestStatus: PartRequestStatus.RECEIVED });
+
+    const first = await f.service.returnFaultyPart('pr-1', { note: ' Đã giao kho ', evidenceRefs: ['p1'] }, TECH);
+    const at = first.faultyReturnedAt;
+    await f.service.returnFaultyPart('pr-1', { note: 'khác' }, TECH);
+
+    expect(f.request).toMatchObject({ faultyReturnNote: 'Đã giao kho', faultyReturnEvidence: ['p1'] });
+    expect(f.request.faultyReturnedAt).toBe(at);
+    expect(f.audit.logWithManager).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses the return before the replacement was received, from another technician, a manager, and a non-warranty request', async () => {
+    const early = make({ requestStatus: PartRequestStatus.READY });
+    await expect(early.service.returnFaultyPart('pr-1', {}, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+
+    const other = make({ requestStatus: PartRequestStatus.RECEIVED });
+    await expect(other.service.returnFaultyPart('pr-1', {}, { id: 'tech-2', role: Role.TECHNICIAN })).rejects.toThrow(/access denied/);
+    await expect(other.service.returnFaultyPart('pr-1', {}, SM)).rejects.toThrow(/Technician role/);
+
+    const ordinary = make({ requestStatus: PartRequestStatus.RECEIVED });
+    ordinary.request.requestType = PartRequestType.ADDITIONAL;
+    await expect(ordinary.service.returnFaultyPart('pr-1', {}, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+  });
+
+  it('still works after the claim closed: the part outlives the claim', async () => {
+    const f = make({ requestStatus: PartRequestStatus.COMPLETED, claimStatus: WarrantyClaimStatus.RESOLVED });
+
+    await expect(f.service.returnFaultyPart('pr-1', {}, TECH)).resolves.toMatchObject({ faultyReturnedAt: expect.any(Date) });
+  });
+
+  it('inspects only after the faulty part is back', async () => {
+    const f = make({ requestStatus: PartRequestStatus.RECEIVED });
+
+    await expect(f.service.recordFaultyInspection('pr-1', dto(), SM)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+    expect(f.request.faultyInspectionResult).toBeUndefined();
+  });
 
   it('decides who pays: installation is the technician, manufacturer and undetermined are FixHome', async () => {
     for (const [result, charged] of [['installation', true], ['manufacturer', false], ['undetermined', false]] as const) {
-      const { service, request, audit } = make({ requestStatus: PartRequestStatus.REQUESTED, charge: !charged });
-      await service.recordFaultyInspection('pr-1', result === 'installation' ? installation as any : dto({ result }), SM);
-      expect(request).toMatchObject({ faultyInspectionResult: result, chargeTechnician: charged, faultyInspectedBy: SM.id });
-      expect(audit.logWithManager).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'WARRANTY_FAULTY_PART_INSPECTED' }));
+      const f = returned(make({ requestStatus: PartRequestStatus.RECEIVED, charge: !charged }));
+      await f.service.recordFaultyInspection('pr-1', result === 'installation' ? installation as any : dto({ result }), SM);
+      expect(f.request).toMatchObject({ faultyInspectionResult: result, chargeTechnician: charged, faultyInspectedBy: SM.id });
+      expect(f.cost.chargeForInstallation).toHaveBeenCalledWith(expect.anything(), f.request);
+      expect(f.cost.refundUnreturned).toHaveBeenCalledWith(expect.anything(), f.request);
+      expect(f.audit.logWithManager).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'WARRANTY_FAULTY_PART_INSPECTED' }));
     }
   });
 
   it('refuses an installation verdict without a written reason and a photo, and bad input', async () => {
     for (const bad of [{ result: 'installation' }, { ...installation, note: 'ngắn' }, { ...installation, evidenceRefs: [] }]) {
-      const { service, request } = make({ requestStatus: PartRequestStatus.REQUESTED });
-      await expect(service.recordFaultyInspection('pr-1', bad as any, SM)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
-      expect(request.faultyInspectionResult).toBeUndefined();
+      const f = returned(make({ requestStatus: PartRequestStatus.RECEIVED }));
+      await expect(f.service.recordFaultyInspection('pr-1', bad as any, SM)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+      expect(f.request.faultyInspectionResult).toBeUndefined();
     }
   });
 
-  it('can be corrected until the technician receives the part, then it is locked', async () => {
-    const open = make({ requestStatus: PartRequestStatus.READY });
-    open.request.faultyInspectionResult = 'undetermined';
-    await open.service.recordFaultyInspection('pr-1', installation as any, SM);
-    expect(open.request).toMatchObject({ faultyInspectionResult: 'installation', chargeTechnician: true });
+  it('records the result once: it moves money, so a change goes through a support case', async () => {
+    const f = returned(make({ requestStatus: PartRequestStatus.RECEIVED }));
+    await f.service.recordFaultyInspection('pr-1', dto(), SM);
 
-    for (const status of [PartRequestStatus.RECEIVED, PartRequestStatus.COMPLETED]) {
-      const locked = make({ requestStatus: status });
-      await expect(locked.service.recordFaultyInspection('pr-1', dto(), SM)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
-    }
+    await expect(f.service.recordFaultyInspection('pr-1', installation as any, SM)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+    expect(f.request.faultyInspectionResult).toBe('manufacturer');
   });
 
   it('is for service managers and warranty requests only', async () => {
-    const tech = make({ requestStatus: PartRequestStatus.REQUESTED });
+    const tech = returned(make({ requestStatus: PartRequestStatus.RECEIVED }));
     await expect(tech.service.recordFaultyInspection('pr-1', dto(), TECH)).rejects.toThrow(/Service Manager/);
 
-    const ordinary = make({ requestStatus: PartRequestStatus.REQUESTED });
+    const ordinary = returned(make({ requestStatus: PartRequestStatus.RECEIVED }));
     ordinary.request.requestType = PartRequestType.ADDITIONAL;
-    ordinary.manager.findOne.mockImplementation(async (entity: { name: string }) => (entity.name === 'PartRequest' ? ordinary.request : null));
-    ordinary.manager.findOneBy.mockResolvedValue(null);
-    await expect(ordinary.service.recordFaultyInspection('pr-1', dto(), SM)).rejects.toBeDefined();
-  });
-
-  it('does not issue the replacement before the faulty part was inspected', async () => {
-    const blocked = make({ requestStatus: PartRequestStatus.REQUESTED });
-    await expect(blocked.service.markReady('pr-1', SM)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
-    expect(blocked.request.status).toBe(PartRequestStatus.REQUESTED);
-
-    const inspected = make({ requestStatus: PartRequestStatus.REQUESTED });
-    inspected.request.faultyInspectionResult = 'manufacturer';
-    await inspected.service.markReady('pr-1', SM);
-    expect(inspected.request.status).toBe(PartRequestStatus.READY);
-    expect(inspected.request.qrToken).toBeTruthy();
+    await expect(ordinary.service.recordFaultyInspection('pr-1', dto(), SM)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
   });
 });
 
 describe('handover and use of a warranty part after the order completed', () => {
-  it('lets the claim technician scan the QR on a completed order, and charges at that moment', async () => {
+  it('lets the claim technician scan the QR on a completed order, which starts the faulty-part deadline and charges nothing yet', async () => {
     const { service, request, cost } = make();
 
     const saved = await service.receiveByQr('pr-1', { qrToken: 'tok' } as any, TECH);
 
     expect(saved.status).toBe(PartRequestStatus.RECEIVED);
-    expect(cost.chargeOnReceive).toHaveBeenCalledWith(expect.anything(), request);
+    expect(cost.startReturnClock).toHaveBeenCalledWith(expect.anything(), request);
+    expect(cost.chargeForInstallation).not.toHaveBeenCalled();
   });
 
   it('refuses another technician, a customer and a closed claim', async () => {
     const other = make();
     await expect(other.service.receiveByQr('pr-1', { qrToken: 'tok' } as any, { id: 'tech-2', role: Role.TECHNICIAN })).rejects.toThrow(/access denied/i);
-    expect(other.cost.chargeOnReceive).not.toHaveBeenCalled();
+    expect(other.cost.startReturnClock).not.toHaveBeenCalled();
 
     const closed = make({ claimStatus: WarrantyClaimStatus.RESOLVED });
     await expect(closed.service.receiveByQr('pr-1', { qrToken: 'tok' } as any, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.ORDER_INVALID_TRANSITION } });
-    expect(closed.cost.chargeOnReceive).not.toHaveBeenCalled();
+    expect(closed.cost.startReturnClock).not.toHaveBeenCalled();
 
     const wrongToken = make();
     await expect(wrongToken.service.receiveByQr('pr-1', { qrToken: 'nope' } as any, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });

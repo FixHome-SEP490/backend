@@ -1,17 +1,21 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { DataSource, IsNull, LessThan, Not } from 'typeorm';
+import { DataSource, In, IsNull, LessThan, Not } from 'typeorm';
 import { startBackgroundJob } from '../../common/background-job';
 import {
+  PartRequestStatus,
+  PartRequestType,
   WARRANTY_CLAIM_ACTIVE_STATUSES,
   WarrantyClaimStatus,
   WarrantyCustomerPrompt,
   WarrantyStatus,
   WarrantyVisitStatus,
 } from '../../shared/enums';
+import { PartRequest } from '../part-requests/entities/part-request.entity';
 import { PartRequestsService } from '../part-requests/part-requests.service';
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { WarrantyClaim } from './entities/warranty-claim.entity';
 import { WarrantyVisit } from './entities/warranty-visit.entity';
+import { WarrantyCostService } from './warranty-cost.service';
 import { WarrantyNotifier } from './warranty-notifier.service';
 
 const BATCH = 20;
@@ -32,6 +36,7 @@ export class WarrantySweepService implements OnModuleInit, OnModuleDestroy {
     private readonly config: BusinessConfigService,
     private readonly notifier: WarrantyNotifier,
     private readonly partRequests: PartRequestsService,
+    private readonly cost: WarrantyCostService,
   ) {}
 
   onModuleInit(): void {
@@ -50,6 +55,7 @@ export class WarrantySweepService implements OnModuleInit, OnModuleDestroy {
       ['no-show', (at) => this.sweepNoShow(at)],
       ['customer silent', (at) => this.sweepCustomerSilent(at)],
       ['expired coverage', (at) => this.sweepExpiredCoverage(at)],
+      ['faulty part return', (at) => this.sweepFaultyReturn(at)],
     ];
     for (const [name, step] of steps) {
       try { await step(now); } catch (error) {
@@ -84,6 +90,56 @@ export class WarrantySweepService implements OnModuleInit, OnModuleDestroy {
           'Kỹ thuật viên chưa phản hồi bảo hành',
           'Kỹ thuật viên không nhận yêu cầu bảo hành đúng hạn. Vui lòng phân công lại và xem xét trách nhiệm.',
           'WARRANTY_REASSIGN_NEEDED', taken.serviceOrderId,
+        );
+      }
+    }
+  }
+
+  /**
+   * The faulty part is due back a few days after the replacement was received (PO 05/11/2026): remind the
+   * technician once before the deadline, and charge the new part's price once after it. The charge is
+   * given back if the manager later finds the fault was not the installation.
+   */
+  async sweepFaultyReturn(now: Date): Promise<void> {
+    const reminderHours = await this.hours('warranty.faulty_return_reminder_hours', 24);
+    const open = await this.dataSource.getRepository(PartRequest).find({
+      where: {
+        requestType: PartRequestType.WARRANTY, status: In([PartRequestStatus.RECEIVED, PartRequestStatus.COMPLETED]),
+        faultyReturnedAt: IsNull(), faultyReturnChargedAt: IsNull(), faultyReturnDueAt: Not(IsNull()),
+      },
+      take: BATCH,
+    });
+    for (const { id } of open) {
+      const outcome = await this.dataSource.transaction(async (tx) => {
+        const row = await tx.findOne(PartRequest, { where: { id }, lock: { mode: 'pessimistic_write' } });
+        if (!row || row.faultyReturnedAt || row.faultyReturnChargedAt || !row.faultyReturnDueAt) return null;
+        const due = new Date(row.faultyReturnDueAt).getTime();
+        if (due <= now.getTime()) {
+          await this.cost.chargeUnreturned(tx, row);
+          return { kind: 'overdue' as const, row };
+        }
+        if (!row.faultyReturnRemindedAt && due - now.getTime() <= reminderHours * HOUR_MS) {
+          await tx.update(PartRequest, row.id, { faultyReturnRemindedAt: now });
+          return { kind: 'reminder' as const, row };
+        }
+        return null;
+      });
+      if (!outcome) continue;
+      if (outcome.kind === 'reminder') {
+        await this.notifier.toUser(
+          outcome.row.technicianId, 'Sắp đến hạn nộp linh kiện hỏng',
+          'Vui lòng mang linh kiện hỏng về kho trước hạn, nếu không giá linh kiện thay thế sẽ bị trừ vào ví.',
+          'WARRANTY_FAULTY_PART_DUE', outcome.row.serviceOrderId,
+        );
+      } else {
+        await this.notifier.toUser(
+          outcome.row.technicianId, 'Đã trừ ví vì chưa nộp linh kiện hỏng',
+          'Quá hạn nộp linh kiện hỏng nên giá linh kiện thay thế đã bị trừ. Nộp về kho và được kiểm tra không do lắp đặt sẽ được hoàn lại.',
+          'WARRANTY_FAULTY_PART_OVERDUE', outcome.row.serviceOrderId,
+        );
+        await this.notifier.toManagers(
+          'Thợ quá hạn nộp linh kiện hỏng', 'Một yêu cầu bảo hành quá hạn nộp linh kiện hỏng, đã trừ ví kỹ thuật viên.',
+          'WARRANTY_FAULTY_PART_OVERDUE', outcome.row.serviceOrderId,
         );
       }
     }

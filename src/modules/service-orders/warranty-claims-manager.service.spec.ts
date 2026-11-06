@@ -68,6 +68,7 @@ const makeService = (options: { claim?: unknown; visits?: unknown[]; technician?
   const decisionTx = {
     getRepository: () => ({ update: claimRepo.update }),
     findOneBy: vi.fn().mockResolvedValue(null),
+    find: vi.fn().mockResolvedValue([]),
   };
   const dataSource = { transaction: vi.fn(async (cb: any) => cb(decisionTx)) };
   const cost = { settleUnfixed: vi.fn().mockResolvedValue(25000), penalize: vi.fn().mockResolvedValue(undefined) };
@@ -264,32 +265,30 @@ describe('manager approve', () => {
 describe('manager approve: who pays for the part', () => {
   const FIXHOME_LINE = { id: 'line-1', partSource: 'fixhome', sourceItemId: 'qi-1', quantity: 2 };
 
-  it('hands the technician a free FixHome part when the fault is the part', async () => {
-    const { service, decisionTx, partRequests } = makeService();
+  it('hands the technician exactly the FixHome parts they named as faulty', async () => {
+    const { service, decisionTx, partRequests } = makeService({ visits: [makeVisit({ faultyInvoiceItemIds: ['line-1', 'line-2'] })] });
+    decisionTx.find.mockResolvedValue([FIXHOME_LINE, { id: 'line-2', partSource: 'fixhome', sourceItemId: 'qi-2', quantity: 1 }]);
     decisionTx.findOneBy
-      .mockResolvedValueOnce({ id: 'cov-1', invoiceItemId: 'line-1' })
-      .mockResolvedValueOnce(FIXHOME_LINE)
-      .mockResolvedValueOnce({ id: 'qi-1', partCatalogId: 'part-9' });
+      .mockResolvedValueOnce({ id: 'qi-1', partCatalogId: 'part-9' })
+      .mockResolvedValueOnce({ id: 'qi-2', partCatalogId: 'part-8' });
 
     await service.approve('claim-1', {}, SM);
 
     expect(partRequests.createWarrantyRequest).toHaveBeenCalledWith(
       decisionTx,
-      expect.objectContaining({ items: [{ partCatalogId: 'part-9', quantity: 2 }] }),
+      expect.objectContaining({ items: [{ partCatalogId: 'part-9', quantity: 2 }, { partCatalogId: 'part-8', quantity: 1 }] }),
     );
   });
 
-  it('leaves a part the technician bought, or a labor line, to the technician', async () => {
-    const own = makeService();
-    own.decisionTx.findOneBy
-      .mockResolvedValueOnce({ id: 'cov-1', invoiceItemId: 'line-1' })
-      .mockResolvedValueOnce({ id: 'line-1', partSource: 'technician', quantity: 1 });
+  it('leaves a part the technician bought, or an inspection that named no part line, to the technician', async () => {
+    const own = makeService({ visits: [makeVisit({ faultyInvoiceItemIds: ['line-1'] })] });
+    own.decisionTx.find.mockResolvedValue([{ id: 'line-1', partSource: 'technician', quantity: 1 }]);
     await own.service.approve('claim-1', {}, SM);
     expect(own.partRequests.createWarrantyRequest).not.toHaveBeenCalled();
 
-    const labor = makeService();
-    await labor.service.approve('claim-1', {}, SM);
-    expect(labor.partRequests.createWarrantyRequest).not.toHaveBeenCalled();
+    const none = makeService();
+    await none.service.approve('claim-1', {}, SM);
+    expect(none.partRequests.createWarrantyRequest).not.toHaveBeenCalled();
   });
 
   it('lets the manager pick a part for a workmanship fault; who pays is decided by the inspection of the faulty part', async () => {
@@ -314,10 +313,8 @@ describe('manager approve: who pays for the part', () => {
   });
 
   it('fails the whole approval when the FixHome part cannot be identified', async () => {
-    const { service, decisionTx } = makeService();
-    decisionTx.findOneBy
-      .mockResolvedValueOnce({ id: 'cov-1', invoiceItemId: 'line-1' })
-      .mockResolvedValueOnce({ ...FIXHOME_LINE, sourceItemId: null });
+    const { service, decisionTx } = makeService({ visits: [makeVisit({ faultyInvoiceItemIds: ['line-1'] })] });
+    decisionTx.find.mockResolvedValue([{ ...FIXHOME_LINE, sourceItemId: null }]);
     await expect(service.approve('claim-1', {}, SM)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
   });
 });

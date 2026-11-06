@@ -4,6 +4,7 @@ import { EntityManager, Repository } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants/error-codes';
 import {
+  CostItemType,
   WarrantyClaimStatus,
   WarrantyCustomerPrompt,
   WarrantyDeclineReason,
@@ -15,6 +16,8 @@ import { Booking } from '../bookings/entities/booking.entity';
 import { distanceToBooking, servesArea, technicianOrigin } from '../bookings/technician-location';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
+import { Invoice } from './entities/invoice.entity';
+import { InvoiceItem } from './entities/invoice-item.entity';
 import { ServiceOrder } from './entities/service-order.entity';
 import { WarrantyCoverage } from './entities/warranty-coverage.entity';
 import {
@@ -183,6 +186,7 @@ export class WarrantyClaimsTechnicianService {
       throw invalid('Cần ít nhất một ảnh hoặc video của linh kiện hỏng khi kết luận lỗi linh kiện.');
     }
     const visit = await this.latestVisit(claim.id, technician.id, [WarrantyVisitStatus.CHECKED_IN]);
+    const faultyIds = dto.result === WarrantyInspectionResult.COVERED_PART ? await this.faultyPartLines(claim.serviceOrderId, dto.faultyInvoiceItemIds ?? []) : null;
 
     await this.claimRepo.manager.transaction(async (manager) => {
       const updated = await manager
@@ -200,6 +204,7 @@ export class WarrantyClaimsTechnicianService {
           notCoveredReasonCode: notCovered ? (dto.notCoveredReasonCode ?? null) : null,
           findings: dto.findings,
           evidenceRefs: dto.evidenceRefs?.length ? dto.evidenceRefs : null,
+          faultyInvoiceItemIds: faultyIds,
         },
       );
     });
@@ -210,6 +215,18 @@ export class WarrantyClaimsTechnicianService {
       claim.serviceOrderId,
     );
     return this.viewOf(claim.id);
+  }
+
+  /** The faulty lines must be part lines of the original job's own invoice, so a technician cannot name a stranger's part. */
+  private async faultyPartLines(serviceOrderId: string, ids: string[]): Promise<string[]> {
+    const unique = [...new Set(ids)];
+    if (!unique.length) throw invalid('Chọn ít nhất một linh kiện bị hỏng.');
+    const manager = this.claimRepo.manager;
+    const invoice = await manager.findOneBy(Invoice, { serviceOrderId });
+    const lines = invoice ? await manager.find(InvoiceItem, { where: { invoiceId: invoice.id, type: CostItemType.PARTS_EQUIPMENT } }) : [];
+    const valid = new Set(lines.map((line) => line.id));
+    if (unique.some((id) => !valid.has(id))) throw invalid('Linh kiện được chọn không thuộc đơn sửa chữa gốc.');
+    return unique;
   }
 
   async complete(claimId: string, dto: CompleteWarrantyReServiceDto, technician: OrderActor): Promise<StaffWarrantyClaimDto> {

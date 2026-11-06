@@ -44,6 +44,8 @@ export const CONFIG_SEED: ConfigSeedItem[] = [
   { key: 'warranty.default_days', value: '30', valueType: 'int', description: 'Default warranty period in days' },
   { key: 'warranty.tech_response_hours', value: '48', valueType: 'int', description: 'Hours a technician has to accept or decline a warranty claim' },
   { key: 'warranty.inspection_hours', value: '72', valueType: 'int', description: 'Hours a technician has to check in after accepting a warranty claim' },
+  { key: 'warranty.faulty_return_days', value: '7', valueType: 'int', description: 'Days a technician has to bring a faulty warranty part back after receiving the replacement; overdue charges the new part' },
+  { key: 'warranty.faulty_return_reminder_hours', value: '24', valueType: 'int', description: 'Hours before the faulty part deadline when the technician is reminded' },
   { key: 'warranty.customer_response_hours', value: '72', valueType: 'int', description: 'Hours a customer has to answer before a warranty claim closes itself' },
   { key: 'reputation.warranty_violation_points', value: '5', valueType: 'int', description: 'Reputation points lost when a manager confirms an unjustified warranty decline, a no-show or an unfixed claim' },
   { key: 'warranty.max_days', value: '365', valueType: 'int', description: 'Maximum warranty period in days' },

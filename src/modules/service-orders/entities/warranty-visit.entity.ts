@@ -55,6 +55,10 @@ export class WarrantyVisit extends BaseEntity {
   @Column({ name: 'evidence_refs', type: 'jsonb', nullable: true })
   evidenceRefs: string[] | null;
 
+  /** Invoice lines of the original job the technician says are faulty (part fault only). */
+  @Column({ name: 'faulty_invoice_item_ids', type: 'jsonb', nullable: true })
+  faultyInvoiceItemIds: string[] | null;
+
   @Column({ name: 're_service_notes', type: 'text', nullable: true })
   reServiceNotes: string | null;
 

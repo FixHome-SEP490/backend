@@ -135,6 +135,25 @@ export class FaultyInspectionDto {
   evidenceRefs?: string[];
 }
 
+// ── Technician: bring the faulty part of a warranty request back to the warehouse ──
+
+export class FaultyReturnDto {
+  @ApiPropertyOptional({ maxLength: 500 })
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @MaxLength(500)
+  note?: string;
+
+  @ApiPropertyOptional({ type: [String], maxItems: 10, description: 'Photos of the faulty part handed over' })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @IsString({ each: true })
+  @MaxLength(512, { each: true })
+  evidenceRefs?: string[];
+}
+
 // ── SM: Mark Delivering ──
 
 export class MarkDeliveringDto {

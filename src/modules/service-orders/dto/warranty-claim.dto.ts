@@ -187,6 +187,14 @@ export class ProposeWarrantyInspectionDto {
   @MaxLength(WARRANTY_CLAIM_MAX_EVIDENCE_REF_LENGTH, { each: true })
   @Transform(trimEach)
   evidenceRefs?: string[];
+
+  @ApiPropertyOptional({ type: [String], description: 'Required for covered_part: the part lines of the original invoice that are faulty' })
+  @ValidateIf((o: ProposeWarrantyInspectionDto) => o.result === WarrantyInspectionResult.COVERED_PART)
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(20)
+  @IsCanonicalUuid({ each: true })
+  faultyInvoiceItemIds?: string[];
 }
 
 export class CompleteWarrantyReServiceDto {
@@ -232,6 +240,9 @@ export class WarrantyVisitViewDto {
   @ApiPropertyOptional({ type: [String], nullable: true })
   evidenceRefs: string[] | null;
 
+  @ApiPropertyOptional({ type: [String], nullable: true, description: 'Invoice lines of the original job the technician says are faulty' })
+  faultyInvoiceItemIds: string[] | null;
+
   @ApiPropertyOptional({ nullable: true })
   reServiceNotes: string | null;
 
@@ -252,6 +263,8 @@ export class StaffWarrantyClaimDto extends WarrantyClaimViewDto {
     addressSummary: string;
     customerName: string;
     customerPhone: string;
+    /** Part lines of the original invoice: the technician names the faulty ones when proposing a part fault. */
+    partLines: { id: string; name: string; quantity: number; partSource: string | null }[];
   };
 
   @ApiPropertyOptional({ nullable: true })
@@ -274,6 +287,17 @@ export class StaffWarrantyClaimDto extends WarrantyClaimViewDto {
 
   @ApiPropertyOptional({ format: 'date-time', nullable: true, description: 'The technician accepted but did not check in by the deadline' })
   noShowFlaggedAt?: Date | null;
+
+  @ApiPropertyOptional({ nullable: true, description: 'The free warranty part and the return of the faulty one' })
+  partRequest?: {
+    id: string;
+    status: string;
+    faultyReturnDueAt: Date | null;
+    faultyReturnedAt: Date | null;
+    faultyReturnChargedAt: Date | null;
+    faultyInspectionResult: string | null;
+    chargeTechnician: boolean;
+  } | null;
 }
 
 const boolFromQuery = ({ value }: { value: unknown }): unknown =>

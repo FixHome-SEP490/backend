@@ -88,6 +88,8 @@ const KEY_VALIDATION: Record<string, KeyValidationRule> = {
   'warranty.tech_response_hours':       { type: 'int', min: 1, max: 720 },
   'warranty.inspection_hours':          { type: 'int', min: 1, max: 720 },
   'warranty.customer_response_hours':   { type: 'int', min: 1, max: 720 },
+  'warranty.faulty_return_days':        { type: 'int', min: 1, max: 60 },
+  'warranty.faulty_return_reminder_hours': { type: 'int', min: 1, max: 240 },
   'reputation.warranty_violation_points': { type: 'int', min: 1, max: 100 },
 };
 
@@ -231,6 +233,14 @@ const KEY_EFFECT: Record<
   'warranty.tech_response_hours': {
     status: 'ACTIVE',
     evidence: 'src/modules/service-orders/warranty-sweep.service.ts: sweepUnresponded and sweepUnassigned.',
+  },
+  'warranty.faulty_return_days': {
+    status: 'ACTIVE',
+    evidence: 'src/modules/service-orders/warranty-cost.service.ts: startReturnClock; warranty-sweep.service.ts: sweepFaultyReturn.',
+  },
+  'warranty.faulty_return_reminder_hours': {
+    status: 'ACTIVE',
+    evidence: 'src/modules/service-orders/warranty-sweep.service.ts: sweepFaultyReturn.',
   },
   'warranty.inspection_hours': {
     status: 'ACTIVE',

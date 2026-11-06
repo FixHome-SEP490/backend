@@ -54,6 +54,8 @@ export interface WarrantyClaimDetailDto extends StaffWarrantyClaimDto {
         partSource: string | null;
         partWarrantyOption: string | null;
         covered: boolean;
+        /** The technician named this line as faulty when proposing a part fault. */
+        faulty: boolean;
       }[];
     };
     coverage: { id: string; startsAt: Date; expiresAt: Date; warrantyDays: number; status: string } | null;
@@ -66,6 +68,11 @@ export interface WarrantyClaimDetailDto extends StaffWarrantyClaimDto {
       faultyInspectionNote: string | null;
       faultyInspectionEvidence: string[] | null;
       faultyInspectedAt: Date | null;
+      faultyReturnDueAt: Date | null;
+      faultyReturnedAt: Date | null;
+      faultyReturnNote: string | null;
+      faultyReturnEvidence: string[] | null;
+      faultyReturnChargedAt: Date | null;
       items: { id: string; name: string; quantity: number; unitPrice: number; usageStatus: string }[];
     } | null;
     otherClaims: { id: string; status: string; submittedAt: Date; itemDescription: string }[];
@@ -92,6 +99,7 @@ export class WarrantyClaimDetailService {
     const lines = invoice ? await manager.find(InvoiceItem, { where: { invoiceId: invoice.id } }) : [];
     const coverage = await manager.findOneBy(WarrantyCoverage, { id: claim.warrantyCoverageId });
     const visits = await manager.find(WarrantyVisit, { where: { warrantyClaimId: claim.id }, order: { createdAt: 'ASC' } });
+    const faultyIds = new Set(visits.flatMap((v) => v.faultyInvoiceItemIds ?? []));
     const request = await manager.findOneBy(PartRequest, { warrantyClaimId: claim.id });
     const requestItems = request ? await manager.find(PartRequestItem, { where: { partRequestId: request.id } }) : [];
     const others = await manager.find(WarrantyClaim, { where: { serviceOrderId: claim.serviceOrderId, id: Not(claim.id) }, order: { submittedAt: 'DESC' }, take: 10 });
@@ -140,6 +148,7 @@ export class WarrantyClaimDetailService {
             unitPrice: Number(l.unitPrice), lineTotal: Number(l.lineTotal), warrantyDays: l.warrantyDaysSnapshot,
             partSource: l.partSource ?? null, partWarrantyOption: l.partWarrantyOption ?? null,
             covered: coverage?.invoiceItemId === l.id,
+            faulty: faultyIds.has(l.id),
           })),
         },
         coverage: coverage
@@ -156,6 +165,11 @@ export class WarrantyClaimDetailService {
               faultyInspectionNote: request.faultyInspectionNote ?? null,
               faultyInspectionEvidence: request.faultyInspectionEvidence ?? null,
               faultyInspectedAt: request.faultyInspectedAt ?? null,
+              faultyReturnDueAt: request.faultyReturnDueAt ?? null,
+              faultyReturnedAt: request.faultyReturnedAt ?? null,
+              faultyReturnNote: request.faultyReturnNote ?? null,
+              faultyReturnEvidence: request.faultyReturnEvidence ?? null,
+              faultyReturnChargedAt: request.faultyReturnChargedAt ?? null,
               items: requestItems.map((i) => ({ id: i.id, name: i.partNameSnapshot, quantity: i.quantity, unitPrice: Number(i.unitPriceSnapshot), usageStatus: i.usageStatus })),
             }
           : null,

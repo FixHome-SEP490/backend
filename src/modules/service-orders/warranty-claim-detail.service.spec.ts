@@ -27,7 +27,7 @@ const make = (options: { claim?: unknown; request?: unknown; others?: unknown[] 
       { id: 'line-1', type: 'labor', description: 'Công thay bo mạch', quantity: 1, unitPrice: '300000', lineTotal: '300000', warrantyDaysSnapshot: 30, partSource: null },
       { id: 'line-2', type: 'parts_equipment', description: 'Board X', quantity: 1, unitPrice: '700000', lineTotal: '700000', warrantyDaysSnapshot: 90, partSource: 'fixhome', partWarrantyOption: 'included' },
     ],
-    WarrantyVisit: [{ id: 'v1', technicianId: 'tech-1', status: 'inspected', proposedResult: 'covered_part', createdAt: new Date() }],
+    WarrantyVisit: [{ id: 'v1', technicianId: 'tech-1', status: 'inspected', proposedResult: 'covered_part', faultyInvoiceItemIds: ['line-2'], createdAt: new Date() }],
     PartRequestItem: [{ id: 'i1', partNameSnapshot: 'Board X', quantity: 1, unitPriceSnapshot: '700000', usageStatus: 'pending' }],
     WarrantyClaim: options.others ?? [],
     User: [{ id: 'tech-1', fullName: 'Thợ A' }, { id: 'sm-1', fullName: 'Quản lý B' }, { id: 'tech-9', fullName: 'Thợ C' }],
@@ -53,7 +53,7 @@ describe('manager reads one warranty claim in full', () => {
     expect(result.detail.declined).toMatchObject({ by: { fullName: 'Thợ C' }, reasonCode: 'busy' });
     expect(result.detail.originalJob).toMatchObject({ grandTotal: 1_000_000, laborTotal: 300_000, partsTotal: 700_000, paymentStatus: 'paid', laborWarrantyDays: 30 });
     expect(result.detail.originalJob.technicians).toEqual([expect.objectContaining({ id: 'tech-1', fullName: 'Thợ A', isActive: true })]);
-    expect(result.detail.originalJob.lines.map((l) => [l.description, l.covered])).toEqual([['Công thay bo mạch', false], ['Board X', true]]);
+    expect(result.detail.originalJob.lines.map((l) => [l.description, l.covered, l.faulty])).toEqual([['Công thay bo mạch', false, false], ['Board X', true, true]]);
     expect(result.detail.originalJob.lines[1]).toMatchObject({ unitPrice: 700_000, partSource: 'fixhome', warrantyDays: 90 });
     expect(result.detail.coverage).toMatchObject({ warrantyDays: 90, status: 'active' });
     expect(result.detail.visits).toEqual([expect.objectContaining({ id: 'v1', technician: { id: 'tech-1', fullName: 'Thợ A' } })]);
@@ -66,7 +66,7 @@ describe('manager reads one warranty claim in full', () => {
 
     const { detail } = await service.get('claim-1');
 
-    expect(detail.partRequest).toMatchObject({ id: 'pr-1', chargeTechnician: true, faultyInspectionResult: 'installation', faultyInspectionEvidence: ['a.jpg'] });
+    expect(detail.partRequest).toMatchObject({ id: 'pr-1', chargeTechnician: true, faultyInspectionResult: 'installation', faultyInspectionEvidence: ['a.jpg'], faultyReturnedAt: null });
     expect(detail.partRequest?.items).toEqual([{ id: 'i1', name: 'Board X', quantity: 1, unitPrice: 700_000, usageStatus: 'pending' }]);
   });
 

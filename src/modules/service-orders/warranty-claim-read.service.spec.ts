@@ -19,10 +19,20 @@ const claim = {
   technician: { id: 'tech-1', fullName: 'Kỹ thuật viên A', phoneNumber: '0900', passwordHash: 'x' },
 } as any;
 
+const MANAGER = (invoices: unknown[] = [], requests: unknown[] = []) => ({
+  find: vi.fn(async (entity: { name: string }) => (entity.name === 'Invoice' ? invoices : entity.name === 'PartRequest' ? requests : [])),
+});
+
 describe('WarrantyClaimReadService', () => {
   it('joins order, customer, coverage and the latest visit without leaking technician contact data', async () => {
     const repos = {
-      order: { find: vi.fn().mockResolvedValue([{ id: 'order-1', code: 'SO-1', bookingId: 'booking-1' }]) },
+      order: {
+        find: vi.fn().mockResolvedValue([{ id: 'order-1', code: 'SO-1', bookingId: 'booking-1' }]),
+        manager: MANAGER([{ id: 'inv-1', serviceOrderId: 'order-1' }], [{
+          id: 'pr-1', warrantyClaimId: 'claim-1', status: 'received', faultyReturnDueAt: new Date('2026-11-12T00:00:00.000Z'), faultyReturnedAt: null,
+          faultyReturnChargedAt: null, faultyInspectionResult: null, chargeTechnician: false,
+        }]),
+      },
       booking: {
         find: vi.fn().mockResolvedValue([
           { id: 'booking-1', customerId: 'customer-1', serviceNameSnapshot: 'Sửa đường nước', addressTextSnapshot: '12 Lê Lợi' },
@@ -32,7 +42,10 @@ describe('WarrantyClaimReadService', () => {
       coverage: {
         find: vi.fn().mockResolvedValue([{ id: 'cov-1', note: 'Vòi sen', expiresAt: new Date('2026-10-30T00:00:00.000Z') }]),
       },
-      invoiceItem: { find: vi.fn().mockResolvedValue([]) },
+      invoiceItem: { find: vi.fn(async (query: any) => (query?.where?.invoiceId ? [
+        { id: 'part-1', invoiceId: 'inv-1', description: 'Tụ khởi động', quantity: 2, partSource: 'fixhome' },
+        { id: 'part-2', invoiceId: 'inv-other', description: 'Của đơn khác', quantity: 1, partSource: 'fixhome' },
+      ] : [])) },
       visit: {
         find: vi.fn().mockResolvedValue([
           { id: 'visit-new', warrantyClaimId: 'claim-1', status: 'checked_in', createdAt: new Date('2026-09-30') },
@@ -59,6 +72,11 @@ describe('WarrantyClaimReadService', () => {
       addressSummary: '12 Lê Lợi',
       customerName: 'Khách A',
       customerPhone: '0911',
+      partLines: [{ id: 'part-1', name: 'Tụ khởi động', quantity: 2, partSource: 'fixhome' }],
+    });
+    expect(view.partRequest).toEqual({
+      id: 'pr-1', status: 'received', faultyReturnDueAt: new Date('2026-11-12T00:00:00.000Z'), faultyReturnedAt: null,
+      faultyReturnChargedAt: null, faultyInspectionResult: null, chargeTechnician: false,
     });
     expect(view.coverage).toMatchObject({ id: 'cov-1', itemDescription: 'Vòi sen' });
     expect(view.visit?.id).toBe('visit-new');
@@ -70,7 +88,7 @@ describe('WarrantyClaimReadService', () => {
   it('names the covered item after its invoice line, so the manager and the technician see what is claimed', async () => {
     const find = (rows: unknown[]) => ({ find: vi.fn().mockResolvedValue(rows) });
     const service = new WarrantyClaimReadService(
-      find([{ id: 'order-1', code: 'SO-1', bookingId: 'booking-1' }]) as any,
+      { ...find([{ id: 'order-1', code: 'SO-1', bookingId: 'booking-1' }]), manager: MANAGER() } as any,
       find([{ id: 'booking-1', customerId: 'customer-1' }]) as any,
       find([{ id: 'customer-1', fullName: 'Khách A' }]) as any,
       find([

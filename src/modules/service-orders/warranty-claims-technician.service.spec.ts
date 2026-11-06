@@ -38,7 +38,10 @@ const makeVisit = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-const makeService = (options: { claim?: unknown; visits?: unknown[]; profile?: unknown; coverage?: unknown; booking?: unknown } = {}) => {
+const LINE_1 = '11111111-1111-4111-8111-111111111111';
+const LINE_2 = '22222222-2222-4222-8222-222222222222';
+
+const makeService = (options: { claim?: unknown; visits?: unknown[]; profile?: unknown; coverage?: unknown; booking?: unknown; partLines?: unknown[] } = {}) => {
   const claimTx = { update: vi.fn().mockResolvedValue({ affected: 1 }) };
   const visitTx = {
     update: vi.fn().mockResolvedValue({ affected: 1 }),
@@ -68,11 +71,13 @@ const makeService = (options: { claim?: unknown; visits?: unknown[]; profile?: u
             return options.booking ?? { latitudeSnapshot: 10.77, longitudeSnapshot: 106.7, provinceSnapshot: '79', districtSnapshot: '760' };
           case 'Address':
             return { lat: 10.78, lng: 106.69 };
+          case 'Invoice':
+            return { id: 'inv-1' };
           default:
             return null;
         }
       }),
-      find: vi.fn().mockResolvedValue([]),
+      find: vi.fn(async (entity: { name: string }) => (entity.name === 'InvoiceItem' ? options.partLines ?? [{ id: LINE_1 }, { id: LINE_2 }] : [])),
     },
   };
   const visitRepo = {
@@ -210,12 +215,30 @@ describe('technician warranty commands', () => {
     expect(repeat.visitRepo.update).not.toHaveBeenCalled();
   });
 
+  it('needs the faulty part lines for a part fault, and only lines of the original invoice', async () => {
+    const claim = makeClaim({ status: WarrantyClaimStatus.ACCEPTED });
+    const visits = [makeVisit({ status: WarrantyVisitStatus.CHECKED_IN })];
+    const base = { result: WarrantyInspectionResult.COVERED_PART, findings: 'Linh kiện bị nứt ở mối ghép', evidenceRefs: ['photo-1'] };
+
+    const none = makeService({ claim, visits });
+    await expect(none.service.propose('claim-1', base, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+
+    const stranger = makeService({ claim, visits });
+    await expect(stranger.service.propose('claim-1', { ...base, faultyInvoiceItemIds: ['33333333-3333-4333-8333-333333333333'] }, TECH))
+      .rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+    expect(stranger.claimTx.update).not.toHaveBeenCalled();
+
+    const labor = makeService({ claim, visits });
+    await labor.service.propose('claim-1', { result: WarrantyInspectionResult.COVERED_WORKMANSHIP, findings: 'Mối nối bị lỏng do lắp chưa chặt' }, TECH);
+    expect(labor.visitTx.update).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ faultyInvoiceItemIds: null }));
+  });
+
   it('proposes a conclusion only after check-in and moves the claim to inspected for manager approval', async () => {
     const early = makeService({ claim: makeClaim({ status: WarrantyClaimStatus.ACCEPTED }) });
     await expect(
       early.service.propose(
         'claim-1',
-        { result: WarrantyInspectionResult.COVERED_PART, findings: 'Linh kiện bị nứt ở mối ghép', evidenceRefs: ['photo-1'] },
+        { result: WarrantyInspectionResult.COVERED_PART, findings: 'Linh kiện bị nứt ở mối ghép', evidenceRefs: ['photo-1'], faultyInvoiceItemIds: [LINE_1] },
         TECH,
       ),
     ).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
@@ -242,7 +265,7 @@ describe('technician warranty commands', () => {
     });
     await ok.service.propose(
       'claim-1',
-      { result: WarrantyInspectionResult.COVERED_PART, findings: 'Linh kiện bị nứt ở mối ghép', evidenceRefs: ['photo-1'] },
+      { result: WarrantyInspectionResult.COVERED_PART, findings: 'Linh kiện bị nứt ở mối ghép', evidenceRefs: ['photo-1'], faultyInvoiceItemIds: [LINE_1, LINE_1, LINE_2] },
       TECH,
     );
     expect(ok.claimTx.update).toHaveBeenCalledWith(
@@ -255,6 +278,7 @@ describe('technician warranty commands', () => {
         status: WarrantyVisitStatus.INSPECTED,
         proposedResult: WarrantyInspectionResult.COVERED_PART,
         notCoveredReasonCode: null,
+        faultyInvoiceItemIds: [LINE_1, LINE_2],
       }),
     );
     expect(ok.notifier.toManagers).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'WARRANTY_PROPOSAL_READY', 'order-1');

@@ -29,7 +29,6 @@ import {
 import { AdditionalCostItem } from './entities/additional-cost-item.entity';
 import { InvoiceItem } from './entities/invoice-item.entity';
 import { WarrantyClaim } from './entities/warranty-claim.entity';
-import { WarrantyCoverage } from './entities/warranty-coverage.entity';
 import { WarrantyVisit } from './entities/warranty-visit.entity';
 import { WarrantyClaimReadService } from './warranty-claim-read.service';
 import { WarrantyCostService } from './warranty-cost.service';
@@ -163,7 +162,7 @@ export class WarrantyClaimsManagerService {
         },
       );
       if (updated.affected !== 1) throw conflict('Yêu cầu bảo hành đã được xử lý.');
-      if (covered) await this.openPartSupport(tx, claim, final, dto, manager);
+      if (covered) await this.openPartSupport(tx, claim, final, dto, manager, visit);
     });
 
     await this.audit(manager, 'WARRANTY_PROPOSAL_APPROVED', claim, { proposed }, { final, reasonCode, overridden: final !== proposed, overrideReason: dto.overrideReason ?? null });
@@ -187,18 +186,23 @@ export class WarrantyClaimsManagerService {
     final: WarrantyInspectionResult,
     dto: ApproveWarrantyProposalDto,
     actor: OrderActor,
+    visit: WarrantyVisit,
   ): Promise<void> {
     let parts = dto.replacementParts ?? [];
     if (!parts.length && final === WarrantyInspectionResult.COVERED_PART) {
-      const coverage = await tx.findOneBy(WarrantyCoverage, { id: claim.warrantyCoverageId });
-      const line = coverage?.invoiceItemId ? await tx.findOneBy(InvoiceItem, { id: coverage.invoiceItemId }) : null;
-      // A labor line or a part the technician bought: nothing for FixHome to supply.
-      if (!line || line.partSource !== PartSource.FIXHOME) return;
-      const source = line.sourceItemId
-        ? (await tx.findOneBy(QuotationItem, { id: line.sourceItemId })) ?? (await tx.findOneBy(AdditionalCostItem, { id: line.sourceItemId }))
-        : null;
-      if (!source?.partCatalogId) throw invalid('Chọn linh kiện FixHome cấp cho lần bảo hành này.');
-      parts = [{ partCatalogId: source.partCatalogId, quantity: line.quantity }];
+      // The technician saw the faulty parts: supply those lines, FixHome ones only (a part the technician bought stays theirs).
+      const lineIds = visit.faultyInvoiceItemIds ?? [];
+      const lines = lineIds.length ? await tx.find(InvoiceItem, { where: { id: In(lineIds) } }) : [];
+      const merged = new Map<string, number>();
+      for (const line of lines) {
+        if (line.partSource !== PartSource.FIXHOME) continue;
+        const source = line.sourceItemId
+          ? (await tx.findOneBy(QuotationItem, { id: line.sourceItemId })) ?? (await tx.findOneBy(AdditionalCostItem, { id: line.sourceItemId }))
+          : null;
+        if (!source?.partCatalogId) throw invalid('Chọn linh kiện FixHome cấp cho lần bảo hành này.');
+        merged.set(source.partCatalogId, (merged.get(source.partCatalogId) ?? 0) + line.quantity);
+      }
+      parts = [...merged].map(([partCatalogId, quantity]) => ({ partCatalogId, quantity }));
     }
     if (!parts.length) return;
     if (!claim.technicianId) throw invalid('Cần phân công kỹ thuật viên trước khi cấp linh kiện.');
