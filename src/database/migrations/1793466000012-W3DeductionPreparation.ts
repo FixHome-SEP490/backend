@@ -45,12 +45,27 @@ export class W3DeductionPreparation1793466000012 implements MigrationInterface {
         SELECT coalesce(max(revision),0) INTO head FROM w3_deduction_preparations WHERE service_order_id=NEW.service_order_id;
         IF NEW.expected_revision IS NULL OR NEW.expected_revision<>head THEN
           RAISE EXCEPTION 'W3_D_PREPARATION_CAS_CONFLICT'; END IF;
-        IF NOT w3_prequote_commission_current(NEW.service_order_id) THEN
-          RAISE EXCEPTION 'W3_D_PREPARATION_CURRENT_COMMISSION_REQUIRED'; END IF;
-        SELECT to_jsonb(s) INTO STRICT snapshot FROM w3_order_commission_snapshots s WHERE s.service_order_id=NEW.service_order_id;
+        PERFORM 1 FROM technician_assignments WHERE service_order_id=NEW.service_order_id ORDER BY id FOR SHARE;
         -- Identity attribution only. No role (including ADMIN) is a Finance mandate.
         SELECT role::text INTO NEW.actor_role FROM users WHERE id=NEW.actor_user_id AND is_active AND status::text='active' FOR SHARE;
         IF NOT FOUND THEN RAISE EXCEPTION 'W3_D_PREPARATION_ACTOR_REQUIRED'; END IF;
+        -- Compatible subset of 0010/0011: Order -> assignment/actor -> config -> labor.
+        -- Never wait for an actor while holding the global config lock: another order's
+        -- terms may hold that actor and need config. Locks live until transaction end.
+        PERFORM 1 FROM system_configs WHERE key='commission.rate_bps' FOR UPDATE;
+        IF NOT FOUND THEN RAISE EXCEPTION 'W3_D_PREPARATION_CURRENT_COMMISSION_REQUIRED'; END IF;
+        -- The rate-row lock also serializes its 0011 config-version capture trigger;
+        -- version/snapshot history itself is immutable, so no reverse version lock.
+        PERFORM 1 FROM bookings WHERE id=(SELECT booking_id FROM service_orders WHERE id=NEW.service_order_id) FOR SHARE;
+        -- UPDATE on source parents also blocks FK child INSERT phantoms, not just
+        -- edits to existing items. The Order lock similarly protects new source parents.
+        PERFORM 1 FROM quotations WHERE service_order_id=NEW.service_order_id ORDER BY id FOR UPDATE;
+        PERFORM 1 FROM quotation_items WHERE quotation_id IN (SELECT id FROM quotations WHERE service_order_id=NEW.service_order_id) ORDER BY id FOR SHARE;
+        PERFORM 1 FROM additional_cost_requests WHERE service_order_id=NEW.service_order_id ORDER BY id FOR UPDATE;
+        PERFORM 1 FROM additional_cost_items WHERE request_id IN (SELECT id FROM additional_cost_requests WHERE service_order_id=NEW.service_order_id) ORDER BY id FOR SHARE;
+        IF NOT w3_prequote_commission_current(NEW.service_order_id) THEN
+          RAISE EXCEPTION 'W3_D_PREPARATION_CURRENT_COMMISSION_REQUIRED'; END IF;
+        SELECT to_jsonb(s) INTO STRICT snapshot FROM w3_order_commission_snapshots s WHERE s.service_order_id=NEW.service_order_id;
         IF jsonb_typeof(NEW.entries) IS DISTINCT FROM 'array' THEN
           RAISE EXCEPTION 'W3_D_PREPARATION_ENTRIES_REQUIRED'; END IF;
         IF jsonb_array_length(NEW.entries)>100 OR NEW.explicit_zero IS NULL OR

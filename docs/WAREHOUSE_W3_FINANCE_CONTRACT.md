@@ -1535,6 +1535,17 @@ required proofs, acceptance criteria và trạng thái NOT SIGNED nằm tại
 - DB capture snapshot C bất biến từ 0011 khi current; không ghi C mới, không refreeze.
   DB tự tính tổng nguyên VND an toàn, revision/fingerprint, UTC timestamp và DB recorder.
   Entry IDs canonical theo thứ tự; unique trong revision, tối đa 100 entry có amount >0.
+- P2 race fix (06/11/2026): trước kiểm C, giữ Order UPDATE → assignments SHARE → actor
+  SHARE → rate config UPDATE → Booking SHARE → Quotations UPDATE → quotation items
+  SHARE → AdditionalCostRequests UPDATE → additional items SHARE (mỗi tập ORDER BY id).
+  Actor phải trước global config, tương thích 0010/0011; không chờ actor khi đang giữ
+  config rồi tạo chu kỳ với terms của order khác. Các source row cùng order được order
+  lock serialize với terms; thứ tự config → Booking → quotation → additional giữ 0011.
+  Parent UPDATE còn chặn child INSERT qua FK; Order UPDATE chặn source parent/assignment
+  INSERT qua FK. Config row lock giữ cả head version: trigger 0011 chỉ append version
+  trong transaction đã khóa đúng rate row; không khóa version table theo chiều ngược.
+  Kiểm C chỉ sau khi đủ khóa, giữ đến COMMIT/ROLLBACK; config/labor đổi sau commit làm
+  history stale bình thường. Không dùng late recheck đơn lẻ. Không sửa 0010/0011.
 - `explicit_zero=true` đi cùng empty entries và statement ref/digest/actor/mandate đầy đủ.
   Không có row là UNKNOWN/null; không suy D=0 từ thiếu dữ liệu. Dương phải có ít nhất
   một entry có category, evidenceRef, SHA-256 contentDigest đúng định dạng.
@@ -1604,3 +1615,16 @@ Kết quả local cuối trên Node 24.15.0 / PostgreSQL 16 disposable:
 Full unit lần đầu chỉ lỗi context 41 entries; đã rút về 40 theo mục 0 và full rerun
 4044 PASS. Không nới test. Full E2E tự hoàn tất trước yêu cầu dừng của Lead; không kill
 process ngoài phạm vi. Các kiểm tra provider dùng fixture/double, không proof tiền thật.
+
+Follow-up P2 trên 0012 chưa release (06/11/2026): regression hai session dùng
+`pg_blocking_pids` xác nhận wait edge thật. RED 4/4 trên code cũ: D zero/dương vẫn insert
+sau actor wait + config commit, và config/Booking update không bị chặn tới D commit.
+Sau sửa, stale D bị reject không để row; config/Booking update và child labor INSERT
+phải chờ D commit. Chạy lại focused PostgreSQL/delivery và quality checks trong follow-up;
+full unit/full E2E ở bảng trên là lần chạy commit trước, không phải chứng nhận lại head
+follow-up. GitHub CI/full E2E/release vẫn do Lead; Finance money tiếp tục BLOCKED.
+
+Follow-up verification: full `warehouse-delivery-physical.e2e-spec.ts` **44/44 PASS**,
+`w3-dev-release.postgres.spec.ts` **37/37 PASS**, context/planner **9/9 PASS**;
+`npm run typecheck`, `npm run lint`, `npm run build`, `git diff --check` **PASS**
+(4 lint warning cũ). Không chạy lại broad full suites trong follow-up focused này.

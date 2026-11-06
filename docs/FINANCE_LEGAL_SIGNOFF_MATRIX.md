@@ -71,6 +71,9 @@ D=0. Không đưa dữ liệu giả từ fixture vào DEV.
 DB bind snapshot C đầy đủ từ 0011; không nhận C/total/revision/fingerprint do caller tự
 quyết. Fingerprint SHA-256 nhận diện nội dung canonical, không là chữ ký hay proof.
 Nguồn C drift làm diagnostics stale và INSERT mới bị từ chối; không tự refreeze.
+Guard khóa assignment/actor trước rate config, rồi Booking/quotation/additional và items
+theo thứ tự 0011 trước khi kiểm C; giữ source locks đến commit, kể cả parent UPDATE để
+chặn FK child INSERT. Actor-before-config tránh đảo khóa với terms của order khác.
 Không có cột approval và không có chuyển từ preparatory sang approved; cần thiết kế
 contract/migration mới sau signoff. Record cũ vẫn historical kể cả actor bị khóa sau đó.
 

@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-06 18:01 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-finance-readiness-20261106
+> Cập nhật lần cuối: 2026-11-06 18:14 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-finance-readiness-20261106
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -93,6 +93,8 @@ Ba điều không đổi giữa các repo:
 Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức của nhóm). Mâu thuẫn giữa code và tài liệu thì ghi vào mục 8 và hỏi PO, không tự quyết.
 
 ## 3. Trạng thái hiện tại
+
+W3 P2 D drift race (06/11/2026): 0012 chưa release sửa thứ tự Order → assignment/actor → config → labor trước kiểm C, giữ row locks đến commit; config lock serialize version capture 0011, parent UPDATE chặn thêm labor items qua FK. Không sửa 0010/0011, quyền hoặc runtime writer; money BLOCKED. Regression hai session RED 4 ca trên source cũ; GREEN full delivery/physical 44, PG gate 37, context/planner 9; typecheck/lint/build/diff PASS (4 warning cũ). Chi tiết tại mục 24 hợp đồng W3. Full unit/E2E 4044/244 bên dưới thuộc commit trước; CI/head follow-up/shared DEV/runtime NOT VERIFIED, Lead giữ release.
 
 W3 D readiness preparation (06/11/2026, base `cedfe4c`): migration additive `W3DeductionPreparation1793466000012` thêm ledger statement D private append-only, full revisions/explicit zero, order-lock CAS và C binding; actor/mandate/taxonomy chỉ được ghi nhận, chưa Finance-approved. Internal SQL `w3_finance_readiness(uuid)` chỉ đọc, không API/writer app; D thiếu là null, có record vẫn unapproved, C drift là stale. `approvedDeductions=null`, `laborBudget=null`, `aggregateBudgetVerified=false`, mọi money execution BLOCKED. DEV gate/rollback fixtures tiến tới 0012, kiểm mọi table/column/function ACL và RLS/guards/replay; không sequence/grant mới. Full unit 4044 PASS/95 skipped, full E2E 244 PASS/39 skipped; PG gate 37/37, physical 39/39 và final CAS focused PASS. Lint/typecheck/build PASS (4 warning cũ), security high gate PASS (12 moderate cũ). Node 24.15.0/PG16 disposable, không `.env`. Ma trận sáu signoff/giới hạn tại `docs/FINANCE_LEGAL_SIGNOFF_MATRIX.md`, mục 24 hợp đồng W3. GitHub CI/shared DEV/provider/Web/Mobile/Docker health/Node 20.19.5 NOT VERIFIED; chỉ local commit, Lead giữ release.
 
@@ -499,6 +501,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-06 18:14 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-readiness-20261106 | Sửa P2 race D bằng transaction locks theo 0011; PG delivery 44/gate 37/context 9 và quality checks PASS; Finance BLOCKED, Lead giữ release.
+
 - 2026-11-06 18:01 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-readiness-20261106 | Thêm D preparation/diagnostics 0012 và ma trận sáu signoff; unit 4044/E2E 244/PG gate 37 PASS, không writer API hoặc execution tiền.
 
 - 2026-11-06 17:00 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-governance-20261106 | Sửa P2 release gate bỏ lọt sequence ACL; PG RED 12/GREEN 28, typecheck/lint/build PASS; không mở W3 tiền.
@@ -541,4 +545,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-01 19:43 (UTC+7) | ToanAltF4 | fix/visit-candidates-empty-reason | GET /visit-groups/:id/technician-candidates?diagnostics=1 trả meta.emptyReason cùng logic với đặt lịch một máy (OUTSIDE_COVERAGE, TIME_UNAVAILABLE, BOOKING_LOCATION_MISSING, UNAVAILABLE), bỏ diagnostics vẫn chỉ trả data cho mobile
 - 2026-11-01 19:13 (UTC+7) | ToanAltF4 | fix/warranty-expired-status | GET /service-orders/:id/warranties trả expired cho bảo hành active đã qua expires_at, tính khi đọc, không ghi DB; yêu cầu bảo hành sau hạn vẫn lưu submitted với submitted_after_expiry (lỗi tìm thấy 01/11 ở TC-WAR-003).
 - 2026-11-01 18:33 (UTC+7) | ToanAltF4 | fix/candidates-empty-reason-envelope | Lý do danh sách thợ rỗng chuyển vào meta.emptyReason để tới được client, thợ không có vị trí không còn che OUTSIDE_COVERAGE, danh sách lượt nhiều thiết bị trả arrivedAt từng máy
-- 2026-11-01 18:10 (UTC+7) | ToanAltF4 | fix/audit-actor-uuid-filter | Lọc theo id người dùng (actorUserId nhật ký, userId strike, technicianId yêu cầu linh kiện và bảo hành, assignedManagerId hỗ trợ, userId thông báo) nhận mọi UUID dạng chuẩn 8-4-4-4-12, kể cả id seed kiểu a0000000-0000-0000-0000-000000000001 mà @IsUUID() từ chối (lỗi 31). Chuỗi tự do vẫn trả 400.

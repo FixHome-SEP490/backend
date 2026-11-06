@@ -627,15 +627,95 @@ describe.skipIf(
     entries: [],
     ...overrides,
   });
-  const appendPreparation = async (row: Record<string, unknown>) => {
+  const appendPreparation = async (
+    row: Record<string, unknown>,
+    executor: Pick<DataSource, 'query'> = db,
+  ) => {
     const keys = Object.keys(row);
-    return db.query(
+    return executor.query(
       `INSERT INTO w3_deduction_preparations(${keys.join(',')}) VALUES (${keys.map((_, i) => `$${i + 1}`).join(',')}) RETURNING *`,
       keys.map((k) => k === 'entries' ? JSON.stringify(row[k]) : row[k]),
     );
   };
   const readiness = async (id: string) =>
     (await db.query('SELECT w3_finance_readiness($1) AS result', [id]))[0].result;
+
+  // Observe actual PostgreSQL wait edges, not timing or a pending JS promise.
+  const waitForBlocker = async (
+    observer: Pick<DataSource, 'query'>,
+    waiter: number,
+    blocker: number,
+  ) => {
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      const [row] = await observer.query('SELECT $2::int=ANY(pg_blocking_pids($1)) AS blocked', [waiter, blocker]);
+      if (row.blocked) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error('Expected PostgreSQL blocking edge was not observed');
+  };
+
+  it.each([true, false])('rejects stale D after actor-lock wait and concurrent config commit (explicitZero=%s)', async (explicitZero) => {
+    const f = await positiveTerms();
+    const writer = db.createQueryRunner(), changer = db.createQueryRunner();
+    await writer.connect(); await changer.connect();
+    let inserted: Promise<{ ok: boolean; error?: Error }> | undefined;
+    try {
+      await writer.startTransaction(); await changer.startTransaction();
+      const writerPid = (await writer.query('SELECT pg_backend_pid() AS pid'))[0].pid;
+      const changerPid = (await changer.query('SELECT pg_backend_pid() AS pid'))[0].pid;
+      await changer.query('SELECT 1 FROM users WHERE id=$1 FOR UPDATE', [f.managerActor.id]);
+      inserted = appendPreparation(preparation(f, { explicit_zero: explicitZero, entries: explicitZero ? [] : [
+        { entryId: 'deduction-1', category: 'LABOR_ADJUSTMENT', amount: 19,
+          evidenceRef: 'private-evidence:deduction-1', contentDigest: 'b'.repeat(64) },
+      ] }), writer).then(() => ({ ok: true }), (error: Error) => ({ ok: false, error }));
+      await waitForBlocker(changer, writerPid, changerPid);
+      await changer.query("UPDATE system_configs SET value='2000' WHERE key='commission.rate_bps'");
+      await changer.commitTransaction();
+      const result = await inserted;
+      expect(result.ok).toBe(false);
+      expect(result.error?.message).toContain('W3_D_PREPARATION_CURRENT_COMMISSION_REQUIRED');
+      await writer.rollbackTransaction();
+      expect((await db.query('SELECT count(*)::int AS n FROM w3_deduction_preparations WHERE service_order_id=$1', [f.order.id]))[0].n).toBe(0);
+    } finally {
+      if (changer.isTransactionActive) await changer.rollbackTransaction();
+      if (inserted) await inserted;
+      if (writer.isTransactionActive) await writer.rollbackTransaction();
+      await writer.release(); await changer.release();
+      await db.query("UPDATE system_configs SET value='1000' WHERE key='commission.rate_bps'");
+    }
+  });
+
+  it.each(['config', 'labor', 'labor-item'])('holds %s source stable after D INSERT returns until its transaction commits', async (source) => {
+    const f = await positiveTerms();
+    const writer = db.createQueryRunner(), changer = db.createQueryRunner();
+    await writer.connect(); await changer.connect();
+    let changed: Promise<unknown> | undefined;
+    try {
+      await writer.startTransaction(); await changer.startTransaction();
+      const writerPid = (await writer.query('SELECT pg_backend_pid() AS pid'))[0].pid;
+      const changerPid = (await changer.query('SELECT pg_backend_pid() AS pid'))[0].pid;
+      await appendPreparation(preparation(f), writer);
+      changed = (source === 'config'
+        ? changer.query("UPDATE system_configs SET value='2000' WHERE key='commission.rate_bps'")
+        : source === 'labor'
+          ? changer.query('UPDATE bookings SET fixed_unit_price_snapshot=100001 WHERE id=$1', [f.booking.id])
+          : changer.query("INSERT INTO additional_cost_items(request_id,type,description,quantity,unit_price,line_total) VALUES($1,'labor','CI concurrent labor',1,1,1)", [f.cost.id])
+      ).then(() => null, (error: Error) => error);
+      await waitForBlocker(writer, changerPid, writerPid);
+      expect((await writer.query('SELECT w3_prequote_commission_current($1) AS current', [f.order.id]))[0].current).toBe(true);
+      await writer.commitTransaction();
+      expect(await changed).toBeNull();
+      await changer.commitTransaction();
+      expect(await readiness(f.order.id)).toMatchObject({ deductionState: 'STALE_COMMISSION', financialExecution: 'BLOCKED' });
+    } finally {
+      if (writer.isTransactionActive) await writer.rollbackTransaction();
+      if (changed) await changed;
+      if (changer.isTransactionActive) await changer.rollbackTransaction();
+      await writer.release(); await changer.release();
+      if (source === 'config') await db.query("UPDATE system_configs SET value='1000' WHERE key='commission.rate_bps'");
+    }
+  });
 
   it('diagnoses missing D as unknown and recorded zero as unapproved, never finance-ready', async () => {
     const f = await positiveTerms();
