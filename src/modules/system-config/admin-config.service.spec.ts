@@ -21,6 +21,7 @@ describe('AdminConfigService', () => {
     }) as SystemConfig;
 
   const seedConfigs: SystemConfig[] = [
+    makeConfig('w3.shipping.max_new_fee_vnd', '0', 'int'),
     makeConfig('commission.rate_bps', '1000', 'int'),
     makeConfig('matching.mode', 'SEQUENTIAL', 'enum'),
     makeConfig('commission.base', 'LABOR', 'enum'),
@@ -48,10 +49,14 @@ describe('AdminConfigService', () => {
     adminConfigService = new AdminConfigService(
       mockConfigService,
       mockAuditLogService,
+      {} as any,
     );
   });
 
   describe('findAll', () => {
+    it('marks the new W3 shipping safety cap ACTIVE', async () => {
+      expect(await adminConfigService.findOne('w3.shipping.max_new_fee_vnd')).toMatchObject({ effectStatus: 'ACTIVE', value: '0' });
+    });
     it('returns all config keys with effect metadata', async () => {
       const result = await adminConfigService.findAll();
       expect(result).toHaveLength(seedConfigs.length);
@@ -124,6 +129,10 @@ describe('AdminConfigService', () => {
   });
 
   describe('findOne', () => {
+    it.each(['-1', '1.5', '100000001', '9007199254740992', '20x'])('rejects invalid W3 cap %s', async (value) => {
+      await expect(adminConfigService.update('w3.shipping.max_new_fee_vnd', value, 'admin-1', 'admin')).rejects.toBeInstanceOf(BadRequestException);
+      expect(mockConfigService.set).not.toHaveBeenCalled();
+    });
     it('returns a single config key', async () => {
       const result = await adminConfigService.findOne('commission.rate_bps');
       expect(result.key).toBe('commission.rate_bps');
@@ -138,6 +147,10 @@ describe('AdminConfigService', () => {
   });
 
   describe('update', () => {
+    it('keeps zero commission separate from the W3 shipping safety cap', async () => {
+      expect((await adminConfigService.update('commission.rate_bps', '0', 'user-uuid', 'admin')).value).toBe('0');
+      expect(mockConfigService.set).toHaveBeenCalledWith('commission.rate_bps', '0', 'user-uuid');
+    });
     it('updates commission.rate_bps with valid int value', async () => {
       const result = await adminConfigService.update(
         'commission.rate_bps',

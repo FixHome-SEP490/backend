@@ -1,9 +1,16 @@
 // src/modules/system-config/admin-config.service.ts
 import {
   BadRequestException,
+  ForbiddenException,
+  HttpException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
+import { DataSource } from 'typeorm';
+import { User } from '../users/entities/user.entity';
+import { AccountStatus, Role } from '../../shared/enums';
+import { parseW3ShippingCap, W3_SHIPPING_CAP_KEY, W3_SHIPPING_CAP_MAX } from './w3-shipping-safety-cap';
 import { BusinessConfigService } from './business-config.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { SystemConfig } from './entities/system-config.entity';
@@ -53,6 +60,7 @@ interface KeyValidationRule {
 }
 
 const KEY_VALIDATION: Record<string, KeyValidationRule> = {
+  [W3_SHIPPING_CAP_KEY]: { type: 'int', min: 0, max: W3_SHIPPING_CAP_MAX },
   'matching.max_shortlist':              { type: 'int', min: 1, max: 2 },
   // matching.mode was SIMULTANEOUS (stale). v1.4 canonical is SEQUENTIAL.
   // Corrected in seed. No runtime consumer currently reads this key; sequential
@@ -109,6 +117,7 @@ const KEY_EFFECT: Record<
   string,
   { status: ConfigEffectStatus; evidence: string | null }
 > = {
+  [W3_SHIPPING_CAP_KEY]: { status: 'ACTIVE', evidence: null },
   'wallet.minimum_balance': {
     status: 'ACTIVE',
     evidence: null,
@@ -290,6 +299,7 @@ export class AdminConfigService {
   constructor(
     private readonly configService: BusinessConfigService,
     private readonly auditLogService: AuditLogService,
+    private readonly source: DataSource,
   ) {}
 
   /** Return all config keys with effect metadata. */
@@ -324,6 +334,7 @@ export class AdminConfigService {
     actorUserId: string,
     actorRole: string,
   ): Promise<ConfigKeyMeta> {
+    if (key === W3_SHIPPING_CAP_KEY) return this.updateShippingCap(value, actorUserId, actorRole);
     // Ensure key exists
     const all = await this.configService.getAll();
     const current = all.find((c) => c.key === key);
@@ -349,6 +360,47 @@ export class AdminConfigService {
     });
 
     return this.toMeta(saved);
+  }
+
+  /** W3 safety control: fresh authorization, locked before-value and strict atomic audit.
+   * Last serialized Admin write wins; each receipt records its actual predecessor. */
+  private async updateShippingCap(value: string, actorUserId: string, actorRole: string): Promise<ConfigKeyMeta> {
+    if (actorRole !== Role.ADMIN) throw new ForbiddenException();
+    if (parseW3ShippingCap(value, 'int') === null)
+      throw new BadRequestException('Giới hạn phí giao phải là số nguyên từ 0 đến 100.000.000 ₫.');
+    try {
+      const saved = await this.source.transaction('READ COMMITTED', async (manager) => {
+        const user = await manager.findOne(User, {
+          where: { id: actorUserId },
+          lock: { mode: 'pessimistic_read' },
+        });
+        if (!user || user.role !== Role.ADMIN || !user.isActive || user.status !== AccountStatus.ACTIVE)
+          throw new ForbiddenException();
+        const grants = await manager.query(`SELECT rp.role_id, rp.permission_id FROM role_permissions rp
+          INNER JOIN roles r ON r.id=rp.role_id INNER JOIN permissions p ON p.id=rp.permission_id
+          WHERE r.code=$1 AND p.code=$2 FOR SHARE OF rp,r,p`, [Role.ADMIN, 'config:update']);
+        if (grants.length !== 1) throw new ForbiddenException();
+        const current = await manager.findOne(SystemConfig, {
+          where: { key: W3_SHIPPING_CAP_KEY }, lock: { mode: 'pessimistic_write' },
+        });
+        if (!current) throw new NotFoundException('Chưa có cấu hình giới hạn phí giao.');
+        const before = { key: current.key, value: current.value };
+        current.value = value;
+        current.valueType = 'int';
+        current.updatedByUserId = actorUserId;
+        const result = await manager.save(SystemConfig, current);
+        await this.auditLogService.logWithManagerStrict(manager, {
+          actorUserId, actorRole, action: 'CONFIG_UPDATE', resourceType: 'system_config',
+          resourceId: current.key, before, after: { key: current.key, value },
+        });
+        return result;
+      });
+      this.configService.invalidateCache();
+      return this.toMeta(saved);
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw new ServiceUnavailableException('Chưa thể lưu giới hạn phí giao. Vui lòng thử lại.');
+    }
   }
 
   private toMeta(config: SystemConfig): ConfigKeyMeta {

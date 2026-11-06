@@ -35,6 +35,9 @@ export const ErrorCodes = {
   ADDITIONAL_COST_ALREADY_DECIDED: 'ADDITIONAL_COST_ALREADY_DECIDED',
   ADDITIONAL_COST_IMMUTABLE: 'ADDITIONAL_COST_IMMUTABLE',
 
+  // W3 shipping safety cap (does not authorize financial execution)
+  W3_SHIPPING_CAP_EXCEEDED: 'W3_SHIPPING_CAP_EXCEEDED',
+
   // Warranty
   WARRANTY_CANNOT_SHORTEN: 'WARRANTY_CANNOT_SHORTEN',
 
@@ -93,6 +96,7 @@ export const ErrorCodeHttpStatus: Record<string, number> = {
   [ErrorCodes.CHECKIN_LOW_ACCURACY]: 422,
   [ErrorCodes.ADDITIONAL_COST_ALREADY_DECIDED]: 409,
   [ErrorCodes.ADDITIONAL_COST_IMMUTABLE]: 409,
+  [ErrorCodes.W3_SHIPPING_CAP_EXCEEDED]: 409,
   [ErrorCodes.WARRANTY_CANNOT_SHORTEN]: 409,
   [ErrorCodes.BOOKING_SUSPENDED]: 403,
   [ErrorCodes.WORK_SUSPENDED]: 403,
