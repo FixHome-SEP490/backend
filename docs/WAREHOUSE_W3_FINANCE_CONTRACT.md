@@ -1679,8 +1679,10 @@ Quote/revision W3 mới dùng `assertW3NewShippingFee` đọc trực tiếp row 
 lock giữ tới quote commit. Không dùng `BusinessConfigService` cache 60 giây; cache của
 instance khác không có authority. Thiếu row/type/value sai dùng effective cap 0;
 lỗi DB chặn request, không fallback cap dương. Admin UPDATE và quote serialize trên
-cùng row. Quote dương vượt cap trả HTTP **409**, `error.code=CONFLICT`,
-`error.details.blocker=W3_SHIPPING_CAP_EXCEEDED`, `maxNewFeeVnd` là effective cap.
+cùng row. Quote dương vượt cap trả HTTP **409**, public
+`error.code=W3_SHIPPING_CAP_EXCEEDED`. Global `HttpExceptionFilter` không expose
+`BusinessException.details`: không có public `details`, `blocker` hoặc `maxNewFeeVnd`
+trong response. Diagnostics details chỉ giữ nội bộ, không phải public API contract.
 Thông báo tiếng Việt; không tự đổi phí thành 0, không tạo C/terms/audit thành công.
 
 Cap chỉ kiểm **NEW PROPOSE/revision** trước journal INSERT; exact-command replay giữ
@@ -1721,7 +1723,8 @@ duyệt riêng cần restart Backend trước runtime QA; không dùng Compose t
 cấu hình chung nằm ngoài phạm vi. Chỉ một local commit; không push/PR/merge/deploy.
 
 
-Kết quả local trên Node 24.15.0 / PostgreSQL 16 disposable:
+Kết quả lịch sử tại commit `153973f`, Node 24.15.0 / PostgreSQL 16 disposable
+(không phải verification cho follow-up P2 bên dưới):
 
 | Gate | Trạng thái | Bằng chứng |
 | --- | --- | --- |
@@ -1755,3 +1758,38 @@ biệt lỗi setup do enum từ fixture còn sót với worker failure chưa rõ
 không dùng nó để xác nhận không còn regression. Full E2E vẫn **NOT VERIFIED**;
 không retry tiếp hoặc sửa test infrastructure ngoài phạm vi. GitHub CI container sạch
 là bước tiếp theo của Lead. Lint/typecheck/build/diff và audit high gate cuối PASS.
+
+
+### P2 follow-up PR #204 — public error code (07/11/2026)
+
+Review độc lập phát hiện commit `153973f` dùng generic CONFLICT trong exception và
+hứa details công khai nhưng global filter đã loại details; service-only assertions
+không chứng minh được public error contract. Thêm đúng
+`ErrorCodes.W3_SHIPPING_CAP_EXCEEDED` map HTTP 409 và dùng code đó ở cap helper.
+Giữ nguyên global filter và mọi module khác; không expose diagnostics bằng blanket
+forwarding. Response public chỉ có code riêng và thông báo tiếng Việt trong envelope
+hiện có, không trả max fee/cap, blocker, source/payee IDs hoặc details.
+
+TDD RED 3 ca nhận CONFLICT thay mã riêng; GREEN sau fix. Hai test trực tiếp gọi
+`HttpExceptionFilter` ở production/development assert exact response và chặn cả
+synthetic private diagnostics được bổ sung vào internal details. Một Nest/Supertest
+HTTP smoke dùng cap helper/BusinessException/filter thật, persistence double, không
+phải DB/JWT authorization test. Existing service tests vẫn giữ internal details.
+Không migration/schema/env/dependency mới, không sửa gate, W1/W2, zero flows,
+phí/consent lịch sử hoặc payments; `financialExecution=BLOCKED` giữ nguyên.
+
+Full broad E2E Windows không chạy lại theo chỉ đạo Lead; GitHub CI trên follow-up
+head là bước tiếp theo, không coi kết quả lịch sử phía trên là head PASS. Web/Mobile,
+provider, shared DEV và Docker health **NOT VERIFIED**. Chỉ follow-up local commit,
+không push/PR/merge/deploy; sau release được duyệt cần restart Backend trước runtime QA.
+
+
+Verification follow-up P2 (head source sau fix, Node 24.15.0):
+
+| Lệnh/gate | Kết quả |
+| --- | --- |
+| Vitest focused cap/filter/Admin config/metadata/delivery/shipping-finance/planner/context, `--reporter=dot` | PASS — 8 files/112 tests, gồm 3 regression mới |
+| `npx vitest run src/database/w3-dev-release.postgres.spec.ts --reporter=dot`, CI/W3_DEV_ISOLATED_PG=1 | PASS — 39/39 trên PostgreSQL 16 disposable |
+| `npm run lint` | PASS — 0 error/4 warning cũ |
+| `npm run typecheck`, `npm run build`, `git diff --check` | PASS — exit 0 |
+| Full unit/full broad E2E/GitHub CI follow-up | NOT VERIFIED — chỉ focused local theo scope Lead, CI chạy riêng trên head mới |

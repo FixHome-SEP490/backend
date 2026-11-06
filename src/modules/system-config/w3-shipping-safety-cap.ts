@@ -23,7 +23,7 @@ export async function assertW3NewShippingFee(manager: EntityManager, fee: number
   });
   const cap = parseW3ShippingCap(config?.value, config?.valueType) ?? 0;
   if (!Number.isSafeInteger(fee) || fee < 0 || fee > cap) {
-    throw new BusinessException(ErrorCodes.CONFLICT,
+    throw new BusinessException(ErrorCodes.W3_SHIPPING_CAP_EXCEEDED,
       'Phí giao mới vượt giới hạn cho phép. Vui lòng liên hệ quản trị viên.',
       { blocker: 'W3_SHIPPING_CAP_EXCEEDED', maxNewFeeVnd: cap });
   }
