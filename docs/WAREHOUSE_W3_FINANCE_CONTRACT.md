@@ -1513,3 +1513,118 @@ Kiểm chứng writer trên Node 24.15.0 / PostgreSQL 16 cô lập (06/11/2026):
 Full-suite runs hoàn tất trước hai ca inspection/initial-race cuối và source description
 fingerprint; focused 77/124 cùng build/typecheck/lint là verification sau thay đổi cuối.
 Không dùng skipped tests hoặc evidence local làm GitHub CI/shared DEV PASS.
+
+## 24. D evidence preparation và internal readiness — 0012 (06/11/2026)
+
+Base `origin/dev cedfe4c`. Backend-only, local commit để Lead review/CI/DEV release;
+không push, PR, merge, deploy hoặc kết nối DB chung. Mở rộng chuẩn bị từ mục 23,
+không tuyên bố complete finance. **SAFE_TO_ACTIVATE_FINANCE=NO.**
+
+Migration additive `W3DeductionPreparation1793466000012` thêm đúng một bảng private
+`w3_deduction_preparations` cùng hai function invoker. Không sửa 0010/0011 hoặc
+controller/service/DTO hiện có. Không dependency, env, role, app grant hoặc consumer
+contract mới. Ma trận hồ sơ cần ký cho sáu quyết định, người chịu trách nhiệm đề xuất,
+required proofs, acceptance criteria và trạng thái NOT SIGNED nằm tại
+[FINANCE_LEGAL_SIGNOFF_MATRIX.md](FINANCE_LEGAL_SIGNOFF_MATRIX.md).
+
+### Ledger statement D chưa approved
+
+- Một statement đầy đủ/order/revision; `expected_revision` CAS dưới khóa Order, PK
+  `(service_order_id,revision)` và unique `(service_order_id,command_id)`. Không cộng
+  dồn các revision. Retry trực tiếp bị CAS/unique reject; không có runtime replay writer.
+- DB capture snapshot C bất biến từ 0011 khi current; không ghi C mới, không refreeze.
+  DB tự tính tổng nguyên VND an toàn, revision/fingerprint, UTC timestamp và DB recorder.
+  Entry IDs canonical theo thứ tự; unique trong revision, tối đa 100 entry có amount >0.
+- P2 race fix (06/11/2026): trước kiểm C, giữ Order UPDATE → assignments SHARE → actor
+  SHARE → rate config UPDATE → Booking SHARE → Quotations UPDATE → quotation items
+  SHARE → AdditionalCostRequests UPDATE → additional items SHARE (mỗi tập ORDER BY id).
+  Actor phải trước global config, tương thích 0010/0011; không chờ actor khi đang giữ
+  config rồi tạo chu kỳ với terms của order khác. Các source row cùng order được order
+  lock serialize với terms; thứ tự config → Booking → quotation → additional giữ 0011.
+  Parent UPDATE còn chặn child INSERT qua FK; Order UPDATE chặn source parent/assignment
+  INSERT qua FK. Config row lock giữ cả head version: trigger 0011 chỉ append version
+  trong transaction đã khóa đúng rate row; không khóa version table theo chiều ngược.
+  Kiểm C chỉ sau khi đủ khóa, giữ đến COMMIT/ROLLBACK; config/labor đổi sau commit làm
+  history stale bình thường. Không dùng late recheck đơn lẻ. Không sửa 0010/0011.
+- `explicit_zero=true` đi cùng empty entries và statement ref/digest/actor/mandate đầy đủ.
+  Không có row là UNKNOWN/null; không suy D=0 từ thiếu dữ liệu. Dương phải có ít nhất
+  một entry có category, evidenceRef, SHA-256 contentDigest đúng định dạng.
+- `actor_role` lấy từ user active thật nhưng chỉ là attribution do privileged recorder
+  khai báo. Không xác minh actor consent/JWT/chữ ký Finance; `mandate_ref` chưa approved.
+  Taxonomy `W3_D_PREPARATION_V1`: TAX_WITHHOLDING, LABOR_ADJUSTMENT, OTHER_DOCUMENTED chỉ
+  là nhóm đề nghị rà soát, chưa có ý nghĩa tài khoản kế toán hoặc thẩm quyền khấu trừ.
+- References/digests là metadata chưa kiểm bytes/authenticity; không phải uploaded-byte,
+  courier, funding hoặc provider proof. `RECORDED_NOT_VERIFIED`, `PREPARATORY_ONLY` và
+  `financial_execution=BLOCKED` bắt buộc qua CHECK/NOT NULL, không có approval field.
+- Guard chặn UPDATE/DELETE/TRUNCATE. Không seed/backfill. Down dưới exclusive lock chỉ
+  chạy khi rỗng; có history phải forward fix. Không có HTTP/API/RPC công khai, Nest
+  provider hoặc app INSERT caller; approved recorder/mandate/maker-checker là slice sau.
+
+### Diagnostics chỉ đọc, không cấp quyền
+
+`SELECT w3_finance_readiness($1::uuid)` dành cho DB operator được ủy quyền, không expose
+qua Nest/Data API. SQL `STABLE`/invoker dùng một statement snapshot, không ghi hoặc khóa
+order. C: NOT_RECORDED/CURRENT_PREPARATION/STALE_PREPARATION; D:
+NOT_RECORDED/RECORDED_UNAPPROVED/STALE_COMMISSION. Order không có trả SQL NULL.
+`recordedDeductions` là tổng statement mới nhất (kể cả khi stale), không là approved D;
+không trả private refs/actor IDs. C drift chặn INSERT D mới và invalidates diagnostics.
+
+Luôn `approvedDeductions=null`, `laborBudget=null`, `aggregateBudgetVerified=false`,
+`financialExecution=BLOCKED`; các blocker nội bộ gồm Finance/legal signoff, D authority,
+persistent commitments, courier verifier, funding/refund adapters, seller/tax/payee và
+invoice/custody cutover. Không consume projection vào simulation hoặc live admission.
+Không có COMMIT/RELEASE/reservation persistent trong slice này; không giả có funding.
+Không thay EXACT ba public blockers/bốn totals của `/delivery/terms` hoặc zero-fee,
+PICKUP, W1/W2, legacy invoice/wallet/VNPay/cash/voucher/refund/custody gates.
+
+### Release gate và kiểm chứng
+
+DEV whitelist tiến đến 0012; giữ prerequisites, advisory lock và atomic ledger/DDL của
+gate cũ. Marker table/function chặn replay khi pending; schema verify kiểm columns,
+constraints/indexes, đúng function/loại trigger + enabled, RLS/no policies, no sequence,
+invoker/STABLE/UTC và mọi table/column/function ACL PUBLIC + effective Data API roles.
+0012 revoke ALL từ PUBLIC/anon/authenticated/service_role, không tạo sequence/identity;
+sequence ACL 0011 vẫn được kiểm riêng. Fixtures rollback/protectedMigrations theo thứ tự
+0012 → 0011, không downgrade migration đã áp trong DEV gate.
+
+TDD trên PostgreSQL 16 disposable, không `.env`: RED bốn ca missing table/function; RED
+năm ca gate bỏ lọt ACL/guard; GREEN sau implementation. Kiểm actual SQL SET ROLE denial,
+CAS race hai connection cùng order, full-statement revisions/zero, malformed/null/overflow,
+drift, immutable history/down refusal, transactional DDL rollback/empty down và marker
+replay; gate tamper table privileges/column grants/function ACL/RLS/policy/guards.
+Kết quả lệnh cuối và giới hạn xác minh ghi tại `docs/CONTEXT.md`.
+
+Review BA/PM/Tech Lead/Senior/Security/QA/DevOps do một implementer tự thực hiện,
+không phải Finance/legal signoff hoặc independent review. Shared DEV migration/schema,
+Docker Compose health/restart, provider thật, GitHub CI, Node 20.19.5, Web/Mobile/AI và
+Production **NOT VERIFIED**. Lead review/CI/preflight trước DEV migration và restart
+Backend; mọi execution tiền tiếp tục HARD BLOCKED tới khi có hồ sơ và cutover riêng.
+
+Kết quả local cuối trên Node 24.15.0 / PostgreSQL 16 disposable:
+
+| Lệnh | Kết quả |
+| --- | --- |
+| `npm test -- --maxWorkers=4 --silent`, TZ=UTC | PASS — 311 files/4044 tests; 6 files/95 tests skipped |
+| `npm run test:e2e -- --silent`, CI/GITHUB_ACTIONS, DB cô lập | PASS — 8 files/244 tests; 4 files/39 tests skipped, 262 giây |
+| `npx vitest run src/database/w3-dev-release.postgres.spec.ts --reporter=dot`, CI/W3_DEV_ISOLATED_PG=1 | PASS — 37 tests |
+| Full `warehouse-delivery-physical.e2e-spec.ts` | PASS — 39 tests; sau assertion CAS cuối chạy lại `-t 'same-order CAS'`: 1 PASS/38 intentionally unselected |
+| `npx vitest run test/context-doc.spec.ts src/database/w3-dev-release-gate.spec.ts --reporter=dot` | PASS — 9 tests |
+| `npm run lint`, `npm run typecheck`, `npm run build`, `git diff --check` | PASS — lint 4 warning cũ/0 error |
+| `npm audit --omit=dev --audit-level=high` | PASS — không high/critical; 12 moderate hiện hữu, không đổi dependencies |
+
+Full unit lần đầu chỉ lỗi context 41 entries; đã rút về 40 theo mục 0 và full rerun
+4044 PASS. Không nới test. Full E2E tự hoàn tất trước yêu cầu dừng của Lead; không kill
+process ngoài phạm vi. Các kiểm tra provider dùng fixture/double, không proof tiền thật.
+
+Follow-up P2 trên 0012 chưa release (06/11/2026): regression hai session dùng
+`pg_blocking_pids` xác nhận wait edge thật. RED 4/4 trên code cũ: D zero/dương vẫn insert
+sau actor wait + config commit, và config/Booking update không bị chặn tới D commit.
+Sau sửa, stale D bị reject không để row; config/Booking update và child labor INSERT
+phải chờ D commit. Chạy lại focused PostgreSQL/delivery và quality checks trong follow-up;
+full unit/full E2E ở bảng trên là lần chạy commit trước, không phải chứng nhận lại head
+follow-up. GitHub CI/full E2E/release vẫn do Lead; Finance money tiếp tục BLOCKED.
+
+Follow-up verification: full `warehouse-delivery-physical.e2e-spec.ts` **44/44 PASS**,
+`w3-dev-release.postgres.spec.ts` **37/37 PASS**, context/planner **9/9 PASS**;
+`npm run typecheck`, `npm run lint`, `npm run build`, `git diff --check` **PASS**
+(4 lint warning cũ). Không chạy lại broad full suites trong follow-up focused này.

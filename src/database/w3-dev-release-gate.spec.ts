@@ -99,9 +99,6 @@ describe('W3 DEV migration whitelist', () => {
   });
 
   it('rejects missing, reordered or partially applied W3 migrations', () => {
-    expect(W3_MIGRATIONS[W3_MIGRATIONS.length - 1]).toBe(
-      'W3PrequoteCommission1793466000011',
-    );
     expect(() =>
       planW3DevMigrations(
         appliedBeforeW3,
@@ -127,6 +124,15 @@ describe('W3 DEV migration whitelist', () => {
     expect(() =>
       planW3DevMigrations([...appliedBeforeW3, W3_MIGRATIONS[1]], image),
     ).toThrow('W3 migration ledger order is invalid');
+  });
+
+  it('upgrades an applied 0011 prefix with only 0012 and rejects an image missing 0012', () => {
+    const preparation = 'W3DeductionPreparation1793466000012';
+    const beforePreparation = image.filter((name) => name !== preparation);
+    expect(planW3DevMigrations(beforePreparation, image)).toEqual([preparation]);
+    expect(() => planW3DevMigrations(beforePreparation, beforePreparation)).toThrow(
+      'W3 migrations missing from image',
+    );
   });
 
   it('rejects a reversed cash ledger but never downgrades an applied W3 migration', () => {
