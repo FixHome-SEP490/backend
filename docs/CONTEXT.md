@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-07 02:29 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-live-payment-integration-20261107
+> Cập nhật lần cuối: 2026-11-07 03:17 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-live-payment-integration-20261107
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -93,6 +93,8 @@ Ba điều không đổi giữa các repo:
 Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức của nhóm). Mâu thuẫn giữa code và tài liệu thì ghi vào mục 8 và hỏi PO, không tự quyết.
 
 ## 3. Trạng thái hiện tại
+
+W3 Task4 slice local (base `1636450`): thêm `POST /finance/manual-bank/:invoiceId` cho khách sở hữu (JWT/RBAC `invoice:pay_own`) chỉ tạo `Payment` `provider=manual_bank` PENDING, giữ invoice UNPAID và không cộng ví. `POST /admin/payments/manual-bank/:invoiceId/confirm` (Admin, `invoice:read_related`) bắt buộc đúng số tiền và mã tham chiếu ngân hàng duy nhất, gọi lại `markInvoicePaidOnline`/settlement một lần dưới invoice/order lock và strict audit rollback. Chọn mới chặn cash intent/pending VNPay-wallet cùng invoice; retry PENDING và confirm replay idempotent không phụ thuộc voucher/interruption hiện tại; W3 eligibility/legacy giữ nguyên. Không migration; không tự hoàn tiền ngân hàng, hoàn tiền gốc là thao tác Admin thủ công có chứng từ. Kiểm chứng: focused 11/11, toàn `src/modules/finance` 579 PASS/16 skipped, lint 0 errors/5 warning cũ, typecheck/build PASS. PostgreSQL/HTTP/runtime/Web/Mobile/DEV NOT VERIFIED; Task4 mới là local slice, chưa release.
 
 W3 Task3 slice local: migration forward `1793466000015-W3InvoicePaymentEnable` freeze `shipping_shipments` theo canonical terms/actual + TECHNICIAN_RECEIVED; DB kiểm exact provenance, tổng share từng request, C/L và snapshot bất biến. Giữ legacy request status/receivedAt; chỉ USED toàn bộ sau receipt, projection nội bộ phục vụ billing/completion. Writer trước completionRequestedAt; money consumer phải kiểm invoice đã lưu bằng DB predicate, giữ group/voucher/refund/custody chặn. Settlement W3 không gọi legacy custody helper, chỉ đi tiếp khi DB xác nhận không custody/group; Order lock và wallet key cũ giữ posting một lần. Kiểm chứng: PG physical/invoice/core paid cash+online 59/59 PASS; full unit4073 PASS/98 skipped; lint0 errors/5 warning cũ, typecheck/build/context/diff PASS. Đây là Task3 một phần, chưa release: CashFirst receipt API, customer-wallet debit/VNPay signed callback W3, nhiều shipment thực cùng order, refund và Web/Mobile UAT còn NOT VERIFIED. DEV gate vẫn dừng 0013, không deployable. Xem audit/plan; không shared DB/provider/push/merge/deploy.
 
@@ -446,7 +448,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 8. Việc đang dở và rủi ro đã biết
 
-- W3 payment capstone: Task1 audit/golden xong trong phạm vi source/tests; chưa active payment W3. Task2 bridge terms–physical/evidence đã có forward migration 0014 và PostgreSQL 54 PASS, chưa rollout; Task3 snapshot từng shipment và scoped invoice/order/usage/consumer gates; Task4 Admin bank receipt chưa tồn tại; Task5 Web/CI/DEV UAT. Chi tiết nguồn và PR slices: `docs/W3_CAPSTONE_AUDIT.md`. Không bỏ guard toàn cục hoặc dùng quote totals làm actual.
+- W3 payment capstone: Task1 audit/golden xong trong phạm vi source/tests; chưa active payment W3. Task2 bridge terms–physical/evidence đã có forward migration 0014 và PostgreSQL 54 PASS, chưa rollout; Task3 snapshot từng shipment và scoped invoice/order/usage/consumer gates; Task4 manual bank receipt local đã có customer PENDING + Admin exact/unique strict-audit confirm và focused tests, nhưng PostgreSQL/HTTP/UAT/rollout chưa kiểm chứng; Task5 Web/CI/DEV UAT. Chi tiết nguồn và PR slices: `docs/W3_CAPSTONE_AUDIT.md`. Không bỏ guard toàn cục hoặc dùng quote totals làm actual.
 
 - W3 shipping cap 0013 chỉ local: Lead cần CI/preflight/migration riêng trước restart Backend; không dùng Admin cap làm Finance authorization hoặc reset fee. Shared DEV, Compose `/health`, provider, Web/Mobile browser và Node 20.19.5 NOT VERIFIED. Chưa có live spending commitment/refund/courier/funding authority; giữ các blockers mục 24–25 hợp đồng W3.
 
@@ -518,6 +520,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-07 03:17 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Task4 manual bank PENDING và Admin exact unique receipt confirm, idempotent/replay/strict audit; focused 11 và finance 579 PASS, chưa PG/HTTP/rollout.
 - 2026-11-07 02:29 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Task3 slice invoice W3 và DB provenance, USED sau receipt, narrow collection/settlement; endpoint/UAT và rollout chưa kiểm chứng.
 - 2026-11-07 02:12 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Ghi Task2 positive terms sang physical/stock bằng migration 0014, PostgreSQL 54 PASS; giữ tiền và DEV gate đóng, Task3 chưa triển khai.
 - 2026-11-07 01:52 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Ghi audit Task1 W3 payment, golden arithmetic, CHECK PostgreSQL và blocker physical/invoice/completion; chưa mở money cutover.
@@ -557,4 +560,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-02 01:00 (UTC+7) | foxonworld | foxonworld/fixhome-qa-seven-issues-be-20261102 | Sửa upload onsite ADDITIONAL, quyền đọc UNKNOWN trả kho sau STOP và projection trạng thái VisitGroup; giữ nghĩa vụ cũ và ghi giới hạn consumer/runtime.
 - 2026-11-01 22:41 (UTC+7) | ToanAltF4 | fix/address-strict-text-coords | Địa chỉ lưu bắt buộc đủ cặp lat, lng hợp lệ và chữ địa chỉ sạch, từ chối emoji, ký tự vô hình, điều khiển, thẻ HTML với câu tiếng Việt (lỗi 29, PO 01/11/2026)
 - 2026-11-01 21:56 (UTC+7) | foxonworld | foxonworld/fixhome-group-stop-be-20261101 | Thêm contact evidence bền vững, group stop nguyên tử/idempotent, staff correlation và rebook subset; giữ nghĩa vụ cũ và giới hạn PostgreSQL/runtime.
-- 2026-11-01 21:25 (UTC+7) | ToanAltF4 | feat/ai-diagnostic-state | Lưu trạng thái chẩn đoán AI có version, bảng ai_chat_turns chống tin lặp, pastJobs có trạng thái COMPLETED/SCHEDULED
