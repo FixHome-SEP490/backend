@@ -1036,10 +1036,33 @@ async function verifyPrequoteCommissionSchema(db: DataSource): Promise<void> {
   );
   if (functions.length !== names.length || functions.some((f) => f.exposed))
     throw new Error('W3 prequote commission function ACL incomplete');
+  const sequenceName = 'public.w3_commission_config_versions_revision_seq';
+  const [sequence] = await db.query(
+    `SELECT c.relkind='S' AS valid,
+      EXISTS(SELECT 1 FROM aclexplode(coalesce(c.relacl,acldefault('S',c.relowner))) a
+        WHERE a.grantee=0 AND a.privilege_type IN ('USAGE','SELECT','UPDATE')) AS exposed
+      FROM pg_class c WHERE c.oid=to_regclass($1)`,
+    [sequenceName],
+  );
+  if (!sequence?.valid || sequence.exposed)
+    throw new Error('W3 prequote commission sequence ACL incomplete');
   const roles = await db.query(
     "SELECT rolname FROM pg_roles WHERE rolname IN ('anon','authenticated','service_role')",
   );
-  for (const { rolname } of roles)
+  for (const { rolname } of roles) {
+    const [sequenceAccess] = await db.query(
+      `SELECT has_sequence_privilege($1,$2,'USAGE') AS usage,
+        has_sequence_privilege($1,$2,'SELECT') AS read,
+        has_sequence_privilege($1,$2,'UPDATE') AS update`,
+      [rolname, sequenceName],
+    );
+    if (
+      !sequenceAccess ||
+      Object.values(sequenceAccess).some((v) => v !== false)
+    )
+      throw new Error(
+        'Data API role has W3 prequote commission sequence access',
+      );
     for (const fn of functions) {
       const [access] = await db.query(
         "SELECT has_function_privilege($1,$2::oid,'EXECUTE') AS allowed",
@@ -1050,6 +1073,7 @@ async function verifyPrequoteCommissionSchema(db: DataSource): Promise<void> {
           'Data API role can execute W3 prequote commission function',
         );
     }
+  }
 }
 
 async function verifyFeeTermsSchema(db: DataSource): Promise<void> {

@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-06 16:49 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-finance-governance-20261106
+> Cập nhật lần cuối: 2026-11-06 17:00 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-finance-governance-20261106
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -93,6 +93,8 @@ Ba điều không đổi giữa các repo:
 Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức của nhóm). Mâu thuẫn giữa code và tài liệu thì ghi vào mục 8 và hỏi PO, không tự quyết.
 
 ## 3. Trạng thái hiện tại
+
+W3 review-fix P2 sequence ACL (06/11/2026, base `ed5d74a`): release gate kiểm PUBLIC và effective USAGE/SELECT/UPDATE của anon/authenticated/service_role trên `w3_commission_config_versions_revision_seq`; thiếu sequence hoặc có quyền đều chặn. PostgreSQL cô lập RED 12 ca gate bỏ lọt quyền, GREEN 28/28 sau sửa và thu hồi từng grant; typecheck/lint/build PASS (4 warning cũ). Không sửa migration, public 3 blockers/4 totals hoặc money gate. Full unit/E2E không chạy lại theo scope Lead; shared DEV/CI/runtime vẫn NOT VERIFIED.
 
 W3 owner 1–5 preparatory (06/11/2026): migration tiến `W3PrequoteCommission1793466000011` freeze C trước conditional quote dương từ approved labor fingerprint + config version bất biến; drift L/config chặn command/replay và invalidates read, không refreeze/backfill 0010. D explicit-zero/actor/evidence, whole-order commitment/release CAS/replay, actual kiểm cả quote/source ceiling và original-rail cancel/refund chỉ có pure SIMULATION_ONLY, không mutation live. Không mở role FINANCE, seller/tax/payee hoặc tiền/custody/invoice W3. Gate và rollback fixture đã bổ sung 0011; chi tiết nguồn/unblockers tại mục 23 `docs/WAREHOUSE_W3_FINANCE_CONTRACT.md`. Shared DEV/Web/Mobile/provider/Docker runtime NOT VERIFIED; Lead giữ review/release, restart Backend sau migration nếu được duyệt.
 
@@ -495,6 +497,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-06 17:00 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-governance-20261106 | Sửa P2 release gate bỏ lọt sequence ACL; PG RED 12/GREEN 28, typecheck/lint/build PASS; không mở W3 tiền.
+
 - 2026-11-06 16:49 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-governance-20261106 | C prequote/config version 0011 và simulation owner 1–5; full unit 4031, full E2E 237, final focused 124/PG gate 16/W3 E2E 77 PASS; mọi money execution BLOCKED.
 
 - 2026-11-06 13:28 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-positive-20261106 | Chốt conditional terms/0010 và review ACL; focused 287, PostgreSQL gate 14, E2E 70 PASS, tiền BLOCKED; không push/deploy.
@@ -535,4 +539,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-01 18:33 (UTC+7) | ToanAltF4 | fix/candidates-empty-reason-envelope | Lý do danh sách thợ rỗng chuyển vào meta.emptyReason để tới được client, thợ không có vị trí không còn che OUTSIDE_COVERAGE, danh sách lượt nhiều thiết bị trả arrivedAt từng máy
 - 2026-11-01 18:10 (UTC+7) | ToanAltF4 | fix/audit-actor-uuid-filter | Lọc theo id người dùng (actorUserId nhật ký, userId strike, technicianId yêu cầu linh kiện và bảo hành, assignedManagerId hỗ trợ, userId thông báo) nhận mọi UUID dạng chuẩn 8-4-4-4-12, kể cả id seed kiểu a0000000-0000-0000-0000-000000000001 mà @IsUUID() từ chối (lỗi 31). Chuỗi tự do vẫn trả 400.
 - 2026-10-31 17:58 (UTC+7) | Hgnv11 | dev | Danh sách lượt nhiều thiết bị của kỹ thuật viên (assigned-page) không còn ẩn cả lượt khi một máy bị khách từ chối báo giá (quote_declined, phân công đã tắt) trong lúc máy còn lại vẫn đang sửa.
-- 2026-10-31 16:30 (UTC+7) | Hgnv11 | dev | Dữ liệu đơn trả thêm bookingMedia (ảnh/video khách gửi lúc đặt, dạng riêng tư không kèm url) để kỹ thuật viên đang giữ đơn xem lại; nội dung vẫn đọc qua /bookings/:bookingId/media đã cho phép kỹ thuật viên giữ đơn.

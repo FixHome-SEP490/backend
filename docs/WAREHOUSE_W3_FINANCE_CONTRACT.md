@@ -1483,7 +1483,10 @@ invoice/group/custody cutover và review Finance/legal độc lập. Không có 
 ### Migration/release và verification
 
 DEV gate whitelist tới 0011, kiểm prerequisite labor/config columns, RLS, constraints,
-trigger/deferred FK, function/table ACL và replay markers. `test/app.e2e-spec.ts`
+trigger/deferred FK, function/table/sequence ACL và replay markers. Sequence commission
+kiểm PUBLIC và quyền hiệu lực USAGE/SELECT/UPDATE của anon/authenticated/service_role;
+PostgreSQL tamper matrix 12 ca grant → gate fail → revoke → gate pass đã được kiểm.
+`test/app.e2e-spec.ts`
 protectedMigrations có 0011 trước 0010. Empty down được kiểm trên PostgreSQL; down từ chối
 khi có C/config version history, không xóa lịch sử để rollback. Sau config write mới cũng
 không downgrade 0011: dùng forward fix. Không tự apply shared DEV hoặc Docker Compose.

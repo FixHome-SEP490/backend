@@ -688,6 +688,43 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
       expect(await runW3DevGate(db)).toEqual([]);
     });
 
+    it.each(
+      ['PUBLIC', 'anon', 'authenticated', 'service_role'].flatMap((grantee) =>
+        ['USAGE', 'SELECT', 'UPDATE'].map((privilege) => ({
+          grantee,
+          privilege,
+        })),
+      ),
+    )(
+      'rejects $grantee $privilege on the commission sequence and passes after revocation',
+      async ({ grantee, privilege }) => {
+        const sequence = 'public.w3_commission_config_versions_revision_seq';
+        expect(await runW3DevGate(db)).toEqual([]);
+        await db.query(
+          `GRANT ${privilege} ON SEQUENCE ${sequence} TO ${grantee}`,
+        );
+        try {
+          if (grantee !== 'PUBLIC') {
+            const [effective] = await db.query(
+              'SELECT has_sequence_privilege($1,$2,$3) AS allowed',
+              [grantee, sequence, privilege],
+            );
+            expect(effective.allowed).toBe(true);
+          }
+          await expect(runW3DevGate(db)).rejects.toThrow(
+            grantee === 'PUBLIC'
+              ? 'W3 prequote commission sequence ACL incomplete'
+              : 'Data API role has W3 prequote commission sequence access',
+          );
+        } finally {
+          await db.query(
+            `REVOKE ${privilege} ON SEQUENCE ${sequence} FROM ${grantee}`,
+          );
+        }
+        expect(await runW3DevGate(db)).toEqual([]);
+      },
+    );
+
     it('refuses 0010 DDL replay, disabled protections and API grants', async () => {
       await db.query('DELETE FROM public.migrations WHERE name=ANY($1)', [
         W3_MIGRATIONS.slice(6),
