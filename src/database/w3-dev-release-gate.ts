@@ -12,6 +12,7 @@ export const W3_MIGRATIONS = [
   'W3DeliveryPolicyLifecycle1793466000009',
   'DeliveryConditionalFeeTerms1793466000010',
   'W3PrequoteCommission1793466000011',
+  'W3DeductionPreparation1793466000012',
 ] as const;
 
 const FINANCE_PREREQUISITES = [
@@ -281,6 +282,9 @@ function imageMigrationNames(db: DataSource): string[] {
 }
 
 const W3_MARKERS: Record<string, string> = {
+  [W3_MIGRATIONS[8]]: `SELECT (to_regclass('public.w3_deduction_preparations') IS NOT NULL
+    OR to_regprocedure('public.w3_deduction_preparation_guard()') IS NOT NULL
+    OR to_regprocedure('public.w3_finance_readiness(uuid)') IS NOT NULL) AS present`,
   [W3_MIGRATIONS[7]]: `SELECT (to_regclass('public.w3_order_commission_snapshots') IS NOT NULL
     OR to_regclass('public.w3_commission_config_versions') IS NOT NULL
     OR to_regprocedure('public.w3_prequote_commission_guard()') IS NOT NULL
@@ -987,6 +991,7 @@ async function verifyAppliedW3Schema(
   if (applied.has(W3_MIGRATIONS[5])) await verifyPolicyLifecycleSchema(db);
   if (applied.has(W3_MIGRATIONS[6])) await verifyFeeTermsSchema(db);
   if (applied.has(W3_MIGRATIONS[7])) await verifyPrequoteCommissionSchema(db);
+  if (applied.has(W3_MIGRATIONS[8])) await verifyDeductionPreparationSchema(db);
 }
 
 async function verifyW3Schema(db: DataSource): Promise<void> {
@@ -998,6 +1003,106 @@ async function verifyW3Schema(db: DataSource): Promise<void> {
   await verifyPolicyLifecycleSchema(db);
   await verifyFeeTermsSchema(db);
   await verifyPrequoteCommissionSchema(db);
+  await verifyDeductionPreparationSchema(db);
+}
+
+async function verifyDeductionPreparationSchema(db: DataSource): Promise<void> {
+  const [proof] = await db.query(`SELECT
+    (SELECT relrowsecurity FROM pg_class WHERE oid=to_regclass('public.w3_deduction_preparations')) AS rls,
+    NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=to_regclass('public.w3_deduction_preparations')) AS no_policies,
+    (SELECT count(*)=10 FROM pg_constraint WHERE conrelid=to_regclass('public.w3_deduction_preparations') AND convalidated) AS constraints,
+    (SELECT count(*)=6 FROM pg_constraint WHERE conrelid=to_regclass('public.w3_deduction_preparations') AND convalidated
+      AND conname IN ('ck_w3_d_revision','ck_w3_d_inert','ck_w3_d_taxonomy','ck_w3_d_total','ck_w3_d_statement','ck_w3_d_fingerprint')) AS checks,
+    (SELECT count(*)=2 FROM pg_index WHERE indrelid=to_regclass('public.w3_deduction_preparations') AND indisunique AND indisvalid) AS unique_indexes,
+    (SELECT count(*)=3 FROM pg_trigger WHERE tgrelid=to_regclass('public.w3_deduction_preparations') AND tgenabled='O'
+      AND ((tgname='w3_d_preparation_guard' AND tgtype=7 AND tgfoid=to_regprocedure('public.w3_deduction_preparation_guard()'))
+      OR (tgname='w3_d_preparation_immutable' AND tgtype=27 AND tgfoid=to_regprocedure('public.protect_w3_physical_history()'))
+      OR (tgname='w3_d_preparation_no_truncate' AND tgtype=34 AND tgfoid=to_regprocedure('public.protect_w3_physical_history()')))) AS guards,
+    NOT EXISTS(SELECT 1 FROM pg_depend d JOIN pg_class c ON c.oid=d.objid WHERE
+      d.refobjid=to_regclass('public.w3_deduction_preparations') AND c.relkind='S') AS no_sequences,
+    has_table_privilege(current_user,'public.w3_deduction_preparations','SELECT') AS backend_read`);
+  if (!proof || Object.values(proof).some((v) => v !== true))
+    throw new Error('W3 deduction preparation schema proof incomplete');
+
+  const columns = [
+    'service_order_id',
+    'revision',
+    'expected_revision',
+    'command_id',
+    'actor_user_id',
+    'actor_role',
+    'recorded_by_db_role',
+    'mandate_ref',
+    'statement_ref',
+    'statement_digest',
+    'explicit_zero',
+    'entries',
+    'taxonomy_version',
+    'recorded_total',
+    'commission_snapshot',
+    'fingerprint',
+    'mode',
+    'verification',
+    'financial_execution',
+    'created_at',
+  ];
+  const [shape] = await db.query(
+    `SELECT count(*)=$2::int AND bool_and(attnotnull) AS valid
+    FROM pg_attribute WHERE attrelid=to_regclass('public.w3_deduction_preparations')
+      AND attnum>0 AND NOT attisdropped AND attname=ANY($1)`,
+    [columns, columns.length],
+  );
+  if (shape?.valid !== true)
+    throw new Error('W3 deduction preparation columns incomplete');
+
+  const functions =
+    await db.query(`SELECT p.oid,p.proname,p.prosecdef,p.provolatile,
+    p.proconfig @> ARRAY['TimeZone=UTC'] AS utc,
+    EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0) AS exposed
+    FROM pg_proc p WHERE p.oid IN (to_regprocedure('public.w3_deduction_preparation_guard()'),to_regprocedure('public.w3_finance_readiness(uuid)'))`);
+  if (
+    functions.length !== 2 ||
+    functions.some(
+      (f) =>
+        f.prosecdef ||
+        f.exposed ||
+        !f.utc ||
+        (f.proname === 'w3_finance_readiness' && f.provolatile !== 's'),
+    )
+  )
+    throw new Error(
+      'W3 deduction preparation function ACL or read-only contract invalid',
+    );
+  const [publicAcl] = await db.query(`SELECT
+    EXISTS(SELECT 1 FROM pg_class c,LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a
+      WHERE c.oid=to_regclass('public.w3_deduction_preparations') AND a.grantee=0) OR
+    EXISTS(SELECT 1 FROM pg_attribute c,LATERAL aclexplode(c.attacl) a
+      WHERE c.attrelid=to_regclass('public.w3_deduction_preparations') AND a.grantee=0) AS exposed`);
+  if (publicAcl?.exposed !== false)
+    throw new Error('PUBLIC has W3 deduction preparation access');
+  const roles = await db.query(
+    "SELECT rolname FROM pg_roles WHERE rolname IN ('anon','authenticated','service_role')",
+  );
+  for (const { rolname } of roles) {
+    const [access] = await db.query(
+      `SELECT
+      has_table_privilege($1,'public.w3_deduction_preparations','SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR
+      has_any_column_privilege($1,'public.w3_deduction_preparations','SELECT,INSERT,UPDATE,REFERENCES') AS allowed`,
+      [rolname],
+    );
+    if (access?.allowed !== false)
+      throw new Error('Data API role has W3 deduction preparation access');
+    for (const fn of functions) {
+      const [execute] = await db.query(
+        "SELECT has_function_privilege($1,$2::oid,'EXECUTE') AS allowed",
+        [rolname, fn.oid],
+      );
+      if (execute?.allowed !== false)
+        throw new Error(
+          'Data API role can execute W3 deduction preparation function',
+        );
+    }
+  }
 }
 
 async function verifyPrequoteCommissionSchema(db: DataSource): Promise<void> {

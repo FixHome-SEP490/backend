@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-06 17:00 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-finance-governance-20261106
+> Cập nhật lần cuối: 2026-11-06 18:14 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-finance-readiness-20261106
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -93,6 +93,10 @@ Ba điều không đổi giữa các repo:
 Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức của nhóm). Mâu thuẫn giữa code và tài liệu thì ghi vào mục 8 và hỏi PO, không tự quyết.
 
 ## 3. Trạng thái hiện tại
+
+W3 P2 D drift race (06/11/2026): 0012 chưa release sửa thứ tự Order → assignment/actor → config → labor trước kiểm C, giữ row locks đến commit; config lock serialize version capture 0011, parent UPDATE chặn thêm labor items qua FK. Không sửa 0010/0011, quyền hoặc runtime writer; money BLOCKED. Regression hai session RED 4 ca trên source cũ; GREEN full delivery/physical 44, PG gate 37, context/planner 9; typecheck/lint/build/diff PASS (4 warning cũ). Chi tiết tại mục 24 hợp đồng W3. Full unit/E2E 4044/244 bên dưới thuộc commit trước; CI/head follow-up/shared DEV/runtime NOT VERIFIED, Lead giữ release.
+
+W3 D readiness preparation (06/11/2026, base `cedfe4c`): migration additive `W3DeductionPreparation1793466000012` thêm ledger statement D private append-only, full revisions/explicit zero, order-lock CAS và C binding; actor/mandate/taxonomy chỉ được ghi nhận, chưa Finance-approved. Internal SQL `w3_finance_readiness(uuid)` chỉ đọc, không API/writer app; D thiếu là null, có record vẫn unapproved, C drift là stale. `approvedDeductions=null`, `laborBudget=null`, `aggregateBudgetVerified=false`, mọi money execution BLOCKED. DEV gate/rollback fixtures tiến tới 0012, kiểm mọi table/column/function ACL và RLS/guards/replay; không sequence/grant mới. Full unit 4044 PASS/95 skipped, full E2E 244 PASS/39 skipped; PG gate 37/37, physical 39/39 và final CAS focused PASS. Lint/typecheck/build PASS (4 warning cũ), security high gate PASS (12 moderate cũ). Node 24.15.0/PG16 disposable, không `.env`. Ma trận sáu signoff/giới hạn tại `docs/FINANCE_LEGAL_SIGNOFF_MATRIX.md`, mục 24 hợp đồng W3. GitHub CI/shared DEV/provider/Web/Mobile/Docker health/Node 20.19.5 NOT VERIFIED; chỉ local commit, Lead giữ release.
 
 W3 review-fix P2 sequence ACL (06/11/2026, base `ed5d74a`): release gate kiểm PUBLIC và effective USAGE/SELECT/UPDATE của anon/authenticated/service_role trên `w3_commission_config_versions_revision_seq`; thiếu sequence hoặc có quyền đều chặn. PostgreSQL cô lập RED 12 ca gate bỏ lọt quyền, GREEN 28/28 sau sửa và thu hồi từng grant; typecheck/lint/build PASS (4 warning cũ). Không sửa migration, public 3 blockers/4 totals hoặc money gate. Full unit/E2E không chạy lại theo scope Lead; shared DEV/CI/runtime vẫn NOT VERIFIED.
 
@@ -249,7 +253,7 @@ Phase A được giữ và bổ sung validation phân biệt command, audit quy�
 Kiểu modular monolith: mỗi module `controller → service → TypeORM repository/entity`, DTO dùng `class-validator`, `ValidationPipe` toàn cục bật `whitelist` và `forbidNonWhitelisted`.
 
 - `src/modules/`: 29 module. Quan trọng nhất: `auth`, `users`, `bookings` (booking, shortlist, lời mời, điều kiện nhận việc), `service-orders` (state machine, check-in, bằng chứng, hoá đơn, tiền mặt, huỷ, vi phạm, bảo hành), `quotations`, `part-requests`, `finance` (VNPay, Payment, PlatformDue), `wallet` (ví, nạp, rút, quyết toán), `technician-assignment`, `messaging` (chat, Socket.IO, gọi thoại), `ai-diagnosis` (proxy tới `ai-service`), `support-cases`, `notifications`, `system-config`, `rbac`, `audit-log`, `technician-verifications` (KYC), `media` (Cloudinary).
-- `src/database/migrations/`: migration TypeORM; mới nhất `1793466000011-W3PrequoteCommission.ts` thêm C prequote/config history private, không mở tiền W3; đã rehearsal PostgreSQL cô lập, chưa apply shared DEV. Trạng thái các migration trước giữ theo mục 8. `src/database/seeds/`: dữ liệu demo.
+- `src/database/migrations/`: mới nhất `1793466000012-W3DeductionPreparation.ts` thêm D preparation/private diagnostics, sau C prequote/config history 0011; không mở tiền W3. Đã kiểm PostgreSQL cô lập, chưa apply shared DEV. Trạng thái migration trước giữ theo mục 8. `src/database/seeds/`: dữ liệu demo.
 - `src/shared/`: enum, hằng số, DTO dùng chung (`PaginationDto`, `PageSizeQueryDto`), validator văn bản và tên người.
 - `src/common/`: guard (JWT, Roles, Permission), filter lỗi, interceptor bọc response.
 - `test/`: e2e chạy migration trên Postgres sạch.
@@ -357,7 +361,7 @@ W3 physical: GET `/part-requests/:id/delivery-physical/preview` chỉ CUSTOMER s
 - Node theo `.nvmrc` (20.19.5). `npm ci`, chép `.env.example` thành `.env` và điền giá trị (hỏi trưởng nhóm, không lấy từ repo).
 - Chạy: `npm run start:dev`. Docker: `docker compose up -d --build` (chỉ chạy backend, database là Supabase dùng chung), xem `docs/DOCKER.md`.
 - Migration: `npm run migration:run`. Seed demo: `npm run seed:demo` (tạo admin, quản lý, kỹ thuật viên `tech1` đến `tech12`, khách `customer1` đến `customer7`, danh mục, 791 linh kiện).
-- Gate phát hành DEV W3: `NODE_ENV=production W3_DEV_RELEASE=1 node dist/database/w3-dev-release.js` chỉ apply đúng tám migration W3 `0004`–`0011` sau khi prerequisite sẵn và cặp cash/reputation còn pending; CI có thêm step PostgreSQL cô lập `W3_DEV_ISOLATED_PG=1` (0008 staged bằng `import.meta.glob`, fail nếu chưa cherry-pick), deploy chạy gate W3 trước gate cash rồi mới restart Backend. Chi tiết mục 19 và 22 `docs/WAREHOUSE_W3_FINANCE_CONTRACT.md`.
+- Gate phát hành DEV W3: `NODE_ENV=production W3_DEV_RELEASE=1 node dist/database/w3-dev-release.js` chỉ apply đúng chín migration W3 `0004`–`0012` sau khi prerequisite sẵn và chỉ để lại pending thuộc cặp cash/reputation cho gate cũ; CI có step PostgreSQL cô lập `W3_DEV_ISOLATED_PG=1` (0008 staged bằng `import.meta.glob`, fail nếu chưa cherry-pick), deploy chạy gate W3 trước gate cash rồi mới restart Backend. Chi tiết mục 19, 22–24 `docs/WAREHOUSE_W3_FINANCE_CONTRACT.md`; không chạy trên shared DEV trong task preparation.
 - Gate trước mỗi commit: `npm run lint`, `npm run typecheck`, `TZ=UTC npm test`, `npm run build`; thêm `npm run test:e2e` khi đụng database. CI chạy thêm `npm audit --omit=dev --audit-level=high` và e2e trên Postgres sạch.
 - Lưu ý: `npm run build` xoá `dist`, làm dev server đang chạy bằng `start:dev` dừng; kiểm build song song thì dùng `npx tsc -p tsconfig.build.json --outDir <thư mục tạm>`.
 - Quy trình nhánh: tách nhánh từ `dev`, mở PR vào `dev`, CI xanh mới merge. Không ai merge vào `main` ngoài người giữ repo.
@@ -430,8 +434,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 - W3 B3b chưa release: GitHub CI phải xác minh migration 0009, preview/audit append-only, JWT/RBAC/CAS/rollback và RLS/grants; chưa ghi shared DEV. Web phải tích hợp `/versions/*`, parse revision riêng contentVersion và gửi server preview receipt + acknowledged=true; chưa sửa consumer trong writer này. Finance/positive fee/seller/tax/refund/custody/disbursement vẫn BLOCKED. Sau Lead apply schema/release phải restart Backend trước runtime QA.
 
-- W3 money execution vẫn BLOCKED: 0010 chỉ lưu conditional positive-fee terms và manual actual, không tạo payable hoặc claim đã thanh toán. L/C prequote có source preparatory 0011; D vẫn chưa có actor/ledger chuẩn và commitment/release chưa persistent, nên chưa đủ thẩm quyền kiểm spending tổng t <= L-C-D live. Thiếu Finance/legal seller/tax/payee, courier funding/verification và payment/refund execution authority; không tự diễn giải config ACTIVE hoặc consent làm quyền chi. Positive stock/invoice/completion/custody giữ chặn. PostgreSQL 16/HTTP/JWT cô lập đã kiểm; shared DEV/schema/restart, provider thật, consumer Web/Mobile và Node 20.19.5 NOT VERIFIED. Lead giữ release; không sửa Mobile/AI/Production hoặc ghi DB chung. Sau Lead áp schema/release phải restart Backend trước QA.
-- Cổng release DEV W3 0004–0011 vẫn cần GitHub CI và preflight cơ sở dữ liệu DEV thật trước khi restart; thất bại phải giữ container Backend cũ, không tự bỏ quyền/RLS hoặc mở global Finance gate.
+- W3 money execution vẫn BLOCKED: 0010 chỉ lưu conditional positive-fee terms và manual actual; 0011 là L/C preparatory, 0012 là D evidence metadata chưa verified/approved, chưa có approved attester/taxonomy/maker-checker. Commitment/release chưa persistent, chưa đủ thẩm quyền kiểm spending tổng t <= L-C-D live. Thiếu Finance/legal signoff sáu quyết định, seller/tax/payee, courier funding/verification và payment/refund execution authority; không coi Admin/config ACTIVE/consent/recorded D là quyền chi. Positive stock/invoice/completion/custody giữ chặn. Shared DEV/schema/restart/provider/Web/Mobile/Node 20.19.5 NOT VERIFIED. Lead giữ release; sau migration/release được duyệt phải restart Backend trước QA.
+- Cổng release DEV W3 0004–0012 vẫn cần GitHub CI và preflight cơ sở dữ liệu DEV thật trước khi restart; thất bại phải giữ container Backend cũ, không tự bỏ quyền/RLS hoặc mở global Finance gate.
 
 - B3a vẫn NOT_DEPLOYABLE: CI PostgreSQL 16 trong schema test đã PASS cho migration 0004/0005/0006, RLS/append-only/CAS/strict-audit; B2b TS4053 type-only fix đã được xác nhận typecheck/build PASS. Nhưng migration 0006 chưa apply shared DEV, DB role grants/shared runtime/JWT Admin end-to-end chưa chứng minh; không tự GRANT. Giữ tài chính/shipping approval, legal/accounting/warehouse/courier gate đóng; không shared DB/ENV/seed/server/deploy. Sau khi được duyệt release phải restart Backend trước runtime QA.
 
@@ -497,6 +501,10 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-06 18:14 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-readiness-20261106 | Sửa P2 race D bằng transaction locks theo 0011; PG delivery 44/gate 37/context 9 và quality checks PASS; Finance BLOCKED, Lead giữ release.
+
+- 2026-11-06 18:01 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-readiness-20261106 | Thêm D preparation/diagnostics 0012 và ma trận sáu signoff; unit 4044/E2E 244/PG gate 37 PASS, không writer API hoặc execution tiền.
+
 - 2026-11-06 17:00 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-governance-20261106 | Sửa P2 release gate bỏ lọt sequence ACL; PG RED 12/GREEN 28, typecheck/lint/build PASS; không mở W3 tiền.
 
 - 2026-11-06 16:49 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-governance-20261106 | C prequote/config version 0011 và simulation owner 1–5; full unit 4031, full E2E 237, final focused 124/PG gate 16/W3 E2E 77 PASS; mọi money execution BLOCKED.
@@ -537,5 +545,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-01 19:43 (UTC+7) | ToanAltF4 | fix/visit-candidates-empty-reason | GET /visit-groups/:id/technician-candidates?diagnostics=1 trả meta.emptyReason cùng logic với đặt lịch một máy (OUTSIDE_COVERAGE, TIME_UNAVAILABLE, BOOKING_LOCATION_MISSING, UNAVAILABLE), bỏ diagnostics vẫn chỉ trả data cho mobile
 - 2026-11-01 19:13 (UTC+7) | ToanAltF4 | fix/warranty-expired-status | GET /service-orders/:id/warranties trả expired cho bảo hành active đã qua expires_at, tính khi đọc, không ghi DB; yêu cầu bảo hành sau hạn vẫn lưu submitted với submitted_after_expiry (lỗi tìm thấy 01/11 ở TC-WAR-003).
 - 2026-11-01 18:33 (UTC+7) | ToanAltF4 | fix/candidates-empty-reason-envelope | Lý do danh sách thợ rỗng chuyển vào meta.emptyReason để tới được client, thợ không có vị trí không còn che OUTSIDE_COVERAGE, danh sách lượt nhiều thiết bị trả arrivedAt từng máy
-- 2026-11-01 18:10 (UTC+7) | ToanAltF4 | fix/audit-actor-uuid-filter | Lọc theo id người dùng (actorUserId nhật ký, userId strike, technicianId yêu cầu linh kiện và bảo hành, assignedManagerId hỗ trợ, userId thông báo) nhận mọi UUID dạng chuẩn 8-4-4-4-12, kể cả id seed kiểu a0000000-0000-0000-0000-000000000001 mà @IsUUID() từ chối (lỗi 31). Chuỗi tự do vẫn trả 400.
-- 2026-10-31 17:58 (UTC+7) | Hgnv11 | dev | Danh sách lượt nhiều thiết bị của kỹ thuật viên (assigned-page) không còn ẩn cả lượt khi một máy bị khách từ chối báo giá (quote_declined, phân công đã tắt) trong lúc máy còn lại vẫn đang sửa.
