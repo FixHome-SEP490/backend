@@ -9,6 +9,7 @@ export const W3_MIGRATIONS = [
   'W3DeliveryOperatingPolicy1793466000006',
   'WarehouseDeliveryPhysical1793466000007',
   'DeliveryZeroFeeOperations1793466000008',
+  'W3DeliveryPolicyLifecycle1793466000009',
 ] as const;
 
 const FINANCE_PREREQUISITES = [
@@ -55,6 +56,7 @@ const REQUIRED_APP_PRIVILEGES: TablePrivilege[] = [
   { table: 'delivery_consent_commands', privileges: ['SELECT', 'INSERT'] },
   { table: 'delivery_evidence_records', privileges: ['SELECT', 'INSERT'] },
   { table: 'w3_delivery_policy_versions', privileges: ['SELECT', 'INSERT'] },
+  { table: 'w3_delivery_policy_previews', privileges: ['SELECT', 'INSERT'] },
   { table: 'warehouse_delivery_gate', privileges: ['SELECT'] },
   { table: 'warehouse_delivery_cohorts', privileges: ['SELECT', 'INSERT'] },
   { table: 'warehouse_delivery_events', privileges: ['SELECT', 'INSERT'] },
@@ -263,6 +265,14 @@ function imageMigrationNames(db: DataSource): string[] {
 }
 
 const W3_MARKERS: Record<string, string> = {
+  [W3_MIGRATIONS[5]]: `SELECT (
+    to_regclass('public.w3_delivery_policy_previews') IS NOT NULL
+    OR to_regclass('public.uq_w3_delivery_policy_draft_content') IS NOT NULL
+    OR to_regprocedure('public.w3_delivery_policy_insert_guard_draft_v1()') IS NOT NULL
+    OR EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
+      AND table_name='w3_delivery_policy_versions' AND column_name='activation_preview_id')
+    OR EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('public.audit_logs')
+      AND tgname='w3_policy_audit_immutable')) AS present`,
   [W3_MIGRATIONS[0]]: `SELECT EXISTS (SELECT 1 FROM information_schema.columns
     WHERE table_schema='public' AND table_name='invoices'
       AND column_name='shipping_policy_version') AS present`,
@@ -453,16 +463,18 @@ async function verifyConsentSchema(db: DataSource): Promise<void> {
   }
 }
 
-async function verifyPolicySchema(db: DataSource): Promise<void> {
+async function verifyPolicySchema(
+  db: DataSource,
+  lifecycle = false,
+): Promise<void> {
   const [proof] = await db.query(`SELECT
     to_regclass('public.w3_delivery_policy_versions') IS NOT NULL AS policy_table,
     (SELECT relrowsecurity FROM pg_class WHERE oid=to_regclass('public.w3_delivery_policy_versions')) AS policy_rls,
     EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('public.w3_delivery_policy_versions')
       AND conname='uq_w3_delivery_policy_revision') AS revision_unique,
+    ${lifecycle ? "to_regclass('public.uq_w3_delivery_policy_draft_content') IS NOT NULL" : "EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('public.w3_delivery_policy_versions') AND conname='uq_w3_delivery_policy_content')"} AS content_unique,
     EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('public.w3_delivery_policy_versions')
-      AND conname='uq_w3_delivery_policy_content') AS content_unique,
-    EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('public.w3_delivery_policy_versions')
-      AND conname='ck_w3_delivery_policy_inert') AS inert_check,
+      AND conname='${lifecycle ? 'ck_w3_delivery_policy_operating' : 'ck_w3_delivery_policy_inert'}') AS inert_check,
     EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('public.w3_delivery_policy_versions')
       AND conname='ck_w3_delivery_policy_revision') AS revision_check,
     EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('public.w3_delivery_policy_versions')
@@ -505,6 +517,81 @@ async function verifyPolicySchema(db: DataSource): Promise<void> {
       'W3 delivery policy functions incomplete; do not restart Backend',
     );
   }
+}
+
+async function verifyPolicyLifecycleSchema(db: DataSource): Promise<void> {
+  const [proof] = await db.query(`SELECT
+    (SELECT relrowsecurity FROM pg_class WHERE oid=to_regclass('public.w3_delivery_policy_previews')) AS preview_rls,
+    NOT EXISTS (SELECT 1 FROM pg_policy WHERE polrelid IN (to_regclass('public.w3_delivery_policy_previews'),to_regclass('public.w3_delivery_policy_versions'))) AS no_api_policy,
+    EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('public.w3_delivery_policy_versions') AND conname='fk_w3_policy_activation_preview') AS preview_fk,
+    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='w3_delivery_policy_versions' AND column_name='activation_preview_id') AS preview_column`);
+  if (!proof || Object.values(proof).some((value) => value !== true))
+    throw new Error('W3 operating lifecycle schema proof incomplete');
+  for (const index of [
+    'uq_w3_delivery_policy_draft_content',
+    'uq_w3_delivery_policy_activation_preview',
+    'uq_w3_policy_audit_resource',
+  ]) {
+    const [row] = await db.query(
+      `SELECT i.indisunique AND i.indisvalid AS valid FROM pg_index i WHERE i.indexrelid=to_regclass($1)`,
+      [`public.${index}`],
+    );
+    if (row?.valid !== true)
+      throw new Error(`W3 operating lifecycle unique index missing: ${index}`);
+  }
+  for (const [table, trigger] of [
+    ['w3_delivery_policy_previews', 'w3_delivery_policy_preview_guard'],
+    ['w3_delivery_policy_previews', 'w3_policy_previews_immutable'],
+    ['w3_delivery_policy_previews', 'w3_policy_previews_no_truncate'],
+    ['w3_delivery_policy_previews', 'w3_delivery_policy_preview_complete'],
+    ['audit_logs', 'w3_policy_audit_immutable'],
+    ['audit_logs', 'w3_policy_audit_no_truncate'],
+    ['audit_logs', 'w3_policy_audit_link_complete'],
+  ]) {
+    const [row] = await db.query(
+      `SELECT tgenabled AS enabled FROM pg_trigger WHERE tgrelid=to_regclass($1) AND tgname=$2`,
+      [`public.${table}`, trigger],
+    );
+    if (row?.enabled !== 'O')
+      throw new Error(`W3 operating lifecycle trigger missing: ${trigger}`);
+  }
+  const functions = [
+    'w3_delivery_policy_insert_guard',
+    'w3_delivery_policy_audit_complete',
+    'w3_delivery_policy_insert_guard_draft_v1',
+    'w3_delivery_policy_audit_complete_draft_v1',
+    'w3_delivery_policy_preview_guard',
+    'w3_delivery_policy_preview_complete',
+    'w3_policy_audit_immutable',
+    'w3_policy_audit_link_complete',
+  ];
+  const rows = await db.query(
+    `SELECT p.oid,p.proname,EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+    WHERE a.grantee=0 AND a.privilege_type='EXECUTE') AS public_execute FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname='public' AND p.proname=ANY($1)`,
+    [functions],
+  );
+  if (
+    rows.length !== functions.length ||
+    rows.some((row) => row.public_execute)
+  )
+    throw new Error(
+      'W3 operating lifecycle functions missing or executable by PUBLIC',
+    );
+  const roles = await db.query(
+    "SELECT rolname FROM pg_roles WHERE rolname IN ('anon','authenticated','service_role')",
+  );
+  for (const role of roles)
+    for (const fn of rows) {
+      const [access] = await db.query(
+        "SELECT has_function_privilege($1,$2::oid,'EXECUTE') AS allowed",
+        [role.rolname, fn.oid],
+      );
+      if (access?.allowed)
+        throw new Error(
+          'Data API role can execute W3 operating lifecycle function',
+        );
+    }
 }
 
 /** 0008 renames the closed 0007 guards but recreates the same trigger/function
@@ -860,17 +947,20 @@ async function verifyAppliedW3Schema(
 ): Promise<void> {
   if (applied.has(W3_MIGRATIONS[0])) await verifyInvoiceSchema(db);
   if (applied.has(W3_MIGRATIONS[1])) await verifyConsentSchema(db);
-  if (applied.has(W3_MIGRATIONS[2])) await verifyPolicySchema(db);
+  if (applied.has(W3_MIGRATIONS[2]))
+    await verifyPolicySchema(db, applied.has(W3_MIGRATIONS[5]));
   if (applied.has(W3_MIGRATIONS[3])) await verifyPhysicalSchema(db);
   if (applied.has(W3_MIGRATIONS[4])) await verifyZeroFeeSchema(db);
+  if (applied.has(W3_MIGRATIONS[5])) await verifyPolicyLifecycleSchema(db);
 }
 
 async function verifyW3Schema(db: DataSource): Promise<void> {
   await verifyInvoiceSchema(db);
   await verifyConsentSchema(db);
-  await verifyPolicySchema(db);
+  await verifyPolicySchema(db, true);
   await verifyPhysicalSchema(db);
   await verifyZeroFeeSchema(db);
+  await verifyPolicyLifecycleSchema(db);
 }
 
 async function verifyW3Grants(db: DataSource): Promise<void> {

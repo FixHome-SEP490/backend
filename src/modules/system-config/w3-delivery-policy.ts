@@ -202,6 +202,47 @@ export function reviseW3DeliveryPolicyDraft(
   );
 }
 
+/** A retired configuration is never reopened. A new draft gets its own content identity. */
+export function createNextW3DeliveryPolicyDraft(
+  state: W3DeliveryPolicyState,
+  parameters: W3DeliveryPolicyParameters,
+  expectedRevision: number,
+): W3DeliveryPolicyState {
+  const current = validate(state);
+  integer(expectedRevision, 1);
+  if (expectedRevision !== state.revision) fail('REVISION_CONFLICT');
+  if (state.status !== 'RETIRED') fail('INVALID_TRANSITION');
+  return stateOf(
+    snapshot(current.policyId, next(current.version), parameters),
+    'DRAFT',
+    next(state.revision),
+  );
+}
+
+/** Operating-only transitions never assess hypothetical legal/financial gate evidence. */
+export function activateW3DeliveryOperatingPolicy(
+  state: W3DeliveryPolicyState,
+  expectedRevision: number,
+): W3DeliveryPolicyState {
+  const policy = validate(state);
+  integer(expectedRevision, 1);
+  if (expectedRevision !== state.revision) fail('REVISION_CONFLICT');
+  if (state.status !== 'DRAFT') fail('INVALID_TRANSITION');
+  return stateOf(policy, 'ACTIVE', next(state.revision));
+}
+
+/** Live-safe retirement does not assess hypothetical gate evidence or change content. */
+export function retireW3DeliveryPolicyDraft(
+  state: W3DeliveryPolicyState,
+  expectedRevision: number,
+): W3DeliveryPolicyState {
+  const policy = validate(state);
+  integer(expectedRevision, 1);
+  if (expectedRevision !== state.revision) fail('REVISION_CONFLICT');
+  if (state.status === 'RETIRED') fail('INVALID_TRANSITION');
+  return stateOf(policy, 'RETIRED', next(state.revision));
+}
+
 /** Evidence is hypothetical input to a model, never trusted verification from a client.
  * Missing/malformed/stale/mismatched evidence fails closed. Even all four gates cannot
  * open finance: shipping approval, aggregate labor, rounding and release remain unresolved. */

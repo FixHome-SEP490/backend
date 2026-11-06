@@ -27,6 +27,23 @@ const routes = [
   ['create', 'drafts', RequestMethod.POST, 'config:update'],
   ['revise', 'drafts/:id', RequestMethod.PATCH, 'config:update'],
   ['preview', 'preview', RequestMethod.POST, 'config:read'],
+  ['activate', 'versions/:id/activate', RequestMethod.POST, 'config:update'],
+  ['retire', 'versions/:id/retire', RequestMethod.POST, 'config:update'],
+  ['versionCurrent', 'versions/current', RequestMethod.GET, 'config:read'],
+  ['versionsHistory', 'versions/history', RequestMethod.GET, 'config:read'],
+  ['createVersion', 'versions/drafts', RequestMethod.POST, 'config:update'],
+  [
+    'reviseVersion',
+    'versions/drafts/:id',
+    RequestMethod.PATCH,
+    'config:update',
+  ],
+  [
+    'previewVersion',
+    'versions/:id/preview',
+    RequestMethod.POST,
+    'config:update',
+  ],
 ] as const;
 
 describe('W3 Admin controller security contract (metadata and real guards; no HTTP)', () => {

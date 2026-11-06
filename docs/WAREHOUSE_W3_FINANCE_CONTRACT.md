@@ -2,7 +2,7 @@
 
 Ngày: 04/11/2026. Nguồn: official dev `ba703298`, owner order W3 04/11/2026.
 Trạng thái hiện hành: **SOURCE ZERO-FEE OPERATIONS; KHÔNG PHẢI ACTIVATED DEV/FINANCE**.
-Mục 1–16 là checkpoint scaffold trước đây; mục 17 mô tả capability mới và giới hạn hiện hành.
+Mục 1–16 là checkpoint scaffold trước đây; mục 17 mô tả operational zero-fee; mục 20 bổ sung lifecycle cấu hình vận hành B3b.
 Team Finance phải review độc lập
 trước release. Không apply migration, đổi ENV hay ghi shared DB trong task này.
 
@@ -1066,7 +1066,7 @@ shipping/financial snapshot, shipping policy, dues, cutover, voucher và context
 lint giữ 0 errors/4 warning có sẵn ngoài allowlist. Không dùng unit/doubles hoặc mutation
 check thay cho PostgreSQL, source authority, Finance signoff hay đối soát tiền runtime.
 
-## 19. Cổng phát hành DEV cho migration W3 0004–0008 (06/11/2026)
+## 19. Cổng phát hành DEV cho migration W3 0004–0009 (06/11/2026)
 
 Đây là gate phát hành **chỉ DEV**, không phải activation W3 và không đụng
 Production. Source: `src/database/w3-dev-release-gate.ts` (planner + gate),
@@ -1076,7 +1076,7 @@ Production. Source: `src/database/w3-dev-release-gate.ts` (planner + gate),
 
 ### Phạm vi và thứ tự
 
-- Chỉ đúng năm migration W3 `1793466000004`–`1793466000008`, đúng thứ tự
+- Chỉ đúng sáu migration W3 `1793466000004`–`1793466000009`, đúng thứ tự
   class/timestamp. Migration `DeliveryZeroFeeOperations1793466000008` là
   additive zero-fee operational slice: hai bảng private
   `delivery_operation_evidence`, `delivery_shipping_proposals`, guard
@@ -1095,6 +1095,8 @@ Production. Source: `src/database/w3-dev-release-gate.ts` (planner + gate),
   không ghi ledger cash, nên transaction 0008 và cặp cash pending tách biệt.
 - Deploy DEV chạy gate W3 trước, rồi gate cash/reputation không đổi, rồi mới
   restart Backend. Gate W3 chỉ apply schema W3, không chạy migration cash.
+
+Migration `W3DeliveryPolicyLifecycle1793466000009` bổ sung preview private và lifecycle operating-only. Gate kiểm schema 0006 cũ nếu ledger chưa có 0009; khi 0009 đã có, kiểm CHECK operating, partial unique content DRAFT, unique activation receipt, FK, preview RLS/no policies, immutable/strict-audit triggers và function ACL. Marker 0009 là OR table/index/column/function/trigger để chặn replay DDL thiếu ledger. Giữ đúng gate cash/reputation hiện có.
 
 ### Cơ chế fail-closed
 
@@ -1125,7 +1127,7 @@ Production. Source: `src/database/w3-dev-release-gate.ts` (planner + gate),
 | `npx vitest run src/database/w3-dev-release.postgres.spec.ts` | NOT VERIFIED — local không có PostgreSQL/Docker; 10 tests skip, CI step chạy với `W3_DEV_ISOLATED_PG=1` |
 | Shared DEV migration/restart, `/health` | NOT VERIFIED |
 
-Unit test phủ exact order 0004–0008, cash pair coordination, thiếu prerequisite,
+Unit test phủ exact order 0004–0009, cash pair coordination, thiếu prerequisite,
 unknown pending, missing/reordered/partial W3, reversed cash ledger và no
 downgrade. PostgreSQL harness (CI-only, database UUID riêng, không đọc `.env`)
 phủ rollback khi 0007 hoặc 0008 lỗi giữa chừng, apply + idempotent replay không
@@ -1143,7 +1145,93 @@ DEV trong task này. Migration class 0008 do worktree W3 finance/delivery cung
 cấp và được Lead cherry-pick vào Backend trước CI; gate chỉ whitelist/verify,
 không sao chép hay sửa source 0008.
 
-## 20. Aggregate shipping labor budget — preparatory source, 06/11/2026
+## 20. B3b — Admin operating configuration lifecycle (06/11/2026, source only)
+
+Admin đang active có `config:update` là người phê duyệt **cấu hình vận hành**.
+ACTIVE không phải legal/accounting/courier approval, không mở phí dương, hóa đơn 70/30,
+ledger/D, seller/tax, refund, custody finance hoặc disbursement. Mọi response vẫn giữ
+`financialExecution=BLOCKED`, `effectivePolicy=null` và sáu blocker B3a. Không consumer
+finance hoặc zero-fee physical nào được đổi sang đọc config này; không thay W1/W2.
+Không thêm fee mặc định, dependency, ENV hoặc cờ cutover.
+
+### API additive và tương thích Web đang deploy
+
+Mọi path dưới `/api/v1/admin/w3-delivery-policy`, JWT → ADMIN → PermissionGuard →
+raw-input guard, no-store và envelope hiện có. Service kiểm lại User/permission DB
+trong transaction, không tin role/actor hoặc gate verdict từ body.
+
+| Method/path | Permission | Input / data |
+| --- | --- | --- |
+| GET `/versions/current` | `config:read` | `version: {id,state,createdAt,activationPreviewId?}` hoặc null |
+| GET `/versions/history` | `config:read` | `beforeRevision?`, `limit?` như API cũ; `versions` giảm dần, đủ trạng thái |
+| POST `/versions/drafts` | `config:update` | `{expectedRevision,parameters}`; initial expected=0 hoặc exact RETIRED head; trả `version`, 201 |
+| PATCH `/versions/drafts/:id` | `config:update` | `{expectedRevision,parameters}`; chỉ current DRAFT; trả snapshot UUID mới |
+| POST `/versions/:id/preview` | `config:update` | `{expectedRevision,samples}`; server tính preview giả định, lưu receipt và strict audit; trả `preview:{id,draftId,impact}` |
+| POST `/versions/:id/activate` | `config:update` | `{expectedRevision,previewId,acknowledged:true}`; current DRAFT, own exact persisted preview; trả ACTIVE snapshot mới |
+| POST `/versions/:id/retire` | `config:update` | `{expectedRevision}`; current DRAFT hoặc ACTIVE; trả RETIRED snapshot mới |
+
+Mỗi response mới có `activation.scope=OPERATING_CONFIG_ONLY`, `previewRequired=true`
+và `financialExecution=BLOCKED`. Preview gồm full policy snapshot trong từng sample,
+revision của draft và kết quả do server tính, không phải report về đơn/proposal thật.
+Samples rỗng hợp lệ, trả số lượng 0; không giả đã đọc dữ liệu vận hành. Chưa có TTL;
+receipt chỉ hợp lệ khi head UUID/revision/content còn nguyên và Admin hiện hành đúng
+người tạo. Thay nội dung hoặc trạng thái làm receipt cũ không thể dùng lại.
+
+API B3a `/current` và `/history` giữ nguyên `draft`/`drafts`, chỉ trả DRAFT có
+`revision === state.policy.version`; current trả null khi head ACTIVE/RETIRED hoặc
+DRAFT sau lifecycle có r khác v. History chỉ các snapshot tương thích cũ, không hiện
+RETIRED/ACTIVE dưới nhãn DRAFT. POST `/drafts` vẫn chỉ initial expected=0; PATCH cũ
+chỉ current DRAFT r=v, ngược lại 409. `/preview` cũ vẫn read-only/hypothetical và không
+sinh receipt activation. Web hiện tại không cần parse status mới; Web phase sau phải
+chuyển đồng bộ read/write sang `/versions/*`, phân biệt revision CAS và content version,
+hiển thị impact rồi gửi đúng receipt ID + explicit acknowledged=true. Không lấy UUID
+hoặc verdict do client tự tạo thay receipt server. Web runtime/adoption: NOT VERIFIED.
+
+### Bất biến và migration tiến 0009
+
+Không sửa migration 0004–0008 hoặc rewrite row cũ. `revision` tăng mỗi mutation lifecycle;
+`contentVersion` chỉ tăng khi tạo/revise DRAFT. Ví dụ DRAFT r1/v1 → ACTIVE r2/v1 →
+RETIRED r3/v1 → DRAFT r4/v2. Status-only giữ nguyên full policy/fingerprint.
+Không sửa ACTIVE; retire trước khi tạo cấu hình tiếp theo, không tự chuyển consent,
+proposal, invoice hay cohort cũ sang config mới. Không có DELETE hoặc unretire.
+
+Migration 0009 thay unique content bằng partial unique DRAFT, giữ unique revision,
+thêm unique activation preview và FK. Advisory transaction lock `(1793466000,6)` +
+head row lock serialize mutation; CAS kiểm exact UUID và revision, không auto-rebase.
+Preview receipt append-only, gắn draft FK + actor; activation đọc lại và recompute
+impact để đối chiếu với chính snapshot đó. Receipt của Admin khác, stale/missing hoặc
+hỏng trả 409 `W3_DELIVERY_POLICY_PREVIEW_REQUIRED`; stale head/revision trả 409
+`W3_DELIVERY_POLICY_REVISION_CONFLICT`. Payload thừa/gate VERIFIED/ack false trả 400.
+
+DB guard kiểm active Admin/config:update, chain transition, canonical fingerprint và
+financialExecution BLOCKED. Deferred constraints đòi exact audit cùng transaction
+(xmin so với current transaction ID, modulo PostgreSQL xid), đúng actor/resource/
+action/before/after; ACTIVE audit còn ghi activationPreviewId. Partial unique audit
+chặn bản trùng; audit-link deferred chặn orphan/pre-created audit. Preview/audit/history
+không UPDATE/DELETE/TRUNCATE. Audit guard chỉ chặn UPDATE/DELETE của hai resource W3,
+không thay CRUD audit resource khác; TRUNCATE audit_logs bị từ chối khi có W3 history
+để không xóa bằng chứng. RLS không API policy, REVOKE PUBLIC/anon/authenticated/service_role,
+không GRANT mới. Down chỉ cho schema không có history/preview, không xóa dữ liệu.
+Migration không tự replay: gate đọc ledger và từ chối schema đã tồn tại thiếu ledger;
+re-run gate sau apply chỉ verify, không chạy DDL/down.
+
+### Kiểm chứng và release boundary
+
+Node 20.19.5: RED ban đầu 7 failed khi thiếu lifecycle/gate; sau clarification,
+activation/preview RED 4 failed rồi GREEN. Focused service/controller/gate 79/79 PASS;
+reviewer độc lập chỉ đọc chạy lại 79/79 PASS, chưa thấy blocker source. Typecheck và
+lint PASS (4 warning có sẵn). Build PASS. Focused regression cuối: 7 files/262 tests PASS; release-gate PostgreSQL 12 skipped và store E2E 21 skipped (không phải DB PASS).
+PostgreSQL thật, deferred constraints/RLS/grants/locking/rollback và JWT HTTP của code mới:
+**NOT VERIFIED**, chờ GitHub CI. Đã mở rộng harness sẵn có với 0009 fault rollback,
+replay/no downgrade, preview protection/ACL và Admin HTTP lifecycle/CAS; không dựng DB
+thay thế hoặc ghi shared DEV. Full suite không chạy lại theo chỉ đạo Lead tối ưu quota.
+
+Không commit/push/merge/deploy/migrate shared DB trong writer này. Lead review diff,
+chạy GitHub CI PostgreSQL và xử lý release DEV. Sau apply 0009 và release binary mới,
+restart Backend trước runtime QA; Web phase mới cần build/release/hard-refresh để dùng
+lifecycle additive. Mobile/AI/Production ngoài phạm vi. **SAFE_TO_ACTIVATE_FINANCE=NO.**
+
+## 21. Aggregate shipping labor budget — preparatory source, 06/11/2026
 
 Worktree `fixhome-w3-finance-aggregate-20261106`, base `e507653`.
 `finance/order-shipping-labor-budget.policy.ts` thêm helper thuần

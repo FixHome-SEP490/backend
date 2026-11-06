@@ -8,6 +8,7 @@ import { Role } from '../../shared/enums';
 import { W3DeliveryPolicyService } from './w3-delivery-policy-admin.service';
 import { W3DeliveryPolicyStore } from './w3-delivery-policy-store.service';
 import { W3DeliveryPolicyVersion } from './entities/w3-delivery-policy-version.entity';
+import { W3DeliveryPolicyPreview } from './entities/w3-delivery-policy-preview.entity';
 
 const actor = { id: '00000000-0000-4000-8000-000000000001', role: Role.ADMIN };
 const parameters = {
@@ -32,6 +33,7 @@ const blockers = [
 function fixture() {
   let rows: any[] = [],
     audits: any[] = [],
+    previews: any[] = [],
     tail = Promise.resolve();
   const state = {
     failAudit: false,
@@ -57,6 +59,10 @@ function fixture() {
     }),
     findOne: vi.fn(async (entity: unknown, options: any) => {
       if (entity === User) return state.user;
+      if (entity === W3DeliveryPolicyPreview)
+        return structuredClone(
+          previews.find((p) => p.id === options.where.id) ?? null,
+        );
       if (entity !== W3DeliveryPolicyVersion)
         throw new Error('Unexpected read');
       if (state.missingTable)
@@ -78,7 +84,12 @@ function fixture() {
       const before = options.where?.revision?._value;
       return structuredClone(
         rows
-          .filter((r) => !before || r.revision < before)
+          .filter(
+            (r) =>
+              (!before || r.revision < before) &&
+              (!options.where.status ||
+                (r.status === 'DRAFT' && r.revision === r.contentVersion)),
+          )
           .reverse()
           .slice(0, options.take),
       );
@@ -87,6 +98,8 @@ function fixture() {
       if (entity === AuditLog) {
         if (state.failAudit) throw new Error('audit unavailable');
         audits.push(structuredClone(row));
+      } else if (entity === W3DeliveryPolicyPreview) {
+        previews.push(structuredClone(row));
       } else if (entity === W3DeliveryPolicyVersion) {
         rows.push(
           structuredClone({
@@ -105,6 +118,7 @@ function fixture() {
       let release: () => void;
       let oldRows: any[],
         oldAudits: any[],
+        oldPreviews: any[],
         wrote = false;
       const transactional = {
         ...manager,
@@ -122,6 +136,7 @@ function fixture() {
           if (!wrote) {
             oldRows = structuredClone(rows);
             oldAudits = structuredClone(audits);
+            oldPreviews = structuredClone(previews);
             wrote = true;
           }
           return manager.insert(...args);
@@ -133,6 +148,7 @@ function fixture() {
         if (wrote) {
           rows = oldRows;
           audits = oldAudits;
+          previews = oldPreviews;
         }
         throw error;
       } finally {
@@ -156,6 +172,258 @@ function fixture() {
 }
 
 describe('W3 Admin inert persistence (unit transaction double, no DB/HTTP)', () => {
+  it('retires by CAS without changing content identity, then starts the next content draft', async () => {
+    const f = fixture();
+    const first = (await f.service.create(input(), actor)).draft;
+    const old = structuredClone(first);
+    const retired = await (f.service as any).retire(
+      first.id,
+      { expectedRevision: 1 },
+      actor,
+    );
+    expect(retired.version.state).toEqual({
+      ...first.state,
+      status: 'RETIRED',
+      revision: 2,
+    });
+    expect(retired.version.state.policy).toEqual(first.state.policy);
+    expect(first).toEqual(old);
+    expect(f.rows()[0].snapshot).toEqual(old.state);
+    expect(f.audits()[1]).toMatchObject({
+      action: 'W3_DELIVERY_POLICY_RETIRED',
+      before: old.state,
+      after: retired.version.state,
+    });
+    await expect(
+      f.service.revise(retired.version.id, input(2), actor),
+    ).rejects.toMatchObject({ status: 409 });
+    await expect(
+      (f.service as any).retire(
+        retired.version.id,
+        { expectedRevision: 2 },
+        actor,
+      ),
+    ).rejects.toMatchObject({ status: 409 });
+    const next = await f.service.createVersion(input(2), actor);
+    expect(next.version.state).toMatchObject({
+      status: 'DRAFT',
+      revision: 3,
+      policy: { version: 2 },
+    });
+    expect(next.version.state.policy.fingerprint).not.toBe(
+      old.state.policy.fingerprint,
+    );
+    const revised = await f.service.reviseVersion(
+      next.version.id,
+      input(3),
+      actor,
+    );
+    expect(revised.version.state).toMatchObject({
+      revision: 4,
+      policy: { version: 3 },
+    });
+    expect(
+      (await f.service.versionsHistory({}, actor)).versions.map(
+        (d) => d.state.status,
+      ),
+    ).toEqual(['DRAFT', 'DRAFT', 'RETIRED', 'DRAFT']);
+    expect((await f.service.current(actor)).draft).toBeNull();
+    expect(
+      (await f.service.history({}, actor)).drafts.map((d) => d.state.revision),
+    ).toEqual([1]);
+    await expect(f.service.create(input(2), actor)).rejects.toMatchObject({
+      status: 400,
+    });
+    await expect(
+      f.service.revise(next.version.id, input(3), actor),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(next.financialExecution).toBe('BLOCKED');
+    expect(next.effectivePolicy).toBeNull();
+  });
+
+  it('requires a server preview bound to the exact head and authenticated Admin before operating-only activation', async () => {
+    const f = fixture();
+    const head = (await f.service.create(input(), actor)).draft;
+    const run = (id: string, body: any) =>
+      (f.service as any).activate(id, body, actor);
+    const consent = {
+      expectedRevision: 1,
+      previewId: randomUUID(),
+      acknowledged: true,
+    };
+    await expect(
+      run(head.id, { ...consent, expectedRevision: 2 }),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { code: 'W3_DELIVERY_POLICY_REVISION_CONFLICT' },
+    });
+    await expect(run(randomUUID(), consent)).rejects.toMatchObject({
+      status: 409,
+    });
+    await expect(run(head.id, consent)).rejects.toMatchObject({
+      status: 409,
+      response: { code: 'W3_DELIVERY_POLICY_PREVIEW_REQUIRED' },
+    });
+    await expect(
+      run(head.id, {
+        expectedRevision: 1,
+        legal: { status: 'VERIFIED', evidenceRef: 'fake' },
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    const preview = await (f.service as any).previewVersion(
+      head.id,
+      { expectedRevision: 1, samples: [] },
+      actor,
+    );
+    await expect(
+      run(head.id, {
+        ...consent,
+        previewId: preview.preview.id,
+        acknowledged: false,
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    f.state.user = {
+      ...actor,
+      id: randomUUID(),
+      isActive: true,
+      status: 'active',
+    };
+    await expect(
+      (f.service as any).activate(
+        head.id,
+        { ...consent, previewId: preview.preview.id },
+        f.state.user,
+      ),
+    ).rejects.toMatchObject({ status: 409 });
+    f.state.user = { ...actor, isActive: true, status: 'active' };
+    const active = await run(head.id, {
+      ...consent,
+      previewId: preview.preview.id,
+    });
+    expect(active.version.state).toEqual({
+      ...head.state,
+      status: 'ACTIVE',
+      revision: 2,
+    });
+    expect(active.version.state.policy).toEqual(head.state.policy);
+    expect(active.financialExecution).toBe('BLOCKED');
+    expect(active.blockers).toEqual(blockers);
+    expect((await f.service.current(actor)).draft).toBeNull();
+    await expect(
+      run(head.id, { ...consent, previewId: preview.preview.id }),
+    ).rejects.toMatchObject({ status: 409 });
+    const retired = await (f.service as any).retire(
+      active.version.id,
+      { expectedRevision: 2 },
+      actor,
+    );
+    expect(retired.version.state).toEqual({
+      ...head.state,
+      status: 'RETIRED',
+      revision: 3,
+    });
+    expect(f.rows()).toHaveLength(3);
+    expect(
+      f.audits().filter((a) => a.resourceType === 'w3_delivery_policy'),
+    ).toHaveLength(3);
+  });
+
+  it('invalidates preview on revise, and legacy preview cannot authorize activation', async () => {
+    const f = fixture();
+    const head = (await f.service.create(input(), actor)).draft;
+    await f.service.preview(
+      { draftId: head.id, expectedRevision: 1, samples: [] },
+      actor,
+    );
+    const preview = await (f.service as any).previewVersion(
+      head.id,
+      { expectedRevision: 1, samples: [] },
+      actor,
+    );
+    const next = (await f.service.revise(head.id, input(1), actor)).draft;
+    await expect(
+      (f.service as any).activate(
+        next.id,
+        {
+          expectedRevision: 2,
+          previewId: preview.preview.id,
+          acknowledged: true,
+        },
+        actor,
+      ),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(f.rows()).toHaveLength(2);
+  });
+
+  it('rolls back activation if its strict audit fails', async () => {
+    const f = fixture();
+    const head = (await f.service.create(input(), actor)).draft;
+    const preview = await (f.service as any).previewVersion(
+      head.id,
+      { expectedRevision: 1, samples: [] },
+      actor,
+    );
+    f.state.failAudit = true;
+    await expect(
+      (f.service as any).activate(
+        head.id,
+        {
+          expectedRevision: 1,
+          previewId: preview.preview.id,
+          acknowledged: true,
+        },
+        actor,
+      ),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(f.rows()).toHaveLength(1);
+    expect((await f.service.current(actor)).draft.state.status).toBe('DRAFT');
+  });
+
+  it('serializes retire/revise races and rejects stale lifecycle commands', async () => {
+    const f = fixture();
+    const head = (await f.service.create(input(), actor)).draft;
+    const results = await Promise.allSettled([
+      (f.service as any).retire(head.id, { expectedRevision: 1 }, actor),
+      f.service.revise(head.id, input(1), actor),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((r) => r.status === 'rejected')).toMatchObject([
+      { reason: { status: 409 } },
+    ]);
+    await expect(
+      (f.service as any).retire(head.id, { expectedRevision: 1 }, actor),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(f.rows()).toHaveLength(2);
+    expect(f.audits()).toHaveLength(2);
+  });
+
+  it('rolls back retirement on strict audit failure and rechecks lifecycle permissions', async () => {
+    const f = fixture();
+    const head = (await f.service.create(input(), actor)).draft;
+    f.state.failAudit = true;
+    await expect(
+      (f.service as any).retire(head.id, { expectedRevision: 1 }, actor),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(f.rows()).toHaveLength(1);
+    expect(f.audits()).toHaveLength(1);
+    f.state.failAudit = false;
+    f.state.permission = false;
+    for (const method of ['retire', 'activate']) {
+      await expect(
+        (f.service as any)[method](
+          head.id,
+          {
+            expectedRevision: 1,
+            ...(method === 'activate'
+              ? { previewId: randomUUID(), acknowledged: true }
+              : {}),
+          },
+          actor,
+        ),
+      ).rejects.toMatchObject({ status: 403 });
+    }
+  });
+
   it('returns no effective policy and explicit blockers before any draft exists', async () => {
     const f = fixture();
     expect(await f.service.current(actor)).toMatchObject({

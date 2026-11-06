@@ -9,6 +9,8 @@ import { Role } from '../../shared/enums';
 import { reviseW3DeliveryPolicyDraft } from './w3-delivery-policy';
 import type { W3DeliveryPolicyService } from './w3-delivery-policy-admin.service';
 import { W3DeliveryOperatingPolicy1793466000006 } from '../../database/migrations/1793466000006-W3DeliveryOperatingPolicy';
+import { W3DeliveryPolicyLifecycle1793466000009 } from '../../database/migrations/1793466000009-W3DeliveryPolicyLifecycle';
+import { previewW3DeliveryPolicyImpact } from './w3-delivery-policy-preview';
 
 describe.skipIf(
   process.env.CI !== 'true' || process.env.GITHUB_ACTIONS !== 'true',
@@ -351,6 +353,122 @@ describe.skipIf(
         await runner.release();
       }
       expect(await count()).toBeGreaterThan(0);
+    });
+
+    it('requires exact same-transaction preview audit and rejects direct ACTIVE without a bound preview', async () => {
+      const head = await current();
+      const before = await count();
+      const impact = previewW3DeliveryPolicyImpact(head.state, []);
+      const preview = {
+        id: randomUUID(),
+        draftId: head.id,
+        actorUserId: actor.id,
+        impact,
+      };
+      await expect(
+        db.getRepository('W3DeliveryPolicyPreview').insert(preview),
+      ).rejects.toThrow('exact transactional audit');
+      await expect(
+        db.transaction(async (manager) => {
+          await manager.insert('W3DeliveryPolicyPreview', preview);
+          await manager.insert('AuditLog', {
+            actorUserId: actor.id,
+            actorRole: Role.ADMIN,
+            action: 'W3_DELIVERY_POLICY_PREVIEW_CREATED',
+            resourceType: 'w3_delivery_policy_preview',
+            resourceId: preview.id,
+            before: null,
+            after: { draftId: randomUUID(), impact },
+          });
+        }),
+      ).rejects.toThrow('exact transactional audit');
+      await expect(
+        db
+          .getRepository('W3DeliveryPolicyVersion')
+          .insert({
+            id: randomUUID(),
+            policyId: head.state.policy.policyId,
+            contentVersion: head.state.policy.version,
+            revision: head.state.revision + 1,
+            status: 'ACTIVE',
+            snapshot: {
+              ...head.state,
+              status: 'ACTIVE',
+              revision: head.state.revision + 1,
+            },
+            createdByUserId: actor.id,
+          }),
+      ).rejects.toThrow('own exact server preview');
+      expect(await db.getRepository('W3DeliveryPolicyPreview').count()).toBe(0);
+      expect(await count()).toBe(before);
+    });
+
+    it('invalidates stale previews and atomically rolls back ACTIVE on strict audit failure', async () => {
+      const first = await current();
+      const old = await service.previewVersion(
+        first.id,
+        { expectedRevision: first.state.revision, samples: [] },
+        actor,
+      );
+      const revised = await service.revise(
+        first.id,
+        request(first.state.revision),
+        actor,
+      );
+      const head = revised.draft;
+      await expect(
+        service.activate(
+          head.id,
+          {
+            expectedRevision: head.state.revision,
+            previewId: old.preview.id,
+            acknowledged: true,
+          },
+          actor,
+        ),
+      ).rejects.toMatchObject({ status: 409 });
+      const fresh = await service.previewVersion(
+        head.id,
+        { expectedRevision: head.state.revision, samples: [] },
+        actor,
+      );
+      const before = await count();
+      await db.query(`CREATE FUNCTION w3_policy_test_activation_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+        IF NEW.action='W3_DELIVERY_POLICY_ACTIVATED' THEN RAISE EXCEPTION 'CI activation audit failure'; END IF; RETURN NEW; END $$;
+        CREATE TRIGGER w3_policy_test_activation_failure BEFORE INSERT ON audit_logs FOR EACH ROW EXECUTE FUNCTION w3_policy_test_activation_failure()`);
+      try {
+        await expect(
+          service.activate(
+            head.id,
+            {
+              expectedRevision: head.state.revision,
+              previewId: fresh.preview.id,
+              acknowledged: true,
+            },
+            actor,
+          ),
+        ).rejects.toMatchObject({ status: 503 });
+      } finally {
+        await db.query(
+          'DROP TRIGGER w3_policy_test_activation_failure ON audit_logs; DROP FUNCTION w3_policy_test_activation_failure()',
+        );
+      }
+      expect(await count()).toBe(before);
+      expect((await current()).id).toBe(head.id);
+    });
+
+    it('refuses lifecycle down with historical drafts or previews', async () => {
+      const runner = db.createQueryRunner();
+      await runner.connect();
+      await runner.startTransaction();
+      try {
+        await expect(
+          new W3DeliveryPolicyLifecycle1793466000009().down(runner),
+        ).rejects.toThrow('Refusing to discard');
+      } finally {
+        await runner.rollbackTransaction();
+        await runner.release();
+      }
     });
   },
 );

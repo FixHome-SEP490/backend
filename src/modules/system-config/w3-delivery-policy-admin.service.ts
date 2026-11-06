@@ -11,11 +11,18 @@ import { AccountStatus, Role } from '../../shared/enums';
 import { User } from '../users/entities/user.entity';
 import {
   createW3DeliveryPolicyDraft,
+  createNextW3DeliveryPolicyDraft,
+  activateW3DeliveryOperatingPolicy,
+  retireW3DeliveryPolicyDraft,
   reviseW3DeliveryPolicyDraft,
 } from './w3-delivery-policy';
 import { previewW3DeliveryPolicyImpact } from './w3-delivery-policy-preview';
 import {
   CreateW3DeliveryPolicyDraftDto,
+  CreateW3DeliveryPolicyVersionDto,
+  TransitionW3DeliveryPolicyDto,
+  ActivateW3DeliveryPolicyDto,
+  PreviewW3DeliveryPolicyVersionDto,
   invalidW3PolicyInput,
   parseW3PolicyDto,
   PreviewW3DeliveryPolicyDto,
@@ -49,6 +56,11 @@ const inert = Object.freeze({
   effectivePolicy: null,
   blockers,
 });
+const activation = Object.freeze({
+  scope: 'OPERATING_CONFIG_ONLY' as const,
+  previewRequired: true,
+  financialExecution: 'BLOCKED' as const,
+});
 export interface W3AdminPrincipal {
   id: string;
   role: Role;
@@ -64,10 +76,13 @@ export class W3DeliveryPolicyService {
   ) {}
 
   async current(actor: W3AdminPrincipal) {
-    return this.run(actor, 'config:read', async (manager) => ({
-      ...inert,
-      draft: await this.store.current(manager),
-    }));
+    return this.run(actor, 'config:read', async (manager) => {
+      const head = await this.store.current(manager);
+      return {
+        ...inert,
+        draft: head && this.legacyDraft(head.state) ? head : null,
+      };
+    });
   }
 
   async history(input: W3DeliveryPolicyHistoryDto, actor: W3AdminPrincipal) {
@@ -78,6 +93,7 @@ export class W3DeliveryPolicyService {
         manager,
         dto.beforeRevision,
         dto.limit ?? 20,
+        true,
       ),
     }));
   }
@@ -86,7 +102,7 @@ export class W3DeliveryPolicyService {
     const dto = parseW3PolicyDto(CreateW3DeliveryPolicyDraftDto, input);
     return this.run(actor, 'config:update', async (manager) => {
       await this.store.lock(manager);
-      if (await this.store.current(manager)) throw this.conflict();
+      if (await this.store.current(manager, true)) throw this.conflict();
       const state = createW3DeliveryPolicyDraft(W3_OPERATING_POLICY_ID, {
         ...dto.parameters,
       });
@@ -106,11 +122,12 @@ export class W3DeliveryPolicyService {
     const dto = parseW3PolicyDto(ReviseW3DeliveryPolicyDraftDto, input);
     return this.run(actor, 'config:update', async (manager) => {
       await this.store.lock(manager);
-      const current = await this.store.current(manager);
+      const current = await this.store.current(manager, true);
       if (
         !current ||
         current.id !== id ||
-        current.state.revision !== dto.expectedRevision
+        current.state.revision !== dto.expectedRevision ||
+        !this.legacyDraft(current.state)
       )
         throw this.conflict();
       if (dto.expectedRevision === W3_MAX_REVISION) throw this.conflict();
@@ -124,6 +141,218 @@ export class W3DeliveryPolicyService {
         draft: await this.store.append(manager, state, actor.id, current.state),
       };
     });
+  }
+
+  /** Additive lifecycle API; the deployed Web's DRAFT projections remain unchanged. */
+  async versionCurrent(actor: W3AdminPrincipal) {
+    return this.run(actor, 'config:read', async (manager) => ({
+      ...inert,
+      activation,
+      version: await this.store.current(manager),
+    }));
+  }
+
+  async versionsHistory(
+    input: W3DeliveryPolicyHistoryDto,
+    actor: W3AdminPrincipal,
+  ) {
+    const dto = parseW3PolicyDto(W3DeliveryPolicyHistoryDto, input);
+    return this.run(actor, 'config:read', async (manager) => ({
+      ...inert,
+      activation,
+      versions: await this.store.history(
+        manager,
+        dto.beforeRevision,
+        dto.limit ?? 20,
+      ),
+    }));
+  }
+
+  async createVersion(
+    input: CreateW3DeliveryPolicyVersionDto,
+    actor: W3AdminPrincipal,
+  ) {
+    const dto = parseW3PolicyDto(CreateW3DeliveryPolicyVersionDto, input);
+    return this.run(actor, 'config:update', async (manager) => {
+      await this.store.lock(manager);
+      const head = await this.store.current(manager, true);
+      if (
+        (head?.state.revision ?? 0) !== dto.expectedRevision ||
+        (head &&
+          (head.state.status !== 'RETIRED' ||
+            head.state.revision === W3_MAX_REVISION))
+      )
+        throw this.conflict();
+      const state = head
+        ? createNextW3DeliveryPolicyDraft(
+            head.state,
+            { ...dto.parameters },
+            dto.expectedRevision,
+          )
+        : createW3DeliveryPolicyDraft(W3_OPERATING_POLICY_ID, {
+            ...dto.parameters,
+          });
+      return {
+        ...inert,
+        activation,
+        version: await this.store.append(
+          manager,
+          state,
+          actor.id,
+          head?.state ?? null,
+        ),
+      };
+    });
+  }
+
+  async reviseVersion(
+    id: string,
+    input: ReviseW3DeliveryPolicyDraftDto,
+    actor: W3AdminPrincipal,
+  ) {
+    if (!uuid.test(id)) throw invalidW3PolicyInput();
+    const dto = parseW3PolicyDto(ReviseW3DeliveryPolicyDraftDto, input);
+    return this.run(actor, 'config:update', async (manager) => {
+      await this.store.lock(manager);
+      const head = await this.head(manager, id, dto.expectedRevision);
+      const state = reviseW3DeliveryPolicyDraft(
+        head.state,
+        { ...dto.parameters },
+        dto.expectedRevision,
+      );
+      return {
+        ...inert,
+        activation,
+        version: await this.store.append(manager, state, actor.id, head.state),
+      };
+    });
+  }
+
+  async retire(
+    id: string,
+    input: TransitionW3DeliveryPolicyDto,
+    actor: W3AdminPrincipal,
+  ) {
+    if (!uuid.test(id)) throw invalidW3PolicyInput();
+    const dto = parseW3PolicyDto(TransitionW3DeliveryPolicyDto, input);
+    return this.run(actor, 'config:update', async (manager) => {
+      await this.store.lock(manager);
+      const head = await this.head(manager, id, dto.expectedRevision, true);
+      const state = retireW3DeliveryPolicyDraft(
+        head.state,
+        dto.expectedRevision,
+      );
+      return {
+        ...inert,
+        activation,
+        version: await this.store.append(manager, state, actor.id, head.state),
+      };
+    });
+  }
+
+  async previewVersion(
+    id: string,
+    input: PreviewW3DeliveryPolicyVersionDto,
+    actor: W3AdminPrincipal,
+  ) {
+    if (!uuid.test(id)) throw invalidW3PolicyInput();
+    const dto = parseW3PolicyDto(PreviewW3DeliveryPolicyVersionDto, input);
+    return this.run(actor, 'config:update', async (manager) => {
+      await this.store.lock(manager);
+      const head = await this.head(manager, id, dto.expectedRevision);
+      // Validate the samples before persistence; they remain hypothetical, never financial evidence.
+      try {
+        previewW3DeliveryPolicyImpact(
+          head.state,
+          dto.samples.map((sample) => ({ ...sample })),
+        );
+      } catch {
+        throw invalidW3PolicyInput();
+      }
+      return {
+        ...inert,
+        activation,
+        hypotheticalOnly: true as const,
+        preview: await this.store.savePreview(
+          manager,
+          head.id,
+          head.state,
+          dto.samples.map((sample) => ({ ...sample })),
+          actor.id,
+        ),
+      };
+    });
+  }
+
+  async activate(
+    id: string,
+    input: ActivateW3DeliveryPolicyDto,
+    actor: W3AdminPrincipal,
+  ) {
+    if (!uuid.test(id)) throw invalidW3PolicyInput();
+    const dto = parseW3PolicyDto(ActivateW3DeliveryPolicyDto, input);
+    return this.run(actor, 'config:update', async (manager) => {
+      await this.store.lock(manager);
+      const head = await this.head(manager, id, dto.expectedRevision);
+      if (
+        !(await this.store.approvedPreview(
+          manager,
+          dto.previewId,
+          head.id,
+          head.state,
+          actor.id,
+        ))
+      )
+        throw new ConflictException({
+          code: 'W3_DELIVERY_POLICY_PREVIEW_REQUIRED',
+          message:
+            'Vui lòng xem trước đúng bản nháp bằng tài khoản của bạn trước khi kích hoạt cấu hình vận hành.',
+        });
+      const state = activateW3DeliveryOperatingPolicy(
+        head.state,
+        dto.expectedRevision,
+      );
+      return {
+        ...inert,
+        activation,
+        version: await this.store.append(
+          manager,
+          state,
+          actor.id,
+          head.state,
+          dto.previewId,
+        ),
+      };
+    });
+  }
+
+  private legacyDraft(state: {
+    status: string;
+    revision: number;
+    policy: { version: number };
+  }) {
+    return state.status === 'DRAFT' && state.revision === state.policy.version;
+  }
+
+  private async head(
+    manager: EntityManager,
+    id: string,
+    expectedRevision: number,
+    allowActive = false,
+  ) {
+    const head = await this.store.current(manager, true);
+    if (
+      !head ||
+      head.id !== id ||
+      head.state.revision !== expectedRevision ||
+      !(
+        head.state.status === 'DRAFT' ||
+        (allowActive && head.state.status === 'ACTIVE')
+      ) ||
+      expectedRevision === W3_MAX_REVISION
+    )
+      throw this.conflict();
+    return head;
   }
 
   async preview(input: PreviewW3DeliveryPolicyDto, actor: W3AdminPrincipal) {
