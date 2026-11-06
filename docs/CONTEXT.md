@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-06 18:14 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-finance-readiness-20261106
+> Cập nhật lần cuối: 2026-11-07 00:13 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-admin-shipping-zero-cap-20261106
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -93,6 +93,10 @@ Ba điều không đổi giữa các repo:
 Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức của nhóm). Mâu thuẫn giữa code và tài liệu thì ghi vào mục 8 và hỏi PO, không tự quyết.
 
 ## 3. Trạng thái hiện tại
+
+W3 Admin shipping safety cap (07/11/2026, base `15306b6`): migration additive `W3ShippingSafetyCap1793466000013` seed `w3.shipping.max_new_fee_vnd=0`, int 0–100.000.000 VND và mô tả tiếng Việt, `effectStatus=ACTIVE`. Quote/revision W3 mới vượt cap trả 409 `CONFLICT.details.blocker=W3_SHIPPING_CAP_EXCEEDED`; đọc DB có SHARE lock, không dùng cache. Admin JWT/RBAC/config:update recheck trong transaction, UPDATE lock và strict audit nguyên tử; không sửa fee nguồn, replay/consent lịch sử hoặc W1/W2. Cap dương chỉ là upper bound, mọi financial execution BLOCKED. Zero physical giữ nguồn thực sự 0 và guard cũ. Chi tiết trusted paths, migration gate, owner BUSINESS-only và verification tại mục 25 hợp đồng W3. Shared DEV/consumer/provider/Docker health/GitHub CI NOT VERIFIED.
+
+Kiểm chứng local W3 cap: unit 4060 PASS/97 skipped (311 files); focused 80/80; PG gate 39/39; W3 physical/HTTP 50/50; lint/typecheck/build/diff/audit high gate PASS (4 warning lint và 12 moderate cũ). Full E2E NOT VERIFIED: lần đầu năm suite setup lỗi `urgency_level_enum` do schema fixture còn sót; rerun sau cleanup hết lỗi enum, 147 PASS/39 skipped nhưng worker app `Worker exited unexpectedly` (1 unhandled error, exit 1). Chưa xác định nguyên nhân worker, không kết luận đã loại trừ regression; không sửa migration lịch sử hoặc nới gate. Lead chạy GitHub CI container sạch; chi tiết mục 25 hợp đồng W3.
 
 W3 P2 D drift race (06/11/2026): 0012 chưa release sửa thứ tự Order → assignment/actor → config → labor trước kiểm C, giữ row locks đến commit; config lock serialize version capture 0011, parent UPDATE chặn thêm labor items qua FK. Không sửa 0010/0011, quyền hoặc runtime writer; money BLOCKED. Regression hai session RED 4 ca trên source cũ; GREEN full delivery/physical 44, PG gate 37, context/planner 9; typecheck/lint/build/diff PASS (4 warning cũ). Chi tiết tại mục 24 hợp đồng W3. Full unit/E2E 4044/244 bên dưới thuộc commit trước; CI/head follow-up/shared DEV/runtime NOT VERIFIED, Lead giữ release.
 
@@ -262,6 +266,8 @@ Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ 
 
 ## 5. Hợp đồng với repo khác
 
+- Admin W3 shipping cap additive: GET/PATCH `/admin/config/w3.shipping.max_new_fee_vnd`, PATCH `{value:"0"}` hoặc integer string canonical 0–100000000. Registry ACTIVE, mô tả DB tiếng Việt; quote/revision mới vượt effective cap (missing/malformed=0) trả 409 `CONFLICT`, details `{blocker:W3_SHIPPING_CAP_EXCEEDED,maxNewFeeVnd}`. Cùng request/source cũ không đổi phí hoặc consent/replay; cap không mở execution tiền. Đã đọc Web AdminConfigPage unknown-key fallback và tìm Mobile consumer (không thấy); adoption/runtime/context consumer/docs repo NOT VERIFIED, cần phối hợp PR riêng.
+
 - W3 conditional terms additive: GET `/part-requests/:id/delivery/terms`, POST `/terms/proposal`, `/terms/consent`, `/terms/actual`, `/terms/evidence`. DTO tái dùng ShippingProposal/ShippingConsent/DeliveryActual/DeliveryUpload; evidence route private hiện có. Mọi kết quả BLOCKED, budget null; invalidated khiến consent lịch sử không dùng được. Đây là điều khoản có điều kiện, không phải financial consent/legal activation. Consumer Web/Mobile/docs adoption và runtime NOT VERIFIED; owner chỉ giao Backend. Chi tiết phiên bản, receipt và blocker tại mục 22 hợp đồng W3.
 
 W3 physical: GET `/part-requests/:id/delivery-physical/preview` chỉ CUSTOMER sở hữu/TECHNICIAN active, tái dùng B2b owner gate; no-store, NON_ATOMIC/NON_EXECUTABLE_PREVIEW, mọi action BLOCKED. Không trả private courier/evidence refs, không phát hành command HTTP. Web adoption/runtime và Mobile parity NOT VERIFIED; task này không sửa hai client. Preview mới cần schema 0007; thiếu schema trả 503, không fallback thành PASS. Xem mục 16 hợp đồng W3.
@@ -368,6 +374,8 @@ W3 physical: GET `/part-requests/:id/delivery-physical/preview` chỉ CUSTOMER s
 
 ## 7. Quyết định đã chốt
 
+- Owner W3 06/11/2026: “tôi phê duyệt hết, admin có thể config nếu ko phù hợp chỉnh 0đ hết” được ghi nhận BUSINESS direction cho cap riêng của phí giao W3 mới, mặc định 0. Không phải Finance/legal signature, seller/tax issuer/payee, funding hoặc mandate. 0 cap không miễn khoản phải trả vận chuyển thực tế; không sửa nghĩa vụ/giá/consent quá khứ. Commission 0 và operating-preview ceiling 0 vẫn độc lập; money BLOCKED.
+
 - Owner W3 06/11/2026 duyệt 1–5: FixHome thu khách 70% actual, trừ 30% actual từ payable labor thợ, trả full actual courier; freeze C trước quote, D explicit verified-zero + authorized statement; thiếu L-C-D-sum(t) phải revise, không nợ/âm ví/voucher bù; actual vượt quote/source ceiling phải renew BOTH consents; trước dispatch chỉ refund funding thật về original rail, sau dispatch manual courier review. Đây chỉ là W3 preparatory; legacy/voucher wallet-only refund không đổi. Quyết định 6 seller/tax issuer/payee UNKNOWN, Finance/legal ký trước money activation. Source/giới hạn ở mục 23 hợp đồng W3.
 
 - Owner P2 04/11/2026: đúng một bản nháp thủ công/account, khôi phục khác thiết bị, hết hạn sau 30 ngày từ lần lưu chủ động thành công; không giỏ hàng, nhiều draft hoặc autosave. Save không tạo Booking/ServiceOrder/invitation/payment, claim ảnh hoặc dùng quota. Receipt submit tách khỏi draft, có mốc giữ tối thiểu 30 ngày từ submit và không prune trong P2; lưu/xóa/hết hạn draft mới không xóa receipt cũ. Không nới TTL ảnh 2 giờ. Chỉ Backend + Web; không sửa Mobile/AI-service.
@@ -432,10 +440,12 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 8. Việc đang dở và rủi ro đã biết
 
+- W3 shipping cap 0013 chỉ local: Lead cần CI/preflight/migration riêng trước restart Backend; không dùng Admin cap làm Finance authorization hoặc reset fee. Shared DEV, Compose `/health`, provider, Web/Mobile browser và Node 20.19.5 NOT VERIFIED. Chưa có live spending commitment/refund/courier/funding authority; giữ các blockers mục 24–25 hợp đồng W3.
+
 - W3 B3b chưa release: GitHub CI phải xác minh migration 0009, preview/audit append-only, JWT/RBAC/CAS/rollback và RLS/grants; chưa ghi shared DEV. Web phải tích hợp `/versions/*`, parse revision riêng contentVersion và gửi server preview receipt + acknowledged=true; chưa sửa consumer trong writer này. Finance/positive fee/seller/tax/refund/custody/disbursement vẫn BLOCKED. Sau Lead apply schema/release phải restart Backend trước runtime QA.
 
 - W3 money execution vẫn BLOCKED: 0010 chỉ lưu conditional positive-fee terms và manual actual; 0011 là L/C preparatory, 0012 là D evidence metadata chưa verified/approved, chưa có approved attester/taxonomy/maker-checker. Commitment/release chưa persistent, chưa đủ thẩm quyền kiểm spending tổng t <= L-C-D live. Thiếu Finance/legal signoff sáu quyết định, seller/tax/payee, courier funding/verification và payment/refund execution authority; không coi Admin/config ACTIVE/consent/recorded D là quyền chi. Positive stock/invoice/completion/custody giữ chặn. Shared DEV/schema/restart/provider/Web/Mobile/Node 20.19.5 NOT VERIFIED. Lead giữ release; sau migration/release được duyệt phải restart Backend trước QA.
-- Cổng release DEV W3 0004–0012 vẫn cần GitHub CI và preflight cơ sở dữ liệu DEV thật trước khi restart; thất bại phải giữ container Backend cũ, không tự bỏ quyền/RLS hoặc mở global Finance gate.
+- Cổng release DEV W3 0004–0013 vẫn cần GitHub CI và preflight cơ sở dữ liệu DEV thật trước khi restart; thất bại phải giữ container Backend cũ, không tự bỏ quyền/RLS hoặc mở global Finance gate.
 
 - B3a vẫn NOT_DEPLOYABLE: CI PostgreSQL 16 trong schema test đã PASS cho migration 0004/0005/0006, RLS/append-only/CAS/strict-audit; B2b TS4053 type-only fix đã được xác nhận typecheck/build PASS. Nhưng migration 0006 chưa apply shared DEV, DB role grants/shared runtime/JWT Admin end-to-end chưa chứng minh; không tự GRANT. Giữ tài chính/shipping approval, legal/accounting/warehouse/courier gate đóng; không shared DB/ENV/seed/server/deploy. Sau khi được duyệt release phải restart Backend trước runtime QA.
 
@@ -501,14 +511,11 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-07 00:13 (UTC+7) | foxonworld | foxonworld/fixhome-w3-admin-shipping-zero-cap-20261106 | Thêm Admin W3 shipping cap 0013 mặc định 0, strict audit/locks và chặn quote mới; giữ historical consent, zero physical/W1/W2 và money BLOCKED; contract mục 25.
 - 2026-11-06 18:14 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-readiness-20261106 | Sửa P2 race D bằng transaction locks theo 0011; PG delivery 44/gate 37/context 9 và quality checks PASS; Finance BLOCKED, Lead giữ release.
-
 - 2026-11-06 18:01 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-readiness-20261106 | Thêm D preparation/diagnostics 0012 và ma trận sáu signoff; unit 4044/E2E 244/PG gate 37 PASS, không writer API hoặc execution tiền.
-
 - 2026-11-06 17:00 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-governance-20261106 | Sửa P2 release gate bỏ lọt sequence ACL; PG RED 12/GREEN 28, typecheck/lint/build PASS; không mở W3 tiền.
-
 - 2026-11-06 16:49 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-governance-20261106 | C prequote/config version 0011 và simulation owner 1–5; full unit 4031, full E2E 237, final focused 124/PG gate 16/W3 E2E 77 PASS; mọi money execution BLOCKED.
-
 - 2026-11-06 13:28 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-positive-20261106 | Chốt conditional terms/0010 và review ACL; focused 287, PostgreSQL gate 14, E2E 70 PASS, tiền BLOCKED; không push/deploy.
 - 2026-11-06 12:41 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-aggregate-20261106 | Hợp nhất Admin lifecycle và Finance aggregate vào PR #200, bảo toàn policy 0009 cùng hai mục 20–21, kiểm lại tài liệu tích hợp.
 - 2026-11-06 10:44 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-aggregate-20261106 | Thêm kiểm ngân sách phần thợ tổng hợp theo toàn bộ DELIVERY source immutable, per-shipment rounding và guard không thiếu sibling; Finance vẫn BLOCKED, 47 focused/3973 full PASS, chưa chi tiền hay áp DB.
@@ -544,4 +551,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-01 20:13 (UTC+7) | ToanAltF4 | fix/kyc-uploaded-documents | Gửi KYC khách và thợ bị từ chối khi ảnh chưa thật sự tải lên kho kyc-private của chính người gửi (DEF-r2-mobile-01, trước đây đường dẫn bịa vẫn 201); KYC khách không còn ghi họ tên, ngày sinh, giới tính, CCCD, địa chỉ vào hồ sơ lúc gửi, chỉ ghi khi admin duyệt. Bằng chứng kỹ năng của thợ vẫn chỉ kiểm đường dẫn.
 - 2026-11-01 19:43 (UTC+7) | ToanAltF4 | fix/visit-candidates-empty-reason | GET /visit-groups/:id/technician-candidates?diagnostics=1 trả meta.emptyReason cùng logic với đặt lịch một máy (OUTSIDE_COVERAGE, TIME_UNAVAILABLE, BOOKING_LOCATION_MISSING, UNAVAILABLE), bỏ diagnostics vẫn chỉ trả data cho mobile
 - 2026-11-01 19:13 (UTC+7) | ToanAltF4 | fix/warranty-expired-status | GET /service-orders/:id/warranties trả expired cho bảo hành active đã qua expires_at, tính khi đọc, không ghi DB; yêu cầu bảo hành sau hạn vẫn lưu submitted với submitted_after_expiry (lỗi tìm thấy 01/11 ở TC-WAR-003).
-- 2026-11-01 18:33 (UTC+7) | ToanAltF4 | fix/candidates-empty-reason-envelope | Lý do danh sách thợ rỗng chuyển vào meta.emptyReason để tới được client, thợ không có vị trí không còn che OUTSIDE_COVERAGE, danh sách lượt nhiều thiết bị trả arrivedAt từng máy

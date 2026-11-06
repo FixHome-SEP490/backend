@@ -13,6 +13,7 @@ export const W3_MIGRATIONS = [
   'DeliveryConditionalFeeTerms1793466000010',
   'W3PrequoteCommission1793466000011',
   'W3DeductionPreparation1793466000012',
+  'W3ShippingSafetyCap1793466000013',
 ] as const;
 
 const FINANCE_PREREQUISITES = [
@@ -197,8 +198,8 @@ async function assertPrerequisiteSchema(db: DataSource): Promise<void> {
   const [financeSource] = await db.query(`SELECT
     to_regclass('public.system_configs') IS NOT NULL AS config,
     to_regclass('public.quotation_items') IS NOT NULL AS quotation_items,
-    (SELECT count(*)=20 FROM information_schema.columns WHERE table_schema='public' AND
-      ((table_name='system_configs' AND column_name IN ('key','value','value_type','updated_at','updated_by_user_id'))
+    (SELECT count(*)=21 FROM information_schema.columns WHERE table_schema='public' AND
+      ((table_name='system_configs' AND column_name IN ('key','value','value_type','description','updated_at','updated_by_user_id'))
       OR (table_name='bookings' AND column_name IN ('pricing_mode_snapshot','fixed_unit_price_snapshot','quantity','scope_snapshot'))
       OR (table_name='quotation_items' AND column_name IN ('quotation_id','type','description','quantity','unit_price','line_total'))
       OR (table_name='additional_cost_items' AND column_name IN ('description','unit_price','line_total'))
@@ -282,6 +283,8 @@ function imageMigrationNames(db: DataSource): string[] {
 }
 
 const W3_MARKERS: Record<string, string> = {
+  [W3_MIGRATIONS[9]]: `SELECT EXISTS(SELECT 1 FROM public.system_configs
+    WHERE key='w3.shipping.max_new_fee_vnd') AS present`,
   [W3_MIGRATIONS[8]]: `SELECT (to_regclass('public.w3_deduction_preparations') IS NOT NULL
     OR to_regprocedure('public.w3_deduction_preparation_guard()') IS NOT NULL
     OR to_regprocedure('public.w3_finance_readiness(uuid)') IS NOT NULL) AS present`,
@@ -992,6 +995,7 @@ async function verifyAppliedW3Schema(
   if (applied.has(W3_MIGRATIONS[6])) await verifyFeeTermsSchema(db);
   if (applied.has(W3_MIGRATIONS[7])) await verifyPrequoteCommissionSchema(db);
   if (applied.has(W3_MIGRATIONS[8])) await verifyDeductionPreparationSchema(db);
+  if (applied.has(W3_MIGRATIONS[9])) await verifyShippingCap(db);
 }
 
 async function verifyW3Schema(db: DataSource): Promise<void> {
@@ -1004,6 +1008,15 @@ async function verifyW3Schema(db: DataSource): Promise<void> {
   await verifyFeeTermsSchema(db);
   await verifyPrequoteCommissionSchema(db);
   await verifyDeductionPreparationSchema(db);
+  await verifyShippingCap(db);
+}
+
+async function verifyShippingCap(db: DataSource): Promise<void> {
+  const [row] = await db.query(`SELECT value,value_type FROM public.system_configs
+    WHERE key='w3.shipping.max_new_fee_vnd'`);
+  if (!row || row.value_type !== 'int' || !/^(0|[1-9]\d{0,8})$/.test(row.value)
+    || Number(row.value) > 100_000_000)
+    throw new Error('W3 shipping safety cap missing or invalid; do not restart Backend');
 }
 
 async function verifyDeductionPreparationSchema(db: DataSource): Promise<void> {

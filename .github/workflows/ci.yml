@@ -122,7 +122,7 @@ jobs:
               exit 1
             fi
             # Prepare a new image while the previous DEV backend keeps serving.
-            # Fail closed unless the exact W3 migrations 0004-0009, their
+            # Fail closed unless the exact W3 migrations 0004-0013, their
             # prerequisites, schema/RLS/grants and the exact two cash/reputation
             # migrations pass in disposable one-offs. W3 runs first and leaves
             # the cash pair pending for its unchanged gate; neither gate touches
