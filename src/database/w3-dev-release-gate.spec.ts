@@ -47,7 +47,7 @@ describe('W3 DEV migration whitelist', () => {
         [...appliedBeforeW3, ...W3_MIGRATIONS.slice(0, 4)],
         image,
       ),
-    ).toEqual([W3_MIGRATIONS[4]]);
+    ).toEqual(W3_MIGRATIONS.slice(4));
     expect(
       planW3DevMigrations([...appliedBeforeW3, ...W3_MIGRATIONS], image),
     ).toEqual([]);
@@ -85,7 +85,7 @@ describe('W3 DEV migration whitelist', () => {
     expect(() =>
       planW3DevMigrations(appliedBeforeW3, [
         ...image,
-        'Unexpected1793466000009',
+        'Unexpected1793466000010',
       ]),
     ).toThrow('Unexpected pending migration');
     expect(() =>
@@ -100,7 +100,7 @@ describe('W3 DEV migration whitelist', () => {
 
   it('rejects missing, reordered or partially applied W3 migrations', () => {
     expect(W3_MIGRATIONS[W3_MIGRATIONS.length - 1]).toBe(
-      'DeliveryZeroFeeOperations1793466000008',
+      'W3DeliveryPolicyLifecycle1793466000009',
     );
     expect(() =>
       planW3DevMigrations(
