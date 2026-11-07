@@ -455,7 +455,9 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 8. Việc đang dở và rủi ro đã biết
 
-- W3 auditfix 0016: blocker whitelist đã sửa và gate unit/PostgreSQL 66 PASS; còn Lead review, GitHub CI, preflight/migration shared DEV và consumer nullable provenance trước release. Không chạy gate/migration trên shared DEV, không commit/push/PR/merge/deploy trong task writer. Sau review và migration được duyệt phải rebuild/restart Backend rồi kiểm `/health`; Compose/health, shared DEV, provider thật, browser và Web/Mobile NOT VERIFIED. Full unit/broad E2E của follow-up gate chưa rerun; số 4085/113 ở trên thuộc lượt auditfix trước.
+- W3 auditfix 0016: blocker whitelist đã sửa và gate unit/PostgreSQL 66 PASS; Lead đã review source và chuẩn bị PR; còn GitHub CI, preflight/migration shared DEV và consumer nullable provenance. Chỉ release qua GitHub CI/PR DEV; không chạy migration shared DEV thủ công. Sau review và migration được duyệt phải rebuild/restart Backend rồi kiểm `/health`; Compose/health, shared DEV, provider thật, browser và Web/Mobile NOT VERIFIED. Full unit/broad E2E của follow-up gate chưa rerun; số 4085/113 ở trên thuộc lượt auditfix trước.
+
+- W2 kho PICKUP: manual reservation của SM nay chỉ chọn kho ĐANG HOẠT ĐỘNG do chính SM phụ trách có đủ toàn bộ SKU, thay vì chọn nhầm kho của SM khác đứng trước theo UUID rồi báo 403. Auto giữ lựa chọn xác định/atomics hiện có. RED→GREEN 13/13 unit, typecheck/lint PASS. Kho hiện CHƯA CÓ tọa độ chuẩn, do đó cờ distanceNotVerified vẫn true; chưa đủ nguồn dữ liệu để chọn kho gần nhất, không được tự suy ra khoảng cách. PR #207 đã CI PASS và merge dev 2026-11-07; postmerge VPS deploy đang kiểm tra.
 
 - W3 partial-used/return CHƯA TRIỂN KHAI: `updateItemUsage` và `w3_live_item_guard` chỉ cho toàn dòng USED; `w3_invoice_shipping_source` đòi full-used và từ chối mọi `part_custodies` của order. `PartCustodyService.enrollHandover` cần legacy/W2 `receivedAt`, W3 giữ null; `WarehouseFulfillmentService.restockReturn` chỉ ghi RETURN theo allocation W2, thiếu allocation thì không restock. Vì vậy chỉ bỏ guard sẽ cho billing thiếu chứng cứ hoặc nhận trả mà không nhập kho. Hướng nhỏ nhất cần phase riêng: bind custody với exact W3 technician receipt và warehouse/SKU xuất, thêm append-only W3 RETURN có manager receipt/idempotency/stock conservation cùng transaction, rồi reconcile invoice bằng usedQty và physical accepted returns. Chưa chứng minh các cầu nối này; giữ nguyên custody/financial/VisitGroup gates, không backfill hoặc giả restock.
 
@@ -533,7 +535,9 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 - 2026-11-07 12:38 (UTC+7) | foxonworld | foxonworld/fixhome-w123-auditfix-backend-20261107 | Mở DEV gate cho 0016 với exact function proof/ACL/replay và prefix 0015 thật; siết ACL 0016 chưa release, gate PostgreSQL/unit 66 PASS, CI thêm zero-fee regression, Lead giữ release.
 
+
 - 2026-11-07 12:27 (UTC+7) | foxonworld | foxonworld/fixhome-w123-auditfix-backend-20261107 | Sửa zero-route invoice bằng migration tiến 0016, giữ positive/legacy; PostgreSQL W3 113 và focused cuối 5 PASS, unit 4085 PASS; ghi blocker custody/return và DEV whitelist, chờ Lead review.
+- 2026-11-07 12:25 (UTC+7) | foxonworld | foxonworld/fixhome-w2-warehouse-select-fix-20261107 | Sửa lựa chọn kho đầy đủ tồn do SM đang phụ trách khi thao tác W2 thủ công, giữ auto/no-split/stock lock, thêm 3 regression scenarios và xác nhận thiếu tọa độ để tính khoảng cách; RED→GREEN 13/13, typecheck/lint PASS.
 
 - 2026-11-07 10:55 (UTC+7) | foxonworld | foxonworld/w3-remove-manual-bank-20261107 | OWNER CANCELLED Manual Bank vì VNPay đủ chức năng thanh toán online; xóa API customer/Admin + service/test, giữ VNPay, Ví FixHome, cash-first/legacy và W3 70/30; DEV gỡ bỏ chờ PR/CI/deploy, không thêm payment rail khác.
 
@@ -573,4 +577,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-04 12:10 (UTC+7) | Hgnv11 | warranty-cost-sla-20261104 | Thêm bước SM kiểm tra linh kiện hỏng trước khi cấp linh kiện bảo hành: kết quả quyết định ai trả tiền, khoá khi thợ đã nhận.
 - 2026-11-04 12:09 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p1-group5-backend-20261104 | P1 Group5 cập nhật ba CHECK, stop/rebook 5 máy; áp dụng forward migration một lần trên PostgreSQL shared dev, xác minh ledger và constraint SQL, Backend/Web release còn chờ CI.
 - 2026-11-04 11:12 (UTC+7) | Hgnv11 | warranty-cost-sla-20261104 | Bảo hành theo mô hình 5Sao và Ong Thợ: thợ chịu công, FixHome chịu linh kiện FixHome lỗi, không khắc phục được thì hoàn ví khách và trừ ví thợ, từ chối có xét, hạn 48/72/72 giờ, tác vụ nền, cột và cấu hình mới.
-- 2026-11-04 10:25 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p0-solo-noshow-20261104 | B2 solo contact/readiness và stop nguyên tử, giữ evidence/replay; giới hạn API liên hệ/dừng đơn thử nghiệm DEV và chặn thông báo trùng, không tự phạt khách.
