@@ -29,7 +29,7 @@ import { TechnicianAssignment } from '../service-orders/entities/technician-assi
 import { CashSettlement } from '../service-orders/entities/cash-settlement.entity';
 import { CommissionDue } from '../service-orders/entities/commission-due.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
-import { assertShippingFinancialCutoverAllowed } from './invoice-shipping-snapshot';
+import { assertInvoiceCollectionAllowed } from './w3-invoice-payment';
 import { readInvoiceFinancialSnapshot } from './invoice-financial-snapshot';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { ServiceOrderStateMachine } from '../service-orders/service-order-state-machine';
@@ -222,7 +222,7 @@ export class FinanceService {
             invoice.serviceOrderId !== scopeId) {
           throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Không tìm thấy đơn sửa chữa.');
         }
-        assertShippingFinancialCutoverAllowed(invoice);
+        await assertInvoiceCollectionAllowed(manager, invoice);
         await this.assertNoStoppedCollection(manager, scopeId, scopeKind);
         const assignment = await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: scopeId, isActive: true } });
         if (!assignment || !order.completionRequestedAt ||
@@ -373,7 +373,7 @@ export class FinanceService {
               invoice.paymentStatus === PaymentStatus.PAID || await isCompletionHeld(manager, scopeId)) {
             throw new BusinessException(ErrorCodes.CONFLICT, 'Đơn hoặc kỹ thuật viên đã thay đổi.');
           }
-          assertShippingFinancialCutoverAllowed(invoice);
+          await assertInvoiceCollectionAllowed(manager, invoice);
           const gross = this.requireWholeVnd(invoice.grandTotal, 'Invoice amount');
           allocations = [{ invoiceId: invoice.id, serviceOrderId: scopeId,
             originalGrossVnd: gross, customerDueVnd: quote?.total.customerDueVnd ?? gross }];
@@ -565,7 +565,7 @@ export class FinanceService {
             due !== BigInt(this.requireWholeVnd(intent.customerDueVnd, 'Cash intent due'))) invalid();
         // Scan the COMPLETE owned membership, not only the untrusted allocation subset.
         // Even a forged reduced intent/payment must not hide an omitted W3 child.
-        for (const invoice of invoices) assertShippingFinancialCutoverAllowed(invoice);
+        for (const invoice of invoices) await assertInvoiceCollectionAllowed(manager, invoice);
         let expected: { invoiceId: string; serviceOrderId: string; amount: number }[];
         if (intent.status === 'received') {
           if (!intent.visitGroupPaymentId) invalid();
@@ -604,7 +604,7 @@ export class FinanceService {
       if (!invoice || invoice.id !== allocation.invoiceId || invoice.serviceOrderId !== order.id) {
         throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Không tìm thấy đơn sửa chữa.');
       }
-      assertShippingFinancialCutoverAllowed(invoice);
+      await assertInvoiceCollectionAllowed(manager, invoice);
     });
   }
 
@@ -815,6 +815,163 @@ export class FinanceService {
     @Optional() private readonly vouchersService?: VouchersService,
   ) {}
 
+  /** Selecting direct bank transfer records intent, NOT receipt of bank funds. */
+  async requestManualBankTransfer(invoiceId: string, actor: FinanceActor): Promise<{
+    paymentId: string; invoiceId: string; amount: number; status: PaymentAttemptStatus;
+  }> {
+    if (actor.role !== Role.CUSTOMER) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Chỉ khách hàng được chọn chuyển khoản.');
+    return this.dataSource.transaction(async manager => {
+      const head = await manager.findOne(Invoice, { where: { id: invoiceId } });
+      if (!head) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Không tìm thấy hóa đơn.');
+      // Invoice first, then order: the same order used by cash, wallet and settlement.
+      const invoice = await manager.findOne(Invoice, {
+        where: { id: invoiceId, serviceOrderId: head.serviceOrderId }, lock: { mode: 'pessimistic_write' },
+      });
+      if (!invoice) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Không tìm thấy hóa đơn.');
+      const order = await manager.findOne(ServiceOrder, {
+        where: { id: invoice.serviceOrderId }, lock: { mode: 'pessimistic_write' },
+      });
+      const booking = order && await manager.findOne(Booking, { where: { id: order.bookingId } });
+      if (!order || !booking || booking.customerId !== actor.id)
+        throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Không tìm thấy hóa đơn của bạn.');
+      this.refuseVisitInvoice(booking);
+      const amount = this.requireWholeVnd(invoice.grandTotal, 'Invoice amount');
+      const key = 'MANUAL_BANK_INVOICE:' + invoice.id;
+      // The durable request is resolved before collection exclusivity is checked so
+      // an honest customer retry still succeeds after an unrelated voucher/stop state.
+      const payment = await manager.findOne(Payment, {
+        where: { idempotencyKey: key }, lock: { mode: 'pessimistic_write' },
+      });
+      const response = (row: Payment) => ({
+        paymentId: row.id, invoiceId: invoice.id, amount: Number(row.amount), status: row.status,
+      });
+      if (payment) {
+        if (payment.invoiceId !== invoice.id || payment.requestedByUserId !== actor.id ||
+            payment.provider !== 'manual_bank' || payment.purpose !== PaymentPurpose.INVOICE ||
+            payment.mode !== PaymentMode.LIVE || Number(payment.amount) !== amount)
+          throw new BusinessException(ErrorCodes.PAYMENT_IDEMPOTENCY_CONFLICT, 'Yêu cầu chuyển khoản đã thay đổi.');
+        if (payment.status === PaymentAttemptStatus.VERIFIED) {
+          if (invoice.paymentStatus !== PaymentStatus.PAID)
+            throw new BusinessException(ErrorCodes.CONFLICT, 'Thanh toán chuyển khoản không nhất quán.');
+          return response(payment);
+        }
+        if (payment.status !== PaymentAttemptStatus.PENDING || invoice.paymentStatus === PaymentStatus.PAID ||
+            order.status === ServiceOrderStatus.CANCELLED || !order.completionRequestedAt)
+          throw new BusinessException(ErrorCodes.CONFLICT, 'Đơn chưa sẵn sàng hoặc đã thanh toán.');
+        return response(payment);
+      }
+      if (invoice.paymentStatus === PaymentStatus.PAID || order.status === ServiceOrderStatus.CANCELLED ||
+          !order.completionRequestedAt)
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Đơn chưa sẵn sàng hoặc đã thanh toán.');
+      if (amount <= 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hóa đơn 0đ không cần chuyển khoản.');
+      await assertInvoiceCollectionAllowed(manager, invoice);
+      await this.assertNoActiveCashIntent(manager, 'SOLO', order.id);
+      await this.closeAbandonedVnpayAttempts(manager, [invoice.id], actor);
+      const attempts = await manager.find(Payment, {
+        where: { invoiceId: invoice.id, purpose: PaymentPurpose.INVOICE },
+      });
+      if (attempts.some(row => row.status === PaymentAttemptStatus.PENDING || row.status === PaymentAttemptStatus.VERIFIED))
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Có giao dịch thanh toán khác đang xử lý. Vui lòng kiểm tra lại.');
+      await this.assertNewCollectionAllowed(manager, order.id);
+      const created = await manager.save(Payment, manager.create(Payment, {
+        invoiceId: invoice.id, commissionDueId: null, purpose: PaymentPurpose.INVOICE,
+        amount, currency: 'VND', mode: PaymentMode.LIVE, provider: 'manual_bank',
+        status: PaymentAttemptStatus.PENDING, idempotencyKey: key,
+        providerReference: null, requestedByUserId: actor.id,
+        failureCode: null, requestedAt: new Date(), verifiedAt: null,
+      }));
+      return response(created);
+    });
+  }
+
+  /** Admin checks their REAL bank statement first; no client screenshot is proof of payment. */
+  async confirmManualBankTransfer(invoiceId: string, body: { amount: number; bankReference: string },
+    actor: FinanceActor): Promise<{ paymentId: string; invoiceId: string; amount: number; status: PaymentAttemptStatus }> {
+    if (actor.role !== Role.ADMIN) throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Chỉ Admin xác nhận đã nhận chuyển khoản.');
+    const ref = typeof body.bankReference === 'string' ? body.bankReference.trim().toUpperCase() : '';
+    if (!Number.isSafeInteger(body.amount) || body.amount <= 0 || !ref ||
+        !/^[A-Z0-9][A-Z0-9._:/-]{5,127}$/.test(ref))
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Số tiền hoặc mã ngân hàng không hợp lệ.');
+    const providerReference = 'MANUAL_BANK:' + ref;
+    try {
+      return await this.dataSource.transaction(async manager => {
+        const head = await manager.findOne(Invoice, { where: { id: invoiceId } });
+        if (!head) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Không tìm thấy hóa đơn.');
+        const invoice = await manager.findOne(Invoice, {
+          where: { id: invoiceId, serviceOrderId: head.serviceOrderId }, lock: { mode: 'pessimistic_write' },
+        });
+        if (!invoice) throw new BusinessException(ErrorCodes.NOT_FOUND, 'Không tìm thấy hóa đơn.');
+        const order = await manager.findOne(ServiceOrder, {
+          where: { id: invoice.serviceOrderId }, lock: { mode: 'pessimistic_write' },
+        });
+        const booking = order && await manager.findOne(Booking, { where: { id: order.bookingId } });
+        if (!order || !booking || booking.visitGroupId)
+          throw new BusinessException(ErrorCodes.CONFLICT, 'Hóa đơn không hợp lệ để xác nhận chuyển khoản.');
+        const payment = await manager.findOne(Payment, {
+          where: { idempotencyKey: 'MANUAL_BANK_INVOICE:' + invoice.id }, lock: { mode: 'pessimistic_write' },
+        });
+        if (!payment || payment.provider !== 'manual_bank' || payment.purpose !== PaymentPurpose.INVOICE ||
+            payment.mode !== PaymentMode.LIVE || payment.invoiceId !== invoice.id ||
+            payment.requestedByUserId !== booking.customerId)
+          throw new BusinessException(ErrorCodes.CONFLICT, 'Khách chưa chọn phương thức chuyển khoản.');
+        const amount = this.requireWholeVnd(invoice.grandTotal, 'Invoice amount');
+        if (body.amount !== amount || Number(payment.amount) !== amount)
+          throw new BusinessException(ErrorCodes.PAYMENT_AMOUNT_MISMATCH, 'Số tiền nhận không khớp hóa đơn.');
+        const response = () => ({ paymentId: payment.id, invoiceId: invoice.id, amount, status: PaymentAttemptStatus.VERIFIED });
+        if (payment.status === PaymentAttemptStatus.VERIFIED) {
+          if (payment.providerReference !== providerReference)
+            throw new BusinessException(ErrorCodes.PAYMENT_IDEMPOTENCY_CONFLICT, 'Giao dịch đã được xác nhận bằng mã ngân hàng khác.');
+          if (invoice.paymentStatus !== PaymentStatus.PAID)
+            throw new BusinessException(ErrorCodes.CONFLICT, 'Thanh toán chuyển khoản không nhất quán.');
+          return response();
+        }
+        if (payment.status !== PaymentAttemptStatus.PENDING || invoice.paymentStatus === PaymentStatus.PAID ||
+            order.status === ServiceOrderStatus.CANCELLED || !order.completionRequestedAt)
+          throw new BusinessException(ErrorCodes.CONFLICT, 'Thanh toán không còn hợp lệ.');
+        await assertInvoiceCollectionAllowed(manager, invoice);
+        await this.assertNoActiveCashIntent(manager, 'SOLO', order.id);
+        // A voucher reservation taken after selection must not be collected by bank as well.
+        await this.assertNewCollectionAllowed(manager, order.id);
+        const duplicate = await manager.findOne(Payment, { where: { providerReference } });
+        if (duplicate && duplicate.id !== payment.id)
+          throw new BusinessException(ErrorCodes.PAYMENT_IDEMPOTENCY_CONFLICT, 'Mã giao dịch đã được dùng cho đơn khác.');
+        // Once the bank receipt is independently verified, another still-open attempt
+        // can never be allowed to charge the same invoice a second time.
+        await this.closeAbandonedVnpayAttempts(manager, [invoice.id], actor);
+        const attempts = await manager.find(Payment, {
+          where: { invoiceId: invoice.id, purpose: PaymentPurpose.INVOICE },
+        });
+        for (const attempt of attempts) {
+          if (attempt.id === payment.id) continue;
+          if (attempt.status === PaymentAttemptStatus.VERIFIED)
+            throw new BusinessException(ErrorCodes.CONFLICT, 'Hóa đơn đã có giao dịch được xác nhận khác.');
+          if (attempt.status === PaymentAttemptStatus.PENDING) {
+            attempt.status = PaymentAttemptStatus.CANCELLED;
+            attempt.failureCode = 'PAID_BY_MANUAL_BANK';
+            await manager.save(Payment, attempt);
+          }
+        }
+        const now = new Date();
+        await this.markInvoicePaidOnline(manager, invoice, booking.customerId, now);
+        payment.status = PaymentAttemptStatus.VERIFIED;
+        payment.providerReference = providerReference;
+        payment.verifiedAt = now;
+        payment.failureCode = null;
+        await manager.save(Payment, payment);
+        await this.auditLogService.logWithManagerStrict(manager, {
+          actorUserId: actor.id, actorRole: actor.role,
+          action: 'MANUAL_BANK_TRANSFER_VERIFIED', resourceType: 'payment', resourceId: payment.id,
+          after: { invoiceId: invoice.id, amount, providerReference, method: 'ADMIN_BANK_RECEIPT' },
+        });
+        return response();
+      });
+    } catch (error) {
+      if (this.isUniquePaymentReferenceViolation(error))
+        throw new BusinessException(ErrorCodes.PAYMENT_IDEMPOTENCY_CONFLICT, 'Mã giao dịch đã được dùng cho đơn khác.');
+      throw error;
+    }
+  }
+
   async getInvoice(
     orderId: string,
     actor: FinanceActor,
@@ -902,7 +1059,7 @@ export class FinanceService {
         throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hóa đơn 0 ₫ cần được xác nhận miễn phí.');
       }
       await this.assertNoActiveCashIntent(manager, 'SOLO', order.id);
-      assertShippingFinancialCutoverAllowed(invoice);
+      await assertInvoiceCollectionAllowed(manager, invoice);
       await this.assertNewCollectionAllowed(manager, order.id);
 
       const payment = paymentRepository.create({
@@ -1087,7 +1244,7 @@ export class FinanceService {
         throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'VNPay chỉ áp dụng cho hóa đơn từ 5.000 ₫. Vui lòng chọn ví hoặc tiền mặt.');
       }
       await this.assertNoActiveCashIntent(manager, 'SOLO', order.id);
-      assertShippingFinancialCutoverAllowed(invoice);
+      await assertInvoiceCollectionAllowed(manager, invoice);
       await this.assertNewCollectionAllowed(manager, order.id);
       const txnRef = randomUUID().replace(/-/g, '');
       const requestedAt = new Date();
@@ -2464,7 +2621,7 @@ export class FinanceService {
    * settled into their wallet. The caller holds the invoice row lock.
    */
   private async markInvoicePaidOnline(manager: EntityManager, invoice: Invoice, payerUserId: string, now: Date): Promise<void> {
-    assertShippingFinancialCutoverAllowed(invoice);
+    await assertInvoiceCollectionAllowed(manager, invoice);
     if (this.requireWholeVnd(invoice.grandTotal, 'Invoice amount') <= 0) {
       throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hóa đơn 0 ₫ cần được xác nhận miễn phí.');
     }
@@ -2514,7 +2671,7 @@ export class FinanceService {
 
   /** Read-only reconciliation of a zero snapshot. Never repairs or replaces a persisted invoice. */
   private async assertNoChargeIntegrity(manager: EntityManager, invoice: Invoice, order: ServiceOrder, booking: Booking): Promise<void> {
-    assertShippingFinancialCutoverAllowed(invoice);
+    await assertInvoiceCollectionAllowed(manager, invoice);
     const fail = () => { throw new BusinessException(ErrorCodes.CONFLICT, 'Hóa đơn chưa khớp chi phí đã duyệt. Vui lòng liên hệ FixHome để kiểm tra.'); };
     for (const value of [invoice.grandTotal, invoice.laborTotal, invoice.partsTotal, invoice.fixHomePartsTotal,
       invoice.technicianPartsTotal, invoice.technicianPartWarrantyFeeTotal, invoice.shippingFee, invoice.commissionAmount]) {
@@ -2799,7 +2956,7 @@ export class FinanceService {
       }
       const amount = this.requireWholeVnd(invoice.grandTotal, 'Invoice amount');
       if (amount <= 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hoá đơn không có số tiền cần thanh toán');
-      assertShippingFinancialCutoverAllowed(invoice);
+      await assertInvoiceCollectionAllowed(manager, invoice);
       await this.assertNoActiveCashIntent(manager, 'SOLO', order.id);
       await this.assertNewCollectionAllowed(manager, order.id);
       const now = new Date();
@@ -2853,7 +3010,7 @@ export class FinanceService {
     manager: EntityManager,
     params: { order: ServiceOrder; invoice: Invoice; settlement: CashSettlement; actor: FinanceActor; now: Date; collectedAmount?: number },
   ): Promise<void> {
-    assertShippingFinancialCutoverAllowed(params.invoice);
+    await assertInvoiceCollectionAllowed(manager, params.invoice);
     if (this.requireWholeVnd(params.invoice.grandTotal, 'Invoice amount') <= 0) {
       throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hóa đơn 0 ₫ cần được khách hàng xác nhận miễn phí.');
     }
@@ -2948,7 +3105,7 @@ export class FinanceService {
     settlement: CashSettlement | null,
     now: Date,
   ): Promise<void> {
-    assertShippingFinancialCutoverAllowed(invoice);
+    await assertInvoiceCollectionAllowed(manager, invoice);
     const commissionDueRepository = manager.getRepository(CommissionDue);
     const platformDueRepository = manager.getRepository(PlatformDue);
     const laborTotal = this.requireWholeVnd(invoice.laborTotal, 'Labor total');
@@ -2963,7 +3120,7 @@ export class FinanceService {
       invoice.commissionAmount,
       'Commission amount',
     );
-    const financial = readInvoiceFinancialSnapshot(invoice);
+    const financial = readInvoiceFinancialSnapshot(invoice, invoice.shippingShipments ?? undefined);
     // The rate frozen on the invoice is the snapshot (BRX-026). Comparing
     // with a constant broke every payment once an admin changed the rate.
     const commissionRate = Number(invoice.commissionRateSnapshot);
@@ -3565,5 +3722,17 @@ export class FinanceService {
       );
     }
     return amount;
+  }
+
+  /** PostgreSQL unique receipt index, surfaced as a business conflict instead of a 500. */
+  private isUniquePaymentReferenceViolation(error: unknown): boolean {
+    const failure = error as {
+      code?: string;
+      constraint?: string;
+      driverError?: { code?: string; constraint?: string };
+    };
+    const code = failure?.driverError?.code ?? failure?.code;
+    const constraint = failure?.driverError?.constraint ?? failure?.constraint;
+    return code === '23505' && constraint === 'uq_payments_provider_reference';
   }
 }

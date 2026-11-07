@@ -13,6 +13,30 @@ import { TechnicianAssignment } from './entities/technician-assignment.entity';
 import { RepairEvidence } from './entities/repair-evidence.entity';
 
 describe('Parts reconciliation at invoice freeze', () => {
+  it('freezes two 1-VND deliveries at L=C=0 without aggregate-rounding a fictitious technician fee', async () => {
+    const shipments = ['a','b'].map(id => ({partRequestId:id,additionalCostId:id,termsVersion:4,receiptVersion:4,
+      shippingPolicyVersion:'W3_70_30_V1',shippingFee:1,customerShippingShare:1,technicianShippingShare:0}));
+    const requests = shipments.map(line => ({id:line.partRequestId,additionalCostId:line.additionalCostId,
+      status:'requested',requestType:'additional',fulfillmentMethod:'delivery',items:[]}));
+    const manager = {
+      findOneBy: vi.fn().mockResolvedValue(null),
+      findOne: vi.fn(async entity => entity === ServiceOrder ? {bookingId:'booking'} : entity === Booking ? {pricingModeSnapshot:'fixed_price',fixedUnitPriceSnapshot:0,quantity:1} : null),
+      find: vi.fn(async entity => entity === PartRequest ? requests : []),
+      query: vi.fn(async sql => {
+        if (sql === 'SELECT w3_invoice_shipping_source($1) AS shipments') return [{ shipments }];
+        if (sql === 'SELECT w3_received_request($1) AS received') return [{ received: true }];
+        if (sql === 'SELECT labor_total,rate_bps,commission_amount FROM w3_order_commission_snapshots WHERE service_order_id=$1')
+          return [{ labor_total: 0, rate_bps: 1000, commission_amount: 0 }];
+        throw new Error(`Unexpected fixture query: ${sql}`);
+      }),
+      create: vi.fn((_entity,value)=>value), save:vi.fn(async (_entity,value)=>({...value,id:'invoice'})),
+      insert:vi.fn(),update:vi.fn(),
+    };
+    const service = Object.create(ServiceOrdersService.prototype);
+    service.configService={getInt:async()=>1000};
+    expect(await service.generateInvoice('order',manager)).toMatchObject({grandTotal:2,shippingFee:2,
+      customerShippingShare:2,technicianShippingShare:0,laborTotal:0,commissionAmount:0,shippingShipments:shipments});
+  });
   it('preserves every existing invoice snapshot without recalculation, including historical paid and invalid unpaid zero', async () => {
     for (const paymentStatus of ['paid', 'unpaid']) {
       const existing = { id: 'invoice', serviceOrderId: 'order', paymentStatus, grandTotal: 0 };
@@ -50,7 +74,7 @@ describe('Parts reconciliation at invoice freeze', () => {
       createQueryBuilder: vi.fn(() => ({ where: () => ({ getMany: async () => [{ ...approved('a1', 'extra'), requestId: 'cost' }] }) })),
       create: vi.fn((_entity, value) => value),
       save: vi.fn(async (_entity, value) => ({ ...value, id: 'invoice' })),
-      insert: vi.fn(), update: vi.fn(),
+      insert: vi.fn(), update: vi.fn(), query: vi.fn().mockResolvedValue([{shipments:null}]),
     };
     const service = Object.create(ServiceOrdersService.prototype);
     service.configService = { getInt: vi.fn().mockResolvedValue(1000) };

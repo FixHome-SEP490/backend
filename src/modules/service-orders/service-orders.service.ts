@@ -1,3 +1,4 @@
+import { readInvoiceFinancialSnapshot } from '../finance/invoice-financial-snapshot';
 import { andWhereTextMatches } from '../../shared/utils/list-search';
 import { checkPendingVisitQuota, lockPendingVisitCustomer } from '../bookings/pending-visit-quota';
 import { NO_DEPARTURE_CANCEL_REASON } from './no-departure';
@@ -1914,6 +1915,13 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     await assertNoOnsiteInterruption(manager, order.id);
     if (!ServiceOrderStateMachine.canTransition(order.status, next)) throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Illegal order transition');
     const previous = order.status;
+    // For W3, close/cancel released cohorts before the database validates order cancellation.
+    // Everything stays in the same transaction, including rollback if any W3 stock is still owed.
+    const [w3Cohort] = next === ServiceOrderStatus.CANCELLED && cause !== 'repair_failure'
+      ? await manager.query('SELECT EXISTS(SELECT 1 FROM warehouse_delivery_cohorts WHERE service_order_id=$1) AS present', [order.id])
+      : [];
+    const precloseW3 = w3Cohort?.present === true;
+    if (precloseW3) await closeOrderPartRequests(manager, order.id, true);
     const now = new Date();
     await manager.update(ServiceOrder, order.id, { status: next, ...(next === ServiceOrderStatus.UNDER_REPAIR ? { startedAt: now } : {}), ...(next === ServiceOrderStatus.COMPLETED ? { completedAt: now } : {}), ...(next === ServiceOrderStatus.CANCELLED ? { cancelledAt: now } : {}) });
     await manager.insert(OrderStatusHistory, { serviceOrderId: order.id, fromStatus: previous, toStatus: next, actorUserId: actor.id, actorRole: actor.role, reason });
@@ -1921,7 +1929,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     // A failed repair ends the work, not physical custody. The caller releases
     // unreceived outgoing requests separately; every received request stays open
     // for the warehouse, including stock held by a previous technician.
-    if (cause !== 'repair_failure' && [ServiceOrderStatus.CANCELLED, ServiceOrderStatus.COMPLETED].includes(next)) await closeOrderPartRequests(manager, order.id, next === ServiceOrderStatus.CANCELLED);
+    if (!precloseW3 && cause !== 'repair_failure' && [ServiceOrderStatus.CANCELLED, ServiceOrderStatus.COMPLETED].includes(next)) await closeOrderPartRequests(manager, order.id, next === ServiceOrderStatus.CANCELLED);
     if (next === ServiceOrderStatus.CANCELLED && cause !== 'repair_failure') {
       // #27: nothing is paid on a cancelled order; open attempts on its invoice are closed.
       await manager.createQueryBuilder().update(Payment)
@@ -2111,23 +2119,34 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     }
 
     const partsTotal = fixHomePartsTotal + technicianPartsTotal;
-    const shippingFee = additionalCosts.reduce((sum, cost) => sum + (
+    const shippingShipments = requests.some(r => r.fulfillmentMethod === 'delivery')
+      ? (await manager.query('SELECT w3_invoice_shipping_source($1) AS shipments', [orderId]))[0]?.shipments ?? null
+      : null;
+    const shippingFee = shippingShipments ? shippingShipments.reduce((sum: number, line: { shippingFee: number }) => sum + line.shippingFee, 0) : additionalCosts.reduce((sum, cost) => sum + (
       requests.some(r => r.additionalCostId === cost.id && r.receivedAt && r.fulfillmentMethod === 'delivery' && ['received', 'completed'].includes(r.status))
         ? Number(cost.shippingFee || 0) : 0), 0);
 
     // Spec v1.4 BRX-026: Platform commission is 10% on Final Labor Total. 0% on parts. Rate snapshotted.
     const commissionBase = 'LABOR';
-    const commissionRateSnapshot = (await this.configService.getInt('commission.rate_bps', 1000)) / 10000;
+    const [w3Commission] = shippingShipments
+      ? await manager.query('SELECT labor_total,rate_bps,commission_amount FROM w3_order_commission_snapshots WHERE service_order_id=$1', [orderId])
+      : [];
+    if (shippingShipments && (!w3Commission || Number(w3Commission.labor_total) !== laborTotal))
+      throw new BusinessException(ErrorCodes.CONFLICT, 'Tiền công không khớp bản chụp hoa hồng đã xác nhận.');
+    const commissionRateSnapshot = shippingShipments
+      ? Number(w3Commission.rate_bps) / 10000
+      : (await this.configService.getInt('commission.rate_bps', 1000)) / 10000;
     if (commissionRateSnapshot < 0 || commissionRateSnapshot > 1) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid commission configuration');
-    const commissionAmount = Math.round(laborTotal * commissionRateSnapshot);
+    const commissionAmount = shippingShipments ? Number(w3Commission.commission_amount) : Math.round(laborTotal * commissionRateSnapshot);
 
-    // W3 cutover is deliberately closed: new invoices explicitly freeze LEGACY.
-    // No ENV flag may reinterpret approved costs or historical invoices.
-    const shippingPolicyVersion = 'LEGACY_100_0' as const;
-    const financial = computeInvoiceFinancialComponents({ policyVersion: shippingPolicyVersion,
+    const shippingPolicyVersion = shippingShipments ? 'W3_70_30_V1' as const : 'LEGACY_100_0' as const;
+    const financial = shippingShipments ? null : computeInvoiceFinancialComponents({ policyVersion: shippingPolicyVersion,
       laborTotal, commissionAmount, fixHomePartsTotal, technicianPartsTotal,
       technicianPartWarrantyFeeTotal, shippingFee, knownLaborDeductions: 0 });
-    const { grandTotal, customerShippingShare, technicianShippingShare } = financial;
+    const customerShippingShare = shippingShipments ? shippingShipments.reduce((sum: number, line: { customerShippingShare: number }) => sum + line.customerShippingShare, 0) : financial!.customerShippingShare;
+    const technicianShippingShare = shippingFee - customerShippingShare;
+    if (laborTotal - commissionAmount - technicianShippingShare < 0) throw new BusinessException(ErrorCodes.CONFLICT, 'Tiền công không đủ chi trả phí giao đã chốt.');
+    const grandTotal = laborTotal + partsTotal + technicianPartWarrantyFeeTotal + customerShippingShare;
 
     // Create invoice
     const invoice = manager.create(Invoice, {
@@ -2141,6 +2160,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       shippingPolicyVersion,
       customerShippingShare,
       technicianShippingShare,
+      shippingShipments,
       grandTotal,
       commissionBase,
       commissionRateSnapshot,
@@ -2148,6 +2168,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       paymentStatus: PaymentStatus.UNPAID,
       issuedAt: new Date(),
     });
+    if (shippingShipments) readInvoiceFinancialSnapshot(invoice, shippingShipments);
     const savedInvoice = await manager.save(Invoice, invoice);
 
     // Create invoice items

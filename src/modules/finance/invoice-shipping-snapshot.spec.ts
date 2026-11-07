@@ -3,8 +3,53 @@ import {
   assertShippingFinancialCutoverAllowed,
   readInvoiceShippingSnapshot,
 } from './invoice-shipping-snapshot';
+import { assessOrderShippingLaborBudget } from './order-shipping-labor-budget.policy';
 
 describe('immutable shipping snapshot readers and closed cutover', () => {
+  it('golden two 1-VND shipments on ONE order sum rounded shares before reading the invoice', () => {
+    const shipments = ['delivery-a', 'delivery-b'].map((partRequestId) => ({
+      serviceOrderId: 'order-1',
+      partRequestId,
+      quoteVersion: 1,
+      shippingPolicyVersion: 'W3_70_30_V1' as const,
+      shippingFee: 1,
+      customerShippingShare: 1,
+      technicianShippingShare: 0,
+    }));
+    const aggregate = assessOrderShippingLaborBudget({
+      version: 'W3_ORDER_SHIPPING_LABOR_BUDGET_V1',
+      serviceOrderId: 'order-1',
+      laborTotal: 200_000,
+      commissionAmount: 20_000,
+      knownApprovedDeductions: 0,
+      deliveryRequestIds: ['delivery-a', 'delivery-b'],
+      deliveries: shipments,
+    });
+    expect(aggregate).toMatchObject({
+      deliveryCount: 2,
+      shippingFee: 2,
+      customerShippingShare: 2,
+      technicianShippingShare: 0,
+      netLaborAfterShipping: 180_000,
+      financialExecution: 'BLOCKED',
+    });
+    const invoice = {
+      shippingPolicyVersion: 'W3_70_30_V1',
+      shippingFee: 2,
+      customerShippingShare: 2,
+      technicianShippingShare: 0,
+    };
+    expect(readInvoiceShippingSnapshot(invoice, shipments)).toEqual({
+      policyVersion: 'W3_70_30_V1',
+      shippingFee: 2,
+      customerShippingShare: 2,
+      technicianShippingShare: 0,
+    });
+    // Without shipment provenance the current reader splits aggregate S=2 as 1/1 and refuses 2/0.
+    expect(() => readInvoiceShippingSnapshot(invoice)).toThrow();
+    expect(() => assertShippingFinancialCutoverAllowed(invoice)).toThrow();
+  });
+
   it('reads historical absent shares as legacy without mutating the invoice', () => {
     const invoice = Object.freeze({ shippingFee: '20000' });
     expect(readInvoiceShippingSnapshot(invoice)).toEqual({

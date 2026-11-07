@@ -13,9 +13,7 @@ import { advanceDelivery } from './warehouse-delivery.policy';
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
 
-/** Dormant internal stock writer. Consumes a persisted command, NEVER caller quantities/verdicts.
- * Two independent DB gates currently make admitted physical events impossible. Future activation
- * must replace event admission, integrate lifecycle release + custody and verify approvals FIRST.
+/** Internal stock writer. Consumes a persisted, DB-validated command, never caller quantities.
  * Caller owns transaction; any error MUST roll it back. No public/Nest registration. */
 export class WarehouseDeliveryStock {
   async applyRecordedEvent(
@@ -29,7 +27,7 @@ export class WarehouseDeliveryStock {
       'SELECT enabled FROM warehouse_delivery_gate WHERE id=1 FOR SHARE',
     );
     if (gate?.enabled !== true) {
-      // A forward-reviewed, zero-fee proposal admits only its own cohort. The old
+      // A confirmed positive terms event or zero-fee proposal admits only its own cohort. The old
       // global gate remains immutable/closed; Admin drafts cannot open it.
       const [admission] = await manager.query(
         `SELECT true AS admitted FROM delivery_shipping_proposals p
@@ -39,7 +37,11 @@ export class WarehouseDeliveryStock {
         AND (s.projection#>>'{actual,totalShippingFee}')::numeric=0
         AND s.projection->'customerConsent'<>'null'::jsonb AND s.projection->'technicianConsent'<>'null'::jsonb
         UNION ALL SELECT true AS admitted FROM warehouse_delivery_events e JOIN delivery_shipping_proposals p ON p.part_request_id=e.part_request_id
-        WHERE e.part_request_id=$1 AND e.command_id=$2 AND e.kind='RELEASE' LIMIT 1`,
+        WHERE e.part_request_id=$1 AND e.command_id=$2 AND e.kind='RELEASE'
+        UNION ALL SELECT true AS admitted FROM warehouse_delivery_events e
+        JOIN delivery_fee_terms f ON f.part_request_id=e.part_request_id AND f.result_version=e.fee_terms_version
+        WHERE e.part_request_id=$1 AND e.command_id=$2 AND
+          (e.kind='RELEASE' OR w3_positive_physical_terms(e.part_request_id)=f.state) LIMIT 1`,
         [requestId, commandId],
       );
       if (admission?.admitted !== true)

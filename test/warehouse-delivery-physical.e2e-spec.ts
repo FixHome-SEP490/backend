@@ -1,10 +1,10 @@
 // Existing ephemeral CI PostgreSQL ONLY. No dotenv/DATABASE_* or shared DEV fallback.
 import 'reflect-metadata';
 import { createRequire } from 'node:module';
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { DataSource } from 'typeorm';
+import { DataSource, QueryFailedError } from 'typeorm';
 import { Test } from '@nestjs/testing';
 import { JwtModule, JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -66,7 +66,6 @@ describe.skipIf(
           ![
             'VoucherFundingLedger1792994400001',
             'VoucherCampaignLifecycle1793116800000',
-            'CashPaymentIntents1793293200000',
             'TechnicianResponsibility1793293200001',
           ].includes(m.name),
       ),
@@ -533,7 +532,7 @@ describe.skipIf(
           size: Buffer.byteLength(bytes),
         },
         actor,
-        shippingFee > 0,
+        shippingFee > 0 && ['QUOTE', 'ACTUAL'].includes(purpose),
       );
     if (shippingFee > 0)
       return { ...f, service, managerActor, customerActor, warehouse, upload };
@@ -580,8 +579,10 @@ describe.skipIf(
     );
     return { ...f, service, managerActor, customerActor, warehouse, upload };
   }
-  async function positiveTerms(fee = 20000) {
+  async function positiveTerms(fee = 20000, labor?: number, freeParts = false) {
     const f = await operationalFixture(fee);
+    if (freeParts) await db.query('UPDATE additional_cost_items SET unit_price=0,line_total=0 WHERE request_id=$1',[f.cost.id]);
+    if (labor !== undefined) await db.query('UPDATE bookings SET fixed_unit_price_snapshot=$2 WHERE id=$1', [f.booking.id,labor]);
     const e = await f.upload('QUOTE');
     const body = {
       commandId: randomUUID(),
@@ -619,7 +620,472 @@ describe.skipIf(
     return { ...f, body, state: result.state, consent };
   }
 
+  const maxFee = (fee: number) => Math.max(1, fee);
   const capKey = 'w3.shipping.max_new_fee_vnd';
+  async function receipt(f: any) {
+    await f.service.physical(f.request.id, 'RESERVE', {commandId:randomUUID(),expectedVersion:0},f.actor);
+    for (const [index, kind] of ['ISSUE_TO_COURIER','COURIER_DISPATCH','TECHNICIAN_RECEIPT'].entries()) {
+      const actor = kind === 'TECHNICIAN_RECEIPT' ? f.actor : f.managerActor;
+      const evidence = await f.upload(kind,actor);
+      await f.service.physical(f.request.id,kind as any,{commandId:randomUUID(),expectedVersion:index+1,evidenceId:evidence.evidenceId},actor);
+    }
+  }
+  async function freezeInvoice(f: any) {
+    const Service = runtimeClass('modules/service-orders/service-orders.service','ServiceOrdersService');
+    const service = Object.create(Service.prototype);
+    service.configService = { getInt: async () => Number((await db.query("SELECT value FROM system_configs WHERE key='commission.rate_bps'"))[0].value) };
+    return db.transaction(async m => {
+      await m.query('SELECT id FROM service_orders WHERE id=$1 FOR UPDATE',[f.order.id]);
+      const invoice = await service.generateInvoice(f.order.id,m);
+      await m.query('UPDATE service_orders SET completion_requested_at=now() WHERE id=$1',[f.order.id]);
+      return invoice;
+    });
+  }
+  it.each([[30000,1000,221000,21000,9000],[0,1000,200000,0,0],[30000,0,221000,21000,9000]])(
+    'Task3 freezes actual receipt S=%i Cbps=%i before requesting completion', async (fee,bps,gross,c,t) => {
+      await db.query("UPDATE system_configs SET value='30000' WHERE key='w3.shipping.max_new_fee_vnd'");
+      await db.query("UPDATE system_configs SET value=$1 WHERE key='commission.rate_bps'",[String(bps)]);
+      try {
+        const f = await confirmedPositive(fee,200000);
+        await expect(freezeInvoice(f)).rejects.toThrow();
+        await receipt(f);
+        await db.query("UPDATE part_request_items SET usage_status='used' WHERE part_request_id=$1",[f.request.id]);
+        // Fixture parts are 2 x 1000. Keep them real and separately asserted.
+        const invoice = await freezeInvoice(f);
+        expect({...invoice,...Object.fromEntries(['shippingFee','grandTotal','commissionAmount','fixHomePartsTotal'].map(k=>[k,Number(invoice[k])]))}).toMatchObject({shippingPolicyVersion:'W3_70_30_V1',shippingFee:fee,
+          customerShippingShare:c,technicianShippingShare:t,grandTotal:gross+2000,
+          commissionAmount:200000*bps/10000,fixHomePartsTotal:2000});
+        expect(invoice.shippingShipments).toHaveLength(1);
+        expect((await db.query('SELECT w3_invoice_payment_verified($1) AS ok',[invoice.id]))[0].ok).toBe(true);
+        await expect(db.query('UPDATE invoices SET shipping_shipments=\'[]\'::jsonb WHERE id=$1',[invoice.id])).rejects.toThrow();
+        await expect(db.query("UPDATE part_request_items SET usage_status='returned' WHERE part_request_id=$1",[f.request.id])).rejects.toThrow();
+        expect((await freezeInvoice(f)).id).toBe(invoice.id);
+      } finally { await db.query("UPDATE system_configs SET value='1000' WHERE key='commission.rate_bps'"); }
+    });
+  async function confirmedPositive(fee = 20000, labor?: number, freeParts = false) {
+    const f = await positiveTerms(maxFee(fee), labor, freeParts);
+    let state = (await f.consent(f.state, f.customerActor)).state;
+    state = (await f.consent(state, f.actor)).state;
+    const evidence = await f.upload('ACTUAL');
+    await f.service.recordTerms(f.request.id, 'RECORD_ACTUAL', {
+      commandId: randomUUID(), expectedVersion: state.version, quoteVersion: 1,
+      totalShippingFee: fee, evidenceId: evidence.evidenceId,
+    }, f.managerActor);
+    return f;
+  }
+  it('W3 SQL guard disallows completed before invoice PAID, even with receipt-verified provenance', async () => {
+    await db.query("UPDATE system_configs SET value='30000' WHERE key='w3.shipping.max_new_fee_vnd'");
+    const f = await confirmedPositive(30000, 200000, true);
+    await receipt(f);
+    await db.query("UPDATE part_request_items SET usage_status='used' WHERE part_request_id=$1", [f.request.id]);
+    const invoice = await freezeInvoice(f);
+    expect(invoice.paymentStatus).toBe('unpaid');
+    expect((await db.query('SELECT w3_invoice_payment_verified($1) AS ok', [invoice.id]))[0].ok).toBe(true);
+    await expect(db.query("UPDATE service_orders SET status='completed' WHERE id=$1", [f.order.id])).rejects.toThrow('Delivery obligations and finance require resolution');
+    expect((await db.getRepository('ServiceOrder').findOneByOrFail({ id: f.order.id })).status).toBe('under_repair');
+  });
+
+  it('W3 SQL guard permits fully cancelled pre-dispatch cohorts but never live physical obligations', async () => {
+    await db.query("UPDATE system_configs SET value='30000' WHERE key='w3.shipping.max_new_fee_vnd'");
+    const unused = await confirmedPositive(30000, 200000, true);
+    await db.query("UPDATE part_requests SET status='cancelled',cancelled_at=now() WHERE id=$1", [unused.request.id]);
+    await db.query("UPDATE service_orders SET status='cancelled',cancelled_at=now() WHERE id=$1", [unused.order.id]);
+    expect((await db.getRepository('ServiceOrder').findOneByOrFail({ id: unused.order.id })).status).toBe('cancelled');
+
+    const dispatched = await confirmedPositive(30000, 200000, true);
+    await receipt(dispatched);
+    await expect(db.query("UPDATE service_orders SET status='cancelled',cancelled_at=now() WHERE id=$1", [dispatched.order.id])).rejects.toThrow('Delivery obligations and finance require resolution');
+  });
+
+  it('W3 invoice preserves frozen commission if Admin changes rate after final technician receipt', async () => {
+    await db.query("UPDATE system_configs SET value='30000' WHERE key='w3.shipping.max_new_fee_vnd'");
+    const f = await confirmedPositive(30000, 200000, true);
+    await receipt(f);
+    await db.query("UPDATE part_request_items SET usage_status='used' WHERE part_request_id=$1", [f.request.id]);
+    await db.query("UPDATE system_configs SET value='2000' WHERE key='commission.rate_bps'");
+    try {
+      const invoice = await freezeInvoice(f);
+      expect(Number(invoice.commissionAmount)).toBe(20000);
+      expect(Number(invoice.commissionRateSnapshot)).toBe(0.1);
+      expect(Number(invoice.grandTotal)).toBe(221000);
+    } finally {
+      await db.query("UPDATE system_configs SET value='1000' WHERE key='commission.rate_bps'");
+    }
+  });
+
+  function paymentServices() {
+    const Business = runtimeClass('modules/system-config/business-config.service', 'BusinessConfigService');
+    const config = new Business(db.getRepository('SystemConfig'));
+    const Wallet = runtimeClass('modules/wallet/wallet.service', 'WalletService');
+    const wallet = new Wallet(undefined, undefined, undefined, undefined, db, config, {});
+    const Settlement = runtimeClass('modules/wallet/settlement.service', 'SettlementService');
+    const settlement = new Settlement(wallet, db);
+    const CustomerWallet = runtimeClass('modules/customer-wallet/customer-wallet.service', 'CustomerWalletService');
+    const customerWallet = new CustomerWallet(db.getRepository('CustomerWallet'), db.getRepository('CustomerWalletTransaction'), db);
+    const Audit = runtimeClass('modules/audit-log/audit-log.service', 'AuditLogService');
+    const audit = new Audit(db.getRepository('AuditLog'));
+    // Test-only provider configuration. No network adapter or real provider credentials.
+    const settings: Record<string, string> = {
+      CASH_FIRST_ENABLED: 'true', VNPAY_TMN_CODE: 'W3TEST', VNPAY_HASH_SECRET: 'w3-isolated-test-key',
+      VNPAY_PAYMENT_URL: 'https://example.test/pay', VNPAY_RETURN_URL: 'https://example.test/return',
+    };
+    const Finance = runtimeClass('modules/finance/finance.service', 'FinanceService');
+    const finance = new Finance(...['Invoice', 'ServiceOrder', 'Booking', 'TechnicianAssignment',
+      'CashSettlement', 'CommissionDue', 'Payment', 'PlatformDue'].map(name => db.getRepository(name)),
+    db, config, undefined, audit, undefined, { get: (key: string) => settings[key] }, undefined,
+    settlement, wallet, customerWallet);
+    return { finance, settlement, customerWallet };
+  }
+
+  async function payableW3() {
+    await db.query("UPDATE system_configs SET value='30000' WHERE key='w3.shipping.max_new_fee_vnd'");
+    const f = await confirmedPositive(30000, 200000, true);
+    await receipt(f);
+    await db.query("UPDATE part_request_items SET usage_status='used' WHERE part_request_id=$1", [f.request.id]);
+    return { ...f, invoice: await freezeInvoice(f) };
+  }
+
+  async function expectPosting(f: any, amount: number, type: string) {
+    expect((await db.getRepository('Invoice').findOneByOrFail({ id: f.invoice.id })).paymentStatus).toBe('paid');
+    expect((await db.getRepository('ServiceOrder').findOneByOrFail({ id: f.order.id })).status).toBe('completed');
+    const transactions = await db.getRepository('WalletTransaction').findBy({ referenceId: f.order.id, referenceType: 'SERVICE_ORDER' });
+    expect(transactions).toHaveLength(1);
+    expect(transactions[0].type).toBe(type);
+    expect(Number(transactions[0].amount)).toBe(amount);
+  }
+
+  it('Task3 CashFirst pending is unpaid; exact owned receipt and concurrent replay post once', async () => {
+    const f = await payableW3();
+    const { finance, settlement } = paymentServices();
+    const selection = { commandId: randomUUID() };
+    await expect(finance.createCashIntent('SOLO', f.order.id, selection, f.actor)).rejects.toThrow();
+    const intent = await finance.createCashIntent('SOLO', f.order.id, selection, f.customerActor);
+    expect((await finance.createCashIntent('SOLO', f.order.id, selection, f.customerActor)).id).toBe(intent.id);
+    expect(intent.status).toBe('pending');
+    expect((await db.getRepository('Invoice').findOneByOrFail({ id: f.invoice.id })).paymentStatus).toBe('unpaid');
+    expect(await db.getRepository('WalletTransaction').countBy({ referenceId: f.order.id })).toBe(0);
+    await expect(finance.payInvoiceWithWallet(f.invoice.id, f.customerActor)).rejects.toThrow();
+    const input = { intentId: intent.id, commandId: randomUUID(), receivedAmountVnd: 221000 };
+    await expect(finance.receiveCashIntent('SOLO', f.order.id, input, f.customerActor)).rejects.toThrow();
+    await expect(finance.receiveCashIntent('SOLO', f.order.id, { ...input, receivedAmountVnd: 220999 }, f.actor)).rejects.toThrow();
+    const results = await Promise.all([1, 2].map(() => finance.receiveCashIntent('SOLO', f.order.id, input, f.actor)));
+    expect(results.map(row => row.status)).toEqual(['received', 'received']);
+    await settlement.trySettleOrder(f.order.id);
+    await expectPosting(f, 50000, 'PLATFORM_FEE');
+    expect(await db.getRepository('CashSettlement').countBy({ serviceOrderId: f.order.id })).toBe(1);
+    expect(await db.getRepository('Payment').countBy({ invoiceId: f.invoice.id, status: 'verified' })).toBe(1);
+    expect(Number((await db.getRepository('Wallet').findOneByOrFail({ technicianId: f.actor.id })).balance)).toBe(-50000);
+    expect(await db.getRepository('AuditLog').countBy({ action: 'CASH_INTENT_RECEIVED', resourceId: intent.id })).toBe(1);
+  });
+
+  it('Task3 customer-wallet ownership and concurrent retries debit 221000 and credit 171000 once', async () => {
+    const f = await payableW3();
+    const { finance, customerWallet, settlement } = paymentServices();
+    await db.transaction(m => customerWallet.apply(m, { userId: f.customer.id, type: 'top_up', amount: 300000,
+      idempotencyKey: `CI_FUND:${f.order.id}` }));
+    await expect(finance.payInvoiceWithWallet(f.invoice.id, { id: f.actor.id, role: Role.CUSTOMER })).rejects.toThrow();
+    const results = await Promise.allSettled([1, 2].map(() => finance.payInvoiceWithWallet(f.invoice.id, f.customerActor)));
+    expect(results.filter(row => row.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(row => row.status === 'rejected')).toHaveLength(1);
+    await settlement.trySettleOrder(f.order.id);
+    await expectPosting(f, 171000, 'ONLINE_EARNING');
+    expect(await db.getRepository('CustomerWalletTransaction').countBy({ referenceId: f.invoice.id, type: 'invoice_payment' })).toBe(1);
+    expect(Number((await db.getRepository('CustomerWallet').findOneByOrFail({ userId: f.customer.id })).balance)).toBe(79000);
+    expect(await db.getRepository('Payment').countBy({ invoiceId: f.invoice.id, provider: 'wallet', status: 'verified' })).toBe(1);
+  });
+
+  it('Task3 signed VNPay callback rejects forged signature/amount and settles duplicate success once', async () => {
+    const f = await payableW3();
+    const { finance, settlement } = paymentServices();
+    const result = await finance.createVnpayPaymentUrl(f.invoice.id, f.customerActor, '127.0.0.1');
+    const txnRef = new URL(result.paymentUrl).searchParams.get('vnp_TxnRef');
+    const query: Record<string, string> = { vnp_TxnRef: txnRef!, vnp_Amount: '22100000', vnp_ResponseCode: '00',
+      vnp_TransactionStatus: '00', vnp_TransactionNo: randomUUID() };
+    const signed = (values: Record<string, string>) => ({ ...values, vnp_SecureHash: createHmac('sha512', 'w3-isolated-test-key')
+      .update(Object.keys(values).sort().map(key => `${key}=${encodeURIComponent(values[key]).replace(/%20/g, '+')}`).join('&')).digest('hex') });
+    expect((await finance.handleVnpayIpn({ ...query, vnp_SecureHash: 'forged' })).RspCode).toBe('97');
+    expect((await finance.handleVnpayIpn(signed({ ...query, vnp_Amount: '22100100' }))).RspCode).toBe('04');
+    expect((await db.getRepository('Invoice').findOneByOrFail({ id: f.invoice.id })).paymentStatus).toBe('unpaid');
+    expect(await db.getRepository('WalletTransaction').countBy({ referenceId: f.order.id })).toBe(0);
+    const responses = await Promise.all([1, 2].map(() => finance.handleVnpayIpn(signed(query))));
+    expect(responses.every(row => ['00', '02'].includes(row.RspCode))).toBe(true);
+    expect((await finance.handleVnpayIpn(signed(query))).RspCode).toBe('02');
+    await settlement.trySettleOrder(f.order.id);
+    await expectPosting(f, 171000, 'ONLINE_EARNING');
+    expect(await db.getRepository('Payment').countBy({ invoiceId: f.invoice.id, provider: 'vnpay', status: 'verified' })).toBe(1);
+  });
+
+  it('Task3 freezes two actual 1-VND deliveries on one order with per-shipment rounding and one wallet debit', async () => {
+    const f = await confirmedPositive(1, 0, true);
+    const cost = await save('AdditionalCostRequest', { ...f.cost, id: randomUUID(), reason: 'Second actual shipment' });
+    await save('AdditionalCostItem', { requestId: cost.id, type: 'parts_equipment', description: 'Second free part',
+      partSource: 'fixhome', partCatalogId: f.part.id, quantity: 2, unitPrice: 0, lineTotal: 0 });
+    const sibling = await db.transaction(async m => {
+      const r = await m.getRepository('PartRequest').save({ serviceOrderId: f.order.id, technicianId: f.actor.id,
+        requestType: 'additional', fulfillmentMethod: 'delivery', additionalCostId: cost.id, shippingFee: 1, status: 'requested' });
+      await m.getRepository('PartRequestItem').save({ partRequestId: r.id, partCatalogId: f.part.id, partSource: 'fixhome',
+        partNameSnapshot: 'Second free part', quantity: 2, unitPriceSnapshot: 0 });
+      await store.enrollNew(m, r.id, f.actor);
+      return r;
+    });
+    const upload = (purpose: string, actor = f.managerActor) => f.service.upload(sibling.id, f.warehouse.id, purpose, 1,
+      { buffer: Buffer.from(purpose), size: Buffer.byteLength(purpose), mimetype: 'image/jpeg' }, actor,
+      ['QUOTE', 'ACTUAL'].includes(purpose));
+    const evidence = await upload('QUOTE');
+    let state = (await f.service.recordTerms(sibling.id, 'PROPOSE', { commandId: randomUUID(), expectedVersion: 0,
+      warehouseId: f.warehouse.id, evidenceId: evidence.evidenceId, courierReference: 'second-actual', totalShippingFee: 1 }, f.managerActor)).state;
+    for (const actor of [f.customerActor, f.actor]) {
+      state = (await f.service.recordTerms(sibling.id, 'CONSENT', { commandId: randomUUID(), expectedVersion: state.version,
+        quoteVersion: 1, quoteFingerprint: state.quote!.fingerprint, totalShippingFee: 1,
+        shippingShare: actor.role === Role.CUSTOMER ? 1 : 0, accepted: true }, actor)).state;
+    }
+    const actual = await upload('ACTUAL');
+    await f.service.recordTerms(sibling.id, 'RECORD_ACTUAL', { commandId: randomUUID(), expectedVersion: state.version,
+      quoteVersion: 1, totalShippingFee: 1, evidenceId: actual.evidenceId }, f.managerActor);
+    await db.getRepository('WarehouseStock').update({ warehouseId: f.warehouse.id, partId: f.part.id }, { onHand: 6 });
+    await receipt(f);
+    await receipt({ ...f, request: sibling, upload });
+    await db.query("UPDATE part_request_items SET usage_status='used' WHERE part_request_id IN ($1,$2)", [f.request.id, sibling.id]);
+    const invoice = await freezeInvoice(f);
+    expect(invoice.shippingShipments).toHaveLength(2);
+    expect(new Set(invoice.shippingShipments.map((line: any) => line.partRequestId)).size).toBe(2);
+    expect(invoice.shippingShipments.every((line: any) => line.shippingFee === 1 && line.customerShippingShare === 1 && line.technicianShippingShare === 0)).toBe(true);
+    expect(Number(invoice.shippingFee)).toBe(2);
+    expect(Number(invoice.customerShippingShare)).toBe(2);
+    expect(Number(invoice.technicianShippingShare)).toBe(0);
+    expect(Number(invoice.grandTotal)).toBe(2);
+    const { finance, customerWallet } = paymentServices();
+    await db.transaction(m => customerWallet.apply(m, { userId: f.customer.id, type: 'top_up', amount: 2, idempotencyKey: `CI_FUND:${f.order.id}` }));
+    await finance.payInvoiceWithWallet(invoice.id, f.customerActor);
+    await expect(finance.payInvoiceWithWallet(invoice.id, f.customerActor)).rejects.toThrow();
+    expect((await db.getRepository('ServiceOrder').findOneByOrFail({ id: f.order.id })).status).toBe('completed');
+    expect(await db.getRepository('CustomerWalletTransaction').countBy({ referenceId: invoice.id, type: 'invoice_payment' })).toBe(1);
+    expect(Number((await db.getRepository('CustomerWallet').findOneByOrFail({ userId: f.customer.id })).balance)).toBe(0);
+    // L=C=t=0: no invented technician earning or zero-value posting.
+    expect(await db.getRepository('WalletTransaction').countBy({ referenceId: f.order.id })).toBe(0);
+  });
+
+  it('Task3 completion hold defers wallet settlement until the real hold is resolved', async () => {
+    const f = await payableW3();
+    // This schema deliberately excludes the unrelated responsibility migration.
+    const [hold] = await db.query(`INSERT INTO support_cases(case_type,status,service_order_id,customer_id,reason,hold_completion)
+      VALUES('other','open',$1,$2,'CI completion hold',true) RETURNING id`, [f.order.id, f.customer.id]);
+    const { finance, customerWallet, settlement } = paymentServices();
+    await db.transaction(m => customerWallet.apply(m, { userId: f.customer.id, type: 'top_up', amount: 221000,
+      idempotencyKey: `CI_FUND:${f.order.id}` }));
+    await expect(finance.createCashIntent('SOLO', f.order.id, { commandId: randomUUID() }, f.customerActor)).rejects.toThrow();
+    await finance.payInvoiceWithWallet(f.invoice.id, f.customerActor);
+    expect((await db.getRepository('Invoice').findOneByOrFail({ id: f.invoice.id })).paymentStatus).toBe('paid');
+    expect((await db.getRepository('ServiceOrder').findOneByOrFail({ id: f.order.id })).status).toBe('under_repair');
+    expect(await settlement.trySettleOrder(f.order.id)).toMatchObject({ settled: false, reason: 'ORDER_NOT_COMPLETED' });
+    expect(await db.getRepository('WalletTransaction').countBy({ referenceId: f.order.id })).toBe(0);
+    await db.query("UPDATE support_cases SET status='resolved',hold_completion=false,resolved_at=now() WHERE id=$1", [hold.id]);
+    const Orders = runtimeClass('modules/service-orders/service-orders.service', 'ServiceOrdersService');
+    const orders = Object.create(Orders.prototype);
+    const Audit = runtimeClass('modules/audit-log/audit-log.service', 'AuditLogService');
+    orders.auditLogService = new Audit(db.getRepository('AuditLog'));
+    const Business = runtimeClass('modules/system-config/business-config.service', 'BusinessConfigService');
+    orders.configService = new Business(db.getRepository('SystemConfig'));
+    orders.settlementService = settlement;
+    await save('RepairEvidence', { serviceOrderId: f.order.id, uploaderId: f.actor.id, type: 'after', mediaUrl: 'https://example.test/after.jpg' });
+    await db.transaction(async m => {
+      const order = await m.getRepository('ServiceOrder').findOneOrFail({ where: { id: f.order.id }, lock: { mode: 'pessimistic_write' } });
+      expect(await orders.finalizeIfSatisfied(m, order, f.customerActor)).toBe(true);
+    });
+    await settlement.trySettleOrder(f.order.id);
+    await expectPosting(f, 171000, 'ONLINE_EARNING');
+  });
+
+  it('Task3 rejects approved labor drift after receipt without creating an invoice', async () => {
+    const f = await confirmedPositive(20000, 200000, true);
+    await receipt(f);
+    await db.query("UPDATE part_request_items SET usage_status='used' WHERE part_request_id=$1", [f.request.id]);
+    await db.query('UPDATE bookings SET fixed_unit_price_snapshot=210000 WHERE id=$1', [f.booking.id]);
+    await expect(freezeInvoice(f)).rejects.toThrow();
+    expect(await db.getRepository('Invoice').countBy({ serviceOrderId: f.order.id })).toBe(0);
+    expect((await db.getRepository('ServiceOrder').findOneByOrFail({ id: f.order.id })).completionRequestedAt).toBeNull();
+  });
+
+  it.each(['RESERVED', 'ISSUED_TO_COURIER', 'DISPATCH_RECORDED'])(
+    'Task3 cancellation rolls back with ongoing %s obligation', async stage => {
+      const f = await confirmedPositive();
+      await f.service.physical(f.request.id, 'RESERVE', { commandId: randomUUID(), expectedVersion: 0 }, f.actor);
+      if (stage !== 'RESERVED') {
+        const issue = await f.upload('ISSUE_TO_COURIER');
+        await f.service.physical(f.request.id, 'ISSUE_TO_COURIER', { commandId: randomUUID(), expectedVersion: 1, evidenceId: issue.evidenceId }, f.managerActor);
+      }
+      if (stage === 'DISPATCH_RECORDED') {
+        const dispatch = await f.upload('COURIER_DISPATCH');
+        await f.service.physical(f.request.id, 'COURIER_DISPATCH', { commandId: randomUUID(), expectedVersion: 2, evidenceId: dispatch.evidenceId }, f.managerActor);
+      }
+      const Orders = runtimeClass('modules/service-orders/service-orders.service', 'ServiceOrdersService');
+      const orders = Object.create(Orders.prototype);
+      const Audit = runtimeClass('modules/audit-log/audit-log.service', 'AuditLogService');
+      orders.auditLogService = new Audit(db.getRepository('AuditLog'));
+      const snapshot = async () => ({
+        request: await db.getRepository('PartRequest').findOneByOrFail({ id: f.request.id }),
+        order: await db.getRepository('ServiceOrder').findOneByOrFail({ id: f.order.id }),
+        stock: await db.getRepository('WarehouseStock').findOneByOrFail({ warehouseId: f.warehouse.id, partId: f.part.id }),
+        history: await db.getRepository('OrderStatusHistory').find({ where: { serviceOrderId: f.order.id }, order: { id: 'ASC' } }),
+        audit: await db.getRepository('AuditLog').find({ where: [{ resourceId: f.order.id }, { resourceId: f.request.id }], order: { id: 'ASC' } }),
+      });
+      const before = await snapshot();
+      const cancellation = db.transaction(async m => {
+        const order = await m.getRepository('ServiceOrder').findOneOrFail({ where: { id: f.order.id }, lock: { mode: 'pessimistic_write' } });
+        await orders.commitTransition(m, order, 'cancelled', f.actor, 'CI cancel');
+      });
+      await expect(cancellation).rejects.toBeInstanceOf(QueryFailedError);
+      await expect(cancellation).rejects.toMatchObject({
+        message: 'Release physical reservation first; issued obligations require review',
+        driverError: { code: 'P0001' },
+      });
+      expect(await snapshot()).toEqual(before);
+      expect((await db.getRepository('PartRequest').findOneByOrFail({ id: f.request.id })).status).toBe('requested');
+      expect((await db.getRepository('ServiceOrder').findOneByOrFail({ id: f.order.id })).status).toBe('under_repair');
+      expect(await db.getRepository('OrderStatusHistory').countBy({ serviceOrderId: f.order.id })).toBe(0);
+    });
+
+  it.each([false, true])('Task3 service cancels an unused/released cohort (released=%s) before the order guard', async released => {
+    const f = await confirmedPositive();
+    if (released) {
+      await f.service.physical(f.request.id, 'RESERVE', { commandId: randomUUID(), expectedVersion: 0 }, f.actor);
+      await f.service.physical(f.request.id, 'RELEASE', { commandId: randomUUID(), expectedVersion: 1 }, f.managerActor);
+    }
+    const Orders = runtimeClass('modules/service-orders/service-orders.service', 'ServiceOrdersService');
+    const orders = Object.create(Orders.prototype);
+    const Audit = runtimeClass('modules/audit-log/audit-log.service', 'AuditLogService');
+    orders.auditLogService = new Audit(db.getRepository('AuditLog'));
+    await db.transaction(async m => {
+      const order = await m.getRepository('ServiceOrder').findOneOrFail({ where: { id: f.order.id }, lock: { mode: 'pessimistic_write' } });
+      await orders.commitTransition(m, order, 'cancelled', f.actor, 'CI pre-dispatch cancel');
+    });
+    expect((await db.getRepository('PartRequest').findOneByOrFail({ id: f.request.id })).status).toBe('cancelled');
+    expect((await db.getRepository('ServiceOrder').findOneByOrFail({ id: f.order.id })).status).toBe('cancelled');
+    expect(await db.getRepository('OrderStatusHistory').countBy({ serviceOrderId: f.order.id, toStatus: 'cancelled' })).toBe(1);
+    expect(await db.getRepository('AuditLog').countBy({ resourceId: f.order.id, action: 'ORDER_TRANSITION' })).toBe(1);
+    expect((await db.getRepository('WarehouseStock').findOneByOrFail({ warehouseId: f.warehouse.id, partId: f.part.id })).reserved).toBe(0);
+  });
+
+  it('Task3 concurrent cash selection and wallet collection leave exactly one authoritative rail', async () => {
+    const f = await payableW3();
+    const { finance, customerWallet } = paymentServices();
+    await db.transaction(m => customerWallet.apply(m, { userId: f.customer.id, type: 'top_up', amount: 221000,
+      idempotencyKey: `CI_FUND:${f.order.id}` }));
+    const outcomes = await Promise.allSettled([
+      finance.createCashIntent('SOLO', f.order.id, { commandId: randomUUID() }, f.customerActor),
+      finance.payInvoiceWithWallet(f.invoice.id, f.customerActor),
+    ]);
+    expect(outcomes.filter(row => row.status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.filter(row => row.status === 'rejected')).toHaveLength(1);
+    const intent = await db.getRepository('CashPaymentIntent').findOneBy({ scopeKind: 'SOLO', scopeId: f.order.id });
+    const paid = (await db.getRepository('Invoice').findOneByOrFail({ id: f.invoice.id })).paymentStatus === 'paid';
+    expect(Boolean(intent)).toBe(!paid);
+    expect(await db.getRepository('CustomerWalletTransaction').countBy({ referenceId: f.invoice.id, type: 'invoice_payment' })).toBe(paid ? 1 : 0);
+    expect(Number((await db.getRepository('CustomerWallet').findOneByOrFail({ userId: f.customer.id })).balance)).toBe(paid ? 0 : 221000);
+    expect(await db.getRepository('WalletTransaction').countBy({ referenceId: f.order.id })).toBe(paid ? 1 : 0);
+  });
+
+  it.each(['cash','online'])('Task3 %s posts real paid invoice and technician wallet exactly once', async rail => {
+    await db.query("UPDATE system_configs SET value='30000' WHERE key='w3.shipping.max_new_fee_vnd'");
+    const f = await confirmedPositive(30000,200000,true);
+    await receipt(f);
+    await db.query("UPDATE part_request_items SET usage_status='used' WHERE part_request_id=$1",[f.request.id]);
+    const invoice = await freezeInvoice(f);
+    expect(Number(invoice.grandTotal)).toBe(221000);
+    const Wallet = runtimeClass('modules/wallet/wallet.service','WalletService');
+    const Business = runtimeClass('modules/system-config/business-config.service','BusinessConfigService');
+    const wallet = new Wallet(undefined,undefined,undefined,undefined,db,new Business(db.getRepository('SystemConfig')),{});
+    const Settlement = runtimeClass('modules/wallet/settlement.service','SettlementService');
+    const settlement = new Settlement(wallet,db);
+    const Finance = runtimeClass('modules/finance/finance.service','FinanceService');
+    const finance = Object.create(Finance.prototype);
+    finance.settlementService=settlement;
+    let cash: any;
+    if (rail==='cash') cash=await save('CashSettlement',{serviceOrderId:f.order.id,declaredByTechnicianId:f.actor.id,
+      declaredAmount:221000,status:'confirmed',confirmedByCustomerId:f.customer.id,confirmedAmount:221000,confirmedAt:new Date()});
+    const pay=()=>db.transaction(async m=>{
+      const row=await m.getRepository('Invoice').findOneOrFail({where:{id:invoice.id},lock:{mode:'pessimistic_write'}});
+      await m.query('SELECT id FROM service_orders WHERE id=$1 FOR UPDATE',[f.order.id]);
+      if(row.paymentStatus==='paid') return;
+      if(rail==='cash') await finance.applyConfirmedCash(m,{order:await m.getRepository('ServiceOrder').findOneByOrFail({id:f.order.id}),invoice:row,settlement:cash,actor:f.actor,now:new Date()});
+      else await finance.markInvoicePaidOnline(m,row,f.customer.id,new Date());
+    });
+    await Promise.all([pay(),pay()]);
+    await Promise.all([settlement.trySettleOrder(f.order.id),settlement.trySettleOrder(f.order.id)]);
+    expect((await db.getRepository('Invoice').findOneByOrFail({id:invoice.id})).paymentStatus).toBe('paid');
+    expect((await db.getRepository('ServiceOrder').findOneByOrFail({id:f.order.id})).status).toBe('completed');
+    const tx=await db.getRepository('WalletTransaction').findBy({referenceId:f.order.id,referenceType:'SERVICE_ORDER'});
+    expect(tx).toHaveLength(1);
+    expect(tx[0].type).toBe(rail==='cash'?'PLATFORM_FEE':'ONLINE_EARNING');
+    expect(Number(tx[0].amount)).toBe(rail==='cash'?50000:171000);
+    expect(Number((await db.getRepository('Wallet').findOneByOrFail({technicianId:f.actor.id})).balance)).toBe(rail==='cash'?-50000:171000);
+  });
+  it('positive physical rejects missing consents/actual, source drift, authority drift and insufficient labor', async () => {
+    const missing = await positiveTerms();
+    const reserve = (f: any) => f.service.physical(f.request.id, 'RESERVE', {commandId:randomUUID(),expectedVersion:0}, f.actor);
+    await expect(reserve(missing)).rejects.toThrow();
+    const drift = await confirmedPositive();
+    await db.query('UPDATE additional_cost_requests SET reason=$2 WHERE id=$1', [drift.cost.id, 'changed source']);
+    await expect(reserve(drift)).rejects.toThrow();
+    const authority = await confirmedPositive();
+    await db.query("UPDATE warehouses SET status='inactive' WHERE id=$1", [authority.warehouse.id]);
+    await expect(reserve(authority)).rejects.toThrow();
+    const budget = await operationalFixture(20000);
+    // L=1000 before C freeze; t=6000 must fail even though cap/source allow the quote.
+    await db.query('UPDATE bookings SET fixed_unit_price_snapshot=1000 WHERE id=$1', [budget.booking.id]);
+    const ev = await budget.upload('QUOTE');
+    let st = (await budget.service.recordTerms(budget.request.id, 'PROPOSE', {commandId:randomUUID(),expectedVersion:0,warehouseId:budget.warehouse.id,evidenceId:ev.evidenceId,courierReference:'budget',totalShippingFee:20000}, budget.managerActor)).state;
+    for (const actor of [budget.customerActor,budget.actor]) {
+      st = (await budget.service.recordTerms(budget.request.id,'CONSENT',{commandId:randomUUID(),expectedVersion:st.version,quoteVersion:1,quoteFingerprint:st.quote!.fingerprint,totalShippingFee:20000,shippingShare:actor.role==='customer'?14000:6000,accepted:true},actor)).state;
+    }
+    const actual = await budget.upload('ACTUAL');
+    await budget.service.recordTerms(budget.request.id,'RECORD_ACTUAL',{commandId:randomUUID(),expectedVersion:3,quoteVersion:1,totalShippingFee:20000,evidenceId:actual.evidenceId},budget.managerActor);
+    await expect(reserve(budget)).rejects.toMatchObject({response:{details:{blocker:'DELIVERY_ORDER_LABOR_BUDGET_EXCEEDED'}}});
+    for (const f of [missing,drift,authority,budget]) expect(await eventCount(f.request.id)).toBe(0);
+  });
+  it('positive reserve serializes exact replay and competing CAS; rejects replay after source authority drifts', async () => {
+    const f = await confirmedPositive();
+    const body = {commandId:randomUUID(),expectedVersion:0};
+    const results = await Promise.all([1,2].map(() => f.service.physical(f.request.id,'RESERVE',body,f.actor)));
+    expect(results.map(r=>r.replayed).sort()).toEqual([false,true]);
+    await expect(f.service.physical(f.request.id,'RESERVE',{...body,commandId:randomUUID()},f.actor)).rejects.toThrow();
+    expect(await eventCount(f.request.id)).toBe(1);
+    expect((await db.getRepository('WarehouseStock').findOneByOrFail({warehouseId:f.warehouse.id})).reserved).toBe(2);
+    await expect(db.query('UPDATE additional_cost_requests SET reason=$2 WHERE id=$1',[f.cost.id,'forged'])).rejects.toThrow('immutable');
+    await db.query("UPDATE users SET is_active=false WHERE id=$1",[f.customer.id]);
+    await expect(f.service.physical(f.request.id,'RESERVE',body,f.actor)).rejects.toThrow();
+  });
+  it('positive raw SQL requires exact terms version, snapshot and complete movements; failures roll back stock', async () => {
+    const f = await confirmedPositive();
+    const snapshot = {version:1,status:'RESERVED',reason:null,warehouseId:f.warehouse.id,responsibleUserId:f.managerActor.id,
+      quantities:[{partId:f.part.id,quantity:2}],courierReference:null,evidence:[]};
+    const insert = (m: any, version: number|null, value=snapshot) => m.query(`INSERT INTO warehouse_delivery_events
+      (part_request_id,command_id,actor_user_id,actor_role,kind,expected_version,result_version,fingerprint,snapshot,fee_terms_version)
+      VALUES($1,$2,$3,'technician','RESERVE',0,1,$4,$5::jsonb,$6)`,[f.request.id,randomUUID(),f.actor.id,'a'.repeat(64),JSON.stringify(value),version]);
+    await expect(db.transaction(m=>insert(m,null))).rejects.toThrow('DELIVERY_TERMS_VERSION_MISMATCH');
+    await expect(db.transaction(m=>insert(m,3))).rejects.toThrow('DELIVERY_TERMS_VERSION_MISMATCH');
+    await expect(db.transaction(m=>insert(m,4,{...snapshot,quantities:[{partId:f.part.id,quantity:1}]}))).rejects.toThrow('snapshot mismatch');
+    await expect(db.transaction(m=>insert(m,4))).rejects.toThrow('Incomplete delivery movement journal');
+    expect(await eventCount(f.request.id)).toBe(0);
+    expect((await db.getRepository('WarehouseStock').findOneByOrFail({warehouseId:f.warehouse.id})).reserved).toBe(0);
+  });
+  it('positive budget includes sibling quote commitments, not only the executing shipment', async () => {
+    const f = await confirmedPositive(20000,10000); // L-C=9000; each shipment t=6000.
+    const cost = await save('AdditionalCostRequest',{...f.cost,id:randomUUID(),reason:'sibling approved source'});
+    await save('AdditionalCostItem',{requestId:cost.id,type:'parts_equipment',description:'sibling part',partSource:'fixhome',partCatalogId:f.part.id,quantity:2,unitPrice:1000,lineTotal:2000});
+    const sibling = await db.transaction(async m=>{
+      const r = await m.getRepository('PartRequest').save({serviceOrderId:f.order.id,technicianId:f.actor.id,requestType:'additional',fulfillmentMethod:'delivery',additionalCostId:cost.id,shippingFee:20000,status:'requested'});
+      await m.getRepository('PartRequestItem').save({partRequestId:r.id,partCatalogId:f.part.id,partSource:'fixhome',partNameSnapshot:'sibling part',quantity:2,unitPriceSnapshot:1000});
+      await m.query('INSERT INTO warehouse_delivery_cohorts(part_request_id,service_order_id,technician_id) VALUES($1,$2,$3)',[r.id,f.order.id,f.actor.id]);
+      return r;
+    });
+    const reserve=()=>f.service.physical(f.request.id,'RESERVE',{commandId:randomUUID(),expectedVersion:0},f.actor);
+    await expect(reserve()).rejects.toMatchObject({response:{details:{blocker:'DELIVERY_ORDER_BUDGET_COVERAGE_REQUIRED'}}});
+    const evidence=await f.service.upload(sibling.id,f.warehouse.id,'QUOTE',1,{buffer:Buffer.from('sibling'),size:7,mimetype:'image/jpeg'},f.managerActor,true);
+    await f.service.recordTerms(sibling.id,'PROPOSE',{commandId:randomUUID(),expectedVersion:0,warehouseId:f.warehouse.id,evidenceId:evidence.evidenceId,courierReference:'sibling',totalShippingFee:20000},f.managerActor);
+    await expect(reserve()).rejects.toMatchObject({response:{details:{blocker:'DELIVERY_ORDER_LABOR_BUDGET_EXCEEDED'}}});
+    expect(await eventCount(f.request.id)).toBe(0);
+  });
   const runtimeClass = (path: string, name: string) => createRequire(resolve('package.json'))(resolve(`dist/${path}.js`))[name];
   async function capAdminFixture() {
     const admin = await save('User', { email: `${randomUUID()}@example.test`, passwordHash: 'ci-no-login',
@@ -670,8 +1136,8 @@ describe.skipIf(
     expect((await f.service.recordTerms(f.request.id, 'RECORD_ACTUAL', { commandId: randomUUID(),
       expectedVersion: state.version, quoteVersion: 1, totalShippingFee: 20, evidenceId: actual.evidenceId }, f.managerActor)).state)
       .toMatchObject({ financialExecution: 'BLOCKED', paymentVerified: false });
-    await expect(f.service.physical(f.request.id, 'RESERVE', { commandId: randomUUID(), expectedVersion: 0 }, f.actor))
-      .rejects.toMatchObject({ response: { details: { blocker: 'FINANCE_LEDGER_SOURCE_REQUIRED' } } });
+    expect((await f.service.physical(f.request.id, 'RESERVE', { commandId: randomUUID(), expectedVersion: 0 }, f.actor)).state.status)
+      .toBe('RESERVED');
     expect((await f.service.readTerms(f.request.id, f.customerActor)).invalidated).toBe(false);
   });
 
@@ -1169,7 +1635,7 @@ describe.skipIf(
     expect((await db.query('SELECT count(*)::int AS n FROM w3_order_commission_snapshots WHERE service_order_id=$1', [f.order.id]))[0].n).toBe(1);
     expect((await db.query('SELECT count(*)::int AS n FROM delivery_fee_terms WHERE part_request_id=$1', [f.request.id]))[0].n).toBe(1);
   });
-  it('persists positive 70/30 terms, separate consents and lower actual without enabling financial or physical execution', async () => {
+  it('persists positive terms and executes the physical lifecycle once, leaving finance closed', async () => {
     const f = await positiveTerms();
     expect(f.state.quote).toMatchObject({
       totalShippingFee: 20000,
@@ -1253,15 +1719,26 @@ describe.skipIf(
     expect(
       (await f.service.readTerms(f.request.id, f.customerActor)).invalidated,
     ).toBe(false);
-    await expect(
-      f.service.physical(
+    const reserveBody = { commandId: randomUUID(), expectedVersion: 0 };
+    const reserved = await f.service.physical(
         f.request.id,
         'RESERVE',
-        { commandId: randomUUID(), expectedVersion: 0 },
+        reserveBody,
         f.actor,
-      ),
-    ).rejects.toThrow();
-    expect(await eventCount(f.request.id)).toBe(0);
+      );
+    expect(reserved.state.status).toBe('RESERVED');
+    expect((await f.service.physical(f.request.id, 'RESERVE', reserveBody, f.actor)).replayed).toBe(true);
+    for (const [index, kind] of ['ISSUE_TO_COURIER', 'COURIER_DISPATCH', 'TECHNICIAN_RECEIPT'].entries()) {
+      const actor = kind === 'TECHNICIAN_RECEIPT' ? f.actor : f.managerActor;
+      const evidence = await f.upload(kind, actor);
+      const result = await f.service.physical(f.request.id, kind as any, {
+        commandId: randomUUID(), expectedVersion: index + 1, evidenceId: evidence.evidenceId,
+      }, actor);
+      expect(result.state.version).toBe(index + 2);
+    }
+    expect(await eventCount(f.request.id)).toBe(4);
+    expect((await db.query('SELECT fee_terms_version FROM warehouse_delivery_events WHERE part_request_id=$1', [f.request.id])).map((r: any) => r.fee_terms_version)).toEqual([4,4,4,4]);
+    expect((await db.query('SELECT count(*)::int AS n FROM delivery_shipping_proposals WHERE part_request_id=$1', [f.request.id]))[0].n).toBe(0);
     expect(
       await db.getRepository('Invoice').countBy({ serviceOrderId: f.order.id }),
     ).toBe(0);
@@ -1270,7 +1747,9 @@ describe.skipIf(
         await db
           .getRepository('WarehouseStock')
           .findOneByOrFail({ warehouseId: f.warehouse.id })
-      ).reserved,
+      ).onHand,
+    ).toBe(1);
+    expect((await db.getRepository('WarehouseStock').findOneByOrFail({warehouseId:f.warehouse.id})).reserved
     ).toBe(0);
   });
   it('serializes positive terms CAS and exact-command retry, and rolls back a failed audit', async () => {
