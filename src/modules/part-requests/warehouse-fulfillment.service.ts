@@ -113,7 +113,7 @@ export class WarehouseFulfillmentService {
       // independently; do not send SM assistance tasks, reserve stock or issue QR.
       await manager.insert(Notification, { userId: request.technicianId,
         title: 'Kho FixHome không đủ linh kiện',
-        message: 'Hiện không có kho FixHome nào đủ toàn bộ linh kiện yêu cầu. Vui lòng tự chuẩn bị và khai báo đúng nguồn linh kiện khi báo giá.',
+        message: 'Hiện không có kho FixHome nào đủ toàn bộ linh kiện yêu cầu. Vui lòng tự chuẩn bị. Hệ thống không tự động tính phí linh kiện tự mua.',
         type: 'PART_REQUEST_STOCK_UNAVAILABLE', referenceId: request.id, referenceType: 'part_request', isRead: false });
       return this.view(manager, request.id);
     }

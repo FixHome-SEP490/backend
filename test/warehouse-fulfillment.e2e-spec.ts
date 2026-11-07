@@ -131,7 +131,7 @@ describe.skipIf(process.env.CI !== 'true')('W2 real PostgreSQL / JWT / custody a
     expect((await repo('ServiceOrder').findOneByOrFail({ id: f.order.id })).grandTotal).toBe('0');
   });
 
-  it('refuses A+B split and produces a manual outcome with no reservation or QR', async () => {
+  it('refuses A+B split and notifies the technician to self-prepare with no reservation or QR', async () => {
     const f = await fixture([1, 1]);
     await call('patch', `${f.base}/cancel`, f.tech, { reason: 'Synthetic cancellation' }).expect(200);
     const second = await save('Warehouse', { name: 'W2 B', responsibleUserId: f.sm.id, status: 'active' });
@@ -141,7 +141,11 @@ describe.skipIf(process.env.CI !== 'true')('W2 real PostgreSQL / JWT / custody a
     const a = await repo('WarehouseAllocation').findOneByOrFail({ partRequestId: r.id });
     expect(a).toMatchObject({ status: 'manual_assistance', warehouseId: null });
     expect(await db.query('SELECT * FROM warehouse_fulfillment_movements m JOIN warehouse_fulfillment_commands c ON c.id=m.command_id WHERE c.part_request_id=$1', [r.id])).toHaveLength(0);
-    expect(await repo('Notification').countBy({ referenceId: r.id, type: 'PART_REQUEST_MANUAL_ASSISTANCE' })).toBeGreaterThan(0);
+    const unavailable = (await call('get', `${f.base}/warehouse-allocation`, f.tech).expect(200)).body.data;
+    expect(unavailable).toMatchObject({ status: 'stock_unavailable', warehouseId: null, stockUnavailable: true });
+    expect(await repo('Notification').countBy({ referenceId: r.id, type: 'PART_REQUEST_STOCK_UNAVAILABLE', userId: f.tech.id })).toBe(1);
+    expect(await repo('Notification').countBy({ referenceId: r.id, type: 'PART_REQUEST_MANUAL_ASSISTANCE' })).toBe(0);
+    await call('post', `${f.base}/warehouse-reserve`, f.sm, { idempotencyKey: randomUUID() }).expect(409);
   });
 
   it('serializes two distinct requests racing for the last units: exactly one wins', async () => {
