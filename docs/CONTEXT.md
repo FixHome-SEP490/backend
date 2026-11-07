@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-07 10:55 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/w3-remove-manual-bank-20261107
+> Cập nhật lần cuối: 2026-11-07 12:25 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w2-warehouse-select-fix-20261107
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -448,6 +448,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - F3 wallet-only source amendment still requires CI review/merge before DEV. Original settled-payment proof and transaction idempotency remain hard gates; real authenticated E2E belongs to owner.
 
 ## 8. Việc đang dở và rủi ro đã biết
+- W2 kho PICKUP: manual reservation của SM nay chỉ chọn kho ĐANG HOẠT ĐỘNG do chính SM phụ trách có đủ toàn bộ SKU, thay vì chọn nhầm kho của SM khác đứng trước theo UUID rồi báo 403. Auto giữ lựa chọn xác định/atomics hiện có. RED→GREEN 13/13 unit, typecheck/lint PASS. Kho hiện CHƯA CÓ tọa độ chuẩn, do đó cờ distanceNotVerified vẫn true; chưa đủ nguồn dữ liệu để chọn kho gần nhất, không được tự suy ra khoảng cách. Đợt sửa đang chờ review/DEV deploy.
 
 - W3 capstone: Backend PR #205 đã merge vào dev, quality gates và deploy workflow 42335435665 SUCCESS; migrations forward 0014/0015 có trong release gate. Shipping 70/30 theo actual shipment và snapshot C đã đóng băng; owner quyết định loại bỏ Manual Bank, chỉ VNPay/Ví FixHome/Tiền mặt. Nhánh hiện tại gỡ manual bank routes/service/tests; chờ PR/CI/deploy bản gỡ và Web W3. Signed-in DEV UAT và provider thật chưa kiểm chứng; không bỏ guard hoặc suy quote thành actual.
 
@@ -520,6 +521,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
+- 2026-11-07 12:25 (UTC+7) | foxonworld | foxonworld/fixhome-w2-warehouse-select-fix-20261107 | Sửa lựa chọn kho đầy đủ tồn do SM đang phụ trách khi thao tác W2 thủ công, giữ auto/no-split/stock lock, thêm 3 regression scenarios và xác nhận thiếu tọa độ để tính khoảng cách; RED→GREEN 13/13, typecheck/lint PASS.
 
 - 2026-11-07 10:55 (UTC+7) | foxonworld | foxonworld/w3-remove-manual-bank-20261107 | OWNER CANCELLED Manual Bank vì VNPay đủ chức năng thanh toán online; xóa API customer/Admin + service/test, giữ VNPay, Ví FixHome, cash-first/legacy và W3 70/30; DEV gỡ bỏ chờ PR/CI/deploy, không thêm payment rail khác.
 
@@ -561,4 +563,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-04 11:12 (UTC+7) | Hgnv11 | warranty-cost-sla-20261104 | Bảo hành theo mô hình 5Sao và Ong Thợ: thợ chịu công, FixHome chịu linh kiện FixHome lỗi, không khắc phục được thì hoàn ví khách và trừ ví thợ, từ chối có xét, hạn 48/72/72 giờ, tác vụ nền, cột và cấu hình mới.
 - 2026-11-04 10:25 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p0-solo-noshow-20261104 | B2 solo contact/readiness và stop nguyên tử, giữ evidence/replay; giới hạn API liên hệ/dừng đơn thử nghiệm DEV và chặn thông báo trùng, không tự phạt khách.
 - 2026-11-04 09:45 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p0-security-20261104 | Thêm P0-1A risk throttling theo actor/IP cho route rủi ro và socket; ghi DEV ceilings cùng giới hạn in-memory/runtime chưa kiểm chứng.
-- 2026-11-04 09:29 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p0-quota-noshow-20261104 | Ghi quota hai lượt pending nguyên tử, retry/nhả thợ ở cap, contract 409 và blocker solo no-show/PostgreSQL.

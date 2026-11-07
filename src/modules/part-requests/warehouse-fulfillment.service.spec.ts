@@ -20,6 +20,55 @@ function setup(status = 'reserved') {
 }
 
 describe('W2 physical authority and legacy safety', () => {
+  it.each([
+    { name: 'assigned SM can use its own eligible warehouse after another SM warehouse', actor: { id: 'sm-b', role: Role.SERVICE_MANAGER }, stockB: 3, automatic: false, expected: 'warehouse-b' },
+    { name: 'automatic booking still selects the first whole-stock warehouse', actor: { id: 'system', role: 'system' }, stockB: 3, automatic: true, expected: 'warehouse-a' },
+  ])('$name', async ({ actor, stockB, automatic, expected }) => {
+    const { service, manager, request, allocation } = setup('manual_assistance');
+    Object.assign(allocation, { warehouseId: null, responsibleUserId: null });
+    const candidates = [{ id: 'warehouse-a', responsibleUserId: 'sm-a' }, { id: 'warehouse-b', responsibleUserId: 'sm-b' }];
+    manager.findOne.mockImplementation(async (entity, options?: any) => entity === WarehouseAllocation ? allocation
+      : entity === Warehouse ? { id: options?.where?.id, responsibleUserId: options?.where?.id === 'warehouse-b' ? 'sm-b' : 'sm-a', status: 'active' }
+      : null);
+    manager.query.mockImplementation(async (sql?: string) => {
+      if (sql?.startsWith('SELECT id, fingerprint')) return [];
+      if (sql?.startsWith('INSERT INTO warehouse_fulfillment_commands')) return [{ id: 'command' }];
+      if (sql?.includes('FROM warehouses w JOIN users')) return candidates;
+      if (sql?.includes('FROM warehouse_stock s WHERE')) return [
+        { warehouseId: 'warehouse-a', partId: 'sku', onHand: 3, reserved: 0 },
+        { warehouseId: 'warehouse-b', partId: 'sku', onHand: stockB, reserved: 0 },
+      ];
+      if (sql?.startsWith('SELECT on_hand AS')) return [{ onHand: 3, reserved: 0 }];
+      return [];
+    });
+    await service.reserve(manager as never, request as never, actor, 'reserve-test', automatic);
+    expect(allocation.warehouseId).toBe(expected);
+    expect(allocation.responsibleUserId).toBe(expected === 'warehouse-b' ? 'sm-b' : 'sm-a');
+    expect(manager.query.mock.calls.some(([sql, params]: any[]) => sql?.startsWith('UPDATE warehouse_stock') && params?.[0] === expected)).toBe(true);
+    expect(manager.query.mock.calls.some(([sql, params]: any[]) => sql?.startsWith('UPDATE warehouse_stock') && params?.[0] !== expected)).toBe(false);
+  });
+
+  it('never reserves another manager warehouse when acting SM has insufficient stock', async () => {
+    const { service, manager, request, allocation } = setup('manual_assistance');
+    Object.assign(allocation, { warehouseId: null, responsibleUserId: null });
+    manager.query.mockImplementation(async (sql?: string) => {
+      if (sql?.startsWith('SELECT id, fingerprint')) return [];
+      if (sql?.startsWith('INSERT INTO warehouse_fulfillment_commands')) return [{ id: 'command' }];
+      if (sql?.includes('FROM warehouses w JOIN users')) return [
+        { id: 'warehouse-a', responsibleUserId: 'sm-a' }, { id: 'warehouse-b', responsibleUserId: 'sm-b' },
+      ];
+      if (sql?.includes('FROM warehouse_stock s WHERE')) return [
+        { warehouseId: 'warehouse-a', partId: 'sku', onHand: 3, reserved: 0 },
+        { warehouseId: 'warehouse-b', partId: 'sku', onHand: 1, reserved: 0 },
+      ];
+      return [];
+    });
+    await expect(service.reserve(manager as never, request as never,
+      { id: 'sm-b', role: Role.SERVICE_MANAGER }, 'no-own-stock')).rejects.toThrow();
+    expect(manager.query.mock.calls.some(([sql]) => sql?.startsWith('UPDATE warehouse_stock'))).toBe(false);
+    expect(manager.save).not.toHaveBeenCalled();
+  });
+
   it('does not enroll Warranty pickup requests or mutate their warehouse state', async () => {
     const { service, manager, request } = setup();
     request.requestType = PartRequestType.WARRANTY;
