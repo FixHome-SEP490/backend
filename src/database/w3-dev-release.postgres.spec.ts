@@ -14,6 +14,7 @@ import { W3PrequoteCommission1793466000011 } from './migrations/1793466000011-W3
 import { W3DeductionPreparation1793466000012 } from './migrations/1793466000012-W3DeductionPreparation';
 import { W3ShippingSafetyCap1793466000013 } from './migrations/1793466000013-W3ShippingSafetyCap';
 import { W3PositivePhysicalDelivery1793466000014 } from './migrations/1793466000014-W3PositivePhysicalDelivery';
+import { W3ZeroFeeInvoice1793466000016 } from './migrations/1793466000016-W3ZeroFeeInvoice';
 import { W3InvoicePaymentEnable1793466000015 } from './migrations/1793466000015-W3InvoicePaymentEnable';
 import {
   CASH_MIGRATIONS,
@@ -53,6 +54,7 @@ w3MigrationClasses.push(W3DeductionPreparation1793466000012);
 w3MigrationClasses.push(W3ShippingSafetyCap1793466000013);
 w3MigrationClasses.push(W3PositivePhysicalDelivery1793466000014);
 w3MigrationClasses.push(W3InvoicePaymentEnable1793466000015);
+w3MigrationClasses.push(W3ZeroFeeInvoice1793466000016);
 
 // CI-only: creates a fresh database on the CI PostgreSQL service at loopback.
 // It never reads .env, DATABASE_* or a shared DEV connection string.
@@ -73,6 +75,7 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
     let admin: DataSource;
     let db: DataSource;
     let created = false;
+    let prerequisiteSql: string;
 
     class FailingPhysicalMigration implements MigrationInterface {
       name = W3_MIGRATIONS[3];
@@ -124,7 +127,7 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
         ],
         migrationsTransactionMode: 'each',
       }).initialize();
-      await db.query(`
+      await db.query(prerequisiteSql = `
       CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
       CREATE TABLE public.users(id uuid PRIMARY KEY, role text, is_active boolean, status text);
       CREATE TABLE public.invoices(id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -478,6 +481,48 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
         await runner.release();
       }
     });
+
+    it('rolls back 0016 bodies, helper ACL and the whole pending ledger on an injected failure', async () => {
+      const index = db.migrations.findIndex(m => m.name === 'W3ZeroFeeInvoice1793466000016');
+      const original = db.migrations[index];
+      db.migrations[index] = { name: original.name, down: q => original.down(q), up: async q => {
+        await original.up(q);
+        throw new Error('fault after 0016 zero-route proof');
+      } };
+      try { await expect(runW3DevGate(db)).rejects.toThrow('fault after 0016 zero-route proof'); }
+      finally { db.migrations[index] = original; }
+      expect((await db.query('SELECT count(*)::int AS n FROM migrations WHERE name=ANY($1)', [W3_MIGRATIONS]))[0].n).toBe(0);
+      expect((await db.query("SELECT to_regprocedure('public.w3_zero_receipt_provenance(uuid,integer,integer,integer)') AS zero, to_regprocedure('public.w3_invoice_commission_source(uuid)') AS commission"))[0]).toEqual({ zero: null, commission: null });
+    }, 30000);
+
+    it('upgrades a real 0015 prefix through only 0016 in a separate disposable database', async () => {
+      const upgradeDatabase = `fixhome_w3_upgrade_${randomUUID().replaceAll('-', '').slice(0, 20)}`;
+      await admin.query(`CREATE DATABASE "${upgradeDatabase}"`);
+      const upgrade = new DataSource({ ...connection, database: upgradeDatabase,
+        migrations: [CashPaymentIntents1793293200000, TechnicianResponsibility1793293200001, ...w3MigrationClasses] });
+      try {
+        await upgrade.initialize();
+        await upgrade.query(prerequisiteSql);
+        for (const name of W3_PREREQUISITES) await upgrade.query(
+          'INSERT INTO public.migrations(timestamp,name) VALUES($1,$2)', [Number(name.slice(-13)), name]);
+        // Apply the real prefix; do not fabricate an applied migration ledger.
+        await upgrade.transaction(async manager => {
+          for (const Migration of w3MigrationClasses.slice(0, -1)) {
+            const migration = new Migration();
+            await migration.up(manager.queryRunner!);
+            await manager.query('INSERT INTO public.migrations(timestamp,name) VALUES($1,$2)',
+              [Number(migration.name!.slice(-13)), migration.name]);
+          }
+        });
+        expect(await runW3DevGate(upgrade)).toEqual(['W3ZeroFeeInvoice1793466000016']);
+        expect(await runW3DevGate(upgrade)).toEqual([]);
+        expect((await upgrade.query('SELECT count(*)::int AS n FROM migrations WHERE name=$1',
+          ['W3ZeroFeeInvoice1793466000016']))[0].n).toBe(1);
+      } finally {
+        if (upgrade.isInitialized) await upgrade.destroy();
+        await admin.query(`DROP DATABASE "${upgradeDatabase}" WITH (FORCE)`);
+      }
+    }, 30000);
 
     it('applies the exact W3 order once, keeps legacy invoices closed and replays without DDL', async () => {
       const invoiceId = randomUUID();
@@ -1014,6 +1059,53 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
       expect(await runW3DevGate(db)).toEqual([]);
     });
 
+    it.each([
+      ['w3_zero_receipt_provenance(uuid,integer,integer,integer)', 'SELECT true'],
+      ['w3_received_request(uuid)', 'BEGIN RETURN true; END'],
+      ['w3_invoice_shipping_source(uuid)', "BEGIN RETURN '[]'::jsonb; END"],
+      ['w3_invoice_commission_source(uuid)', 'BEGIN RETURN QUERY SELECT 0::bigint,0::integer,0::bigint; END'],
+      ['w3_live_invoice_guard()', 'BEGIN RETURN NEW; END'],
+      ['w3_invoice_payment_verified(uuid)', 'SELECT true'],
+    ])('0016 refuses altered provenance/commission body: %s', async (signature, body) => {
+      const [fn] = await db.query('SELECT prosrc,pg_get_functiondef(oid) AS definition FROM pg_proc WHERE oid=$1::regprocedure', [`public.${signature}`]);
+      try {
+        await db.query(fn.definition.replace(fn.prosrc, body));
+        await expect(runW3DevGate(db)).rejects.toThrow(/schema proof incomplete|function proof incomplete/);
+      } finally { await db.query(fn.definition); }
+      expect(await runW3DevGate(db)).toEqual([]);
+    });
+
+    it.each([
+      'w3_zero_receipt_provenance(uuid,integer,integer,integer)',
+      'w3_invoice_commission_source(uuid)',
+    ])('0016 refuses missing helper, changed execution metadata and dirty tail: %s', async signature => {
+      const [fn] = await db.query('SELECT pg_get_functiondef(oid) AS definition FROM pg_proc WHERE oid=$1::regprocedure', [`public.${signature}`]);
+      try {
+        await db.query(`DROP FUNCTION public.${signature}`);
+        await expect(runW3DevGate(db)).rejects.toThrow('W3 zero-fee invoice function proof incomplete');
+      } finally { await db.query(fn.definition); await db.query(`REVOKE ALL ON FUNCTION public.${signature} FROM PUBLIC`); }
+      for (const attribute of ['SECURITY DEFINER', 'IMMUTABLE', "SET search_path TO public"]) {
+        try {
+          await db.query(`ALTER FUNCTION public.${signature} ${attribute}`);
+          await expect(runW3DevGate(db)).rejects.toThrow('W3 zero-fee invoice function proof incomplete');
+        } finally { await db.query(`ALTER FUNCTION public.${signature} RESET ALL`); await db.query(fn.definition); }
+      }
+      await db.query('DELETE FROM public.migrations WHERE name=$1', ['W3ZeroFeeInvoice1793466000016']);
+      try { await expect(runW3DevGate(db)).rejects.toThrow('refusing DDL replay'); }
+      finally { await db.query('INSERT INTO public.migrations(timestamp,name) VALUES(1793466000016,$1)', ['W3ZeroFeeInvoice1793466000016']); }
+      expect(await runW3DevGate(db)).toEqual([]);
+    }, 30000);
+
+    it.each(['PUBLIC', 'anon', 'authenticated', 'service_role'])('0016 refuses private helper EXECUTE granted to %s', async role => {
+      for (const signature of ['w3_zero_receipt_provenance(uuid,integer,integer,integer)', 'w3_invoice_commission_source(uuid)']) {
+        try {
+          await db.query(`GRANT EXECUTE ON FUNCTION public.${signature} TO ${role}`);
+          await expect(runW3DevGate(db)).rejects.toThrow(/can execute W3 zero-fee invoice function/);
+        } finally { await db.query(`REVOKE EXECUTE ON FUNCTION public.${signature} FROM ${role}`); }
+      }
+      expect(await runW3DevGate(db)).toEqual([]);
+    }, 30000);
+
     it.skipIf(!ZeroFeeOperations)(
       'refuses non-prefix 0008 and 0009 ledger loss before any replay',
       async () => {
@@ -1142,16 +1234,12 @@ describe.skipIf(process.env.W3_DEV_ISOLATED_PG !== '1')(
       }
       expect(await runW3DevGate(db)).toEqual([]);
 
-      await db.query('DELETE FROM public.migrations WHERE name=$1', [
-        W3_MIGRATIONS[11],
-      ]);
+      await db.query('DELETE FROM public.migrations WHERE name=ANY($1)', [W3_MIGRATIONS.slice(11)]);
       try {
         await expect(runW3DevGate(db)).rejects.toThrow('refusing DDL replay');
       } finally {
-        await db.query(
-          'INSERT INTO public.migrations(timestamp,name) VALUES($1,$2)',
-          [Number(W3_MIGRATIONS[11].slice(-13)), W3_MIGRATIONS[11]],
-        );
+        for (const name of W3_MIGRATIONS.slice(11)) await db.query(
+          'INSERT INTO public.migrations(timestamp,name) VALUES($1,$2)', [Number(name.slice(-13)), name]);
       }
       expect(await runW3DevGate(db)).toEqual([]);
     }, 30000);

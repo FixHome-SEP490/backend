@@ -1,7 +1,8 @@
 /** DEV-only forward migration gate for the W3 warehouse delivery slice.
  * Historical migrations are never replayed and no migration is ever downgraded. */
 import 'reflect-metadata';
-import { DataSource, MigrationInterface } from 'typeorm';
+import { DataSource, MigrationInterface, QueryRunner } from 'typeorm';
+import { W3ZeroFeeInvoice1793466000016 } from './migrations/1793466000016-W3ZeroFeeInvoice';
 
 export const W3_MIGRATIONS = [
   'WarehouseDeliverySplit1793466000004',
@@ -16,6 +17,7 @@ export const W3_MIGRATIONS = [
   'W3ShippingSafetyCap1793466000013',
   'W3PositivePhysicalDelivery1793466000014',
   'W3InvoicePaymentEnable1793466000015',
+  'W3ZeroFeeInvoice1793466000016',
 ] as const;
 
 const FINANCE_PREREQUISITES = [
@@ -290,6 +292,10 @@ function imageMigrationNames(db: DataSource): string[] {
 }
 
 const W3_MARKERS: Record<string, string> = {
+  [W3_MIGRATIONS[12]]: `SELECT (to_regprocedure('public.w3_zero_receipt_provenance(uuid,integer,integer,integer)') IS NOT NULL
+    OR to_regprocedure('public.w3_invoice_commission_source(uuid)') IS NOT NULL
+    OR coalesce(pg_get_functiondef(to_regprocedure('public.w3_received_request(uuid)')) LIKE '%w3_zero_receipt_provenance%',false)
+    OR coalesce(pg_get_functiondef(to_regprocedure('public.w3_live_invoice_guard()')) LIKE '%w3_invoice_commission_source%',false)) AS present`,
   [W3_MIGRATIONS[11]]: `SELECT (EXISTS(SELECT 1 FROM information_schema.columns
     WHERE table_schema='public' AND table_name='invoices' AND column_name='shipping_shipments')
     OR to_regprocedure('public.w3_received_request(uuid)') IS NOT NULL
@@ -1027,6 +1033,7 @@ async function verifyAppliedW3Schema(
   if (applied.has(W3_MIGRATIONS[10])) await verifyPositivePhysicalSchema(db);
   if (applied.has(W3_MIGRATIONS[11]))
     await verifyInvoicePaymentEnableSchema(db);
+  if (applied.has(W3_MIGRATIONS[12])) await verifyZeroFeeInvoiceSchema(db);
 }
 
 async function verifyW3Schema(db: DataSource): Promise<void> {
@@ -1042,6 +1049,52 @@ async function verifyW3Schema(db: DataSource): Promise<void> {
   await verifyShippingCap(db);
   await verifyPositivePhysicalSchema(db);
   await verifyInvoicePaymentEnableSchema(db);
+  await verifyZeroFeeInvoiceSchema(db);
+}
+
+/** Verify the complete reviewed 0016 bodies, not a substring that could coexist
+ * with RETURN true or a removed consent/stock/budget guard. Capture SQL locally;
+ * never execute migration DDL during verification of an applied ledger. */
+async function verifyZeroFeeInvoiceSchema(db: DataSource): Promise<void> {
+  const statements: string[] = [];
+  await new W3ZeroFeeInvoice1793466000016().up({
+    query: async (sql: string) => { statements.push(sql); },
+  } as unknown as QueryRunner);
+  const bodies = new Map([...statements.join('\n').matchAll(
+    /CREATE(?: OR REPLACE)? FUNCTION (\w+)\([\s\S]*?\bAS \$\$([\s\S]*?)\$\$;/g,
+  )].map(match => [match[1], match[2].trim().replace(/\r\n/g, '\n')]));
+  const functions = [
+    ['w3_zero_receipt_provenance(uuid,integer,integer,integer)', 's', 'boolean', 'sql'],
+    ['w3_received_request(uuid)', 'v', 'boolean', 'plpgsql'],
+    ['w3_invoice_shipping_source(uuid)', 'v', 'jsonb', 'plpgsql'],
+    ['w3_invoice_commission_source(uuid)', 'v', 'record', 'plpgsql'],
+    ['w3_live_invoice_guard()', 'v', 'trigger', 'plpgsql'],
+    ['w3_invoice_payment_verified(uuid)', 's', 'boolean', 'sql'],
+  ];
+  if (bodies.size !== functions.length) throw new Error('W3 zero-fee invoice image proof incomplete');
+  const roles: Array<{ rolname: string }> = await db.query(
+    "SELECT rolname FROM pg_roles WHERE rolname IN ('anon','authenticated','service_role')",
+  );
+  for (const [signature, volatility, resultType, language] of functions) {
+    const [fn] = await db.query(`SELECT p.prosrc,p.prosecdef,p.provolatile,p.proconfig,l.lanname,
+      p.prorettype=$2::regtype AS result_type,
+      has_function_privilege(current_user,p.oid,'EXECUTE') AS backend_execute,
+      EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+        WHERE a.grantee=0 AND a.privilege_type='EXECUTE') AS exposed
+      FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang WHERE p.oid=to_regprocedure($1)`,
+    [`public.${signature}`, resultType]);
+    if (!fn || fn.prosecdef || fn.provolatile !== volatility || fn.proconfig !== null
+      || fn.lanname !== language || fn.result_type !== true || fn.backend_execute !== true
+      || fn.prosrc.trim().replace(/\r\n/g, '\n') !== bodies.get(signature.split('(')[0])) {
+      throw new Error(`W3 zero-fee invoice function proof incomplete: ${signature}`);
+    }
+    if (fn.exposed) throw new Error('PUBLIC can execute W3 zero-fee invoice function');
+    for (const { rolname } of roles) {
+      const [access] = await db.query("SELECT has_function_privilege($1,$2::regprocedure,'EXECUTE') AS allowed",
+        [rolname, `public.${signature}`]);
+      if (access?.allowed !== false) throw new Error('Data API role can execute W3 zero-fee invoice function');
+    }
+  }
 }
 
 async function verifyShippingCap(db: DataSource): Promise<void> {

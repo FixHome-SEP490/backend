@@ -25,7 +25,7 @@ describe('Parts reconciliation at invoice freeze', () => {
       query: vi.fn(async sql => {
         if (sql === 'SELECT w3_invoice_shipping_source($1) AS shipments') return [{ shipments }];
         if (sql === 'SELECT w3_received_request($1) AS received') return [{ received: true }];
-        if (sql === 'SELECT labor_total,rate_bps,commission_amount FROM w3_order_commission_snapshots WHERE service_order_id=$1')
+        if (sql === 'SELECT labor_total,rate_bps,commission_amount FROM w3_invoice_commission_source($1)')
           return [{ labor_total: 0, rate_bps: 1000, commission_amount: 0 }];
         throw new Error(`Unexpected fixture query: ${sql}`);
       }),

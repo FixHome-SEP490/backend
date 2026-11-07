@@ -15,6 +15,7 @@ const warehousePrerequisites = [
   'WarehouseInventory1793379600003',
   'WarehousePartFulfillment1793466000003',
 ];
+const zeroInvoice = 'W3ZeroFeeInvoice1793466000016';
 const image = [
   ...financePrerequisites,
   ...CASH_MIGRATIONS,
@@ -29,19 +30,30 @@ const appliedWithoutCash = appliedBeforeW3.filter(
 );
 
 describe('W3 DEV migration whitelist', () => {
-  it('recognizes 0014/0015 as the only pending tail after the 0013 prefix', () => {
+  it('admits only 0016 after the full 0015 prefix and refuses a missing, reordered or gapped tail', () => {
+    expect(W3_MIGRATIONS.at(-1)).toBe(zeroInvoice);
+    const through0015 = image.filter(name => name !== zeroInvoice);
+    expect(planW3DevMigrations(through0015, image)).toEqual([zeroInvoice]);
+    expect(() => planW3DevMigrations(through0015, through0015)).toThrow('W3 migrations missing from image');
+    const reordered = [...image];
+    const index = reordered.indexOf(zeroInvoice);
+    [reordered[index - 1], reordered[index]] = [reordered[index], reordered[index - 1]];
+    expect(() => planW3DevMigrations(through0015, reordered)).toThrow('W3 migrations missing from image or out of order');
+    expect(() => planW3DevMigrations(image.filter(name => name !== 'W3InvoicePaymentEnable1793466000015'), image)).toThrow('W3 migration ledger order is invalid');
+  });
+  it('recognizes 0014/0015/0016 as the only pending tail after the 0013 prefix', () => {
     const positive = 'W3PositivePhysicalDelivery1793466000014';
     const invoice = 'W3InvoicePaymentEnable1793466000015';
-    expect(W3_MIGRATIONS.slice(-2)).toEqual([positive, invoice]);
+    expect(W3_MIGRATIONS.slice(-3)).toEqual([positive, invoice, zeroInvoice]);
     expect(
       planW3DevMigrations(
-        image.filter((name) => name !== positive && name !== invoice),
+        image.filter((name) => name !== positive && name !== invoice && name !== zeroInvoice),
         image,
       ),
-    ).toEqual([positive, invoice]);
+    ).toEqual([positive, invoice, zeroInvoice]);
     expect(
-      planW3DevMigrations(image.filter((name) => name !== invoice), image),
-    ).toEqual([invoice]);
+      planW3DevMigrations(image.filter((name) => name !== invoice && name !== zeroInvoice), image),
+    ).toEqual([invoice, zeroInvoice]);
   });
   it('accepts the exact W3 order and returns only pending W3 migrations', () => {
     expect(planW3DevMigrations(appliedBeforeW3, image)).toEqual([
@@ -140,19 +152,20 @@ describe('W3 DEV migration whitelist', () => {
     ).toThrow('W3 migration ledger order is invalid');
   });
 
-  it('upgrades an applied 0011 prefix through 0015 and rejects an incomplete image', () => {
+  it('upgrades an applied 0011 prefix through 0016 and rejects an incomplete image', () => {
     const preparation = 'W3DeductionPreparation1793466000012';
     const cap = 'W3ShippingSafetyCap1793466000013';
     const positive = 'W3PositivePhysicalDelivery1793466000014';
     const invoice = 'W3InvoicePaymentEnable1793466000015';
     const beforePreparation = image.filter(
-      (name) => ![preparation, cap, positive, invoice].includes(name),
+      (name) => ![preparation, cap, positive, invoice, zeroInvoice].includes(name),
     );
     expect(planW3DevMigrations(beforePreparation, image)).toEqual([
       preparation,
       cap,
       positive,
       invoice,
+      zeroInvoice,
     ]);
     expect(() =>
       planW3DevMigrations(beforePreparation, beforePreparation),
@@ -163,7 +176,7 @@ describe('W3 DEV migration whitelist', () => {
     const positive = 'W3PositivePhysicalDelivery1793466000014';
     const invoice = 'W3InvoicePaymentEnable1793466000015';
     const appliedThrough0013 = image.filter(
-      (name) => name !== positive && name !== invoice,
+      (name) => name !== positive && name !== invoice && name !== zeroInvoice,
     );
     expect(() =>
       planW3DevMigrations(

@@ -149,8 +149,14 @@ export class InvoiceShipmentSnapshotDto {
   @ApiProperty({ format: 'uuid' })
   additionalCostId: string;
 
-  @ApiProperty()
-  termsVersion: number;
+  @ApiProperty({ nullable: true })
+  termsVersion: number | null;
+
+  @ApiPropertyOptional()
+  zeroQuoteVersion?: number;
+
+  @ApiPropertyOptional()
+  consentVersion?: number;
 
   @ApiProperty()
   receiptVersion: number;
@@ -210,7 +216,9 @@ export class InvoiceResponseDto {
   shippingShipments?: Array<{
     partRequestId: string;
     additionalCostId: string;
-    termsVersion: number;
+    termsVersion: number | null;
+    zeroQuoteVersion?: number;
+    consentVersion?: number;
     receiptVersion: number;
     shippingPolicyVersion: 'W3_70_30_V1';
     shippingFee: number;
@@ -430,7 +438,9 @@ export const toInvoiceResponse = (invoice: Invoice): InvoiceResponseDto => ({
     ? invoice.shippingShipments.map((s) => ({
         partRequestId: s.partRequestId,
         additionalCostId: s.additionalCostId,
-        termsVersion: Number(s.termsVersion),
+        termsVersion: s.termsVersion == null ? null : Number(s.termsVersion),
+        ...(s.zeroQuoteVersion === undefined ? {} : { zeroQuoteVersion: Number(s.zeroQuoteVersion) }),
+        ...(s.consentVersion === undefined ? {} : { consentVersion: Number(s.consentVersion) }),
         receiptVersion: Number(s.receiptVersion),
         shippingPolicyVersion: s.shippingPolicyVersion,
         shippingFee: Number(s.shippingFee),

@@ -16,6 +16,7 @@ import type { DeliveryOperationsService } from '../src/modules/part-requests/del
 import { DeliveryZeroFeeOperations1793466000008 } from '../src/database/migrations/1793466000008-DeliveryZeroFeeOperations';
 import { Role } from '../src/shared/enums';
 import { WarehouseDeliveryPhysical1793466000007 } from '../src/database/migrations/1793466000007-WarehouseDeliveryPhysical';
+import { W3ZeroFeeInvoice1793466000016 } from '../src/database/migrations/1793466000016-W3ZeroFeeInvoice';
 
 describe.skipIf(
   process.env.CI !== 'true' || process.env.GITHUB_ACTIONS !== 'true',
@@ -641,6 +642,129 @@ describe.skipIf(
       return invoice;
     });
   }
+  it('0016 zero proposal receipt permits service usage and invoice without invented positive terms', async () => {
+    const f = await operationalFixture();
+    await expect(freezeInvoice(f)).rejects.toThrow();
+    expect((await db.query('SELECT w3_received_request($1) AS ok', [f.request.id]))[0].ok).toBe(false);
+    await receipt(f);
+    expect((await db.query('SELECT w3_received_request($1) AS ok', [f.request.id]))[0].ok).toBe(true);
+    expect((await db.query('SELECT count(*)::int AS n FROM delivery_fee_terms WHERE part_request_id=$1', [f.request.id]))[0].n).toBe(0);
+    const Service = runtimeClass('modules/part-requests/part-requests.service', 'PartRequestsService');
+    const audit = new (runtimeClass('modules/audit-log/audit-log.service', 'AuditLogService'))(db.getRepository('AuditLog'));
+    const service = new Service(db, db.getRepository('PartRequest'), db.getRepository('PartRequestItem'), db.getRepository('FixHomePart'), audit, {});
+    const item = await db.getRepository('PartRequestItem').findOneByOrFail({ partRequestId: f.request.id });
+    for (const body of [{ usageStatus: 'returned' }, { usageStatus: 'used', usedQty: 1 }]) {
+      await expect(service.updateItemUsage(f.request.id, item.id, body, f.actor)).rejects.toThrow();
+    }
+    await service.updateItemUsage(f.request.id, item.id, { usageStatus: 'used' }, f.actor);
+    const invoice = await freezeInvoice(f);
+    expect(Number(invoice.shippingFee)).toBe(0);
+    expect(Number(invoice.grandTotal)).toBe(102000);
+    expect(Number(invoice.commissionAmount)).toBe(10000);
+    expect(invoice.shippingShipments).toEqual([expect.objectContaining({
+      partRequestId: f.request.id, termsVersion: null, zeroQuoteVersion: 1, consentVersion: 4,
+      receiptVersion: 4, shippingFee: 0, customerShippingShare: 0, technicianShippingShare: 0,
+    })]);
+    expect((await db.query('SELECT w3_invoice_payment_verified($1) AS ok', [invoice.id]))[0].ok).toBe(true);
+    await db.query("UPDATE system_configs SET value='2000' WHERE key='commission.rate_bps'");
+    try {
+      expect((await freezeInvoice(f)).id).toBe(invoice.id);
+      expect((await db.query('SELECT w3_invoice_payment_verified($1) AS ok', [invoice.id]))[0].ok).toBe(true);
+    } finally {
+      await db.query("UPDATE system_configs SET value='1000' WHERE key='commission.rate_bps'");
+    }
+    const { finance, customerWallet } = paymentServices();
+    await db.transaction(m => customerWallet.apply(m, { userId: f.customer.id, type: 'top_up', amount: 102000,
+      idempotencyKey: `CI_ZERO_FUND:${f.order.id}` }));
+    await finance.payInvoiceWithWallet(invoice.id, f.customerActor);
+    expect((await db.getRepository('ServiceOrder').findOneByOrFail({ id: f.order.id })).status).toBe('completed');
+    expect((await db.getRepository('Invoice').findOneByOrFail({ id: invoice.id })).paymentStatus).toBe('paid');
+    expect(await db.getRepository('CustomerWalletTransaction').countBy({ referenceId: invoice.id, type: 'invoice_payment' })).toBe(1);
+    expect(Number((await db.getRepository('Wallet').findOneByOrFail({ technicianId: f.actor.id })).balance)).toBe(90000);
+  });
+  it('0016 zero proof rejects wrong versions, forged invoice source and stale warehouse authority', async () => {
+    const f = await operationalFixture();
+    await receipt(f);
+    for (const versions of [[null, 4, 4], [2, 4, 4], [1, 3, 4], [1, 4, 3]]) {
+      expect((await db.query('SELECT w3_zero_receipt_provenance($1,$2,$3,$4) AS ok', [f.request.id, ...versions]))[0].ok).toBe(false);
+    }
+    await db.query("UPDATE part_request_items SET usage_status='used' WHERE part_request_id=$1", [f.request.id]);
+    const [line] = (await db.query('SELECT w3_invoice_shipping_source($1) AS lines', [f.order.id]))[0].lines;
+    for (const forged of [{ ...line, consentVersion: 3 }, { ...line, receiptVersion: 3 }, { ...line, termsVersion: 4 }, { ...line, shippingFee: 1 }]) {
+      await expect(db.query(`INSERT INTO invoices(service_order_id,labor_total,parts_total,fixhome_parts_total,
+        shipping_policy_version,shipping_fee,customer_shipping_share,technician_shipping_share,shipping_shipments,
+        commission_base,commission_rate_snapshot,commission_amount,grand_total)
+        VALUES($1,100000,2000,2000,'W3_70_30_V1',0,0,0,$2,'LABOR',0.1,10000,102000)`,
+      [f.order.id, JSON.stringify([forged])])).rejects.toThrow('W3_INVOICE_SOURCE_MISMATCH');
+    }
+    await db.query("UPDATE users SET is_active=false WHERE id=$1", [f.managerActor.id]);
+    expect((await db.query('SELECT w3_received_request($1) AS ok', [f.request.id]))[0].ok).toBe(false);
+    await expect(freezeInvoice(f)).rejects.toThrow();
+    expect(await db.getRepository('Invoice').countBy({ serviceOrderId: f.order.id })).toBe(0);
+  });
+  it('0016 legacy delivery keeps legacy invoice arithmetic and cannot become zero-route proof', async () => {
+    const f = await fixture(false);
+    expect((await db.query('SELECT w3_received_request($1) AS ok', [f.request.id]))[0].ok).toBe(false);
+    expect((await db.query('SELECT w3_invoice_shipping_source($1) AS lines', [f.order.id]))[0].lines).toBeNull();
+    await db.query("UPDATE part_requests SET status='received',received_at=now() WHERE id=$1", [f.request.id]);
+    await db.query("UPDATE part_request_items SET usage_status='used' WHERE part_request_id=$1", [f.request.id]);
+    const invoice = await freezeInvoice(f);
+    expect(invoice.shippingPolicyVersion).toBe('LEGACY_100_0');
+    expect(invoice.shippingShipments).toBeNull();
+    expect(Number(invoice.grandTotal)).toBe(102000);
+    expect(Number(invoice.commissionAmount)).toBe(10000);
+    expect((await db.query('SELECT w3_invoice_payment_verified($1) AS ok', [invoice.id]))[0].ok).toBe(false);
+  });
+  it('0016 helpers remain private and migration refuses destructive rollback', async () => {
+    for (const signature of ['w3_zero_receipt_provenance(uuid,integer,integer,integer)', 'w3_invoice_commission_source(uuid)']) {
+      expect(await db.query(`SELECT acl.privilege_type FROM pg_proc p
+        CROSS JOIN LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+        WHERE p.oid=$1::regprocedure AND acl.grantee=0`, [signature])).toEqual([]);
+      for (const row of await db.query("SELECT rolname FROM pg_roles WHERE rolname IN ('anon','authenticated','service_role')")) {
+        expect((await db.query("SELECT has_function_privilege($1,$2,'EXECUTE') AS allowed", [row.rolname, signature]))[0].allowed).toBe(false);
+      }
+    }
+    await expect(new W3ZeroFeeInvoice1793466000016().down()).rejects.toThrow('Forward-only');
+  });
+  it('0016 mixed zero and positive shipments retain positive prequote commission and 70/30', async () => {
+    const f = await confirmedPositive();
+    const cost = await save('AdditionalCostRequest', { ...f.cost, id: randomUUID(), shippingFee: 0 });
+    await save('AdditionalCostItem', { requestId: cost.id, type: 'parts_equipment', description: 'Zero-route sibling',
+      partSource: 'fixhome', partCatalogId: f.part.id, quantity: 2, unitPrice: 1000, lineTotal: 2000 });
+    const sibling = await db.transaction(async m => {
+      const r = await m.getRepository('PartRequest').save({ serviceOrderId: f.order.id, technicianId: f.actor.id,
+        requestType: 'additional', fulfillmentMethod: 'delivery', additionalCostId: cost.id, shippingFee: 0 });
+      await m.getRepository('PartRequestItem').save({ partRequestId: r.id, partCatalogId: f.part.id, partSource: 'fixhome',
+        partNameSnapshot: 'Zero-route sibling', quantity: 2, unitPriceSnapshot: 1000 });
+      await store.enrollNew(m, r.id, f.actor);
+      return r;
+    });
+    const upload = (purpose: string, actor = f.managerActor) => f.service.upload(sibling.id, f.warehouse.id, purpose, 1,
+      { buffer: Buffer.from(purpose), size: Buffer.byteLength(purpose), mimetype: 'image/jpeg' }, actor);
+    const evidence = await upload('QUOTE');
+    let state = await f.service.propose(sibling.id, { commandId: randomUUID(), expectedVersion: 0,
+      warehouseId: f.warehouse.id, evidenceId: evidence.evidenceId, courierReference: 'zero-sibling', totalShippingFee: 0 }, f.managerActor);
+    for (const actor of [f.customerActor, f.actor]) {
+      const result = await f.service.consent(sibling.id, { commandId: randomUUID(), expectedVersion: state.version,
+        quoteVersion: 1, quoteFingerprint: state.quote!.fingerprint, totalShippingFee: 0, shippingShare: 0, accepted: true }, actor);
+      state = { ...state, version: result.version };
+    }
+    const actual = await upload('ACTUAL');
+    await f.service.actual(sibling.id, { commandId: randomUUID(), expectedVersion: state.version, quoteVersion: 1,
+      totalShippingFee: 0, evidenceId: actual.evidenceId }, f.managerActor);
+    await db.getRepository('WarehouseStock').update({ warehouseId: f.warehouse.id, partId: f.part.id }, { onHand: 6 });
+    await receipt(f);
+    await receipt({ ...f, request: sibling, upload });
+    await db.query("UPDATE part_request_items SET usage_status='used' WHERE part_request_id IN ($1,$2)", [f.request.id, sibling.id]);
+    const invoice = await freezeInvoice(f);
+    expect(invoice.shippingShipments).toHaveLength(2);
+    expect(Number(invoice.shippingFee)).toBe(20000);
+    expect(Number(invoice.customerShippingShare)).toBe(14000);
+    expect(Number(invoice.technicianShippingShare)).toBe(6000);
+    expect(Number(invoice.commissionAmount)).toBe(10000);
+    expect(Number(invoice.grandTotal)).toBe(118000);
+    expect((await db.query('SELECT w3_invoice_payment_verified($1) AS ok', [invoice.id]))[0].ok).toBe(true);
+  });
   it.each([[30000,1000,221000,21000,9000],[0,1000,200000,0,0],[30000,0,221000,21000,9000]])(
     'Task3 freezes actual receipt S=%i Cbps=%i before requesting completion', async (fee,bps,gross,c,t) => {
       await db.query("UPDATE system_configs SET value='30000' WHERE key='w3.shipping.max_new_fee_vnd'");
@@ -2171,12 +2295,8 @@ describe.skipIf(
         [f.request.id],
       ),
     ).rejects.toThrow();
-    await expect(
-      db.query(
-        "UPDATE part_request_items SET usage_status='used' WHERE part_request_id=$1",
-        [f.request.id],
-      ),
-    ).rejects.toThrow();
+    // 0016 admits full usage after the independent zero-route receipt proof.
+    await db.query("UPDATE part_request_items SET usage_status='used' WHERE part_request_id=$1", [f.request.id]);
     await expect(
       db.query(
         'UPDATE service_orders SET completion_requested_at=now() WHERE id=$1',

@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-07 10:55 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/w3-remove-manual-bank-20261107
+> Cập nhật lần cuối: 2026-11-07 12:38 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w123-auditfix-backend-20261107
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -93,6 +93,10 @@ Ba điều không đổi giữa các repo:
 Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức của nhóm). Mâu thuẫn giữa code và tài liệu thì ghi vào mục 8 và hỏi PO, không tự quyết.
 
 ## 3. Trạng thái hiện tại
+
+W3 DEV gate follow-up 0016: whitelist nhận đúng tail `W3ZeroFeeInvoice1793466000016`; giữ prerequisite, prefix ledger, advisory lock, atomic pending migration/ledger và không chạy down. Gate đối chiếu toàn body sáu function 0016 từ migration trong image cùng language/return type/volatility/SECURITY INVOKER/config và quyền backend; từ chối helper thiếu, body/metadata drift, PUBLIC hoặc effective Data API EXECUTE. Marker chặn replay cả helper hoặc body bridge tồn tại mà thiếu ledger. Fixture default EXECUTE grants phát hiện ACL cũ của `w3_live_invoice_guard` được CREATE OR REPLACE giữ lại; 0016 chưa phát hành đã thêm REVOKE cho cả sáu entry point, không sửa 0015. Gate unit/PostgreSQL Docker 66/66 PASS; kiểm nâng từ prefix 0015 thật, rollback khi lỗi và legacy invoice không đổi. CI giữ full integration và thêm focused `0016` regression trước đó. Chưa commit/push/merge/deploy.
+
+W3 zero-fee auditfix (writer, base `d313a3d`): migration forward-only `1793466000016-W3ZeroFeeInvoice` nhận diện zero route bằng proposal + hai consent đúng actor/role + actual 0 + journal xuất kho/dispatch/receipt và evidence cùng quote; không tạo positive terms giả. Invoice mới đóng băng phí/share 0 cùng `zeroQuoteVersion`, `consentVersion`, `receiptVersion`, `termsVersion=null`. Đơn zero-only chưa có C prequote lấy approved labor và strict config dưới khóa, freeze C trong invoice; đơn positive/mixed giữ C prequote và 70/30 từng chuyến. Không sửa 0015, backfill, invoice/ledger lịch sử, payment rails hoặc admission custody. Ba suite PostgreSQL W3 cô lập 113/113 PASS; focused cuối 5/5 PASS có wallet payment/completion zero-route và private helper ACL/forward-only. Full unit 4085 PASS/100 skipped, lint 0 lỗi/5 warning cũ, typecheck/build PASS trên Node 24.15.0/PostgreSQL 16. RED đã chứng minh zero receipt bị 0015 từ chối. Full broad E2E/Node 20.19.5 NOT VERIFIED. Đây là source chờ Lead review/release; follow-up gate 0016 ở dưới, shared DEV chưa chạy.
 
 Quyết định owner ngày 07/11/2026: **không sử dụng Manual Bank**. Chỉ giữ VNPay (xác minh provider), Ví FixHome (tự động), Tiền mặt (cash-first/legacy theo đúng flow hiện có). Đã loại bỏ customer/Admin manual-bank routes, service methods và test riêng; không thay đổi migration W3 0014/0015, 70/30, ledger chung hay logic thanh toán khác. Thao tác cũ tại đây là lịch sử, không còn là chức năng được hỗ trợ.
 
@@ -265,7 +269,7 @@ Phase A được giữ và bổ sung validation phân biệt command, audit quy�
 Kiểu modular monolith: mỗi module `controller → service → TypeORM repository/entity`, DTO dùng `class-validator`, `ValidationPipe` toàn cục bật `whitelist` và `forbidNonWhitelisted`.
 
 - `src/modules/`: 29 module. Quan trọng nhất: `auth`, `users`, `bookings` (booking, shortlist, lời mời, điều kiện nhận việc), `service-orders` (state machine, check-in, bằng chứng, hoá đơn, tiền mặt, huỷ, vi phạm, bảo hành), `quotations`, `part-requests`, `finance` (VNPay, Payment, PlatformDue), `wallet` (ví, nạp, rút, quyết toán), `technician-assignment`, `messaging` (chat, Socket.IO, gọi thoại), `ai-diagnosis` (proxy tới `ai-service`), `support-cases`, `notifications`, `system-config`, `rbac`, `audit-log`, `technician-verifications` (KYC), `media` (Cloudinary).
-- `src/database/migrations/`: mới nhất `1793466000012-W3DeductionPreparation.ts` thêm D preparation/private diagnostics, sau C prequote/config history 0011; không mở tiền W3. Đã kiểm PostgreSQL cô lập, chưa apply shared DEV. Trạng thái migration trước giữ theo mục 8. `src/database/seeds/`: dữ liệu demo.
+- `src/database/migrations/`: W3 có `1793466000016-W3ZeroFeeInvoice.ts` sau 0015, bổ sung zero-route invoice/provenance; không sửa migration đã áp dụng. C prequote/config history 0011 và D preparation 0012 giữ nguyên. 0016 đã kiểm PostgreSQL cô lập, chưa apply shared DEV; release gate xem mục 8. `src/database/seeds/`: dữ liệu demo.
 - `src/shared/`: enum, hằng số, DTO dùng chung (`PaginationDto`, `PageSizeQueryDto`), validator văn bản và tên người.
 - `src/common/`: guard (JWT, Roles, Permission), filter lỗi, interceptor bọc response.
 - `test/`: e2e chạy migration trên Postgres sạch.
@@ -273,6 +277,8 @@ Kiểu modular monolith: mỗi module `controller → service → TypeORM reposi
 Response thành công `{ success, statusCode, message, data, meta? }`; lỗi `{ success: false, statusCode, error: { code, message, details? }, timestamp, path }`.
 
 ## 5. Hợp đồng với repo khác
+
+- Invoice W3 zero route: `shippingShipments[].termsVersion` nullable; khi null có `zeroQuoteVersion` và `consentVersion` từ immutable journal, không ép null thành 0. `receiptVersion`, policy `W3_70_30_V1` và ba monetary fields giữ shape cũ; zero route có phí/share đều 0. Positive route giữ `termsVersion` số nguyên và response cũ. Chỉ VNPay, Ví FixHome, Tiền mặt; không Manual Bank. Web/Mobile/docs consumer adoption NOT VERIFIED; writer chỉ sửa Backend, Lead phối hợp consumer trước release.
 
 - Admin W3 shipping cap additive: GET/PATCH `/admin/config/w3.shipping.max_new_fee_vnd`, PATCH `{value:"0"}` hoặc integer string canonical 0–100000000. Registry ACTIVE, mô tả DB tiếng Việt; quote/revision mới vượt effective cap (missing/malformed=0) trả HTTP 409 với public `error.code=W3_SHIPPING_CAP_EXCEEDED`; không expose details hoặc max fee/cap. Cùng request/source cũ không đổi phí hoặc consent/replay; cap không mở execution tiền. Đã đọc Web AdminConfigPage unknown-key fallback và tìm Mobile consumer (không thấy); adoption/runtime/context consumer/docs repo NOT VERIFIED, cần phối hợp PR riêng.
 
@@ -375,7 +381,7 @@ W3 physical: GET `/part-requests/:id/delivery-physical/preview` chỉ CUSTOMER s
 - Node theo `.nvmrc` (20.19.5). `npm ci`, chép `.env.example` thành `.env` và điền giá trị (hỏi trưởng nhóm, không lấy từ repo).
 - Chạy: `npm run start:dev`. Docker: `docker compose up -d --build` (chỉ chạy backend, database là Supabase dùng chung), xem `docs/DOCKER.md`.
 - Migration: `npm run migration:run`. Seed demo: `npm run seed:demo` (tạo admin, quản lý, kỹ thuật viên `tech1` đến `tech12`, khách `customer1` đến `customer7`, danh mục, 791 linh kiện).
-- Gate phát hành DEV W3: `NODE_ENV=production W3_DEV_RELEASE=1 node dist/database/w3-dev-release.js` chỉ apply đúng chín migration W3 `0004`–`0012` sau khi prerequisite sẵn và chỉ để lại pending thuộc cặp cash/reputation cho gate cũ; CI có step PostgreSQL cô lập `W3_DEV_ISOLATED_PG=1` (0008 staged bằng `import.meta.glob`, fail nếu chưa cherry-pick), deploy chạy gate W3 trước gate cash rồi mới restart Backend. Chi tiết mục 19, 22–24 `docs/WAREHOUSE_W3_FINANCE_CONTRACT.md`; không chạy trên shared DEV trong task preparation.
+- Gate phát hành DEV W3: `NODE_ENV=production W3_DEV_RELEASE=1 node dist/database/w3-dev-release.js` chỉ apply đúng 13 migration W3 `0004`–`0016` sau khi prerequisite sẵn và chỉ để lại pending thuộc cặp cash/reputation cho gate cũ; CI có step PostgreSQL cô lập `W3_DEV_ISOLATED_PG=1` (0008 staged bằng `import.meta.glob`, fail nếu chưa cherry-pick), deploy chạy gate W3 trước gate cash rồi mới restart Backend. Chi tiết mục 19, 22–24 `docs/WAREHOUSE_W3_FINANCE_CONTRACT.md`; không chạy trên shared DEV trong task preparation.
 - Gate trước mỗi commit: `npm run lint`, `npm run typecheck`, `TZ=UTC npm test`, `npm run build`; thêm `npm run test:e2e` khi đụng database. CI chạy thêm `npm audit --omit=dev --audit-level=high` và e2e trên Postgres sạch.
 - Fixture E2E PR #205: `test/app.e2e-spec.ts` giữ đủ 0014/0015 trên DB HTTP hiện tại; rollback/reapply/adopt legacy users chạy ở database tạm riêng, chỉ database replay loại 0014/0015, không gọi down của 0015. `warehouse-w3-finance.e2e-spec.ts` pin migrations trước 0004 rồi chạy 0004 thật để kiểm invoice lịch sử; `delivery-consent-storage.e2e-spec.ts` dùng schema mới nhất, kiểm CHECK shares validated và từ chối invoice thiếu provenance bằng SQL thật. Giữ nguyên isolated W3 release gate; chạy Node 20.19.5 và hoàn thành build trước E2E vì tests dùng `dist`. Không thay migration production hoặc shared DB. Kết quả và giới hạn: `docs/W3_CAPSTONE_AUDIT.md`, mục PR #205.
 - Lưu ý: `npm run build` xoá `dist`, làm dev server đang chạy bằng `start:dev` dừng; kiểm build song song thì dùng `npx tsc -p tsconfig.build.json --outDir <thư mục tạm>`.
@@ -449,6 +455,10 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 8. Việc đang dở và rủi ro đã biết
 
+- W3 auditfix 0016: blocker whitelist đã sửa và gate unit/PostgreSQL 66 PASS; còn Lead review, GitHub CI, preflight/migration shared DEV và consumer nullable provenance trước release. Không chạy gate/migration trên shared DEV, không commit/push/PR/merge/deploy trong task writer. Sau review và migration được duyệt phải rebuild/restart Backend rồi kiểm `/health`; Compose/health, shared DEV, provider thật, browser và Web/Mobile NOT VERIFIED. Full unit/broad E2E của follow-up gate chưa rerun; số 4085/113 ở trên thuộc lượt auditfix trước.
+
+- W3 partial-used/return CHƯA TRIỂN KHAI: `updateItemUsage` và `w3_live_item_guard` chỉ cho toàn dòng USED; `w3_invoice_shipping_source` đòi full-used và từ chối mọi `part_custodies` của order. `PartCustodyService.enrollHandover` cần legacy/W2 `receivedAt`, W3 giữ null; `WarehouseFulfillmentService.restockReturn` chỉ ghi RETURN theo allocation W2, thiếu allocation thì không restock. Vì vậy chỉ bỏ guard sẽ cho billing thiếu chứng cứ hoặc nhận trả mà không nhập kho. Hướng nhỏ nhất cần phase riêng: bind custody với exact W3 technician receipt và warehouse/SKU xuất, thêm append-only W3 RETURN có manager receipt/idempotency/stock conservation cùng transaction, rồi reconcile invoice bằng usedQty và physical accepted returns. Chưa chứng minh các cầu nối này; giữ nguyên custody/financial/VisitGroup gates, không backfill hoặc giả restock.
+
 - W3 capstone: Backend PR #205 đã merge vào dev, quality gates và deploy workflow 42335435665 SUCCESS; migrations forward 0014/0015 có trong release gate. Shipping 70/30 theo actual shipment và snapshot C đã đóng băng; owner quyết định loại bỏ Manual Bank, chỉ VNPay/Ví FixHome/Tiền mặt. Nhánh hiện tại gỡ manual bank routes/service/tests; chờ PR/CI/deploy bản gỡ và Web W3. Signed-in DEV UAT và provider thật chưa kiểm chứng; không bỏ guard hoặc suy quote thành actual.
 
 - W3 shipping cap 0013 chỉ local: Lead cần CI/preflight/migration riêng trước restart Backend; không dùng Admin cap làm Finance authorization hoặc reset fee. Shared DEV, Compose `/health`, provider, Web/Mobile browser và Node 20.19.5 NOT VERIFIED. Chưa có live spending commitment/refund/courier/funding authority; giữ các blockers mục 24–25 hợp đồng W3.
@@ -521,6 +531,10 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-07 12:38 (UTC+7) | foxonworld | foxonworld/fixhome-w123-auditfix-backend-20261107 | Mở DEV gate cho 0016 với exact function proof/ACL/replay và prefix 0015 thật; siết ACL 0016 chưa release, gate PostgreSQL/unit 66 PASS, CI thêm zero-fee regression, Lead giữ release.
+
+- 2026-11-07 12:27 (UTC+7) | foxonworld | foxonworld/fixhome-w123-auditfix-backend-20261107 | Sửa zero-route invoice bằng migration tiến 0016, giữ positive/legacy; PostgreSQL W3 113 và focused cuối 5 PASS, unit 4085 PASS; ghi blocker custody/return và DEV whitelist, chờ Lead review.
+
 - 2026-11-07 10:55 (UTC+7) | foxonworld | foxonworld/w3-remove-manual-bank-20261107 | OWNER CANCELLED Manual Bank vì VNPay đủ chức năng thanh toán online; xóa API customer/Admin + service/test, giữ VNPay, Ví FixHome, cash-first/legacy và W3 70/30; DEV gỡ bỏ chờ PR/CI/deploy, không thêm payment rail khác.
 
 - 2026-11-07 10:36 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | PR #205: tách DB replay pre-cutover khỏi HTTP đủ 0014/0015, pin fixture legacy trước 0004 và kiểm provenance/CHECK hiện tại; giữ production migration và release gate.
@@ -560,5 +574,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-04 12:09 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p1-group5-backend-20261104 | P1 Group5 cập nhật ba CHECK, stop/rebook 5 máy; áp dụng forward migration một lần trên PostgreSQL shared dev, xác minh ledger và constraint SQL, Backend/Web release còn chờ CI.
 - 2026-11-04 11:12 (UTC+7) | Hgnv11 | warranty-cost-sla-20261104 | Bảo hành theo mô hình 5Sao và Ong Thợ: thợ chịu công, FixHome chịu linh kiện FixHome lỗi, không khắc phục được thì hoàn ví khách và trừ ví thợ, từ chối có xét, hạn 48/72/72 giờ, tác vụ nền, cột và cấu hình mới.
 - 2026-11-04 10:25 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p0-solo-noshow-20261104 | B2 solo contact/readiness và stop nguyên tử, giữ evidence/replay; giới hạn API liên hệ/dừng đơn thử nghiệm DEV và chặn thông báo trùng, không tự phạt khách.
-- 2026-11-04 09:45 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p0-security-20261104 | Thêm P0-1A risk throttling theo actor/IP cho route rủi ro và socket; ghi DEV ceilings cùng giới hạn in-memory/runtime chưa kiểm chứng.
-- 2026-11-04 09:29 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p0-quota-noshow-20261104 | Ghi quota hai lượt pending nguyên tử, retry/nhả thợ ở cap, contract 409 và blocker solo no-show/PostgreSQL.
