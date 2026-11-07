@@ -82,10 +82,14 @@ export class WarehouseFulfillmentService {
       SELECT s.warehouse_id AS "warehouseId", s.part_id AS "partId", s.on_hand AS "onHand", s.reserved
       FROM warehouse_stock s WHERE s.warehouse_id=ANY($1::uuid[]) AND s.part_id=ANY($2::uuid[])
       ORDER BY s.warehouse_id,s.part_id FOR UPDATE`, [candidates.map(w => w.id), required.map(i => i.partId)]) : [];
+    // On manual assistance, an SM may choose an eligible warehouse they own, even when another SM's warehouse sorts first.
+    const eligible = candidates.filter(w => hasWholeRequestStock(required, stocks.filter(s => s.warehouseId === w.id)));
     const chosen = a.status === 'reserved' ? candidates.find(w => w.id === a.warehouseId) :
-      candidates.find(w => hasWholeRequestStock(required, stocks.filter(s => s.warehouseId === w.id)));
+      !automatic && actor.role === Role.SERVICE_MANAGER
+        ? eligible.find(w => w.responsibleUserId === actor.id)
+        : eligible[0];
     if (!automatic && actor.role === Role.SERVICE_MANAGER && chosen?.responsibleUserId !== actor.id) {
-      if (chosen) throw new ForbiddenException('Bạn không phụ trách kho được chọn.');
+      if (!chosen && eligible.length) throw new ForbiddenException('Bạn không phụ trách kho đủ linh kiện.');
     }
     if (a.status === 'reserved') return this.view(manager, request.id);
     if (!chosen) {
