@@ -34,7 +34,10 @@ export class W3InvoicePaymentEnable1793466000015 implements MigrationInterface {
           WHERE w.id=(f.state#>>'{quote,warehouseId}')::uuid AND w.status='active' AND u.id=(f.state#>>'{quote,responsibleUserId}')::uuid
           AND u.role::text='service_manager' AND u.is_active AND u.status::text='active' FOR SHARE OF w,u;
         RETURN FOUND AND current_source IS NOT NULL AND current_source=frozen_source
-          AND w3_prequote_commission_current(order_id) AND e.fee_terms_version=f.result_version
+          AND EXISTS(SELECT 1 FROM w3_order_commission_snapshots snap
+            WHERE snap.service_order_id=order_id AND f.commission_order_id=snap.service_order_id
+              AND snap.labor_source=w3_approved_labor_source(order_id))
+          AND e.fee_terms_version=f.result_version
           AND f.state->'customerConsented'='true'::jsonb AND f.state->'technicianConsented'='true'::jsonb
           AND f.state->'actual' IS NOT NULL AND f.state->'actual'<>'null'::jsonb
           AND NOT EXISTS(SELECT 1 FROM w3_deduction_preparations WHERE service_order_id=order_id AND recorded_total>0);
@@ -146,8 +149,23 @@ export class W3InvoicePaymentEnable1793466000015 implements MigrationInterface {
       BEGIN
         IF (NEW.completion_requested_at IS DISTINCT FROM OLD.completion_requested_at OR NEW.status::text IN ('completed','cancelled'))
           AND EXISTS(SELECT 1 FROM warehouse_delivery_cohorts WHERE service_order_id=OLD.id) THEN
-          IF NEW.status::text='cancelled' OR NOT EXISTS(SELECT 1 FROM invoices WHERE service_order_id=OLD.id AND w3_invoice_payment_verified(id))
-            THEN RAISE EXCEPTION 'Delivery obligations and finance require resolution'; END IF;
+          IF NEW.status::text='cancelled' THEN
+            IF EXISTS(SELECT 1 FROM warehouse_delivery_cohorts c JOIN part_requests r ON r.id=c.part_request_id
+              WHERE c.service_order_id=OLD.id AND (r.status::text<>'cancelled'
+                OR EXISTS(SELECT 1 FROM warehouse_delivery_events e WHERE e.part_request_id=c.part_request_id
+                  AND e.result_version=(SELECT max(result_version) FROM warehouse_delivery_events
+                    WHERE part_request_id=c.part_request_id)
+                  AND e.snapshot->>'status' NOT IN ('RELEASED','INELIGIBLE','PENDING_ASSISTANCE'))))
+              OR EXISTS(SELECT 1 FROM invoices i WHERE i.service_order_id=OLD.id AND i.payment_status::text='paid')
+              THEN RAISE EXCEPTION 'Delivery obligations and finance require resolution'; END IF;
+          ELSIF NEW.status::text='completed' THEN
+            IF NOT EXISTS(SELECT 1 FROM invoices i WHERE i.service_order_id=OLD.id
+              AND i.payment_status::text='paid' AND w3_invoice_payment_verified(i.id))
+              THEN RAISE EXCEPTION 'Delivery obligations and finance require resolution'; END IF;
+          ELSIF NOT EXISTS(SELECT 1 FROM invoices i WHERE i.service_order_id=OLD.id
+            AND w3_invoice_payment_verified(i.id))
+            THEN RAISE EXCEPTION 'Delivery obligations and finance require resolution';
+          END IF;
         END IF;
         RETURN NEW;
       END $$;

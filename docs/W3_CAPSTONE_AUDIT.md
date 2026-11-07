@@ -124,3 +124,40 @@ Task5 backend **QUALIFIED FOR GATE ONLY**, không phải release-ready: chưa ap
 ## Task6 — expose frozen shipping snapshot on InvoiceResponseDto (07/11/2026)
 
 Base `b513844`. Added four optional read-only fields to `InvoiceResponseDto` and `toInvoiceResponse` mapper (`src/modules/finance/dto/finance.dto.ts`): `shippingPolicyVersion`, `customerShippingShare`, `technicianShippingShare`, `shippingShipments`. Values read directly from frozen entity columns — no recalculation, no schema change, no migration. Legacy null-share rows synthesise 100/0 for backward compat. New spec `src/modules/finance/dto/invoice-response-dto.spec.ts` 8/8 PASS (golden L200000/C20000/S30000→221000, two 1-VND shipments, paid not repriced, legacy 100/0). `npm run lint` 0 errors, typecheck/build PASS. NOT VERIFIED: PostgreSQL E2E, Web integration, DEV UAT.
+
+## Task3 — guarded follow-up trên baseline 5d91133 (07/11/2026)
+
+Git đầu phiên đúng nhánh `foxonworld/fixhome-w3-live-payment-integration-20261107`, HEAD `5d91133dbf6b66f87374336769be65d2be32ffca`, đúng ba file dirty được Lead giao. Chỉ tiến trình Codex của phiên này có command line trỏ vào worktree; không thấy writer khác qua kiểm tra tiến trình và Git. Giữ patch có sẵn trong service (C frozen và preclose cancellation), không làm lại Task1–2 hoặc sửa finance/settlement production ngoài allowlist.
+
+Migration 0015 dirty ban đầu có IF cancellation thiếu THEN/END IF và THEN thừa sau ELSIF. PostgreSQL thật tái hiện lỗi `syntax error at or near "NEW"`; sửa đúng cấu trúc và whitespace, không bỏ financial guard. COMPLETED cần invoice PAID cùng provenance W3 đã kiểm; cancellation cần mọi cohort đã cancelled, không còn physical obligation và không có invoice PAID. Writer dùng snapshot commission đã freeze; thay config sau receipt không reprice, còn approved labor drift vẫn từ chối invoice.
+
+Thêm test trong `test/warehouse-delivery-physical.e2e-spec.ts`, dùng service thật, TypeORM và migrations thật. Cho chạy migration CashPaymentIntents vốn không hardcode public trong `up()`; giữ exclusions của các migration không liên quan. Không mock guard/settlement/wallet. Storage là double; cấu hình/chữ ký VNPay chỉ là test fixture với URL example.test, không gọi mạng hoặc xác nhận tiền ngân hàng thật.
+
+- CashFirst create/replay chỉ PENDING, invoice UNPAID, không posting; sai role/amount bị chặn; receipt đồng thời/replay chỉ một CashSettlement/Payment và wallet debit 50000.
+- Customer-wallet kiểm ownership, concurrent retries chỉ một debit 221000, balance 79000 từ fixture 300000; technician credit 171000 đúng một lần.
+- VNPay tạo attempt qua public service, từ chối forged signature/signed wrong amount, signed callback đồng thời/replay chỉ một VERIFIED Payment và technician credit 171000.
+- Hai actual receipts 1 VND trên cùng order freeze hai provenance khác nhau: S=2/c=2/t=0, wallet debit 2 một lần; L=C=0 không tạo earning giả.
+- Completion hold giữ đơn UNDER_REPAIR và chưa settlement dù đã PAID; resolve hold rồi chạy finalize thật chỉ credit một lần. Hủy unused/released cohort thành công có history/audit; RESERVED/ISSUED/DISPATCHED rollback cả request/order. Cash selection cạnh tranh wallet chỉ một rail được chấp nhận.
+
+Kiểm chứng trên PostgreSQL 16 container dùng một lần, bind loopback, không đọc .env hoặc shared DEV:
+
+| Lệnh (PowerShell) | Kết quả |
+| --- | --- |
+| `$env:CI='true'; $env:GITHUB_ACTIONS='true'; npx vitest run --config vitest.config.e2e.ts test/warehouse-delivery-physical.e2e-spec.ts --reporter=dot` trước sửa | FAIL: migration0015 syntax, 62 tests chưa chạy |
+| Cùng lệnh sau sửa và bổ sung fixture/tests | PASS: 74/74, exit0, 47.09s |
+| `$env:CI='true'; $env:W3_DEV_ISOLATED_PG='1'; npx vitest run src/database/w3-dev-release.postgres.spec.ts --reporter=dot` | PASS: 42/42, exit0 |
+| `npx vitest run src/modules/finance src/modules/wallet/settlement.service.spec.ts --reporter=dot` | PASS: 593 passed/16 skipped, 33 files, exit0 |
+| `npm run lint` | PASS: 0 errors/5 warnings có sẵn |
+| `npm run typecheck`; `npm run build` | PASS: cả hai exit0 |
+| `npm test -- --reporter=json --outputFile="$env:TEMP/fixhome-w3-task3-unit.json"` (stdout/stderr lưu trong TEMP) | FAIL ban đầu: 4090 passed/100 skipped/3 failed; fixture `departure-sweep`, `repair-failed` thiếu manager.query và W3 `parts-billing` thiếu commission row |
+| `npx vitest run src/modules/service-orders/departure-sweep.spec.ts src/modules/service-orders/repair-failed.spec.ts src/modules/service-orders/parts-billing.spec.ts --reporter=dot` | PASS: 58/58 sau bổ sung đúng contract fixture, không đổi assertions nghiệp vụ |
+| `npm test -- --reporter=json --outputFile="$env:TEMP/fixhome-w3-task3-unit-final.json"` (stdout/stderr lưu trong TEMP) | PASS: 4093 passed/100 skipped/0 failed, exit0 |
+| `npx vitest run test/context-doc.spec.ts --reporter=dot`; `git diff --check` | PASS: 2/2 và exit0 |
+
+Các lượt test mới ban đầu FAIL do fixture dùng sai tên bảng stock, entity support có cột ngoài schema fixture, thiếu resolved_at/configService/AFTER evidence. Đã sửa fixture theo schema/real readiness, không nới constraint hay gate. Full-suite W3 cuối cùng phía trên GREEN.
+
+Ba unit fixture liên quan trực tiếp tới W3/legacy compatibility cũng được cập nhật: `src/modules/service-orders/departure-sweep.spec.ts`, `repair-failed.spec.ts`, `parts-billing.spec.ts`. Query double chỉ nhận đúng query cohort/receipt/shipping/commission đang dùng, query lạ gây lỗi; không trả PASS mặc định cho một nguồn thiếu. Service production giữ nguyên patch đầu phiên.
+
+Tự review BA/PM/architecture/developer/security/tester/QA/DevOps: giữ module, API/RBAC, state machine, invoice immutability và wallet idempotency; không dependency/ENV/CI mới, không subagent. Chưa commit/stage/push/merge/deploy; không chạy compose của repo vì nối shared DB. Full broad E2E, HTTP/JWT cho payment tests mới, provider/bank thật, Docker backend health, Web/Mobile và DEV UAT NOT VERIFIED. Group/voucher/refund/custody vẫn là subpath bị chặn theo contract hiện có, không mở finance rewrite.
+
+Handover cho Lead: READY_FOR_LEAD_REVIEW cho source/service-level Task3, chưa chứng nhận release/UAT. `docs/CONTEXT.md` nằm ngoài allowlist của worker; cần Lead mở scope/cập nhật đúng protocol trước commit. Sau review và rollout được duyệt, apply migration trên môi trường được phép rồi rebuild/restart Backend trước runtime QA; không apply shared DB trong task này.

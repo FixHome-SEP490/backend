@@ -22,7 +22,13 @@ describe('Parts reconciliation at invoice freeze', () => {
       findOneBy: vi.fn().mockResolvedValue(null),
       findOne: vi.fn(async entity => entity === ServiceOrder ? {bookingId:'booking'} : entity === Booking ? {pricingModeSnapshot:'fixed_price',fixedUnitPriceSnapshot:0,quantity:1} : null),
       find: vi.fn(async entity => entity === PartRequest ? requests : []),
-      query: vi.fn(async sql => sql.includes('shipping_source') ? [{shipments}] : [{received:true}]),
+      query: vi.fn(async sql => {
+        if (sql === 'SELECT w3_invoice_shipping_source($1) AS shipments') return [{ shipments }];
+        if (sql === 'SELECT w3_received_request($1) AS received') return [{ received: true }];
+        if (sql === 'SELECT labor_total,rate_bps,commission_amount FROM w3_order_commission_snapshots WHERE service_order_id=$1')
+          return [{ labor_total: 0, rate_bps: 1000, commission_amount: 0 }];
+        throw new Error(`Unexpected fixture query: ${sql}`);
+      }),
       create: vi.fn((_entity,value)=>value), save:vi.fn(async (_entity,value)=>({...value,id:'invoice'})),
       insert:vi.fn(),update:vi.fn(),
     };
