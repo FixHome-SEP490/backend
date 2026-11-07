@@ -11,6 +11,12 @@ export class WarehouseResponseDto {
   @ApiPropertyOptional({ nullable: true })
   address: string | null;
 
+  @ApiPropertyOptional({ nullable: true })
+  latitude: number | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  longitude: number | null;
+
   @ApiProperty({ enum: WarehouseStatus })
   status: WarehouseStatus;
 

@@ -48,6 +48,34 @@ describe('W2 physical authority and legacy safety', () => {
     expect(manager.query.mock.calls.some(([sql, params]: any[]) => sql?.startsWith('UPDATE warehouse_stock') && params?.[0] !== expected)).toBe(false);
   });
 
+  it('auto-selects nearest stock-sufficient warehouse and never holds stock in another', async () => {
+    const { service, manager, request, allocation } = setup('manual_assistance');
+    Object.assign(allocation, { warehouseId: null, responsibleUserId: null });
+    manager.query.mockImplementation(async (sql?: string) => {
+      if (sql?.startsWith('INSERT INTO warehouse_fulfillment_commands')) return [{ id: 'command' }];
+      if (sql?.includes('FROM service_orders o JOIN bookings b')) return [{
+        lastLocationAt: null, liveLatitude: null, liveLongitude: null,
+        profileLatitude: '10.810', profileLongitude: '106.740',
+        bookingLatitude: '10.770', bookingLongitude: '106.690',
+      }];
+      if (sql?.includes('FROM warehouses w JOIN users')) return [
+        { id: 'warehouse-a', responsibleUserId: 'sm-a', latitude: '10.770', longitude: '106.690' },
+        { id: 'warehouse-b', responsibleUserId: 'sm-b', latitude: '10.811', longitude: '106.741' },
+      ];
+      if (sql?.includes('FROM warehouse_stock s WHERE')) return [
+        { warehouseId: 'warehouse-a', partId: 'sku', onHand: 4, reserved: 0 },
+        { warehouseId: 'warehouse-b', partId: 'sku', onHand: 4, reserved: 0 },
+      ];
+      if (sql?.startsWith('SELECT on_hand AS')) return [{ onHand: 4, reserved: 0 }];
+      return [];
+    });
+    await service.reserve(manager as never, request as never, { id: 'system', role: 'system' }, 'nearest', true);
+    expect(allocation.warehouseId).toBe('warehouse-b');
+    expect(manager.query.mock.calls.filter(([sql]) => sql?.startsWith('UPDATE warehouse_stock'))).toHaveLength(1);
+    expect(manager.query.mock.calls.some(([sql, params]: any[]) =>
+      sql?.startsWith('UPDATE warehouse_stock') && params?.[0] === 'warehouse-b')).toBe(true);
+  });
+
   it('never reserves another manager warehouse when acting SM has insufficient stock', async () => {
     const { service, manager, request, allocation } = setup('manual_assistance');
     Object.assign(allocation, { warehouseId: null, responsibleUserId: null });
