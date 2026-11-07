@@ -196,7 +196,8 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     await replayDb.query('CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public');
     replayDb.migrations.splice(0, replayDb.migrations.length, ...replayDb.migrations.filter(m =>
       db.migrations.some(current => current.name === m.name) &&
-      !['W3PositivePhysicalDelivery1793466000014', 'W3InvoicePaymentEnable1793466000015'].includes(m.name)));
+      !['W3PositivePhysicalDelivery1793466000014', 'W3InvoicePaymentEnable1793466000015',
+        'W3ZeroFeeInvoice1793466000016'].includes(m.name)));
     expect(await replayDb.runMigrations()).toHaveLength(replayDb.migrations.length);
     expect(await replayDb.query("SELECT convalidated FROM pg_constraint WHERE conrelid='invoices'::regclass AND conname='ck_invoice_shipping_cutover_closed'"))
       .toEqual([{ convalidated: true }]);
