@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-07 09:59 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-live-payment-integration-20261107
+> Cập nhật lần cuối: 2026-11-07 10:36 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-live-payment-integration-20261107
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -377,6 +377,7 @@ W3 physical: GET `/part-requests/:id/delivery-physical/preview` chỉ CUSTOMER s
 - Migration: `npm run migration:run`. Seed demo: `npm run seed:demo` (tạo admin, quản lý, kỹ thuật viên `tech1` đến `tech12`, khách `customer1` đến `customer7`, danh mục, 791 linh kiện).
 - Gate phát hành DEV W3: `NODE_ENV=production W3_DEV_RELEASE=1 node dist/database/w3-dev-release.js` chỉ apply đúng chín migration W3 `0004`–`0012` sau khi prerequisite sẵn và chỉ để lại pending thuộc cặp cash/reputation cho gate cũ; CI có step PostgreSQL cô lập `W3_DEV_ISOLATED_PG=1` (0008 staged bằng `import.meta.glob`, fail nếu chưa cherry-pick), deploy chạy gate W3 trước gate cash rồi mới restart Backend. Chi tiết mục 19, 22–24 `docs/WAREHOUSE_W3_FINANCE_CONTRACT.md`; không chạy trên shared DEV trong task preparation.
 - Gate trước mỗi commit: `npm run lint`, `npm run typecheck`, `TZ=UTC npm test`, `npm run build`; thêm `npm run test:e2e` khi đụng database. CI chạy thêm `npm audit --omit=dev --audit-level=high` và e2e trên Postgres sạch.
+- Fixture E2E PR #205: `test/app.e2e-spec.ts` giữ đủ 0014/0015 trên DB HTTP hiện tại; rollback/reapply/adopt legacy users chạy ở database tạm riêng, chỉ database replay loại 0014/0015, không gọi down của 0015. `warehouse-w3-finance.e2e-spec.ts` pin migrations trước 0004 rồi chạy 0004 thật để kiểm invoice lịch sử; `delivery-consent-storage.e2e-spec.ts` dùng schema mới nhất, kiểm CHECK shares validated và từ chối invoice thiếu provenance bằng SQL thật. Giữ nguyên isolated W3 release gate; chạy Node 20.19.5 và hoàn thành build trước E2E vì tests dùng `dist`. Không thay migration production hoặc shared DB. Kết quả và giới hạn: `docs/W3_CAPSTONE_AUDIT.md`, mục PR #205.
 - Lưu ý: `npm run build` xoá `dist`, làm dev server đang chạy bằng `start:dev` dừng; kiểm build song song thì dùng `npx tsc -p tsconfig.build.json --outDir <thư mục tạm>`.
 - Quy trình nhánh: tách nhánh từ `dev`, mở PR vào `dev`, CI xanh mới merge. Không ai merge vào `main` ngoài người giữ repo.
 
@@ -520,6 +521,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-07 10:36 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | PR #205: tách DB replay pre-cutover khỏi HTTP đủ 0014/0015, pin fixture legacy trước 0004 và kiểm provenance/CHECK hiện tại; giữ production migration và release gate.
 - 2026-11-07 09:59 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Cập nhật Task3/0015: invoice actual từng shipment, PAID completion, cancellation guard và C snapshot; P2 cancellation kiểm đúng lỗi/rollback với audit thật, focused PostgreSQL 5 PASS, chưa release.
 - 2026-11-07 03:42 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Expose frozen W3 70/30 shipping snapshot trên InvoiceResponseDto (read-only, backward-compat); 8 unit PASS, lint/typecheck/build PASS, không schema/migration.
 - 2026-11-07 03:28 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Task5 backend release qualification: DEV gate nhận 0014/0015 theo thứ tự, proof bridge/invoice/ACL/replay và negative dirty ledger; PostgreSQL 16 cô lập 42 PASS, không apply DEV.
@@ -559,4 +561,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-04 09:45 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p0-security-20261104 | Thêm P0-1A risk throttling theo actor/IP cho route rủi ro và socket; ghi DEV ceilings cùng giới hạn in-memory/runtime chưa kiểm chứng.
 - 2026-11-04 09:29 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p0-quota-noshow-20261104 | Ghi quota hai lượt pending nguyên tử, retry/nhả thợ ở cap, contract 409 và blocker solo no-show/PostgreSQL.
 - 2026-11-02 14:24 (UTC+7) | foxonworld | foxonworld/fixhome-rebook-voucher-history-be-20261102 | Expose header Date qua CORS cho đồng hồ voucher Web, giữ chính sách origin/credentials/methods.
-- 2026-11-02 10:21 (UTC+7) | foxonworld | foxonworld/fixhome-rebook-voucher-history-be-20261102 | Thêm urgent interruption opt-in và lịch sử thợ inactive gồm child nhóm, giữ receipt/PII/tiền cũ, ghi hợp đồng consumer và giới hạn PostgreSQL/runtime.

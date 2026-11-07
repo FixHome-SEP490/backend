@@ -242,7 +242,7 @@ describe.skipIf(
       )[0].n,
     );
 
-  it('runs the real forward migration with RLS/no API grants and keeps W3 invoice CHECK closed', async () => {
+  it('runs the real forward migration with RLS/no API grants and enforces invoice CHECK/provenance', async () => {
     const tables = await db.query(
       `SELECT relname,relrowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
       WHERE n.nspname=$1 AND relname IN ('delivery_consent_sessions','delivery_consent_commands','delivery_evidence_records')`,
@@ -259,13 +259,26 @@ describe.skipIf(
         [schema],
       ),
     ).toHaveLength(0);
-    expect(
-      await db.query(
-        `SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace
-      WHERE n.nspname=$1 AND c.conname='ck_invoice_shipping_cutover_closed'`,
-        [schema],
-      ),
-    ).toHaveLength(1);
+    // Latest 0015 replaces the blanket closed CHECK with source-backed admission.
+    // B1 consent alone is not invoice provenance, even with a valid 70/30 split.
+    const shares = await db.query(`SELECT convalidated,pg_get_constraintdef(oid) AS definition
+      FROM pg_constraint WHERE conrelid='invoices'::regclass AND conname='ck_invoice_shipping_shares'`);
+    expect(shares).toHaveLength(1);
+    expect(shares[0].convalidated).toBe(true);
+    expect(shares[0].definition).toContain('w3_invoice_shipping_totals');
+    const f = await fixture();
+    const consent = await f.start();
+    expect(consent.state.quote).not.toBeNull();
+    await expect(db.query(`INSERT INTO invoices(service_order_id,labor_total,commission_amount,shipping_fee,grand_total,
+      shipping_policy_version,customer_shipping_share,technician_shipping_share,shipping_shipments)
+      VALUES($1,100000,10000,20000,114000,'W3_70_30_V1',14000,6000,$2::jsonb)`,
+    [f.order.id, JSON.stringify([{ partRequestId: f.request.id, additionalCostId: f.cost.id, termsVersion: 1, receiptVersion: 1,
+      shippingPolicyVersion: 'W3_70_30_V1', shippingFee: 20000, customerShippingShare: 14000, technicianShippingShare: 6000 }])]))
+      .rejects.toMatchObject({ message: 'W3_SOURCE_REQUIRED', driverError: { code: 'P0001' } });
+    await expect(db.query(`INSERT INTO invoices(service_order_id,shipping_fee,grand_total,customer_shipping_share,technician_shipping_share)
+      VALUES($1,20000,20000,14000,6000)`, [f.order.id]))
+      .rejects.toMatchObject({ driverError: { code: '23514', constraint: 'ck_invoice_shipping_shares' } });
+    expect(await db.getRepository('Invoice').countBy({ serviceOrderId: f.order.id })).toBe(0);
     const warehouseCheck = await db.query(
       `SELECT pg_get_constraintdef(c.oid) AS definition
       FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace

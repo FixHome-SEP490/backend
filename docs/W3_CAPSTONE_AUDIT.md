@@ -161,3 +161,29 @@ Ba unit fixture liên quan trực tiếp tới W3/legacy compatibility cũng đ�
 Tự review BA/PM/architecture/developer/security/tester/QA/DevOps: giữ module, API/RBAC, state machine, invoice immutability và wallet idempotency; không dependency/ENV/CI mới, không subagent. Chưa commit/stage/push/merge/deploy; không chạy compose của repo vì nối shared DB. Full broad E2E, HTTP/JWT cho payment tests mới, provider/bank thật, Docker backend health, Web/Mobile và DEV UAT NOT VERIFIED. Group/voucher/refund/custody vẫn là subpath bị chặn theo contract hiện có, không mở finance rewrite.
 
 Handover cho Lead: READY_FOR_LEAD_REVIEW cho source/service-level Task3, chưa chứng nhận release/UAT. `docs/CONTEXT.md` nằm ngoài allowlist của worker; cần Lead mở scope/cập nhật đúng protocol trước commit. Sau review và rollout được duyệt, apply migration trên môi trường được phép rồi rebuild/restart Backend trước runtime QA; không apply shared DB trong task này.
+
+## PR #205 — sửa fixture CI theo migration stage (07/11/2026)
+
+Baseline `c7e2b9515388c2145947963afc2734c8d837ea23`, worktree sạch đầu phiên. Đã đọc `gh run view 42332112243 --log-failed`: Integration tests lỗi ở rollback 0015 forward-only, fixture legacy chạy 0015 trước 0004 và assertion CHECK closed đã lỗi thời. Production migrations, release gate, dependencies và business rules giữ nguyên.
+
+- `test/app.e2e-spec.ts`: DB HTTP vẫn chạy 0014/0015 vì entity Invoice cần `shipping_shipments`. Rollback/reapply và legacy user adoption dùng database tạm riêng tên UUID với create/drop guard, giữ CHECK closed validated và toàn bộ assertions lịch sử; chỉ DB replay loại 0014/0015. Không gọi down của 0015, không xóa lịch sử HTTP để giả lập downgrade. Database riêng cũng tránh global enum-name checks của migrations cũ nhìn nhầm schema khác.
+- `test/warehouse-w3-finance.e2e-spec.ts`: pin đúng migrations trước 0004, xác nhận cột W3 chưa tồn tại, insert invoice lịch sử rồi chạy 0004 thật; giữ 13 assertions immutable/legacy/closed cutover. Không chạy migration mới phụ thuộc 0004 trước migration được kiểm.
+- `test/delivery-consent-storage.e2e-spec.ts`: giữ schema mới nhất và RLS/no-grant assertions. Kiểm CHECK shares validated, INSERT W3 thiếu physical provenance bị `W3_SOURCE_REQUIRED`/P0001, INSERT legacy shares sai bị 23514/`ck_invoice_shipping_shares`; không có invoice được lưu. Assertion tương tự ở cuối Admin policy lifecycle trong app cũng được đổi sang current provenance guard, giữ warehouse gate đóng.
+
+Môi trường kiểm chứng: Node 20.19.5 theo `.nvmrc`, PostgreSQL 16 container tạm chỉ bind loopback, env fixture theo CI; không đọc .env/secret hoặc ghi shared DEV. Gọi Node 20 trực tiếp trong process kiểm thử, không đổi Node mặc định của máy. Chờ build hoàn tất trước E2E vì `nest build` xóa `dist`.
+
+Các lượt RED/thiết lập đã ghi nhận: loại 0015 khỏi HTTP runtime gây thiếu cột entity và 500, nên thiết kế cuối giữ đủ schema HTTP. Node 24.15.0 local có `Worker exited unexpectedly`, không dùng làm chứng nhận PASS. Node 20 chạy đủ app trước sửa assertion cuối: 131 PASS/1 FAIL ở CHECK obsolete; Admin policy sau sửa 10/10 PASS. Một lượt E2E khởi chạy chồng build bị thiếu dist/module/bảng, không dùng làm bằng chứng; typecheck union DataSourceOptions đã sửa bằng shared options có discriminator postgres. Hai suite legacy/consent riêng đã PASS 35/35; kết quả qualification cuối ghi bên dưới sau lượt chạy tuần tự.
+
+Qualification cuối chạy tuần tự, Node 20.19.5, `CI=true`, `GITHUB_ACTIONS=true`, `NODE_ENV=test`, DATABASE fixture loopback theo CI và `MAIL_TRANSPORT=json`:
+
+| Lệnh | Kết quả thực chạy |
+| --- | --- |
+| `node node_modules/vitest/vitest.mjs run --config vitest.config.e2e.ts test/app.e2e-spec.ts test/warehouse-w3-finance.e2e-spec.ts test/delivery-consent-storage.e2e-spec.ts --reporter=dot` | PASS: 3 files, 167/167, exit0, 200.96s |
+| `W3_DEV_ISOLATED_PG=1 node node_modules/vitest/vitest.mjs run src/database/w3-dev-release.postgres.spec.ts --reporter=dot` (PowerShell đặt env trước lệnh) | PASS: 42/42, exit0, 32.79s; giữ nguyên production release gate |
+| `node node_modules/vitest/vitest.mjs run test/context-doc.spec.ts --reporter=dot` | PASS: 2/2, exit0 |
+| `npm run lint` | PASS: 0 errors/5 warnings có sẵn, exit0 |
+| `npm run typecheck`; `npm run build`; `git diff --check` | PASS: từng lệnh exit0 |
+
+Chọn targeted E2E group + isolated release gate theo scope Lead; full `npm run test:e2e` và full unit không chạy lại trong lượt này. CI GitHub sau patch, Web/Mobile, provider/bank thật, shared DEV và deploy NOT VERIFIED. 74 physical W3 PASS trong run GitHub gốc là evidence lịch sử của head baseline, không gán thành lượt local mới.
+
+Review BA/PM/architecture/developer/security/QA/DevOps: chỉ ba fixture E2E và hai tài liệu; không production migration/API/permission/dependency change, không nới invoice/immutable guard hay bỏ release test. DB replay và container PostgreSQL dùng một lần được cleanup; không commit/stage/push/PR/merge/deploy. Handover READY_FOR_LEAD_REVIEW cho fixture fix; Lead push và yêu cầu CI PR #205 chạy lại.

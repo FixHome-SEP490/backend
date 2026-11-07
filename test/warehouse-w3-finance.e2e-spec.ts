@@ -65,22 +65,25 @@ describe.skipIf(process.env.CI !== 'true')(
         entities: [resolve('dist/**/*.entity.js')],
         migrations: [resolve('dist/database/migrations/*.js')],
       }).initialize();
-      // Same public-only exclusions as the existing W2 private-schema CI harness.
+      // Test the historical 0004 upgrade, not today's live monetary cutover.
+      // Later W3 migrations depend on 0004 and must not precede its explicit up().
+      // The current 0014/0015 chain is exercised by the isolated release/physical gates.
       db.migrations.splice(
         0,
         db.migrations.length,
         ...db.migrations.filter(
           (m) =>
-            ![
+            Number(m.name!.slice(-13)) < 1793466000004 && ![
               'VoucherFundingLedger1792994400001',
               'VoucherCampaignLifecycle1793116800000',
               'CashPaymentIntents1793293200000',
               'TechnicianResponsibility1793293200001',
-              migration.name,
             ].includes(m.name),
         ),
       );
       await db.runMigrations();
+      expect(await db.query(`SELECT 1 FROM information_schema.columns
+        WHERE table_schema=$1 AND table_name='invoices' AND column_name='shipping_policy_version'`, [schema])).toHaveLength(0);
       const save = (name: string, value: object) =>
         db.getRepository(name).save(value);
       const customer = await save('User', {
