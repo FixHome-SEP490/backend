@@ -33,6 +33,12 @@ function makeInvoice(overrides: Partial<Invoice> = {}): Invoice {
 }
 
 describe('toInvoiceResponse — W3 shipping snapshot exposure', () => {
+  it('preserves absent positive terms and exact zero-route provenance', () => {
+    const shipment = { partRequestId: 'zero', additionalCostId: 'cost', termsVersion: null,
+      zeroQuoteVersion: 2, consentVersion: 8, receiptVersion: 4,
+      shippingPolicyVersion: 'W3_70_30_V1' as const, shippingFee: 0, customerShippingShare: 0, technicianShippingShare: 0 };
+    expect(toInvoiceResponse(makeInvoice({ shippingShipments: [shipment] } as any)).shippingShipments).toEqual([shipment]);
+  });
   it('golden W3: L200000 C20000 S30000 → customer gross 221000, shares 21000/9000', () => {
     const invoice = makeInvoice();
     const dto = toInvoiceResponse(invoice);

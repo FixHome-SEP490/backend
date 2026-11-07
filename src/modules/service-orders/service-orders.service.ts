@@ -2129,7 +2129,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     // Spec v1.4 BRX-026: Platform commission is 10% on Final Labor Total. 0% on parts. Rate snapshotted.
     const commissionBase = 'LABOR';
     const [w3Commission] = shippingShipments
-      ? await manager.query('SELECT labor_total,rate_bps,commission_amount FROM w3_order_commission_snapshots WHERE service_order_id=$1', [orderId])
+      ? await manager.query('SELECT labor_total,rate_bps,commission_amount FROM w3_invoice_commission_source($1)', [orderId])
       : [];
     if (shippingShipments && (!w3Commission || Number(w3Commission.labor_total) !== laborTotal))
       throw new BusinessException(ErrorCodes.CONFLICT, 'Tiền công không khớp bản chụp hoa hồng đã xác nhận.');

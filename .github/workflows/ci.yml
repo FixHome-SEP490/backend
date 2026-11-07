@@ -55,9 +55,11 @@ jobs:
         env:
           CASH_REPUTATION_ISOLATED_PG: '1'
       - name: Isolated W3 warehouse delivery PostgreSQL migration gate
-        run: npx vitest run src/database/w3-dev-release.postgres.spec.ts
+        run: npx vitest run src/database/w3-dev-release-gate.spec.ts src/database/w3-dev-release.postgres.spec.ts
         env:
           W3_DEV_ISOLATED_PG: '1'
+      - name: W3 zero-fee invoice PostgreSQL regression
+        run: npx vitest run --config vitest.config.e2e.ts test/warehouse-delivery-physical.e2e-spec.ts -t '0016'
       - name: Integration tests
         run: npm run test:e2e
         env:

@@ -46,7 +46,9 @@ export class Invoice extends BaseEntity {
   shippingShipments?: Array<{
     partRequestId: string;
     additionalCostId: string;
-    termsVersion: number;
+    termsVersion: number | null;
+    zeroQuoteVersion?: number;
+    consentVersion?: number;
     receiptVersion: number;
     shippingPolicyVersion: 'W3_70_30_V1';
     shippingFee: number;
