@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-07 10:36 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/fixhome-w3-live-payment-integration-20261107
+> Cập nhật lần cuối: 2026-11-07 10:55 (UTC+7) · Người cập nhật (git): foxonworld · Nhánh: foxonworld/w3-remove-manual-bank-20261107
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -94,7 +94,7 @@ Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức c
 
 ## 3. Trạng thái hiện tại
 
-W3 Task4 slice local (base `1636450`): thêm `POST /finance/manual-bank/:invoiceId` cho khách sở hữu (JWT/RBAC `invoice:pay_own`) chỉ tạo `Payment` `provider=manual_bank` PENDING, giữ invoice UNPAID và không cộng ví. `POST /admin/payments/manual-bank/:invoiceId/confirm` (Admin, `invoice:read_related`) bắt buộc đúng số tiền và mã tham chiếu ngân hàng duy nhất, gọi lại `markInvoicePaidOnline`/settlement một lần dưới invoice/order lock và strict audit rollback. Chọn mới chặn cash intent/pending VNPay-wallet cùng invoice; retry PENDING và confirm replay idempotent không phụ thuộc voucher/interruption hiện tại; W3 eligibility/legacy giữ nguyên. Không migration; không tự hoàn tiền ngân hàng, hoàn tiền gốc là thao tác Admin thủ công có chứng từ. Kiểm chứng: focused 11/11, toàn `src/modules/finance` 579 PASS/16 skipped, lint 0 errors/5 warning cũ, typecheck/build PASS. PostgreSQL/HTTP/runtime/Web/Mobile/DEV NOT VERIFIED; Task4 mới là local slice, chưa release.
+Quyết định owner ngày 07/11/2026: **không sử dụng Manual Bank**. Chỉ giữ VNPay (xác minh provider), Ví FixHome (tự động), Tiền mặt (cash-first/legacy theo đúng flow hiện có). Đã loại bỏ customer/Admin manual-bank routes, service methods và test riêng; không thay đổi migration W3 0014/0015, 70/30, ledger chung hay logic thanh toán khác. Thao tác cũ tại đây là lịch sử, không còn là chức năng được hỗ trợ.
 
 W3 Task3 slice local (base `5d91133`): migration forward `1793466000015-W3InvoicePaymentEnable` freeze `shipping_shipments` theo từng actual DELIVERY và TECHNICIAN_RECEIVED, kiểm provenance, tổng share từng chuyến và invoice bất biến. Writer tạo invoice trước completionRequestedAt, lấy C/rate từ `w3_order_commission_snapshots`; thay config sau receipt không tính lại C, approved labor drift vẫn bị từ chối. COMPLETED cần invoice PAID có provenance W3 hợp lệ. Hủy chỉ khi mọi cohort đã cancelled, không còn nghĩa vụ stock/courier và không có invoice PAID; service đóng request trước order trong cùng transaction. Giữ legacy request status/receivedAt, USED sau receipt, scoped SOLO collection/settlement, Order lock và wallet idempotency; group/voucher/refund/custody chưa mở. Đã có PostgreSQL service-level cho CashFirst, customer-wallet, signed VNPay callback giả lập, hai actual shipments cùng order và completion hold; không chứng minh payment HTTP/JWT hoặc tiền provider thật. Follow-up P2 bổ sung AuditLogService thật cho fixture cancellation, yêu cầu đúng QueryFailedError/stock-courier guard và SQLSTATE P0001, so sánh rollback order/request/stock/history/audit; focused negative và successful cancel 5/5 PASS, broad W3 74/74 PASS trên PostgreSQL 16 cô lập. Task3 chỉ READY_FOR_REVIEW, chưa release/UAT; chi tiết bằng chứng lượt trước tại `docs/W3_CAPSTONE_AUDIT.md`. Task5 đã đưa 0014/0015 vào DEV gate; chưa apply shared DEV. Full broad E2E, payment HTTP/JWT, provider/bank, Web/Mobile và DEV UAT NOT VERIFIED.
 
@@ -449,7 +449,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 8. Việc đang dở và rủi ro đã biết
 
-- W3 payment capstone: Task1 audit/golden xong trong phạm vi source/tests; chưa active payment W3. Task2 bridge terms–physical/evidence đã có forward migration 0014 và PostgreSQL 54 PASS, chưa rollout; Task3 snapshot từng shipment và scoped invoice/order/usage/consumer gates; Task4 manual bank receipt local đã có customer PENDING + Admin exact/unique strict-audit confirm và focused tests, nhưng PostgreSQL/HTTP/UAT/rollout chưa kiểm chứng; Task5 backend release qualification đã admit 0014/0015 vào DEV gate và PostgreSQL 16 cô lập 42 PASS, còn Web/CI/DEV UAT. Chi tiết nguồn và PR slices: `docs/W3_CAPSTONE_AUDIT.md`. Không bỏ guard toàn cục hoặc dùng quote totals làm actual.
+- W3 capstone: Backend PR #205 đã merge vào dev, quality gates và deploy workflow 42335435665 SUCCESS; migrations forward 0014/0015 có trong release gate. Shipping 70/30 theo actual shipment và snapshot C đã đóng băng; owner quyết định loại bỏ Manual Bank, chỉ VNPay/Ví FixHome/Tiền mặt. Nhánh hiện tại gỡ manual bank routes/service/tests; chờ PR/CI/deploy bản gỡ và Web W3. Signed-in DEV UAT và provider thật chưa kiểm chứng; không bỏ guard hoặc suy quote thành actual.
 
 - W3 shipping cap 0013 chỉ local: Lead cần CI/preflight/migration riêng trước restart Backend; không dùng Admin cap làm Finance authorization hoặc reset fee. Shared DEV, Compose `/health`, provider, Web/Mobile browser và Node 20.19.5 NOT VERIFIED. Chưa có live spending commitment/refund/courier/funding authority; giữ các blockers mục 24–25 hợp đồng W3.
 
@@ -521,6 +521,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-07 10:55 (UTC+7) | foxonworld | foxonworld/w3-remove-manual-bank-20261107 | OWNER CANCELLED Manual Bank vì VNPay đủ chức năng thanh toán online; xóa API customer/Admin + service/test, giữ VNPay, Ví FixHome, cash-first/legacy và W3 70/30; DEV gỡ bỏ chờ PR/CI/deploy, không thêm payment rail khác.
+
 - 2026-11-07 10:36 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | PR #205: tách DB replay pre-cutover khỏi HTTP đủ 0014/0015, pin fixture legacy trước 0004 và kiểm provenance/CHECK hiện tại; giữ production migration và release gate.
 - 2026-11-07 09:59 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Cập nhật Task3/0015: invoice actual từng shipment, PAID completion, cancellation guard và C snapshot; P2 cancellation kiểm đúng lỗi/rollback với audit thật, focused PostgreSQL 5 PASS, chưa release.
 - 2026-11-07 03:42 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Expose frozen W3 70/30 shipping snapshot trên InvoiceResponseDto (read-only, backward-compat); 8 unit PASS, lint/typecheck/build PASS, không schema/migration.
@@ -560,4 +562,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-04 10:25 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p0-solo-noshow-20261104 | B2 solo contact/readiness và stop nguyên tử, giữ evidence/replay; giới hạn API liên hệ/dừng đơn thử nghiệm DEV và chặn thông báo trùng, không tự phạt khách.
 - 2026-11-04 09:45 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p0-security-20261104 | Thêm P0-1A risk throttling theo actor/IP cho route rủi ro và socket; ghi DEV ceilings cùng giới hạn in-memory/runtime chưa kiểm chứng.
 - 2026-11-04 09:29 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p0-quota-noshow-20261104 | Ghi quota hai lượt pending nguyên tử, retry/nhả thợ ở cap, contract 409 và blocker solo no-show/PostgreSQL.
-- 2026-11-02 14:24 (UTC+7) | foxonworld | foxonworld/fixhome-rebook-voucher-history-be-20261102 | Expose header Date qua CORS cho đồng hồ voucher Web, giữ chính sách origin/credentials/methods.
