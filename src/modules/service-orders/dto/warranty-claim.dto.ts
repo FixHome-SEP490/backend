@@ -127,13 +127,15 @@ export class WarrantyClaimViewDto {
 
   @ApiPropertyOptional({ type: WarrantyClaimTechnicianDto, nullable: true })
   technician: WarrantyClaimTechnicianDto | null;
+
+  @ApiPropertyOptional({ format: 'date-time', nullable: true, description: 'Customer-facing views only: when the technician comes to inspect' })
+  inspectionScheduledAt?: Date | null;
 }
 
 export class AcceptWarrantyClaimDto {
-  @ApiPropertyOptional({ format: 'date-time', description: 'Proposed inspection time' })
-  @IsOptional()
+  @ApiProperty({ format: 'date-time', description: 'Inspection time the technician agrees with the customer' })
   @IsDateString()
-  scheduledAt?: string;
+  scheduledAt: string;
 }
 
 export class DeclineWarrantyClaimDto {

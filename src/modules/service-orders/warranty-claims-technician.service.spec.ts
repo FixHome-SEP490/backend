@@ -107,11 +107,13 @@ describe('technician reads one claim', () => {
   });
 });
 
+const FUTURE = new Date(Date.now() + 86_400_000).toISOString();
+
 describe('technician warranty commands', () => {
   it('accepts a submitted claim, opens a scheduled visit and tells the customer', async () => {
     const { service, claimTx, visitTx, notifier } = makeService();
 
-    await service.accept('claim-1', { scheduledAt: '2026-10-02T02:00:00.000Z' }, TECH);
+    await service.accept('claim-1', { scheduledAt: FUTURE }, TECH);
 
     expect(claimTx.update).toHaveBeenCalledWith(
       { id: 'claim-1', status: WarrantyClaimStatus.SUBMITTED, technicianId: TECH.id },
@@ -122,21 +124,26 @@ describe('technician warranty commands', () => {
         warrantyClaimId: 'claim-1',
         technicianId: TECH.id,
         status: WarrantyVisitStatus.SCHEDULED,
-        scheduledAt: new Date('2026-10-02T02:00:00.000Z'),
+        scheduledAt: new Date(FUTURE),
       }),
     );
     expect(notifier.toUser).toHaveBeenCalledWith('customer-1', expect.any(String), expect.any(String), 'WARRANTY_CLAIM_ACCEPTED', 'order-1');
   });
 
+  it('refuses an inspection time that is not in the future', async () => {
+    const { service } = makeService();
+    await expect(service.accept('claim-1', { scheduledAt: '2020-01-01T00:00:00.000Z' }, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+  });
+
   it('answers 404 for a claim assigned to someone else or unassigned, and 409 for the wrong state', async () => {
     const other = makeService({ claim: makeClaim({ technicianId: 'tech-2' }) });
-    await expect(other.service.accept('claim-1', {}, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.NOT_FOUND } });
+    await expect(other.service.accept('claim-1', { scheduledAt: FUTURE }, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.NOT_FOUND } });
 
     const unassigned = makeService({ claim: makeClaim({ technicianId: null }) });
-    await expect(unassigned.service.accept('claim-1', {}, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.NOT_FOUND } });
+    await expect(unassigned.service.accept('claim-1', { scheduledAt: FUTURE }, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.NOT_FOUND } });
 
     const wrongState = makeService({ claim: makeClaim({ status: WarrantyClaimStatus.INSPECTED }) });
-    await expect(wrongState.service.accept('claim-1', {}, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+    await expect(wrongState.service.accept('claim-1', { scheduledAt: FUTURE }, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
     expect(wrongState.claimTx.update).not.toHaveBeenCalled();
   });
 
@@ -144,7 +151,7 @@ describe('technician warranty commands', () => {
     const { service, claimTx, visitTx } = makeService();
     claimTx.update.mockResolvedValueOnce({ affected: 0 });
 
-    await expect(service.accept('claim-1', {}, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+    await expect(service.accept('claim-1', { scheduledAt: FUTURE }, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
     expect(visitTx.save).not.toHaveBeenCalled();
   });
 

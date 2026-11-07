@@ -3,7 +3,7 @@ import { WarrantyClaim } from './entities/warranty-claim.entity';
 import { WarrantyVisit } from './entities/warranty-visit.entity';
 
 /** Actor-safe claim view: only id and name of the technician, never contact or account data. */
-export function toClaimView(claim: WarrantyClaim): WarrantyClaimViewDto {
+export function toClaimView(claim: WarrantyClaim, inspectionScheduledAt?: Date | null): WarrantyClaimViewDto {
   return {
     id: claim.id,
     serviceOrderId: claim.serviceOrderId,
@@ -20,6 +20,7 @@ export function toClaimView(claim: WarrantyClaim): WarrantyClaimViewDto {
     technician: claim.technician
       ? { id: claim.technician.id, fullName: claim.technician.fullName }
       : null,
+    ...(inspectionScheduledAt !== undefined ? { inspectionScheduledAt } : {}),
   };
 }
 

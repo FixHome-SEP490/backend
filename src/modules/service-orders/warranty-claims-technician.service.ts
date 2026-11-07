@@ -74,6 +74,10 @@ export class WarrantyClaimsTechnicianService {
   }
 
   async accept(claimId: string, dto: AcceptWarrantyClaimDto, technician: OrderActor): Promise<StaffWarrantyClaimDto> {
+    const scheduledAt = new Date(dto.scheduledAt);
+    if (!Number.isFinite(scheduledAt.getTime()) || scheduledAt.getTime() <= Date.now()) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Lịch kiểm tra phải ở thời điểm sau hiện tại.');
+    }
     const claim = await this.ownClaim(claimId, technician.id, WarrantyClaimStatus.SUBMITTED);
     await this.claimRepo.manager.transaction(async (manager) => {
       const updated = await manager
@@ -89,14 +93,14 @@ export class WarrantyClaimsTechnicianService {
           warrantyClaimId: claim.id,
           technicianId: technician.id,
           status: WarrantyVisitStatus.SCHEDULED,
-          scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : null,
+          scheduledAt,
         }),
       );
     });
     await this.notifier.toUser(
       claim.customerId,
       'Kỹ thuật viên đã nhận yêu cầu bảo hành',
-      'Kỹ thuật viên phụ trách sẽ liên hệ để hẹn lịch kiểm tra.',
+      `Kỹ thuật viên hẹn kiểm tra lúc ${scheduledAt.toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false })}.`,
       'WARRANTY_CLAIM_ACCEPTED',
       claim.serviceOrderId,
     );

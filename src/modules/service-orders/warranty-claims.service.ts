@@ -21,6 +21,7 @@ import {
 import { TechnicianAssignment } from './entities/technician-assignment.entity';
 import { WarrantyClaim } from './entities/warranty-claim.entity';
 import { WarrantyCoverage } from './entities/warranty-coverage.entity';
+import { WarrantyVisit } from './entities/warranty-visit.entity';
 import { authorizeOrder, type OrderActor } from './order-access';
 import { toClaimView } from './warranty-claim.mapper';
 import { WarrantyNotifier } from './warranty-notifier.service';
@@ -129,7 +130,8 @@ export class WarrantyClaimsService {
       relations: ['technician'],
       order: { submittedAt: 'DESC' },
     });
-    return claims.map(toClaimView);
+    const times = await this.scheduledTimes(claims.map((claim) => claim.id));
+    return claims.map((claim) => toClaimView(claim, times.get(claim.id) ?? null));
   }
 
   async respond(
@@ -189,6 +191,17 @@ export class WarrantyClaimsService {
 
   private async viewById(id: string): Promise<WarrantyClaimViewDto> {
     const claim = await this.claimRepo.findOneOrFail({ where: { id }, relations: ['technician'] });
-    return toClaimView(claim);
+    const times = await this.scheduledTimes([id]);
+    return toClaimView(claim, times.get(id) ?? null);
+  }
+
+  /** The newest scheduled inspection time per claim, for the customer's view. */
+  private async scheduledTimes(claimIds: string[]): Promise<Map<string, Date | null>> {
+    if (!claimIds.length) return new Map();
+    const visits = await this.claimRepo.manager.find(WarrantyVisit, {
+      where: { warrantyClaimId: In(claimIds) },
+      order: { createdAt: 'ASC' },
+    });
+    return new Map(visits.map((visit) => [visit.warrantyClaimId, visit.scheduledAt ?? null]));
   }
 }
