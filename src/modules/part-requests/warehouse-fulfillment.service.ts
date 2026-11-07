@@ -8,6 +8,7 @@ import { Warehouse } from '../warehouses/entities';
 import { PartRequest, PartRequestItem } from './entities';
 import { WarehouseAllocation } from './entities/warehouse-allocation.entity';
 import { canonicalWarehouseQuantities, hasWholeRequestStock, warehouseBalance, WarehouseQuantity } from './warehouse-fulfillment.rules';
+import { nearestEligible, point } from './warehouse-distance.rules';
 
 type Actor = { id: string; role: string };
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -73,7 +74,22 @@ export class WarehouseFulfillmentService {
     if (command.replayed) return this.view(manager, request.id);
     if (request.status !== PartRequestStatus.REQUESTED || !['manual_assistance', 'reserved'].includes(a.status)) throw new ConflictException('Không thể giữ kho ở trạng thái này.');
     // SHARE locks stabilize active warehouse/manager selection; stock locks have global warehouse/SKU order.
-    const candidates: { id: string; responsibleUserId: string }[] = await manager.query(`SELECT w.id, w.responsible_user_id AS "responsibleUserId"
+    // Recent GPS fix wins. Otherwise use technician profile, then booking site;
+    // missing locations fall back to deterministic warehouse ID selection.
+    const [source]: Array<{ liveLatitude: string | null; liveLongitude: string | null; lastLocationAt: Date | null;
+      profileLatitude: string | null; profileLongitude: string | null; bookingLatitude: string | null; bookingLongitude: string | null }> =
+      await manager.query(`SELECT tp.last_lat AS "liveLatitude", tp.last_lng AS "liveLongitude",
+        tp.last_location_at AS "lastLocationAt", tp.latitude AS "profileLatitude", tp.longitude AS "profileLongitude",
+        b.latitude_snapshot AS "bookingLatitude", b.longitude_snapshot AS "bookingLongitude"
+        FROM service_orders o JOIN bookings b ON b.id=o.booking_id
+        LEFT JOIN technician_profiles tp ON tp.user_id=$1
+        WHERE o.id=$2`, [request.technicianId, request.serviceOrderId]);
+    const lastFix = source?.lastLocationAt ? new Date(source.lastLocationAt).getTime() : 0;
+    const recent = lastFix > 0 && lastFix <= Date.now() + 60_000 && Date.now() - lastFix <= 30 * 60_000;
+    const reference = (recent ? point({ latitude: source?.liveLatitude, longitude: source?.liveLongitude }) : null) ||
+      point({ latitude: source?.profileLatitude, longitude: source?.profileLongitude }) ||
+      point({ latitude: source?.bookingLatitude, longitude: source?.bookingLongitude });
+    const candidates: { id: string; responsibleUserId: string; latitude: string | null; longitude: string | null }[] = await manager.query(`SELECT w.id, w.responsible_user_id AS "responsibleUserId", w.latitude, w.longitude
       FROM warehouses w JOIN users u ON u.id=w.responsible_user_id
       WHERE w.status='active' AND u.role='service_manager' AND u.is_active AND u.status='active'
       ORDER BY w.id FOR SHARE OF w,u`);
@@ -86,8 +102,8 @@ export class WarehouseFulfillmentService {
     const eligible = candidates.filter(w => hasWholeRequestStock(required, stocks.filter(s => s.warehouseId === w.id)));
     const chosen = a.status === 'reserved' ? candidates.find(w => w.id === a.warehouseId) :
       !automatic && actor.role === Role.SERVICE_MANAGER
-        ? eligible.find(w => w.responsibleUserId === actor.id)
-        : eligible[0];
+        ? nearestEligible(eligible.filter(w => w.responsibleUserId === actor.id), reference)
+        : nearestEligible(eligible, reference);
     if (!automatic && actor.role === Role.SERVICE_MANAGER && chosen?.responsibleUserId !== actor.id) {
       if (!chosen && eligible.length) throw new ForbiddenException('Bạn không phụ trách kho đủ linh kiện.');
     }
@@ -103,7 +119,7 @@ export class WarehouseFulfillmentService {
     await this.move(manager, a, required, 'RESERVE', command.id);
     await manager.save(WarehouseAllocation, a);
     await manager.insert(Notification, { userId: chosen.responsibleUserId, title: 'Yêu cầu linh kiện tại kho',
-      message: 'Đã giữ đủ linh kiện tại kho bạn phụ trách. Khoảng cách chưa được xác minh; vui lòng kiểm tra trước khi chuẩn bị.',
+      message: 'Đã giữ đủ linh kiện tại kho được chọn theo khoảng cách ước tính nếu có tọa độ. Vui lòng kiểm tra địa chỉ trước khi chuẩn bị.',
       type: 'PART_REQUEST_NEW', referenceId: request.id, referenceType: 'part_request', isRead: false });
     return this.view(manager, request.id);
   }

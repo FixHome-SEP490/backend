@@ -197,7 +197,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     replayDb.migrations.splice(0, replayDb.migrations.length, ...replayDb.migrations.filter(m =>
       db.migrations.some(current => current.name === m.name) &&
       !['W3PositivePhysicalDelivery1793466000014', 'W3InvoicePaymentEnable1793466000015',
-        'W3ZeroFeeInvoice1793466000016'].includes(m.name)));
+        'W3ZeroFeeInvoice1793466000016', 'WarehouseNearestGeo1794048000000'].includes(m.name)));
     expect(await replayDb.runMigrations()).toHaveLength(replayDb.migrations.length);
     expect(await replayDb.query("SELECT convalidated FROM pg_constraint WHERE conrelid='invoices'::regclass AND conname='ck_invoice_shipping_cutover_closed'"))
       .toEqual([{ convalidated: true }]);
