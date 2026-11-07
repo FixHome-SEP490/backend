@@ -17,7 +17,7 @@
 - Owner-approved split W3_70_30_V1: per shipment c=floor((S*7+5)/10), t=S-c; S is FULL courier cost. With L=200000, C=20000, S=30000, customer pays 221000; cash wallet debit=50000; verified online wallet credit=171000.
 - Admin `commission.rate_bps` may be zero. `w3.shipping.max_new_fee_vnd` is new quote safety cap, zero means no positive NEW quote; Admin explicitly raises it for positive demo.
 - One authoritative actual/quote source, unique request, dual consent, actor ownership, order locks, CAS/version and idempotent wallet postings; never treat preparatory simulation D/commission as money authority.
-- No direct real-money transfer triggered from backend; manual bank confirmation must be authorized, amount-correct, single-use and auditable; never mark as paid from a client screenshot.
+- Owner removed Manual Bank on 2026-11-07: support only VNPay, FixHome Wallet and Cash; no direct bank transfer workflow or client-claimed paid state.
 - No blanket removal of `assertShippingFinancialCutoverAllowed`, no override via generic env or admin flag. Replace with a narrow W3 invoice+verified delivery predicate, applied in every W3 money consumer.
 - Run at least `npm run lint`, `npm run typecheck`, `npm run build`, relevant `npm test`; isolated PostgreSQL W3 schema and full payment integration before merge or DEV deploy. No shared DB writes for local tests.
 - Preserve `docs/CONTEXT.md` latest log protocol (max 40 log entries), plan tracked, add tests before implementation. No speculative schema or new finance ledger if current infrastructure suffices.
@@ -25,7 +25,7 @@
 ## Review Focus (add regression in owning tasks)
 
 1. Paid W3 with 2 shipments S=1 each: per-shipment rounded customer 2, tech 0, no aggregate rounding divergence; invoice DB CHECK must accept but not arbitrary fake shares.
-2. Race: concurrent duplicate cash/online/manual-transfer confirmation must generate exactly one invoice PAID and one wallet posting.
+2. Race: concurrent duplicate cash, wallet and VNPay confirmation must generate exactly one invoice PAID and one wallet posting.
 3. Historical legacy invoice with positive shipping continues legacy 100/0, not retroactively converted to W3; paid invoice immutable even if consent drifts.
 4. Missing/stale approved fee, absent either consent, fee>quote/source, no physical receipt, or insufficient L-C-Σt refuses W3 invoicing/collection.
 5. Cash + online + cancelled/refunded + W1/W2/PICKUP/group/voucher paths remain compatible; no double-counted courier S or bank transfer credited before verification.
