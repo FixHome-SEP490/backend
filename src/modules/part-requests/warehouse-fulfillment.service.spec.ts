@@ -21,7 +21,7 @@ function setup(status = 'reserved') {
 
 describe('W2 physical authority and legacy safety', () => {
   it.each([
-    { name: 'assigned SM can use its own eligible warehouse after another SM warehouse', actor: { id: 'sm-b', role: Role.SERVICE_MANAGER }, stockB: 3, automatic: false, expected: 'warehouse-b' },
+
     { name: 'automatic booking still selects the first whole-stock warehouse', actor: { id: 'system', role: 'system' }, stockB: 3, automatic: true, expected: 'warehouse-a' },
   ])('$name', async ({ actor, stockB, automatic, expected }) => {
     const { service, manager, request, allocation } = setup('manual_assistance');
@@ -74,6 +74,30 @@ describe('W2 physical authority and legacy safety', () => {
     expect(manager.query.mock.calls.filter(([sql]) => sql?.startsWith('UPDATE warehouse_stock'))).toHaveLength(1);
     expect(manager.query.mock.calls.some(([sql, params]: any[]) =>
       sql?.startsWith('UPDATE warehouse_stock') && params?.[0] === 'warehouse-b')).toBe(true);
+  });
+
+  it('notifies only the technician and never reserves or delegates when every warehouse lacks stock', async () => {
+    const { service, manager, request, allocation } = setup('manual_assistance');
+    Object.assign(allocation, { warehouseId: null, responsibleUserId: null });
+    manager.query.mockImplementation(async (sql?: string) => {
+      if (sql?.startsWith('INSERT INTO warehouse_fulfillment_commands')) return [{ id: 'command' }];
+      if (sql?.includes('FROM warehouses w JOIN users')) return [
+        { id: 'warehouse-a', responsibleUserId: 'sm-a', latitude: '10.77', longitude: '106.7' },
+      ];
+      if (sql?.includes('FROM warehouse_stock s WHERE')) return [
+        { warehouseId: 'warehouse-a', partId: 'sku', onHand: 1, reserved: 0 },
+      ];
+      return [];
+    });
+    const result = await service.reserve(manager as never, request as never, { id: 'tech', role: Role.TECHNICIAN }, 'auto:no-stock', true);
+    expect(result).toMatchObject({ status: 'stock_unavailable', warehouseId: null, stockUnavailable: true });
+    expect(manager.insert).toHaveBeenCalledTimes(1);
+    expect(manager.insert.mock.calls[0][1]).toMatchObject({ userId: 'tech', type: 'PART_REQUEST_STOCK_UNAVAILABLE' });
+    expect(manager.query.mock.calls.some(([sql]) => sql?.startsWith('UPDATE warehouse_stock'))).toBe(false);
+    expect(allocation.status).toBe('manual_assistance'); // DB CHECK unchanged; API translates to stock_unavailable.
+    await expect(service.reserve(manager as never, request as never,
+      { id: 'sm-a', role: Role.SERVICE_MANAGER }, 'manual-retry')).rejects.toThrow('Không có kho đủ linh kiện');
+    expect(manager.insert).toHaveBeenCalledTimes(1);
   });
 
   it('never reserves another manager warehouse when acting SM has insufficient stock', async () => {

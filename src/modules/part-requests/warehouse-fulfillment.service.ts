@@ -28,9 +28,9 @@ export class WarehouseFulfillmentService {
     const a = await manager.findOne(WarehouseAllocation, { where: { partRequestId: id } });
     if (!a) return { partRequestId: id, mode: 'legacy', status: null };
     const w = a.warehouseId ? await manager.findOne(Warehouse, { where: { id: a.warehouseId } }) : null;
-    return { partRequestId: id, mode: 'warehouse', status: a.status, warehouseId: a.warehouseId,
+    return { partRequestId: id, mode: 'warehouse', status: a.status === 'manual_assistance' ? 'stock_unavailable' : a.status, warehouseId: a.warehouseId,
       warehouseName: w?.name ?? null, warehouseAddress: w?.address ?? null, responsibleUserId: w?.responsibleUserId ?? null,
-      distanceNotVerified: true, reviewRequired: true, manualAssistanceReason: a.status === 'manual_assistance' ? 'NO_SINGLE_WAREHOUSE' : null,
+      distanceNotVerified: true, reviewRequired: a.warehouseId !== null, stockUnavailable: a.status === 'manual_assistance',
       tokenExpiresAt: a.tokenExpiresAt, tokenVersion: a.tokenVersion, handedOverAt: a.handedOverAt, receivedAt: a.receivedAt };
   }
 
@@ -69,6 +69,11 @@ export class WarehouseFulfillmentService {
     if (!automatic && ![Role.SERVICE_MANAGER, Role.ADMIN].includes(actor.role as Role)) throw new ForbiddenException();
     const a = await this.allocation(manager, request.id);
     if (!a || request.fulfillmentMethod !== FulfillmentMethod.PICKUP) throw new ConflictException('Yêu cầu lịch sử tiếp tục dùng quy trình cũ.');
+    // The legacy DB check still names this initial state manual_assistance.
+    // Public API exposes stock_unavailable; no SM can reopen the unavailable path.
+    if (!automatic && a.status === 'manual_assistance') {
+      throw new ConflictException('Không có kho đủ linh kiện. Kỹ thuật viên cần tự chuẩn bị; không chuyển cho SM xử lý.');
+    }
     if (a.warehouseId && !automatic && actor.role === Role.SERVICE_MANAGER) await this.requireManager(manager, a, actor, false);
     const command = await this.command(manager, request.id, key, 'reserve', actor, {});
     if (command.replayed) return this.view(manager, request.id);
@@ -98,21 +103,18 @@ export class WarehouseFulfillmentService {
       SELECT s.warehouse_id AS "warehouseId", s.part_id AS "partId", s.on_hand AS "onHand", s.reserved
       FROM warehouse_stock s WHERE s.warehouse_id=ANY($1::uuid[]) AND s.part_id=ANY($2::uuid[])
       ORDER BY s.warehouse_id,s.part_id FOR UPDATE`, [candidates.map(w => w.id), required.map(i => i.partId)]) : [];
-    // On manual assistance, an SM may choose an eligible warehouse they own, even when another SM's warehouse sorts first.
+    // Rank only whole-stock candidates; no partial stock, manual reassignment or QR on shortage.
     const eligible = candidates.filter(w => hasWholeRequestStock(required, stocks.filter(s => s.warehouseId === w.id)));
-    const chosen = a.status === 'reserved' ? candidates.find(w => w.id === a.warehouseId) :
-      !automatic && actor.role === Role.SERVICE_MANAGER
-        ? nearestEligible(eligible.filter(w => w.responsibleUserId === actor.id), reference)
-        : nearestEligible(eligible, reference);
-    if (!automatic && actor.role === Role.SERVICE_MANAGER && chosen?.responsibleUserId !== actor.id) {
-      if (!chosen && eligible.length) throw new ForbiddenException('Bạn không phụ trách kho đủ linh kiện.');
-    }
+    const chosen = a.status === 'reserved' ? candidates.find(w => w.id === a.warehouseId)
+      : nearestEligible(eligible, reference);
     if (a.status === 'reserved') return this.view(manager, request.id);
     if (!chosen) {
-      const recipients = await manager.find(User, { where: { role: Role.SERVICE_MANAGER, status: AccountStatus.ACTIVE, isActive: true } });
-      if (recipients.length) await manager.insert(Notification, recipients.map(u => ({ userId: u.id, title: 'Yêu cầu linh kiện cần hỗ trợ',
-        message: 'Chưa có một kho đủ toàn bộ linh kiện và quản lý đang hoạt động. Vui lòng hỗ trợ thủ công; chưa giữ tồn hoặc phát mã nhận.',
-        type: 'PART_REQUEST_MANUAL_ASSISTANCE', referenceId: request.id, referenceType: 'part_request', isRead: false })));
+      // No whole-stock warehouse is available. The technician must source parts
+      // independently; do not send SM assistance tasks, reserve stock or issue QR.
+      await manager.insert(Notification, { userId: request.technicianId,
+        title: 'Kho FixHome không đủ linh kiện',
+        message: 'Hiện không có kho FixHome nào đủ toàn bộ linh kiện yêu cầu. Vui lòng tự chuẩn bị và khai báo đúng nguồn linh kiện khi báo giá.',
+        type: 'PART_REQUEST_STOCK_UNAVAILABLE', referenceId: request.id, referenceType: 'part_request', isRead: false });
       return this.view(manager, request.id);
     }
     a.warehouseId = chosen.id; a.responsibleUserId = chosen.responsibleUserId; a.status = 'reserved';
