@@ -33,8 +33,9 @@ const make = (options: { paid?: boolean; grandTotal?: number; refunded?: number;
   };
   const customerWallet = { refundedForOrder: vi.fn().mockResolvedValue(options.refunded ?? 0), apply: vi.fn().mockResolvedValue({}) };
   const reputation = { penalizeWarranty: vi.fn().mockResolvedValue(null) };
-  const service = new WarrantyCostService(walletService as any, customerWallet as any, reputation as any);
-  return { service, manager, walletService, customerWallet, reputation };
+  const config = { getInt: vi.fn(async (_key: string, fallback: number) => fallback) };
+  const service = new WarrantyCostService(walletService as any, customerWallet as any, reputation as any, config as any);
+  return { service, manager, walletService, customerWallet, reputation, config };
 };
 
 const request = (overrides: Record<string, unknown> = {}) =>
@@ -116,25 +117,71 @@ describe('settleUnfixed', () => {
 });
 
 describe('a part caused by the technician', () => {
-  it('is charged at its selling price when the technician picks it up, once', async () => {
+  it('is charged at its selling price once the manager finds an installation fault, once', async () => {
     const { service, manager, walletService } = make();
 
-    await service.chargeOnReceive(manager, request());
+    await service.chargeForInstallation(manager, request());
 
     expect(walletService.mutateBalance).toHaveBeenCalledWith(expect.objectContaining({
       walletId: 'wallet-of-tech-2', type: WalletTransactionType.ADJUSTMENT, debit: true, amount: 400_000,
       allowNegative: true, idempotencyKey: 'WARRANTY_PART:pr-1', referenceId: 'claim-1',
     }));
+    expect(manager.update).toHaveBeenCalledWith(expect.anything(), 'pr-1', { faultyReturnChargedAt: expect.any(Date) });
   });
 
-  it('is never charged when FixHome pays, when it is not a warranty request, or when it costs nothing', async () => {
+  it('is never charged for a fault that is not the installation, a non-warranty request, or a part that costs nothing', async () => {
     const { service, manager, walletService } = make();
 
-    await service.chargeOnReceive(manager, request({ chargeTechnician: false }));
-    await service.chargeOnReceive(manager, request({ requestType: PartRequestType.ADDITIONAL }));
-    await service.chargeOnReceive(manager, request({ items: [{ id: 'it-1', quantity: 1, unitPriceSnapshot: 0 }] }));
+    await service.chargeForInstallation(manager, request({ chargeTechnician: false }));
+    await service.chargeForInstallation(manager, request({ requestType: PartRequestType.ADDITIONAL }));
+    await service.chargeForInstallation(manager, request({ items: [{ id: 'it-1', quantity: 1, unitPriceSnapshot: 0 }] }));
 
     expect(walletService.mutateBalance).not.toHaveBeenCalled();
+  });
+
+  it('starts a deadline for bringing the faulty part back when the replacement is received', async () => {
+    const { service, manager, config } = make();
+    const row = request();
+    config.getInt.mockResolvedValue(5);
+
+    await service.startReturnClock(manager, row);
+
+    expect(config.getInt).toHaveBeenCalledWith('warranty.faulty_return_days', 7);
+    const days = (row.faultyReturnDueAt.getTime() - Date.now()) / 86_400_000;
+    expect(days).toBeGreaterThan(4.99);
+    expect(days).toBeLessThan(5.01);
+    const other = make();
+    await other.service.startReturnClock(other.manager, request({ requestType: PartRequestType.ADDITIONAL }));
+    expect(other.manager.update).not.toHaveBeenCalled();
+  });
+
+  it('is charged when the faulty part is overdue, under the same key as an installation charge so it never doubles', async () => {
+    const { service, manager, walletService } = make();
+
+    await service.chargeUnreturned(manager, request({ chargeTechnician: false }));
+
+    expect(walletService.mutateBalance).toHaveBeenCalledWith(expect.objectContaining({
+      debit: true, amount: 400_000, allowNegative: true, idempotencyKey: 'WARRANTY_PART:pr-1',
+    }));
+  });
+
+  it('gives an overdue charge back, once, when the manager finds it was not the installation', async () => {
+    const { service, manager, walletService } = make();
+    const charged = request({ chargeTechnician: false, faultyReturnChargedAt: new Date() });
+
+    await service.refundUnreturned(manager, charged);
+
+    expect(walletService.mutateBalance).toHaveBeenCalledWith(expect.objectContaining({
+      type: WalletTransactionType.ADJUSTMENT, amount: 400_000, idempotencyKey: 'WARRANTY_PART_REFUND:pr-1',
+    }));
+    expect(walletService.mutateBalance.mock.calls[0][0].debit).toBeUndefined();
+
+    const installation = make();
+    await installation.service.refundUnreturned(installation.manager, request({ chargeTechnician: true, faultyReturnChargedAt: new Date() }));
+    const neverCharged = make();
+    await neverCharged.service.refundUnreturned(neverCharged.manager, request({ chargeTechnician: false }));
+    expect(installation.walletService.mutateBalance).not.toHaveBeenCalled();
+    expect(neverCharged.walletService.mutateBalance).not.toHaveBeenCalled();
   });
 
   it('is credited back for a returned item only if it was charged', async () => {

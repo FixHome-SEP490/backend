@@ -30,6 +30,9 @@ export class WarehousesService {
     await this.requireActiveManager(dto.responsibleUserId);
     const name = dto.name.trim();
     if (!name) throw new UnprocessableEntityException('Warehouse name is required');
+    if ((dto.latitude === undefined) !== (dto.longitude === undefined)) {
+      throw new UnprocessableEntityException('Warehouse coordinates must be supplied together');
+    }
     return this.toWarehouseResponse(await this.warehouses.save(this.warehouses.create({
       ...dto,
       name,
@@ -63,6 +66,13 @@ export class WarehousesService {
       warehouse.name = name;
     }
     if (dto.address !== undefined) warehouse.address = dto.address.trim() || null;
+    if ((dto.latitude !== undefined) !== (dto.longitude !== undefined)) {
+      throw new UnprocessableEntityException('Warehouse coordinates must be supplied together');
+    }
+    if (dto.latitude !== undefined && dto.longitude !== undefined) {
+      warehouse.latitude = dto.latitude;
+      warehouse.longitude = dto.longitude;
+    }
     if (dto.responsibleUserId !== undefined) warehouse.responsibleUserId = dto.responsibleUserId;
     if (dto.status !== undefined) warehouse.status = dto.status;
     return this.toWarehouseResponse(await this.warehouses.save(warehouse));
@@ -215,6 +225,8 @@ export class WarehousesService {
       id: warehouse.id,
       name: warehouse.name,
       address: warehouse.address,
+      latitude: warehouse.latitude == null ? null : Number(warehouse.latitude),
+      longitude: warehouse.longitude == null ? null : Number(warehouse.longitude),
       status: warehouse.status,
       responsibleUserId: warehouse.responsibleUserId,
       createdAt: warehouse.createdAt,

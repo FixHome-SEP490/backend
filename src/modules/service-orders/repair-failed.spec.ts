@@ -33,6 +33,10 @@ function fixture() {
   });
   const table = (entity: { name: string }) => rows[entity.name] ??= [];
   const manager: any = {
+    query: vi.fn(async (sql: string) => {
+      if (sql === 'SELECT EXISTS(SELECT 1 FROM warehouse_delivery_cohorts WHERE service_order_id=$1) AS present') return [{ present: false }];
+      throw new Error(`Unexpected fixture query: ${sql}`);
+    }),
     find: vi.fn(async (entity, options) => table(entity).filter(row => matches(row, options?.where))),
     findOne: vi.fn(async (entity, options) => table(entity).find(row => matches(row, options?.where)) ?? null),
     findOneBy: vi.fn(async (entity, where) => table(entity).find(row => matches(row, where)) ?? null),

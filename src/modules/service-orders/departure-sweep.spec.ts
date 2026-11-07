@@ -10,6 +10,10 @@ function setup(order: { departureWarnedAt: Date | null; status?: ServiceOrderSta
   const assignment = { technicianId: 'tech-1', assignedAt: new Date(windowStart.getTime() - minutes(120)), isActive: true };
   const updates: Array<[string, unknown, Record<string, unknown>]> = [];
   const manager = {
+    query: vi.fn(async (sql: string) => {
+      if (sql === 'SELECT EXISTS(SELECT 1 FROM warehouse_delivery_cohorts WHERE service_order_id=$1) AS present') return [{ present: false }];
+      throw new Error(`Unexpected fixture query: ${sql}`);
+    }),
     find: vi.fn().mockResolvedValue([]), // No warehouse-managed requests in this legacy fixture.
     findOneBy: vi.fn(async (entity: { name: string }) => (entity.name === 'ServiceOrder' ? state.order : entity.name === 'TechnicianAssignment' ? assignment : null)),
     findOne: vi.fn(async (entity: { name: string }) => (entity.name === 'Booking' ? booking : state.order)),

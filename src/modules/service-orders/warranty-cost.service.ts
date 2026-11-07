@@ -14,6 +14,7 @@ import { CustomerWalletService } from '../customer-wallet/customer-wallet.servic
 import { PartRequest } from '../part-requests/entities/part-request.entity';
 import { PartRequestItem } from '../part-requests/entities/part-request-item.entity';
 import { ReputationService } from '../reputation/reputation.service';
+import { BusinessConfigService } from '../system-config/business-config.service';
 import { assertNoFundedVoucherRefund } from '../vouchers/voucher-refund-guard';
 import { WalletTransaction } from '../wallet/entities';
 import { WalletService } from '../wallet/wallet.service';
@@ -37,15 +38,23 @@ export class WarrantyCostService {
     private readonly walletService: WalletService,
     private readonly customerWallet: CustomerWalletService,
     private readonly reputation: ReputationService,
+    private readonly config: BusinessConfigService,
   ) {}
 
   private partsValue(items: PartRequestItem[]): number {
     return items.reduce((sum, item) => sum + Number(item.unitPriceSnapshot) * item.quantity, 0);
   }
 
-  /** The technician picks up a part their own workmanship made necessary: take its selling price. */
-  async chargeOnReceive(manager: EntityManager, request: PartRequest): Promise<void> {
-    if (request.requestType !== PartRequestType.WARRANTY || !request.chargeTechnician) return;
+  /** The technician took the replacement: they now have a few days to bring the faulty part back. */
+  async startReturnClock(manager: EntityManager, request: PartRequest): Promise<void> {
+    if (request.requestType !== PartRequestType.WARRANTY) return;
+    const days = await this.config.getInt('warranty.faulty_return_days', 7);
+    request.faultyReturnDueAt = new Date(Date.now() + days * 86_400_000);
+    await manager.update(PartRequest, request.id, { faultyReturnDueAt: request.faultyReturnDueAt });
+  }
+
+  /** One debit per request, whichever reason comes first: the key keeps a second reason from charging again. */
+  private async debitPart(manager: EntityManager, request: PartRequest, description: string): Promise<void> {
     const items = request.items ?? await manager.find(PartRequestItem, { where: { partRequestId: request.id } });
     const amount = this.partsValue(items);
     if (amount <= 0) return;
@@ -53,8 +62,38 @@ export class WarrantyCostService {
     await this.walletService.mutateBalance({
       walletId: wallet.id, type: WalletTransactionType.ADJUSTMENT, debit: true, amount,
       referenceType: REFERENCE, referenceId: request.warrantyClaimId ?? null,
-      idempotencyKey: `WARRANTY_PART:${request.id}`,
-      description: 'Linh kiện FixHome cấp lại cho bảo hành do lỗi công', allowNegative: true, manager,
+      idempotencyKey: `WARRANTY_PART:${request.id}`, description, allowNegative: true, manager,
+    });
+    request.faultyReturnChargedAt = request.faultyReturnChargedAt ?? new Date();
+    await manager.update(PartRequest, request.id, { faultyReturnChargedAt: request.faultyReturnChargedAt });
+  }
+
+  /** The manager found the faulty part was damaged by the installation: the technician pays the new part. */
+  async chargeForInstallation(manager: EntityManager, request: PartRequest): Promise<void> {
+    if (request.requestType !== PartRequestType.WARRANTY || !request.chargeTechnician) return;
+    await this.debitPart(manager, request, 'Linh kiện FixHome cấp lại cho bảo hành do lỗi lắp đặt');
+  }
+
+  /** The deadline passed without the faulty part coming back: charge the new part until it does. */
+  async chargeUnreturned(manager: EntityManager, request: PartRequest): Promise<void> {
+    if (request.requestType !== PartRequestType.WARRANTY) return;
+    await this.debitPart(manager, request, 'Chưa nộp linh kiện hỏng về kho đúng hạn');
+  }
+
+  /** The part was charged for being late, then the manager found it was not the technician's fault: give it back, once. */
+  async refundUnreturned(manager: EntityManager, request: PartRequest): Promise<void> {
+    if (request.requestType !== PartRequestType.WARRANTY || request.chargeTechnician || !request.faultyReturnChargedAt) return;
+    const charged = await manager.findOne(WalletTransaction, { where: { idempotencyKey: `WARRANTY_PART:${request.id}` } });
+    if (!charged) return;
+    const items = request.items ?? await manager.find(PartRequestItem, { where: { partRequestId: request.id } });
+    const amount = this.partsValue(items);
+    if (amount <= 0) return;
+    const wallet = await this.walletService.getOrCreateWallet(request.technicianId, manager);
+    await this.walletService.mutateBalance({
+      walletId: wallet.id, type: WalletTransactionType.ADJUSTMENT, amount,
+      referenceType: REFERENCE, referenceId: request.warrantyClaimId ?? null,
+      idempotencyKey: `WARRANTY_PART_REFUND:${request.id}`,
+      description: 'Hoàn tiền linh kiện bảo hành: linh kiện hỏng không do lắp đặt', manager,
     });
   }
 

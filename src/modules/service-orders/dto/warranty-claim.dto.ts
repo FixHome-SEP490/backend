@@ -10,6 +10,7 @@ import {
   IsInt,
   IsLatitude,
   IsLongitude,
+  IsObject,
   IsOptional,
   IsString,
   IsUUID,
@@ -126,13 +127,15 @@ export class WarrantyClaimViewDto {
 
   @ApiPropertyOptional({ type: WarrantyClaimTechnicianDto, nullable: true })
   technician: WarrantyClaimTechnicianDto | null;
+
+  @ApiPropertyOptional({ format: 'date-time', nullable: true, description: 'Customer-facing views only: when the technician comes to inspect' })
+  inspectionScheduledAt?: Date | null;
 }
 
 export class AcceptWarrantyClaimDto {
-  @ApiPropertyOptional({ format: 'date-time', description: 'Proposed inspection time' })
-  @IsOptional()
+  @ApiProperty({ format: 'date-time', description: 'Inspection time the technician agrees with the customer' })
   @IsDateString()
-  scheduledAt?: string;
+  scheduledAt: string;
 }
 
 export class DeclineWarrantyClaimDto {
@@ -187,6 +190,19 @@ export class ProposeWarrantyInspectionDto {
   @MaxLength(WARRANTY_CLAIM_MAX_EVIDENCE_REF_LENGTH, { each: true })
   @Transform(trimEach)
   evidenceRefs?: string[];
+
+  @ApiPropertyOptional({ type: [String], description: 'Required for covered_part: the part lines of the original invoice that are faulty' })
+  @ValidateIf((o: ProposeWarrantyInspectionDto) => o.result === WarrantyInspectionResult.COVERED_PART)
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(20)
+  @IsCanonicalUuid({ each: true })
+  faultyInvoiceItemIds?: string[];
+
+  @ApiPropertyOptional({ type: 'object', additionalProperties: { type: 'integer' }, description: 'How many of each faulty line are faulty (line id → count, 1..quantity bought); omitted = the whole line' })
+  @IsOptional()
+  @IsObject()
+  faultyQuantities?: Record<string, number>;
 }
 
 export class CompleteWarrantyReServiceDto {
@@ -232,6 +248,12 @@ export class WarrantyVisitViewDto {
   @ApiPropertyOptional({ type: [String], nullable: true })
   evidenceRefs: string[] | null;
 
+  @ApiPropertyOptional({ type: [String], nullable: true, description: 'Invoice lines of the original job the technician says are faulty' })
+  faultyInvoiceItemIds: string[] | null;
+
+  @ApiPropertyOptional({ type: 'object', additionalProperties: { type: 'integer' }, nullable: true })
+  faultyQuantities: Record<string, number> | null;
+
   @ApiPropertyOptional({ nullable: true })
   reServiceNotes: string | null;
 
@@ -252,6 +274,8 @@ export class StaffWarrantyClaimDto extends WarrantyClaimViewDto {
     addressSummary: string;
     customerName: string;
     customerPhone: string;
+    /** Part lines of the original invoice: the technician names the faulty ones when proposing a part fault. */
+    partLines: { id: string; name: string; quantity: number; partSource: string | null }[];
   };
 
   @ApiPropertyOptional({ nullable: true })
@@ -274,6 +298,19 @@ export class StaffWarrantyClaimDto extends WarrantyClaimViewDto {
 
   @ApiPropertyOptional({ format: 'date-time', nullable: true, description: 'The technician accepted but did not check in by the deadline' })
   noShowFlaggedAt?: Date | null;
+
+  @ApiPropertyOptional({ nullable: true, description: 'The free warranty part and the return of the faulty one' })
+  partRequest?: {
+    id: string;
+    status: string;
+    faultyReturnDueAt: Date | null;
+    faultyReturnedAt: Date | null;
+    faultyReturnChargedAt: Date | null;
+    faultyInspectionResult: string | null;
+    chargeTechnician: boolean;
+    /** The replacement parts and whether the technician has recorded them as used or returned. */
+    items: { id: string; name: string; quantity: number; usageStatus: string }[];
+  } | null;
 }
 
 const boolFromQuery = ({ value }: { value: unknown }): unknown =>

@@ -36,6 +36,7 @@ import {
   UpdateItemUsageDto,
   MarkReadyDto,
   FaultyInspectionDto,
+  FaultyReturnDto,
   MarkDeliveringDto,
   QueryPartRequestsDto,
   CancelPartRequestDto,
@@ -270,7 +271,7 @@ export class PartRequestsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Service Manager: record what the faulty part of a warranty request shows',
-    description: 'Required before READY. The result decides who pays the replacement; locked once the technician has received it.',
+    description: 'After the technician brought the faulty part back. The result decides who pays the replacement; recorded once.',
   })
   async faultyInspection(
     @Param('id', ParseUUIDPipe) id: string,
@@ -278,6 +279,21 @@ export class PartRequestsController {
     @Req() req: { user: { id: string; role: string } },
   ) {
     return { data: await this.partRequestsService.recordFaultyInspection(id, dto, req.user) };
+  }
+
+  @Post('part-requests/:id/faulty-return')
+  @Roles(Role.TECHNICIAN)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Technician: report that the faulty part of a warranty request was brought back to the warehouse',
+    description: 'After receiving the replacement, before the deadline. Idempotent.',
+  })
+  async faultyReturn(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FaultyReturnDto,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    return { data: await this.partRequestsService.returnFaultyPart(id, dto, req.user) };
   }
 
   // ── 9. Service Manager: Mark DELIVERING ──

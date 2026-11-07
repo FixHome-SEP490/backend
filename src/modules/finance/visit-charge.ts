@@ -3,6 +3,7 @@ import { BookingStatus, PaymentStatus, ServiceOrderStatus } from '../../shared/e
 import { Booking } from '../bookings/entities/booking.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
+import { assertShippingFinancialCutoverAllowed } from './invoice-shipping-snapshot';
 import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity';
 import type { VisitPaymentAllocation } from '../visit-groups/entities/visit-group-payment.entity';
 import type { VoucherFundingAllocation } from '../vouchers/voucher-funding-allocation';
@@ -55,6 +56,7 @@ export async function loadVisitCharge(manager: EntityManager, groupId: string, l
   const bookingById = new Map(bookings.map((booking) => [booking.id, booking]));
   const orderByBooking = new Map(orders.map((order) => [order.bookingId, order]));
   const invoiceByOrder = new Map(invoices.map((invoice) => [invoice.serviceOrderId, invoice]));
+  for (const invoice of invoices) assertShippingFinancialCutoverAllowed(invoice);
 
   // Preserve the pre-stop allocation eligibility for historical provider callbacks.
   // A stop may hold NEW collection, never reinterpret an already-frozen split.

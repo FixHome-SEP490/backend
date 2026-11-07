@@ -82,7 +82,7 @@ const makeService = (options: {
     create: vi.fn((v) => ({ id: 'claim-new', ...v })),
     save: vi.fn(async (v) => v),
     update: vi.fn().mockResolvedValue({ affected: 1 }),
-    manager: { transaction: vi.fn(async (cb: any) => cb({ getRepository: () => txRepo })) },
+    manager: { find: vi.fn(async () => []), transaction: vi.fn(async (cb: any) => cb({ getRepository: () => txRepo })) },
   };
   const coverageRepo = {
     findOne: vi.fn().mockResolvedValue(

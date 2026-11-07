@@ -18,6 +18,7 @@ import { WalletTransaction } from './entities';
 import { WalletService } from './wallet.service';
 import { p1CustodyEnabled } from '../part-requests/part-custody.policy';
 import { settleCustodyOnline } from './custody-settlement';
+import { assertInvoiceCollectionAllowed } from '../finance/w3-invoice-payment';
 
 @Injectable()
 export class SettlementService {
@@ -64,7 +65,11 @@ export class SettlementService {
         return { settled: false, reason: 'PAYMENT_NOT_PAID' };
       }
 
-      const custodyResult = await settleCustodyOnline(manager, order, invoice, this.walletService);
+      if (invoice.shippingPolicyVersion === 'W3_70_30_V1') {
+        await manager.findOne(ServiceOrder, { where: { id: orderId }, lock: { mode: 'pessimistic_write' } });
+      }
+      await assertInvoiceCollectionAllowed(manager, invoice);
+      const custodyResult = invoice.shippingPolicyVersion === 'W3_70_30_V1' ? null : await settleCustodyOnline(manager, order, invoice, this.walletService);
       if (custodyResult) return custodyResult;
 
       // Check if already settled (idempotent)

@@ -10,9 +10,11 @@ import { TechnicianAssignment } from '../service-orders/entities/technician-assi
 import { CustodyPayout } from './entities/custody-payout.entity';
 import { WalletTransaction } from './entities/wallet-transaction.entity';
 import { WalletService } from './wallet.service';
+import { assertShippingFinancialCutoverAllowed } from '../finance/invoice-shipping-snapshot';
 
 /** Caller holds the Order lock, serializing callbacks, receipts and sweeps for this invoice. */
 export async function settleCustodyOnline(manager: EntityManager, order: ServiceOrder, invoice: Invoice, walletService: WalletService): Promise<{ settled: boolean; reason?: string } | null> {
+  assertShippingFinancialCutoverAllowed(invoice);
   if (!p1CustodyEnabled()) return null;
   const custody = await manager.find(PartCustody, { where: { serviceOrderId: order.id } });
   if (!custody.length) return null; // LEGACY is never enrolled by a payment/callback/sweep.

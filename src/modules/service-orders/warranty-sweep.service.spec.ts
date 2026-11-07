@@ -14,23 +14,25 @@ const claim = (overrides: Record<string, unknown> = {}) => ({
 });
 
 /** `found` is what the candidate query returns; `locked` is what the row looks like once locked (it may have changed). */
-const make = (options: { found?: unknown[]; locked?: unknown; visits?: unknown[]; config?: Record<string, number> } = {}) => {
+const make = (options: { found?: unknown[]; locked?: unknown; visits?: unknown[]; requests?: unknown[]; config?: Record<string, number> } = {}) => {
   const tx = {
     findOne: vi.fn(async () => ('locked' in options ? options.locked : claim())),
     update: vi.fn().mockResolvedValue({ affected: 1 }),
   };
   const claimRepo = { find: vi.fn(async () => options.found ?? [claim()]) };
   const visitRepo = { find: vi.fn(async () => options.visits ?? []) };
+  const requestRepo = { find: vi.fn(async () => options.requests ?? []) };
   const dataSource = {
-    getRepository: (entity: { name: string }) => (entity.name === 'WarrantyVisit' ? visitRepo : claimRepo),
+    getRepository: (entity: { name: string }) => (entity.name === 'WarrantyVisit' ? visitRepo : entity.name === 'PartRequest' ? requestRepo : claimRepo),
     transaction: vi.fn(async (cb: any) => cb(tx)),
     query: vi.fn().mockResolvedValue(undefined),
   };
   const config = { getInt: vi.fn(async (key: string, fallback: number) => options.config?.[key] ?? fallback) };
   const notifier = { toUser: vi.fn().mockResolvedValue(undefined), toManagers: vi.fn().mockResolvedValue(undefined) };
   const partRequests = { settleWarrantyRequest: vi.fn().mockResolvedValue(undefined) };
-  const service = new WarrantySweepService(dataSource as any, config as any, notifier as any, partRequests as any);
-  return { service, tx, claimRepo, visitRepo, dataSource, config, notifier, partRequests };
+  const cost = { chargeUnreturned: vi.fn().mockResolvedValue(undefined) };
+  const service = new WarrantySweepService(dataSource as any, config as any, notifier as any, partRequests as any, cost as any);
+  return { service, tx, claimRepo, visitRepo, requestRepo, dataSource, config, notifier, partRequests, cost };
 };
 
 describe('technician who never answers', () => {
@@ -197,5 +199,52 @@ describe('expired coverage and the whole sweep', () => {
 
     expect(dataSource.query).toHaveBeenCalled();
     expect(claimRepo.find.mock.calls.length).toBeGreaterThan(1);
+  });
+});
+
+describe('faulty part that must come back', () => {
+  const part = (overrides: Record<string, unknown> = {}) => ({
+    id: 'pr-1', technicianId: 'tech-1', serviceOrderId: 'order-1', faultyReturnedAt: null, faultyReturnChargedAt: null,
+    faultyReturnRemindedAt: null, faultyReturnDueAt: new Date(NOW.getTime() + 12 * 3_600_000), ...overrides,
+  });
+
+  it('reminds the technician once when the deadline is near, without charging', async () => {
+    const { service, tx, notifier, cost } = make({ requests: [part()], locked: part() });
+
+    await service.sweepFaultyReturn(NOW);
+
+    expect(tx.update).toHaveBeenCalledWith(expect.anything(), 'pr-1', { faultyReturnRemindedAt: NOW });
+    expect(notifier.toUser).toHaveBeenCalledWith('tech-1', expect.any(String), expect.any(String), 'WARRANTY_FAULTY_PART_DUE', 'order-1');
+    expect(cost.chargeUnreturned).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet while the deadline is far and after the reminder was sent', async () => {
+    const far = make({ requests: [part({ faultyReturnDueAt: new Date(NOW.getTime() + 5 * 86_400_000) })], locked: part({ faultyReturnDueAt: new Date(NOW.getTime() + 5 * 86_400_000) }) });
+    await far.service.sweepFaultyReturn(NOW);
+    const reminded = make({ requests: [part()], locked: part({ faultyReturnRemindedAt: ago(1) }) });
+    await reminded.service.sweepFaultyReturn(NOW);
+
+    expect(far.notifier.toUser).not.toHaveBeenCalled();
+    expect(reminded.notifier.toUser).not.toHaveBeenCalled();
+  });
+
+  it('charges the new part once the deadline passed and tells the technician and the managers', async () => {
+    const overdue = part({ faultyReturnDueAt: ago(2) });
+    const { service, notifier, cost } = make({ requests: [overdue], locked: overdue });
+
+    await service.sweepFaultyReturn(NOW);
+
+    expect(cost.chargeUnreturned).toHaveBeenCalledWith(expect.anything(), overdue);
+    expect(notifier.toUser).toHaveBeenCalledWith('tech-1', expect.any(String), expect.any(String), 'WARRANTY_FAULTY_PART_OVERDUE', 'order-1');
+    expect(notifier.toManagers).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'WARRANTY_FAULTY_PART_OVERDUE', 'order-1');
+  });
+
+  it('leaves a part that came back or was charged while it waited for the lock', async () => {
+    for (const locked of [part({ faultyReturnDueAt: ago(2), faultyReturnedAt: ago(1) }), part({ faultyReturnDueAt: ago(2), faultyReturnChargedAt: ago(1) }), null]) {
+      const { service, cost, notifier } = make({ requests: [part({ faultyReturnDueAt: ago(2) })], locked });
+      await service.sweepFaultyReturn(NOW);
+      expect(cost.chargeUnreturned).not.toHaveBeenCalled();
+      expect(notifier.toUser).not.toHaveBeenCalled();
+    }
   });
 });

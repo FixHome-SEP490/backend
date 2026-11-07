@@ -78,6 +78,26 @@ export class PartRequest extends BaseEntity {
   @Column({ name: 'faulty_inspected_by', type: 'uuid', nullable: true })
   faultyInspectedBy?: string | null;
 
+  // Warranty only: the faulty part is brought back after the replacement was received (PO 05/11/2026).
+  @Column({ name: 'faulty_return_due_at', type: 'timestamptz', nullable: true })
+  faultyReturnDueAt?: Date | null;
+
+  @Column({ name: 'faulty_returned_at', type: 'timestamptz', nullable: true })
+  faultyReturnedAt?: Date | null;
+
+  @Column({ name: 'faulty_return_note', type: 'text', nullable: true })
+  faultyReturnNote?: string | null;
+
+  @Column({ name: 'faulty_return_evidence', type: 'jsonb', nullable: true })
+  faultyReturnEvidence?: string[] | null;
+
+  @Column({ name: 'faulty_return_reminded_at', type: 'timestamptz', nullable: true })
+  faultyReturnRemindedAt?: Date | null;
+
+  /** Set once the technician's wallet was debited for this part (overdue return or installation fault). */
+  @Column({ name: 'faulty_return_charged_at', type: 'timestamptz', nullable: true })
+  faultyReturnChargedAt?: Date | null;
+
   // QR handover token — generated when SM marks READY
   @Column({ name: 'qr_token', type: 'varchar', length: 128, nullable: true })
   qrToken?: string | null;

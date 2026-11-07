@@ -4,6 +4,7 @@ import { EntityManager, Repository } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants/error-codes';
 import {
+  CostItemType,
   WarrantyClaimStatus,
   WarrantyCustomerPrompt,
   WarrantyDeclineReason,
@@ -15,6 +16,8 @@ import { Booking } from '../bookings/entities/booking.entity';
 import { distanceToBooking, servesArea, technicianOrigin } from '../bookings/technician-location';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
+import { Invoice } from './entities/invoice.entity';
+import { InvoiceItem } from './entities/invoice-item.entity';
 import { ServiceOrder } from './entities/service-order.entity';
 import { WarrantyCoverage } from './entities/warranty-coverage.entity';
 import {
@@ -71,6 +74,7 @@ export class WarrantyClaimsTechnicianService {
   }
 
   async accept(claimId: string, dto: AcceptWarrantyClaimDto, technician: OrderActor): Promise<StaffWarrantyClaimDto> {
+    const scheduledAt = futureTime(dto.scheduledAt);
     const claim = await this.ownClaim(claimId, technician.id, WarrantyClaimStatus.SUBMITTED);
     await this.claimRepo.manager.transaction(async (manager) => {
       const updated = await manager
@@ -86,15 +90,32 @@ export class WarrantyClaimsTechnicianService {
           warrantyClaimId: claim.id,
           technicianId: technician.id,
           status: WarrantyVisitStatus.SCHEDULED,
-          scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : null,
+          scheduledAt,
         }),
       );
     });
     await this.notifier.toUser(
       claim.customerId,
       'Kỹ thuật viên đã nhận yêu cầu bảo hành',
-      'Kỹ thuật viên phụ trách sẽ liên hệ để hẹn lịch kiểm tra.',
+      `Kỹ thuật viên hẹn kiểm tra lúc ${scheduledAt.toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false })}.`,
       'WARRANTY_CLAIM_ACCEPTED',
+      claim.serviceOrderId,
+    );
+    return this.viewOf(claim.id);
+  }
+
+  /** The customer cannot make the agreed time: move it, as long as the technician has not checked in yet. */
+  async reschedule(claimId: string, dto: AcceptWarrantyClaimDto, technician: OrderActor): Promise<StaffWarrantyClaimDto> {
+    const scheduledAt = futureTime(dto.scheduledAt);
+    const claim = await this.ownClaim(claimId, technician.id, WarrantyClaimStatus.ACCEPTED);
+    const visit = await this.latestVisit(claim.id, technician.id, [WarrantyVisitStatus.SCHEDULED]);
+    const updated = await this.visitRepo.update({ id: visit.id, status: WarrantyVisitStatus.SCHEDULED }, { scheduledAt });
+    if (updated.affected !== 1) throw conflict('Lượt kiểm tra đã bắt đầu, không thể đổi lịch.');
+    await this.notifier.toUser(
+      claim.customerId,
+      'Lịch kiểm tra bảo hành đã đổi',
+      `Kỹ thuật viên hẹn lại kiểm tra lúc ${scheduledAt.toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false })}.`,
+      'WARRANTY_VISIT_RESCHEDULED',
       claim.serviceOrderId,
     );
     return this.viewOf(claim.id);
@@ -183,6 +204,7 @@ export class WarrantyClaimsTechnicianService {
       throw invalid('Cần ít nhất một ảnh hoặc video của linh kiện hỏng khi kết luận lỗi linh kiện.');
     }
     const visit = await this.latestVisit(claim.id, technician.id, [WarrantyVisitStatus.CHECKED_IN]);
+    const faulty = dto.result === WarrantyInspectionResult.COVERED_PART ? await this.faultyPartLines(claim.serviceOrderId, dto.faultyInvoiceItemIds ?? [], dto.faultyQuantities) : null;
 
     await this.claimRepo.manager.transaction(async (manager) => {
       const updated = await manager
@@ -200,6 +222,8 @@ export class WarrantyClaimsTechnicianService {
           notCoveredReasonCode: notCovered ? (dto.notCoveredReasonCode ?? null) : null,
           findings: dto.findings,
           evidenceRefs: dto.evidenceRefs?.length ? dto.evidenceRefs : null,
+          faultyInvoiceItemIds: faulty?.ids ?? null,
+          faultyQuantities: faulty?.quantities ?? null,
         },
       );
     });
@@ -210,6 +234,26 @@ export class WarrantyClaimsTechnicianService {
       claim.serviceOrderId,
     );
     return this.viewOf(claim.id);
+  }
+
+  /** The faulty lines must be part lines of the original job's own invoice, so a technician cannot name a stranger's part. */
+  private async faultyPartLines(serviceOrderId: string, ids: string[], quantities?: Record<string, number>): Promise<{ ids: string[]; quantities: Record<string, number> | null }> {
+    const unique = [...new Set(ids)];
+    if (!unique.length) throw invalid('Chọn ít nhất một linh kiện bị hỏng.');
+    const manager = this.claimRepo.manager;
+    const invoice = await manager.findOneBy(Invoice, { serviceOrderId });
+    const lines = invoice ? await manager.find(InvoiceItem, { where: { invoiceId: invoice.id, type: CostItemType.PARTS_EQUIPMENT } }) : [];
+    const bought = new Map(lines.map((line) => [line.id, line.quantity]));
+    if (unique.some((id) => !bought.has(id))) throw invalid('Linh kiện được chọn không thuộc đơn sửa chữa gốc.');
+    if (!quantities) return { ids: unique, quantities: null };
+    const counted: Record<string, number> = {};
+    for (const id of unique) {
+      const n = quantities[id] ?? bought.get(id)!;
+      if (!Number.isInteger(n) || n < 1 || n > bought.get(id)!) throw invalid('Số lượng linh kiện hỏng không hợp lệ.');
+      counted[id] = n;
+    }
+    if (Object.keys(quantities).some((id) => !unique.includes(id))) throw invalid('Số lượng linh kiện hỏng không hợp lệ.');
+    return { ids: unique, quantities: counted };
   }
 
   async complete(claimId: string, dto: CompleteWarrantyReServiceDto, technician: OrderActor): Promise<StaffWarrantyClaimDto> {
@@ -275,4 +319,12 @@ export class WarrantyClaimsTechnicianService {
     const [view] = await this.reader.toStaffViews([claim]);
     return view;
   }
+}
+
+function futureTime(value: string): Date {
+  const at = new Date(value);
+  if (!Number.isFinite(at.getTime()) || at.getTime() <= Date.now()) {
+    throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Lịch kiểm tra phải ở thời điểm sau hiện tại.');
+  }
+  return at;
 }

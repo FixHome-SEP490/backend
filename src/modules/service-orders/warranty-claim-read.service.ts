@@ -1,9 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
+import { CostItemType } from '../../shared/enums';
 import { Booking } from '../bookings/entities/booking.entity';
+import { PartRequest } from '../part-requests/entities/part-request.entity';
+import { PartRequestItem } from '../part-requests/entities/part-request-item.entity';
 import { User } from '../users/entities/user.entity';
 import { StaffWarrantyClaimDto } from './dto/warranty-claim.dto';
+import { Invoice } from './entities/invoice.entity';
 import { InvoiceItem } from './entities/invoice-item.entity';
 import { ServiceOrder } from './entities/service-order.entity';
 import { WarrantyClaim } from './entities/warranty-claim.entity';
@@ -48,6 +52,17 @@ export class WarrantyClaimReadService {
       order: { createdAt: 'DESC' },
     });
 
+    // Part lines of each order's invoice (the technician names the faulty ones) and the free warranty part, if any.
+    const manager = this.orderRepo.manager;
+    const invoices = await manager.find(Invoice, { where: { serviceOrderId: In(orders.map((o) => o.id)) } });
+    const partLines = invoices.length
+      ? await this.invoiceItemRepo.find({ where: { invoiceId: In(invoices.map((i) => i.id)), type: CostItemType.PARTS_EQUIPMENT } })
+      : [];
+    const orderOfInvoice = new Map(invoices.map((i) => [i.id, i.serviceOrderId]));
+    const requests = await manager.find(PartRequest, { where: { warrantyClaimId: In(claims.map((c) => c.id)) } });
+    const requestByClaim = new Map(requests.map((r) => [r.warrantyClaimId as string, r]));
+    const requestItems = requests.length ? await manager.find(PartRequestItem, { where: { partRequestId: In(requests.map((r) => r.id)) } }) : [];
+
     const orderById = new Map(orders.map((o) => [o.id, o]));
     const bookingById = new Map(bookings.map((b) => [b.id, b]));
     const customerById = new Map(customers.map((u) => [u.id, u]));
@@ -73,6 +88,9 @@ export class WarrantyClaimReadService {
           addressSummary: booking?.addressTextSnapshot ?? '',
           customerName: customer?.fullName ?? '',
           customerPhone: customer?.phoneNumber ?? '',
+          partLines: partLines
+            .filter((line) => orderOfInvoice.get(line.invoiceId) === claim.serviceOrderId)
+            .map((line) => ({ id: line.id, name: line.description, quantity: line.quantity, partSource: line.partSource ?? null })),
         },
         coverage: coverage
           ? {
@@ -88,6 +106,17 @@ export class WarrantyClaimReadService {
         outcomeCode: claim.outcomeCode ?? null,
         refundAmount: claim.refundAmount ?? null,
         noShowFlaggedAt: claim.noShowFlaggedAt ?? null,
+        partRequest: requestByClaim.has(claim.id)
+          ? (() => {
+              const r = requestByClaim.get(claim.id) as PartRequest;
+              return {
+                id: r.id, status: r.status, faultyReturnDueAt: r.faultyReturnDueAt ?? null, faultyReturnedAt: r.faultyReturnedAt ?? null,
+                faultyReturnChargedAt: r.faultyReturnChargedAt ?? null, faultyInspectionResult: r.faultyInspectionResult ?? null,
+                chargeTechnician: r.chargeTechnician,
+                items: requestItems.filter((i) => i.partRequestId === r.id).map((i) => ({ id: i.id, name: i.partNameSnapshot, quantity: i.quantity, usageStatus: i.usageStatus })),
+              };
+            })()
+          : null,
       };
     });
   }

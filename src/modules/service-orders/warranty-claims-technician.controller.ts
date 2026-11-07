@@ -83,6 +83,19 @@ export class WarrantyClaimsTechnicianController {
     return { data: await this.service.accept(claimId, dto, req.user) };
   }
 
+  @Post(':claimId/reschedule')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Technician: move the inspection time before checking in' })
+  @ApiNotFoundResponse({ description: 'Claim is not assigned to the caller' })
+  @ApiConflictResponse({ description: 'Claim is not accepted or the visit already started' })
+  async reschedule(
+    @Param('claimId', ParseUUIDPipe) claimId: string,
+    @Body() dto: AcceptWarrantyClaimDto,
+    @Req() req: Req,
+  ) {
+    return { data: await this.service.reschedule(claimId, dto, req.user) };
+  }
+
   @Post(':claimId/decline')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Technician: cannot take the claim; the service manager reassigns it' })

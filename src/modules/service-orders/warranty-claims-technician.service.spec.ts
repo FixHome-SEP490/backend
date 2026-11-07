@@ -38,7 +38,10 @@ const makeVisit = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-const makeService = (options: { claim?: unknown; visits?: unknown[]; profile?: unknown; coverage?: unknown; booking?: unknown } = {}) => {
+const LINE_1 = '11111111-1111-4111-8111-111111111111';
+const LINE_2 = '22222222-2222-4222-8222-222222222222';
+
+const makeService = (options: { claim?: unknown; visits?: unknown[]; profile?: unknown; coverage?: unknown; booking?: unknown; partLines?: unknown[] } = {}) => {
   const claimTx = { update: vi.fn().mockResolvedValue({ affected: 1 }) };
   const visitTx = {
     update: vi.fn().mockResolvedValue({ affected: 1 }),
@@ -68,11 +71,13 @@ const makeService = (options: { claim?: unknown; visits?: unknown[]; profile?: u
             return options.booking ?? { latitudeSnapshot: 10.77, longitudeSnapshot: 106.7, provinceSnapshot: '79', districtSnapshot: '760' };
           case 'Address':
             return { lat: 10.78, lng: 106.69 };
+          case 'Invoice':
+            return { id: 'inv-1' };
           default:
             return null;
         }
       }),
-      find: vi.fn().mockResolvedValue([]),
+      find: vi.fn(async (entity: { name: string }) => (entity.name === 'InvoiceItem' ? options.partLines ?? [{ id: LINE_1 }, { id: LINE_2 }] : [])),
     },
   };
   const visitRepo = {
@@ -102,11 +107,13 @@ describe('technician reads one claim', () => {
   });
 });
 
+const FUTURE = new Date(Date.now() + 86_400_000).toISOString();
+
 describe('technician warranty commands', () => {
   it('accepts a submitted claim, opens a scheduled visit and tells the customer', async () => {
     const { service, claimTx, visitTx, notifier } = makeService();
 
-    await service.accept('claim-1', { scheduledAt: '2026-10-02T02:00:00.000Z' }, TECH);
+    await service.accept('claim-1', { scheduledAt: FUTURE }, TECH);
 
     expect(claimTx.update).toHaveBeenCalledWith(
       { id: 'claim-1', status: WarrantyClaimStatus.SUBMITTED, technicianId: TECH.id },
@@ -117,21 +124,26 @@ describe('technician warranty commands', () => {
         warrantyClaimId: 'claim-1',
         technicianId: TECH.id,
         status: WarrantyVisitStatus.SCHEDULED,
-        scheduledAt: new Date('2026-10-02T02:00:00.000Z'),
+        scheduledAt: new Date(FUTURE),
       }),
     );
     expect(notifier.toUser).toHaveBeenCalledWith('customer-1', expect.any(String), expect.any(String), 'WARRANTY_CLAIM_ACCEPTED', 'order-1');
   });
 
+  it('refuses an inspection time that is not in the future', async () => {
+    const { service } = makeService();
+    await expect(service.accept('claim-1', { scheduledAt: '2020-01-01T00:00:00.000Z' }, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+  });
+
   it('answers 404 for a claim assigned to someone else or unassigned, and 409 for the wrong state', async () => {
     const other = makeService({ claim: makeClaim({ technicianId: 'tech-2' }) });
-    await expect(other.service.accept('claim-1', {}, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.NOT_FOUND } });
+    await expect(other.service.accept('claim-1', { scheduledAt: FUTURE }, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.NOT_FOUND } });
 
     const unassigned = makeService({ claim: makeClaim({ technicianId: null }) });
-    await expect(unassigned.service.accept('claim-1', {}, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.NOT_FOUND } });
+    await expect(unassigned.service.accept('claim-1', { scheduledAt: FUTURE }, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.NOT_FOUND } });
 
     const wrongState = makeService({ claim: makeClaim({ status: WarrantyClaimStatus.INSPECTED }) });
-    await expect(wrongState.service.accept('claim-1', {}, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+    await expect(wrongState.service.accept('claim-1', { scheduledAt: FUTURE }, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
     expect(wrongState.claimTx.update).not.toHaveBeenCalled();
   });
 
@@ -139,7 +151,7 @@ describe('technician warranty commands', () => {
     const { service, claimTx, visitTx } = makeService();
     claimTx.update.mockResolvedValueOnce({ affected: 0 });
 
-    await expect(service.accept('claim-1', {}, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+    await expect(service.accept('claim-1', { scheduledAt: FUTURE }, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
     expect(visitTx.save).not.toHaveBeenCalled();
   });
 
@@ -210,12 +222,55 @@ describe('technician warranty commands', () => {
     expect(repeat.visitRepo.update).not.toHaveBeenCalled();
   });
 
+  it('moves the inspection time before check-in and tells the customer, but not after', async () => {
+    const before = makeService({ claim: makeClaim({ status: WarrantyClaimStatus.ACCEPTED }) });
+    await before.service.reschedule('claim-1', { scheduledAt: FUTURE }, TECH);
+    expect(before.visitRepo.update).toHaveBeenCalledWith({ id: 'visit-1', status: WarrantyVisitStatus.SCHEDULED }, { scheduledAt: new Date(FUTURE) });
+    expect(before.notifier.toUser).toHaveBeenCalledWith('customer-1', expect.any(String), expect.any(String), 'WARRANTY_VISIT_RESCHEDULED', 'order-1');
+
+    const after = makeService({ claim: makeClaim({ status: WarrantyClaimStatus.ACCEPTED }), visits: [makeVisit({ status: WarrantyVisitStatus.CHECKED_IN })] });
+    await expect(after.service.reschedule('claim-1', { scheduledAt: FUTURE }, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+    await expect(before.service.reschedule('claim-1', { scheduledAt: '2020-01-01T00:00:00.000Z' }, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+  });
+
+  it('needs the faulty part lines for a part fault, and only lines of the original invoice', async () => {
+    const claim = makeClaim({ status: WarrantyClaimStatus.ACCEPTED });
+    const visits = [makeVisit({ status: WarrantyVisitStatus.CHECKED_IN })];
+    const base = { result: WarrantyInspectionResult.COVERED_PART, findings: 'Linh kiện bị nứt ở mối ghép', evidenceRefs: ['photo-1'] };
+
+    const none = makeService({ claim, visits });
+    await expect(none.service.propose('claim-1', base, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+
+    const stranger = makeService({ claim, visits });
+    await expect(stranger.service.propose('claim-1', { ...base, faultyInvoiceItemIds: ['33333333-3333-4333-8333-333333333333'] }, TECH))
+      .rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+    expect(stranger.claimTx.update).not.toHaveBeenCalled();
+
+    const labor = makeService({ claim, visits });
+    await labor.service.propose('claim-1', { result: WarrantyInspectionResult.COVERED_WORKMANSHIP, findings: 'Mối nối bị lỏng do lắp chưa chặt' }, TECH);
+    expect(labor.visitTx.update).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ faultyInvoiceItemIds: null }));
+  });
+
+  it('stores how many of a x3 line are faulty and refuses more than were bought', async () => {
+    const claim = makeClaim({ status: WarrantyClaimStatus.ACCEPTED });
+    const visits = [makeVisit({ status: WarrantyVisitStatus.CHECKED_IN })];
+    const partLines = [{ id: LINE_1, quantity: 3 }];
+    const base = { result: WarrantyInspectionResult.COVERED_PART, findings: 'Linh kiện bị nứt ở mối ghép', evidenceRefs: ['photo-1'], faultyInvoiceItemIds: [LINE_1] };
+    const ok = makeService({ claim, visits, partLines });
+    await ok.service.propose('claim-1', { ...base, faultyQuantities: { [LINE_1]: 1 } }, TECH);
+    expect(ok.visitTx.update).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ faultyQuantities: { [LINE_1]: 1 } }));
+    for (const bad of [4, 0, 1.5]) {
+      const over = makeService({ claim, visits, partLines });
+      await expect(over.service.propose('claim-1', { ...base, faultyQuantities: { [LINE_1]: bad } }, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+    }
+  });
+
   it('proposes a conclusion only after check-in and moves the claim to inspected for manager approval', async () => {
     const early = makeService({ claim: makeClaim({ status: WarrantyClaimStatus.ACCEPTED }) });
     await expect(
       early.service.propose(
         'claim-1',
-        { result: WarrantyInspectionResult.COVERED_PART, findings: 'Linh kiện bị nứt ở mối ghép', evidenceRefs: ['photo-1'] },
+        { result: WarrantyInspectionResult.COVERED_PART, findings: 'Linh kiện bị nứt ở mối ghép', evidenceRefs: ['photo-1'], faultyInvoiceItemIds: [LINE_1] },
         TECH,
       ),
     ).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
@@ -242,7 +297,7 @@ describe('technician warranty commands', () => {
     });
     await ok.service.propose(
       'claim-1',
-      { result: WarrantyInspectionResult.COVERED_PART, findings: 'Linh kiện bị nứt ở mối ghép', evidenceRefs: ['photo-1'] },
+      { result: WarrantyInspectionResult.COVERED_PART, findings: 'Linh kiện bị nứt ở mối ghép', evidenceRefs: ['photo-1'], faultyInvoiceItemIds: [LINE_1, LINE_1, LINE_2] },
       TECH,
     );
     expect(ok.claimTx.update).toHaveBeenCalledWith(
@@ -255,6 +310,7 @@ describe('technician warranty commands', () => {
         status: WarrantyVisitStatus.INSPECTED,
         proposedResult: WarrantyInspectionResult.COVERED_PART,
         notCoveredReasonCode: null,
+        faultyInvoiceItemIds: [LINE_1, LINE_2],
       }),
     );
     expect(ok.notifier.toManagers).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'WARRANTY_PROPOSAL_READY', 'order-1');
