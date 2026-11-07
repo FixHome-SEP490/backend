@@ -222,6 +222,17 @@ describe('technician warranty commands', () => {
     expect(repeat.visitRepo.update).not.toHaveBeenCalled();
   });
 
+  it('moves the inspection time before check-in and tells the customer, but not after', async () => {
+    const before = makeService({ claim: makeClaim({ status: WarrantyClaimStatus.ACCEPTED }) });
+    await before.service.reschedule('claim-1', { scheduledAt: FUTURE }, TECH);
+    expect(before.visitRepo.update).toHaveBeenCalledWith({ id: 'visit-1', status: WarrantyVisitStatus.SCHEDULED }, { scheduledAt: new Date(FUTURE) });
+    expect(before.notifier.toUser).toHaveBeenCalledWith('customer-1', expect.any(String), expect.any(String), 'WARRANTY_VISIT_RESCHEDULED', 'order-1');
+
+    const after = makeService({ claim: makeClaim({ status: WarrantyClaimStatus.ACCEPTED }), visits: [makeVisit({ status: WarrantyVisitStatus.CHECKED_IN })] });
+    await expect(after.service.reschedule('claim-1', { scheduledAt: FUTURE }, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+    await expect(before.service.reschedule('claim-1', { scheduledAt: '2020-01-01T00:00:00.000Z' }, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+  });
+
   it('needs the faulty part lines for a part fault, and only lines of the original invoice', async () => {
     const claim = makeClaim({ status: WarrantyClaimStatus.ACCEPTED });
     const visits = [makeVisit({ status: WarrantyVisitStatus.CHECKED_IN })];

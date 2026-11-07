@@ -74,10 +74,7 @@ export class WarrantyClaimsTechnicianService {
   }
 
   async accept(claimId: string, dto: AcceptWarrantyClaimDto, technician: OrderActor): Promise<StaffWarrantyClaimDto> {
-    const scheduledAt = new Date(dto.scheduledAt);
-    if (!Number.isFinite(scheduledAt.getTime()) || scheduledAt.getTime() <= Date.now()) {
-      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Lịch kiểm tra phải ở thời điểm sau hiện tại.');
-    }
+    const scheduledAt = futureTime(dto.scheduledAt);
     const claim = await this.ownClaim(claimId, technician.id, WarrantyClaimStatus.SUBMITTED);
     await this.claimRepo.manager.transaction(async (manager) => {
       const updated = await manager
@@ -102,6 +99,23 @@ export class WarrantyClaimsTechnicianService {
       'Kỹ thuật viên đã nhận yêu cầu bảo hành',
       `Kỹ thuật viên hẹn kiểm tra lúc ${scheduledAt.toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false })}.`,
       'WARRANTY_CLAIM_ACCEPTED',
+      claim.serviceOrderId,
+    );
+    return this.viewOf(claim.id);
+  }
+
+  /** The customer cannot make the agreed time: move it, as long as the technician has not checked in yet. */
+  async reschedule(claimId: string, dto: AcceptWarrantyClaimDto, technician: OrderActor): Promise<StaffWarrantyClaimDto> {
+    const scheduledAt = futureTime(dto.scheduledAt);
+    const claim = await this.ownClaim(claimId, technician.id, WarrantyClaimStatus.ACCEPTED);
+    const visit = await this.latestVisit(claim.id, technician.id, [WarrantyVisitStatus.SCHEDULED]);
+    const updated = await this.visitRepo.update({ id: visit.id, status: WarrantyVisitStatus.SCHEDULED }, { scheduledAt });
+    if (updated.affected !== 1) throw conflict('Lượt kiểm tra đã bắt đầu, không thể đổi lịch.');
+    await this.notifier.toUser(
+      claim.customerId,
+      'Lịch kiểm tra bảo hành đã đổi',
+      `Kỹ thuật viên hẹn lại kiểm tra lúc ${scheduledAt.toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false })}.`,
+      'WARRANTY_VISIT_RESCHEDULED',
       claim.serviceOrderId,
     );
     return this.viewOf(claim.id);
@@ -305,4 +319,12 @@ export class WarrantyClaimsTechnicianService {
     const [view] = await this.reader.toStaffViews([claim]);
     return view;
   }
+}
+
+function futureTime(value: string): Date {
+  const at = new Date(value);
+  if (!Number.isFinite(at.getTime()) || at.getTime() <= Date.now()) {
+    throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Lịch kiểm tra phải ở thời điểm sau hiện tại.');
+  }
+  return at;
 }
