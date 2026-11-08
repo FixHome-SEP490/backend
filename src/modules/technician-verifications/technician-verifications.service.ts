@@ -23,7 +23,6 @@ import { PaginationMeta } from '../../shared/dto';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { Wallet } from '../wallet/entities/wallet.entity';
 import { FaceMatchService } from '../face-match/face-match.service';
 import {
   KycStorageService,
@@ -338,25 +337,13 @@ export class TechnicianVerificationsService {
           'Verification request is already processed',
         );
 
-      const profileUpdate: Partial<TechnicianProfile> = {
-        verificationStatus: status,
-      };
-      if (status === VerificationStatus.VERIFIED) {
-        profileUpdate.onboardingStatus = OnboardingStatus.APPROVED;
-
-        // Ensure wallet exists with initial 0 VND balance
-        const walletRepo = manager.getRepository(Wallet);
-        const existingWallet = await walletRepo.findOne({
-          where: { technicianId: verification.technicianId },
-        });
-        if (!existingWallet) {
-          const newWallet = walletRepo.create({
-            technicianId: verification.technicianId,
-            balance: 0,
-          });
-          await walletRepo.save(newWallet);
-        }
-      } else if (status === VerificationStatus.REJECTED) {
+      // Confirming identity only invites the technician to the office (PO 09/11/2026). The technician becomes
+      // APPROVED, gets a wallet and can take jobs only after the profile review that follows the visit.
+      const profileUpdate: Partial<TechnicianProfile> =
+        status === VerificationStatus.VERIFIED
+          ? { identityVerifiedAt: new Date(), verificationStatus: VerificationStatus.PENDING }
+          : { verificationStatus: status };
+      if (status === VerificationStatus.REJECTED) {
         profileUpdate.onboardingStatus = OnboardingStatus.REJECTED;
       }
 
@@ -381,7 +368,7 @@ export class TechnicianVerificationsService {
         before: { status: verification.status },
         after: {
           status,
-          profileVerificationStatus: status,
+          profileVerificationStatus: profileUpdate.verificationStatus,
           reviewedById: reviewerId,
           rejectionReason,
         },
@@ -391,12 +378,12 @@ export class TechnicianVerificationsService {
         if (status === VerificationStatus.VERIFIED) {
           void this.notificationsService.createNotification({
             userId: verification.technicianId,
-            title: 'Hồ sơ đã được duyệt - Nạp tiền ví để nhận việc',
+            title: 'Danh tính đã được xác nhận - Đặt lịch lên trụ sở',
             message:
-              'Chúc mừng bạn đã trở thành Đối tác Kỹ thuật viên FixHome! Số dư ví ban đầu là 0 ₫. Vui lòng nạp tối thiểu 200.000 ₫ vào ví để bắt đầu tiếp nhận các đơn sửa chữa từ khách hàng.',
-            type: 'WALLET_TOPUP_REQUIRED',
-            referenceType: 'wallet',
-            referenceId: verification.technicianId,
+              'Danh tính của bạn đã được xác nhận. Vui lòng chọn trụ sở và giờ hẹn để gặp trực tiếp, mang theo bản công chứng bằng cấp để FixHome kiểm tra và duyệt hồ sơ.',
+            type: 'KYC_IDENTITY_APPROVED',
+            referenceType: 'technician_verification',
+            referenceId: id,
           });
         } else if (status === VerificationStatus.REJECTED) {
           void this.notificationsService.createNotification({

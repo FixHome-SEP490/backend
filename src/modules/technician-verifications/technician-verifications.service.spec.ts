@@ -407,13 +407,15 @@ describe('TechnicianVerificationsService', () => {
       expect(result.reviewedById).toBe('admin-uuid-1');
       expect(result.reviewedAt).toBeInstanceOf(Date);
       expect(result.rejectionReason).toBeNull();
+      // Identity confirmed only invites the technician to the office: not approved, no wallet, not yet matchable.
       expect(profileRepository.update).toHaveBeenCalledWith(
         { userId: 'tech-uuid-1' },
         {
-          verificationStatus: VerificationStatus.VERIFIED,
-          onboardingStatus: OnboardingStatus.APPROVED,
+          identityVerifiedAt: expect.any(Date),
+          verificationStatus: VerificationStatus.PENDING,
         },
       );
+      expect(profileRepository.update.mock.calls[0][1]).not.toHaveProperty('onboardingStatus');
       expect(auditLogService.logWithManagerStrict).toHaveBeenCalledWith(
         manager,
         expect.objectContaining({
@@ -424,7 +426,7 @@ describe('TechnicianVerificationsService', () => {
           before: { status: VerificationStatus.PENDING },
           after: {
             status: VerificationStatus.VERIFIED,
-            profileVerificationStatus: VerificationStatus.VERIFIED,
+            profileVerificationStatus: VerificationStatus.PENDING,
             reviewedById: 'admin-uuid-1',
             rejectionReason: null,
           },

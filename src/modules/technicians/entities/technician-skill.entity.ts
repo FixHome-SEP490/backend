@@ -24,8 +24,13 @@ export class TechnicianSkill extends BaseEntity {
   @JoinColumn({ name: 'service_id' })
   service: Service;
 
+  /** Cấp độ hiện hiệu lực. Chỉ coi là đã xác nhận khi `verificationStatus` là VERIFIED. */
   @Column({ type: 'varchar', length: 50, default: 'INTERMEDIATE' })
   level: string;
+
+  /** Cấp độ thợ tự khai lúc đăng ký (giữ lại để đối chiếu với cấp được xác nhận). */
+  @Column({ name: 'declared_level', type: 'varchar', length: 50, nullable: true })
+  declaredLevel?: string | null;
 
   @Column({
     name: 'listed_labor_price',

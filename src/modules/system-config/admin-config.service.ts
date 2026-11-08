@@ -99,6 +99,10 @@ const KEY_VALIDATION: Record<string, KeyValidationRule> = {
   'warranty.faulty_return_days':        { type: 'int', min: 1, max: 60 },
   'warranty.faulty_return_reminder_hours': { type: 'int', min: 1, max: 240 },
   'reputation.warranty_violation_points': { type: 'int', min: 1, max: 100 },
+  'office.support_phone':               { type: 'string', maxLength: 32 },
+  'office.max_missed_visits':           { type: 'int', min: 1, max: 5 },
+  'office.visit_days_ahead':            { type: 'int', min: 1, max: 30 },
+  'office.min_notice_hours':            { type: 'int', min: 0, max: 72 },
 };
 
 /**
@@ -118,6 +122,10 @@ const KEY_EFFECT: Record<
   { status: ConfigEffectStatus; evidence: string | null }
 > = {
   [W3_SHIPPING_CAP_KEY]: { status: 'ACTIVE', evidence: null },
+  'office.support_phone': { status: 'ACTIVE', evidence: null },
+  'office.max_missed_visits': { status: 'ACTIVE', evidence: null },
+  'office.visit_days_ahead': { status: 'ACTIVE', evidence: null },
+  'office.min_notice_hours': { status: 'ACTIVE', evidence: null },
   'wallet.minimum_balance': {
     status: 'ACTIVE',
     evidence: null,

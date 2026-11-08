@@ -133,6 +133,8 @@ jobs:
             docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml build backend
             # Apply the exact additive geo schema before the unchanged W3/cash migration gates.
             docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml run --rm --no-deps -e WAREHOUSE_GEO_DEV_RELEASE=1 backend node dist/database/warehouse-geo-dev-release.js
+            # Office visits for technician review (additive); applied here so the W3/cash gates do not see an unknown pending migration.
+            docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml run --rm --no-deps -e TECHNICIAN_OFFICE_VISITS_DEV_RELEASE=1 backend node dist/database/technician-office-visits-dev-release.js
             docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml run --rm --no-deps -e W3_DEV_RELEASE=1 backend node dist/database/w3-dev-release.js
             docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml run --rm --no-deps -e CASH_REPUTATION_DEV_RELEASE=1 -e CASH_FIRST_DEV_ACTIVATION="$activation" backend node dist/database/cash-reputation-dev-release.js
             docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml up -d --no-build backend
