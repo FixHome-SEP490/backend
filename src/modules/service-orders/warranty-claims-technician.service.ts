@@ -9,6 +9,7 @@ import {
   WarrantyCustomerPrompt,
   WarrantyDeclineReason,
   WarrantyInspectionResult,
+  WarrantyStatus,
   WarrantyVisitStatus,
 } from '../../shared/enums';
 import { Address } from '../users/entities/address.entity';
@@ -206,12 +207,32 @@ export class WarrantyClaimsTechnicianService {
     const visit = await this.latestVisit(claim.id, technician.id, [WarrantyVisitStatus.CHECKED_IN]);
     const faulty = dto.result === WarrantyInspectionResult.COVERED_PART ? await this.faultyPartLines(claim.serviceOrderId, dto.faultyInvoiceItemIds ?? [], dto.faultyQuantities) : null;
 
+    // A workmanship fault with no part costs FixHome nothing and runs against the technician's own interest:
+    // the service manager has nothing to approve, so the claim goes straight to the re-service. Late or voided claims still need a manager.
+    const coverage = dto.result === WarrantyInspectionResult.COVERED_WORKMANSHIP
+      ? await this.claimRepo.manager.findOneBy(WarrantyCoverage, { id: claim.warrantyCoverageId })
+      : null;
+    const auto = !!coverage && coverage.status !== WarrantyStatus.VOIDED && !claim.submittedAfterExpiry;
+
     await this.claimRepo.manager.transaction(async (manager) => {
       const updated = await manager
         .getRepository(WarrantyClaim)
         .update(
           { id: claim.id, status: WarrantyClaimStatus.ACCEPTED, technicianId: technician.id },
-          { status: WarrantyClaimStatus.INSPECTED },
+          auto
+            ? {
+                status: WarrantyClaimStatus.IN_PROGRESS,
+                awaitingPrompt: null,
+                awaitingSince: null,
+                customerResponse: null,
+                customerRespondedAt: null,
+                finalResult: WarrantyInspectionResult.COVERED_WORKMANSHIP,
+                finalReasonCode: null,
+                smOverrodeProposal: false,
+                reviewedByManagerId: null,
+                reviewedAt: new Date(),
+              }
+            : { status: WarrantyClaimStatus.INSPECTED },
         );
       if (updated.affected !== 1) throw conflict('Yêu cầu bảo hành đã được xử lý.');
       await manager.getRepository(WarrantyVisit).update(
@@ -227,12 +248,28 @@ export class WarrantyClaimsTechnicianService {
         },
       );
     });
-    await this.notifier.toManagers(
-      'Có đề xuất kết luận bảo hành cần duyệt',
-      'Kỹ thuật viên đã kiểm tra và gửi đề xuất kết luận. Vui lòng xem xét.',
-      'WARRANTY_PROPOSAL_READY',
-      claim.serviceOrderId,
-    );
+    if (auto) {
+      await this.notifier.toManagers(
+        'Yêu cầu bảo hành được tự động duyệt',
+        'Lỗi do công lắp đặt, không cần linh kiện: kỹ thuật viên sửa lại miễn phí, không cần duyệt. Xem lại khi cần.',
+        'WARRANTY_AUTO_APPROVED',
+        claim.serviceOrderId,
+      );
+      await this.notifier.toUser(
+        claim.customerId,
+        'Yêu cầu bảo hành được chấp nhận',
+        'Kỹ thuật viên sẽ thực hiện bảo hành miễn phí cho bạn.',
+        'WARRANTY_DECISION_MADE',
+        claim.serviceOrderId,
+      );
+    } else {
+      await this.notifier.toManagers(
+        'Có đề xuất kết luận bảo hành cần duyệt',
+        'Kỹ thuật viên đã kiểm tra và gửi đề xuất kết luận. Vui lòng xem xét.',
+        'WARRANTY_PROPOSAL_READY',
+        claim.serviceOrderId,
+      );
+    }
     return this.viewOf(claim.id);
   }
 

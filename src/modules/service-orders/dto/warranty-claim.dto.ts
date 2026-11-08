@@ -299,6 +299,9 @@ export class StaffWarrantyClaimDto extends WarrantyClaimViewDto {
   @ApiPropertyOptional({ format: 'date-time', nullable: true, description: 'The technician accepted but did not check in by the deadline' })
   noShowFlaggedAt?: Date | null;
 
+  @ApiPropertyOptional({ description: 'A workmanship fault without parts, approved by the system instead of a manager' })
+  autoApproved?: boolean;
+
   @ApiPropertyOptional({ nullable: true, description: 'The free warranty part and the return of the faulty one' })
   partRequest?: {
     id: string;
