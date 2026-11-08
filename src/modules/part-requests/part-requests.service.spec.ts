@@ -162,6 +162,33 @@ describe('PartRequestsService', () => {
     );
   });
 
+  describe('findWarehouseTasks (W2 assigned warehouse queue)', () => {
+    it('denies non-SM access without querying global requests', async () => {
+      await expect(service.findWarehouseTasks({}, { id: 'admin', role: Role.ADMIN })).rejects.toThrow();
+      expect(mockPartRequestRepo.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it('filters W2 PICKUP tasks by the current warehouse owner inside SQL and keeps legacy list separate', async () => {
+      const qb: any = {
+        leftJoinAndSelect: vi.fn().mockReturnThis(),
+        orderBy: vi.fn().mockReturnThis(),
+        skip: vi.fn().mockReturnThis(),
+        take: vi.fn().mockReturnThis(),
+        innerJoin: vi.fn().mockReturnThis(),
+        andWhere: vi.fn().mockReturnThis(),
+        getManyAndCount: vi.fn().mockResolvedValue([[], 0]),
+      };
+      mockPartRequestRepo.createQueryBuilder.mockReturnValue(qb);
+      await expect(service.findWarehouseTasks({}, { id: 'sm-owner', role: Role.SERVICE_MANAGER })).resolves.toEqual({ data: [], total: 0 });
+      expect(qb.innerJoin).toHaveBeenCalledWith('part_request_warehouse_allocations', 'w2a', 'w2a.part_request_id = pr.id');
+      expect(qb.innerJoin).toHaveBeenCalledWith('warehouses', 'w2w', expect.stringContaining('w2w.responsible_user_id = :warehouseSmId'), { warehouseSmId: 'sm-owner' });
+      expect(qb.andWhere).toHaveBeenCalledWith('pr.fulfillmentMethod = :warehousePickup', { warehousePickup: FulfillmentMethod.PICKUP });
+      qb.innerJoin.mockClear();
+      await service.findAll({}, { id: 'admin', role: Role.ADMIN });
+      expect(qb.innerJoin).not.toHaveBeenCalled();
+    });
+  });
+
   describe('createPreRepairRequest', () => {
     it('should reject if order is not in ACCEPTED status', async () => {
       mockEntityManager.findOne.mockResolvedValueOnce({

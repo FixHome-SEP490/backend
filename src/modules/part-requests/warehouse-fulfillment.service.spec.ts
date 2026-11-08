@@ -20,6 +20,27 @@ function setup(status = 'reserved') {
 }
 
 describe('W2 physical authority and legacy safety', () => {
+  it('shows approximate straight-line km from the booking without claiming verified road distance or ETA', async () => {
+    const { service, manager, allocation } = setup();
+    manager.findOne.mockImplementation(async (entity: unknown): Promise<any> =>
+      entity === WarehouseAllocation ? allocation :
+      entity === Warehouse ? { id: 'warehouse', responsibleUserId: 'sm', status: 'active', latitude: '10.810', longitude: '106.740' } : null);
+    manager.query.mockResolvedValue([{ latitude: '10.800', longitude: '106.730' }]);
+    const view = await service.view(manager as never, 'request');
+    expect(view).toMatchObject({
+      mode: 'warehouse', distanceNotVerified: true, reviewRequired: true,
+      estimatedStraightLineKm: expect.any(Number), distanceReference: 'booking_snapshot',
+    });
+    expect((view as any).estimatedStraightLineKm).toBeGreaterThan(0);
+  });
+
+  it('does not fabricate km when warehouse or booking coordinates are missing', async () => {
+    const { service, manager } = setup();
+    const view = await service.view(manager as never, 'request');
+    expect(view).toMatchObject({ mode: 'warehouse', distanceNotVerified: true, estimatedStraightLineKm: null, distanceReference: null });
+    expect(manager.query).not.toHaveBeenCalled();
+  });
+
   it.each([
 
     { name: 'automatic booking still selects the first whole-stock warehouse', actor: { id: 'system', role: 'system' }, stockB: 3, automatic: true, expected: 'warehouse-a' },
