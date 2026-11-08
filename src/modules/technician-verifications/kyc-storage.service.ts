@@ -246,6 +246,21 @@ export class KycStorageService {
     );
   }
 
+  /** Bytes of an object the technician uploaded, read through a short-lived signed URL. Not logged, not cached. */
+  async download(storageObjectPath: string, ownerId: string): Promise<Buffer> {
+    const { signedUrl } = await this.createSignedAccess(storageObjectPath, ownerId);
+    try {
+      const response = await axios.get<ArrayBuffer>(signedUrl, {
+        responseType: 'arraybuffer',
+        timeout: 10000,
+        maxContentLength: 10 * 1024 * 1024,
+      });
+      return Buffer.from(response.data);
+    } catch {
+      throw new ServiceUnavailableException('Private KYC storage could not be read');
+    }
+  }
+
   async createSignedUploadUrl(
     technicianId: string,
     mimeType: string,

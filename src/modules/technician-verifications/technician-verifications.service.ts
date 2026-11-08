@@ -24,6 +24,7 @@ import { TechnicianProfile } from '../technicians/entities/technician-profile.en
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Wallet } from '../wallet/entities/wallet.entity';
+import { FaceMatchService } from '../face-match/face-match.service';
 import {
   KycStorageService,
   KycSignedAccess,
@@ -51,6 +52,7 @@ export class TechnicianVerificationsService {
     private readonly auditLogService: AuditLogService,
     private readonly storageService: KycStorageService,
     @Optional() private readonly notificationsService?: NotificationsService,
+    @Optional() private readonly faceMatch?: FaceMatchService,
   ) {}
 
   async submitVerification(
@@ -93,6 +95,7 @@ export class TechnicianVerificationsService {
       throw new BadRequestException(
         'Không tìm thấy giấy tờ đã tải lên. Vui lòng tải lại ảnh hoặc video rồi gửi hồ sơ.',
       );
+    const faceMatchScore = await this.matchFace(technicianId, dto);
     const verification = await this.verificationRepository.manager.transaction(async (manager) => {
       const technician = await manager
         .getRepository(User)
@@ -131,6 +134,8 @@ export class TechnicianVerificationsService {
         technicianId,
         status: VerificationStatus.PENDING,
         submittedAt: new Date(),
+        faceMatchScore,
+        faceMatchAt: faceMatchScore === null ? null : new Date(),
       });
 
       const savedVerification = await verifications.save(verification);
@@ -453,6 +458,31 @@ export class TechnicianVerificationsService {
       document.storageObjectPath,
       document.verification.technicianId,
     );
+  }
+
+  /**
+   * Selfie vs the CCCD front photo, outside the row lock (it is a network call). Below the threshold or
+   * no face found => the technician retakes. Provider off/unreachable or no comparable image => null,
+   * and the admin reviews by eye as before.
+   */
+  private async matchFace(technicianId: string, dto: SubmitVerificationDto): Promise<number | null> {
+    if (!this.faceMatch?.enabled) return null;
+    const image = (type: DocumentType) =>
+      dto.documents.find((d) => d.documentType === type && d.mimeType.startsWith('image/'));
+    const front = image(DocumentType.CITIZEN_ID_FRONT);
+    const face = image(DocumentType.FACE_PHOTO);
+    if (!front || !face) return null;
+    const [idCard, selfie] = await Promise.all([
+      this.storageService.download(front.storageObjectPath, technicianId),
+      this.storageService.download(face.storageObjectPath, technicianId),
+    ]);
+    const result = await this.faceMatch.compare(selfie, idCard);
+    if (result.outcome === 'skipped') return null;
+    if (result.outcome === 'no_face')
+      throw new BadRequestException('Không nhận diện được khuôn mặt trong ảnh CCCD hoặc ảnh chân dung. Vui lòng chụp lại rõ mặt, đủ sáng.');
+    if (result.similarity < this.faceMatch.threshold)
+      throw new BadRequestException('Khuôn mặt ở ảnh chân dung không khớp với ảnh trên CCCD. Vui lòng chụp lại.');
+    return result.similarity;
   }
 
   private validateSubmissionDocuments(dto: SubmitVerificationDto): void {

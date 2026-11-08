@@ -63,6 +63,20 @@ export class TechnicianVerification extends BaseEntity {
   @Column({ name: 'verified_full_name', type: 'varchar', length: 255, nullable: true })
   verifiedFullName: string | null;
 
+  /** Rekognition similarity (0-100) between the CCCD photo and the selfie at submit; null = not compared. */
+  @Column({
+    name: 'face_match_score',
+    type: 'numeric',
+    precision: 5,
+    scale: 2,
+    nullable: true,
+    transformer: { to: (v: number | null) => v, from: (v: string | null) => (v === null ? null : Number(v)) },
+  })
+  faceMatchScore: number | null;
+
+  @Column({ name: 'face_match_at', type: 'timestamp with time zone', nullable: true })
+  faceMatchAt: Date | null;
+
   @OneToMany(() => VerificationDocument, (doc) => doc.verification, {
     cascade: true,
   })
