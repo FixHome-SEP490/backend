@@ -16,6 +16,13 @@ export class Warehouse extends BaseEntity {
   @Column({ type: 'varchar', length: 500, nullable: true })
   address: string | null;
 
+  /** Optional verified or demo-approximate coordinates (WGS84). */
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  latitude: number | null;
+
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  longitude: number | null;
+
   @Column({ type: 'enum', enum: WarehouseStatus, enumName: 'warehouse_status', default: WarehouseStatus.ACTIVE })
   status: WarehouseStatus;
 

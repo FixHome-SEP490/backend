@@ -20,6 +20,128 @@ function setup(status = 'reserved') {
 }
 
 describe('W2 physical authority and legacy safety', () => {
+  it('shows approximate straight-line km from the booking without claiming verified road distance or ETA', async () => {
+    const { service, manager, allocation } = setup();
+    manager.findOne.mockImplementation(async (entity: unknown): Promise<any> =>
+      entity === WarehouseAllocation ? allocation :
+      entity === Warehouse ? { id: 'warehouse', responsibleUserId: 'sm', status: 'active', latitude: '10.810', longitude: '106.740' } : null);
+    manager.query.mockResolvedValue([{ latitude: '10.800', longitude: '106.730' }]);
+    const view = await service.view(manager as never, 'request');
+    expect(view).toMatchObject({
+      mode: 'warehouse', distanceNotVerified: true, reviewRequired: true,
+      estimatedStraightLineKm: expect.any(Number), distanceReference: 'booking_snapshot',
+    });
+    expect((view as any).estimatedStraightLineKm).toBeGreaterThan(0);
+  });
+
+  it('does not fabricate km when warehouse or booking coordinates are missing', async () => {
+    const { service, manager } = setup();
+    const view = await service.view(manager as never, 'request');
+    expect(view).toMatchObject({ mode: 'warehouse', distanceNotVerified: true, estimatedStraightLineKm: null, distanceReference: null });
+    expect(manager.query).not.toHaveBeenCalled();
+  });
+
+  it.each([
+
+    { name: 'automatic booking still selects the first whole-stock warehouse', actor: { id: 'system', role: 'system' }, stockB: 3, automatic: true, expected: 'warehouse-a' },
+  ])('$name', async ({ actor, stockB, automatic, expected }) => {
+    const { service, manager, request, allocation } = setup('manual_assistance');
+    Object.assign(allocation, { warehouseId: null, responsibleUserId: null });
+    const candidates = [{ id: 'warehouse-a', responsibleUserId: 'sm-a' }, { id: 'warehouse-b', responsibleUserId: 'sm-b' }];
+    manager.findOne.mockImplementation(async (entity, options?: any) => entity === WarehouseAllocation ? allocation
+      : entity === Warehouse ? { id: options?.where?.id, responsibleUserId: options?.where?.id === 'warehouse-b' ? 'sm-b' : 'sm-a', status: 'active' }
+      : null);
+    manager.query.mockImplementation(async (sql?: string) => {
+      if (sql?.startsWith('SELECT id, fingerprint')) return [];
+      if (sql?.startsWith('INSERT INTO warehouse_fulfillment_commands')) return [{ id: 'command' }];
+      if (sql?.includes('FROM warehouses w JOIN users')) return candidates;
+      if (sql?.includes('FROM warehouse_stock s WHERE')) return [
+        { warehouseId: 'warehouse-a', partId: 'sku', onHand: 3, reserved: 0 },
+        { warehouseId: 'warehouse-b', partId: 'sku', onHand: stockB, reserved: 0 },
+      ];
+      if (sql?.startsWith('SELECT on_hand AS')) return [{ onHand: 3, reserved: 0 }];
+      return [];
+    });
+    await service.reserve(manager as never, request as never, actor, 'reserve-test', automatic);
+    expect(allocation.warehouseId).toBe(expected);
+    expect(allocation.responsibleUserId).toBe(expected === 'warehouse-b' ? 'sm-b' : 'sm-a');
+    expect(manager.query.mock.calls.some(([sql, params]: any[]) => sql?.startsWith('UPDATE warehouse_stock') && params?.[0] === expected)).toBe(true);
+    expect(manager.query.mock.calls.some(([sql, params]: any[]) => sql?.startsWith('UPDATE warehouse_stock') && params?.[0] !== expected)).toBe(false);
+  });
+
+  it('auto-selects nearest stock-sufficient warehouse and never holds stock in another', async () => {
+    const { service, manager, request, allocation } = setup('manual_assistance');
+    Object.assign(allocation, { warehouseId: null, responsibleUserId: null });
+    manager.query.mockImplementation(async (sql?: string) => {
+      if (sql?.startsWith('INSERT INTO warehouse_fulfillment_commands')) return [{ id: 'command' }];
+      if (sql?.includes('FROM service_orders o JOIN bookings b')) return [{
+        lastLocationAt: null, liveLatitude: null, liveLongitude: null,
+        profileLatitude: '10.810', profileLongitude: '106.740',
+        bookingLatitude: '10.770', bookingLongitude: '106.690',
+      }];
+      if (sql?.includes('FROM warehouses w JOIN users')) return [
+        { id: 'warehouse-a', responsibleUserId: 'sm-a', latitude: '10.770', longitude: '106.690' },
+        { id: 'warehouse-b', responsibleUserId: 'sm-b', latitude: '10.811', longitude: '106.741' },
+      ];
+      if (sql?.includes('FROM warehouse_stock s WHERE')) return [
+        { warehouseId: 'warehouse-a', partId: 'sku', onHand: 4, reserved: 0 },
+        { warehouseId: 'warehouse-b', partId: 'sku', onHand: 4, reserved: 0 },
+      ];
+      if (sql?.startsWith('SELECT on_hand AS')) return [{ onHand: 4, reserved: 0 }];
+      return [];
+    });
+    await service.reserve(manager as never, request as never, { id: 'system', role: 'system' }, 'nearest', true);
+    expect(allocation.warehouseId).toBe('warehouse-b');
+    expect(manager.query.mock.calls.filter(([sql]) => sql?.startsWith('UPDATE warehouse_stock'))).toHaveLength(1);
+    expect(manager.query.mock.calls.some(([sql, params]: any[]) =>
+      sql?.startsWith('UPDATE warehouse_stock') && params?.[0] === 'warehouse-b')).toBe(true);
+  });
+
+  it('notifies only the technician and never reserves or delegates when every warehouse lacks stock', async () => {
+    const { service, manager, request, allocation } = setup('manual_assistance');
+    Object.assign(allocation, { warehouseId: null, responsibleUserId: null });
+    manager.query.mockImplementation(async (sql?: string) => {
+      if (sql?.startsWith('INSERT INTO warehouse_fulfillment_commands')) return [{ id: 'command' }];
+      if (sql?.includes('FROM warehouses w JOIN users')) return [
+        { id: 'warehouse-a', responsibleUserId: 'sm-a', latitude: '10.77', longitude: '106.7' },
+      ];
+      if (sql?.includes('FROM warehouse_stock s WHERE')) return [
+        { warehouseId: 'warehouse-a', partId: 'sku', onHand: 1, reserved: 0 },
+      ];
+      return [];
+    });
+    const result = await service.reserve(manager as never, request as never, { id: 'tech', role: Role.TECHNICIAN }, 'auto:no-stock', true);
+    expect(result).toMatchObject({ status: 'stock_unavailable', warehouseId: null, stockUnavailable: true });
+    expect(manager.insert).toHaveBeenCalledTimes(1);
+    expect(manager.insert.mock.calls[0][1]).toMatchObject({ userId: 'tech', type: 'PART_REQUEST_STOCK_UNAVAILABLE' });
+    expect(manager.query.mock.calls.some(([sql]) => sql?.startsWith('UPDATE warehouse_stock'))).toBe(false);
+    expect(allocation.status).toBe('manual_assistance'); // DB CHECK unchanged; API translates to stock_unavailable.
+    await expect(service.reserve(manager as never, request as never,
+      { id: 'sm-a', role: Role.SERVICE_MANAGER }, 'manual-retry')).rejects.toThrow('Không có kho đủ linh kiện');
+    expect(manager.insert).toHaveBeenCalledTimes(1);
+  });
+
+  it('never reserves another manager warehouse when acting SM has insufficient stock', async () => {
+    const { service, manager, request, allocation } = setup('manual_assistance');
+    Object.assign(allocation, { warehouseId: null, responsibleUserId: null });
+    manager.query.mockImplementation(async (sql?: string) => {
+      if (sql?.startsWith('SELECT id, fingerprint')) return [];
+      if (sql?.startsWith('INSERT INTO warehouse_fulfillment_commands')) return [{ id: 'command' }];
+      if (sql?.includes('FROM warehouses w JOIN users')) return [
+        { id: 'warehouse-a', responsibleUserId: 'sm-a' }, { id: 'warehouse-b', responsibleUserId: 'sm-b' },
+      ];
+      if (sql?.includes('FROM warehouse_stock s WHERE')) return [
+        { warehouseId: 'warehouse-a', partId: 'sku', onHand: 3, reserved: 0 },
+        { warehouseId: 'warehouse-b', partId: 'sku', onHand: 1, reserved: 0 },
+      ];
+      return [];
+    });
+    await expect(service.reserve(manager as never, request as never,
+      { id: 'sm-b', role: Role.SERVICE_MANAGER }, 'no-own-stock')).rejects.toThrow();
+    expect(manager.query.mock.calls.some(([sql]) => sql?.startsWith('UPDATE warehouse_stock'))).toBe(false);
+    expect(manager.save).not.toHaveBeenCalled();
+  });
+
   it('does not enroll Warranty pickup requests or mutate their warehouse state', async () => {
     const { service, manager, request } = setup();
     request.requestType = PartRequestType.WARRANTY;

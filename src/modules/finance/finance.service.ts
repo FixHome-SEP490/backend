@@ -29,7 +29,7 @@ import { TechnicianAssignment } from '../service-orders/entities/technician-assi
 import { CashSettlement } from '../service-orders/entities/cash-settlement.entity';
 import { CommissionDue } from '../service-orders/entities/commission-due.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
-import { assertShippingFinancialCutoverAllowed } from './invoice-shipping-snapshot';
+import { assertInvoiceCollectionAllowed } from './w3-invoice-payment';
 import { readInvoiceFinancialSnapshot } from './invoice-financial-snapshot';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { ServiceOrderStateMachine } from '../service-orders/service-order-state-machine';
@@ -222,7 +222,7 @@ export class FinanceService {
             invoice.serviceOrderId !== scopeId) {
           throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Không tìm thấy đơn sửa chữa.');
         }
-        assertShippingFinancialCutoverAllowed(invoice);
+        await assertInvoiceCollectionAllowed(manager, invoice);
         await this.assertNoStoppedCollection(manager, scopeId, scopeKind);
         const assignment = await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: scopeId, isActive: true } });
         if (!assignment || !order.completionRequestedAt ||
@@ -373,7 +373,7 @@ export class FinanceService {
               invoice.paymentStatus === PaymentStatus.PAID || await isCompletionHeld(manager, scopeId)) {
             throw new BusinessException(ErrorCodes.CONFLICT, 'Đơn hoặc kỹ thuật viên đã thay đổi.');
           }
-          assertShippingFinancialCutoverAllowed(invoice);
+          await assertInvoiceCollectionAllowed(manager, invoice);
           const gross = this.requireWholeVnd(invoice.grandTotal, 'Invoice amount');
           allocations = [{ invoiceId: invoice.id, serviceOrderId: scopeId,
             originalGrossVnd: gross, customerDueVnd: quote?.total.customerDueVnd ?? gross }];
@@ -565,7 +565,7 @@ export class FinanceService {
             due !== BigInt(this.requireWholeVnd(intent.customerDueVnd, 'Cash intent due'))) invalid();
         // Scan the COMPLETE owned membership, not only the untrusted allocation subset.
         // Even a forged reduced intent/payment must not hide an omitted W3 child.
-        for (const invoice of invoices) assertShippingFinancialCutoverAllowed(invoice);
+        for (const invoice of invoices) await assertInvoiceCollectionAllowed(manager, invoice);
         let expected: { invoiceId: string; serviceOrderId: string; amount: number }[];
         if (intent.status === 'received') {
           if (!intent.visitGroupPaymentId) invalid();
@@ -604,7 +604,7 @@ export class FinanceService {
       if (!invoice || invoice.id !== allocation.invoiceId || invoice.serviceOrderId !== order.id) {
         throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Không tìm thấy đơn sửa chữa.');
       }
-      assertShippingFinancialCutoverAllowed(invoice);
+      await assertInvoiceCollectionAllowed(manager, invoice);
     });
   }
 
@@ -902,7 +902,7 @@ export class FinanceService {
         throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hóa đơn 0 ₫ cần được xác nhận miễn phí.');
       }
       await this.assertNoActiveCashIntent(manager, 'SOLO', order.id);
-      assertShippingFinancialCutoverAllowed(invoice);
+      await assertInvoiceCollectionAllowed(manager, invoice);
       await this.assertNewCollectionAllowed(manager, order.id);
 
       const payment = paymentRepository.create({
@@ -1087,7 +1087,7 @@ export class FinanceService {
         throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'VNPay chỉ áp dụng cho hóa đơn từ 5.000 ₫. Vui lòng chọn ví hoặc tiền mặt.');
       }
       await this.assertNoActiveCashIntent(manager, 'SOLO', order.id);
-      assertShippingFinancialCutoverAllowed(invoice);
+      await assertInvoiceCollectionAllowed(manager, invoice);
       await this.assertNewCollectionAllowed(manager, order.id);
       const txnRef = randomUUID().replace(/-/g, '');
       const requestedAt = new Date();
@@ -2464,7 +2464,7 @@ export class FinanceService {
    * settled into their wallet. The caller holds the invoice row lock.
    */
   private async markInvoicePaidOnline(manager: EntityManager, invoice: Invoice, payerUserId: string, now: Date): Promise<void> {
-    assertShippingFinancialCutoverAllowed(invoice);
+    await assertInvoiceCollectionAllowed(manager, invoice);
     if (this.requireWholeVnd(invoice.grandTotal, 'Invoice amount') <= 0) {
       throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hóa đơn 0 ₫ cần được xác nhận miễn phí.');
     }
@@ -2514,7 +2514,7 @@ export class FinanceService {
 
   /** Read-only reconciliation of a zero snapshot. Never repairs or replaces a persisted invoice. */
   private async assertNoChargeIntegrity(manager: EntityManager, invoice: Invoice, order: ServiceOrder, booking: Booking): Promise<void> {
-    assertShippingFinancialCutoverAllowed(invoice);
+    await assertInvoiceCollectionAllowed(manager, invoice);
     const fail = () => { throw new BusinessException(ErrorCodes.CONFLICT, 'Hóa đơn chưa khớp chi phí đã duyệt. Vui lòng liên hệ FixHome để kiểm tra.'); };
     for (const value of [invoice.grandTotal, invoice.laborTotal, invoice.partsTotal, invoice.fixHomePartsTotal,
       invoice.technicianPartsTotal, invoice.technicianPartWarrantyFeeTotal, invoice.shippingFee, invoice.commissionAmount]) {
@@ -2799,7 +2799,7 @@ export class FinanceService {
       }
       const amount = this.requireWholeVnd(invoice.grandTotal, 'Invoice amount');
       if (amount <= 0) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hoá đơn không có số tiền cần thanh toán');
-      assertShippingFinancialCutoverAllowed(invoice);
+      await assertInvoiceCollectionAllowed(manager, invoice);
       await this.assertNoActiveCashIntent(manager, 'SOLO', order.id);
       await this.assertNewCollectionAllowed(manager, order.id);
       const now = new Date();
@@ -2853,7 +2853,7 @@ export class FinanceService {
     manager: EntityManager,
     params: { order: ServiceOrder; invoice: Invoice; settlement: CashSettlement; actor: FinanceActor; now: Date; collectedAmount?: number },
   ): Promise<void> {
-    assertShippingFinancialCutoverAllowed(params.invoice);
+    await assertInvoiceCollectionAllowed(manager, params.invoice);
     if (this.requireWholeVnd(params.invoice.grandTotal, 'Invoice amount') <= 0) {
       throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hóa đơn 0 ₫ cần được khách hàng xác nhận miễn phí.');
     }
@@ -2948,7 +2948,7 @@ export class FinanceService {
     settlement: CashSettlement | null,
     now: Date,
   ): Promise<void> {
-    assertShippingFinancialCutoverAllowed(invoice);
+    await assertInvoiceCollectionAllowed(manager, invoice);
     const commissionDueRepository = manager.getRepository(CommissionDue);
     const platformDueRepository = manager.getRepository(PlatformDue);
     const laborTotal = this.requireWholeVnd(invoice.laborTotal, 'Labor total');
@@ -2963,7 +2963,7 @@ export class FinanceService {
       invoice.commissionAmount,
       'Commission amount',
     );
-    const financial = readInvoiceFinancialSnapshot(invoice);
+    const financial = readInvoiceFinancialSnapshot(invoice, invoice.shippingShipments ?? undefined);
     // The rate frozen on the invoice is the snapshot (BRX-026). Comparing
     // with a constant broke every payment once an admin changed the rate.
     const commissionRate = Number(invoice.commissionRateSnapshot);
@@ -3565,5 +3565,17 @@ export class FinanceService {
       );
     }
     return amount;
+  }
+
+  /** PostgreSQL unique receipt index, surfaced as a business conflict instead of a 500. */
+  private isUniquePaymentReferenceViolation(error: unknown): boolean {
+    const failure = error as {
+      code?: string;
+      constraint?: string;
+      driverError?: { code?: string; constraint?: string };
+    };
+    const code = failure?.driverError?.code ?? failure?.code;
+    const constraint = failure?.driverError?.constraint ?? failure?.constraint;
+    return code === '23505' && constraint === 'uq_payments_provider_reference';
   }
 }

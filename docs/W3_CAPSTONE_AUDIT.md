@@ -1,0 +1,180 @@
+# W3 capstone payment — audit và golden baseline
+
+Audit tại base `295d5f7`, nhánh `foxonworld/fixhome-w3-live-payment-integration-20261107`, ngày 07/11/2026. Phạm vi **Task 1**: source audit, regression tests và tài liệu; không sửa runtime, migration, Web, cấu hình hoặc money gate. Các anchor dưới đây tính từ base, trừ test mới. Không có PR/push/merge/deploy hoặc ghi DB chung. Không cần Legal/Finance signoff để thực hiện roadmap demo đã được chủ dự án duyệt.
+
+## 1. Kết luận
+
+Arithmetic 70/30 đã đúng trong policy thật. Invoice, cash, wallet và VNPay có thể tái sử dụng; **W3 chưa thu/chi tiền được**. Không chỉ một guard chặn: source physical zero-only, evidence/event DB, projection/usage, invoice CHECK, invoice trigger, completion trigger và consumer guard đều cần cutover có điều kiện. Không dựng simulator hay bỏ guard toàn cục.
+
+Ví dụ không có parts/warranty/D: L=200000, C=20000, S=30000 → c=21000, t=9000, customer gross=221000, platform due/cash wallet debit=50000, online technician credit=171000. `shippingFee` luôn là **FULL S**, không thay thành c hoặc t. Kết quả policy không phải bằng chứng W3 đã thanh toán được.
+
+## 2. Ma trận đường dữ liệu hiện có
+
+| Bước | Source và file:line | Hành vi / blocker |
+| --- | --- | --- |
+| Báo/duyệt phát sinh | `src/modules/quotations/quotations.service.ts:216`, `:223`, `:281` | Phí giao riêng trên AdditionalCost, positive chỉ DELIVERY có FixHome parts; customer decision trong transaction qua `authorizeOrder(...,true)`. Pending/expiry/completion/invoice được kiểm trước duyệt. Order totals ở đây cộng FULL phí, chưa phải invoice W3. |
+| Tạo request | `src/modules/part-requests/part-requests.service.ts:581`, `:650` | Chỉ phần thiếu stock tạo request. Chỉ request ADDITIONAL DELIVERY mới có đủ toàn SKU nguồn mới enroll W3. Deficit dùng stock lịch sử giữ legacy, không backfill cohort. |
+| Khóa/ownership nguồn | `src/modules/part-requests/delivery-operations.service.ts:151`, `:269` | `scope`: Order UPDATE → technician user UPDATE → request UPDATE, rồi Booking/assignment/actor SHARE, cohort UPDATE; kiểm JWT principal với active DB user, owner/assignment/current warehouse SM. `source`: approved cost đúng order/tech/customer, decidedAt, DELIVERY, toàn SKU bằng nguồn. Cost/items được SHARE lock. |
+| Positive terms | `src/modules/part-requests/delivery-operations.controller.ts:83`, `src/modules/part-requests/delivery-operations.service.ts:576` | `/delivery/terms`: proposal, hai consent, actual lưu append-only `delivery_fee_terms`; không phải journal physical. Replay khớp actor/body/current source; CAS/version do DB kiểm. Trả `financialExecution=BLOCKED`, budget null. |
+| Actual/consent DB | `src/database/migrations/1793466000010-DeliveryConditionalFeeTerms.ts:55`, `:95`, `:109`, `:120` | Order/request/cohort locks; exact fingerprint/quoteVersion/S/share và accepted=true. Actual cần cả hai consent, đúng SM/evidence/version, không có actual trước, không vượt quote; ceiling nguồn cũng được kiểm. DB tự tính c/t cho từng actual. `state.actual`, không tổng quote, là ứng viên nguồn S. |
+| C snapshot | `src/database/migrations/1793466000011-W3PrequoteCommission.ts:110`, `src/modules/part-requests/delivery-operations.service.ts:240` | Prequote C/labor/config được bind và kiểm freshness (`w3_prequote_commission_current`). Invoice hiện lấy config lần nữa; Task3 phải đối chiếu source C với invoice C, không dùng preparatory D/readiness như chứng từ chi tiền. |
+| Cap Admin | `src/modules/system-config/w3-shipping-safety-cap.ts:19`, `src/database/migrations/1793466000013-W3ShippingSafetyCap.ts:1` | Seed cap=0; missing/malformed cũng 0. DB SHARE lock, chỉ áp NEW proposal/revision; positive demo cần Admin tăng cap rõ ràng. Cap không cho phép physical/payment, không đổi actual thành 0. |
+| Physical journal | `src/modules/part-requests/delivery-operations.service.ts:776`, `:930`, `:998` | `/delivery` dùng `delivery_shipping_proposals` + `delivery_consent_*`, rồi `warehouse_delivery_events`/movements. `source(!terms)`, propose/actual và physical đều zero-only; positive trả `FINANCE_LEDGER_SOURCE_REQUIRED` kể cả dưới cap. |
+| Physical receipt | `src/modules/part-requests/delivery-operations.controller.ts:291`, `src/modules/part-requests/delivery-operations.service.ts:1099` | TECHNICIAN_RECEIPT sau dispatch, đúng thợ/evidence/version/courier; lưu state `TECHNICIAN_RECEIVED`, audit `RECORDED_NOT_EXTERNALLY_VERIFIED`. Không phải payment verified, không cập nhật legacy receivedAt/status. |
+| Hoàn tất → invoice | `src/modules/service-orders/service-orders.service.ts:803`, `:1962`, `src/modules/service-orders/order-access.ts:12` | requestCompletion giữ Order lock, kiểm completion readiness rồi generateInvoice trong cùng transaction. Trả invoice cũ nguyên trạng. Labor/parts từ approved nguồn và used quantities. Shipping hiện cộng AdditionalCost một lần khi có legacy received/completed DELIVERY request + receivedAt. Không đọc terms actual hoặc physical receipt W3. |
+| Snapshot invoice | `src/modules/service-orders/service-orders.service.ts:2114`, `:2126`, `src/modules/finance/shipping-finance.policy.ts:44` | Writer luôn `LEGACY_100_0`, commission trên labor qua config snapshot; dùng real `computeInvoiceFinancialComponents`. Không được fallback LEGACY cho cohort W3 chưa đủ chứng từ. |
+| Cash-first | `src/modules/finance/cash-intent.controller.ts:48`, `src/modules/finance/finance.service.ts:185`, `:328`, `:454` | Customer tạo intent/chấp thuận trước; technician `/received` kiểm exact amount/allocations và lock, chuyển settlement CONFIRMED rồi `applyConfirmedCash`. **Không có bước customer approve sau received** trong cash-first. Legacy declare/confirm vẫn là đường riêng; không thêm bước giả. |
+| Paid online | `src/modules/finance/finance.service.ts:1024`, `:1232`, `:2466`, `:2774` | VNPay URL → signed IPN/đối chiếu attempt/amount; customer wallet debit trong transaction → markInvoicePaidOnline → dues/completion hold/settlement. Không coi redirect/client ảnh là paid. Generic initiatePayment có DEMO pending và port fail-closed, không tương đương VNPay thật. |
+| Dues/cash paid | `src/modules/finance/finance.service.ts:2852`, `:2944` | Cash apply + ensureFinancialDues dùng invoice frozen; online commission đã thu, cash PlatformDue gồm C + FixHome parts + FULL S. Tránh thu lại due đã trả. |
+| Wallet settlement | `src/modules/wallet/settlement.service.ts:42`, `:115`, `:163`, `src/modules/wallet/wallet.service.ts:177` | Chỉ COMPLETED + PAID; cash debit C+FixHome parts+FULL S trừ dues thực trả trước; online credit gross−C−FixHome parts−FULL S. SERVICE_ORDER keys cố định, wallet lock/immutable ledger/idempotency. Arithmetic đã phù hợp W3 nếu invoice đúng, nhưng guard hiện cấm W3. |
+
+## 3. Các blocker phải mở hẹp ở task sau
+
+1. **Task2 — bridge positive terms sang physical, cả code và DB.** Terms và operational consent là hai journal khác nhau; không tạo hai nguồn phí có thể charge. Dùng canonical terms head/actual + consent + version/source/assignment/evidence làm tiền, warehouse event/movement làm vật lý, cùng Order lock. Các checks zero trong `delivery-operations.service.ts:331`, `:799`, `:947`, `:1061` không thể chỉ xóa rồi tin payload.
+2. **Task2 — evidence DB blocker bổ sung đã đọc trực tiếp.** `1793466000010-DeliveryConditionalFeeTerms.ts:172` thay `w3_live_evidence_guard`: ACTUAL được phép bind positive `delivery_fee_terms` khi không có legacy `delivery_shipping_proposals`. Nhưng ISSUE_TO_COURIER / COURIER_DISPATCH / TECHNICIAN_RECEIPT vẫn yêu cầu `delivery_shipping_proposals` đúng request/quoteVersion/warehouse (`:185`). Cần forward migration hẹp cho validated positive terms; giữ actor/scope/warehouse/version/distinct evidence và zero path. Không sửa 0010 lịch sử hay tạo proposal zero giả để qua gate.
+3. **Task2 — event/movement DB blocker.** `1793466000008-DeliveryZeroFeeOperations.ts:95` có scoped event guard dựa legacy proposal/consent, vắng proposal chỉ cho INELIGIBLE/PENDING_ASSISTANCE rỗng. Proposal source zero được kiểm tại `:75`. Forward bridge phải giữ CAS, replay, stock delta/deferred completeness (`:190`), ACL/RLS và lịch sử.
+4. **Task3 — CHECK 0004.** `1793466000004-WarehouseDeliverySplit.ts:14` có `ck_invoice_shipping_cutover_closed`: mọi INSERT W3 đều bị cấm. `ck_invoice_shipping_shares` tại `:15` làm tròn aggregate S nên 2 shipment S=1 mỗi chuyến (c=2,t=0) còn xung đột ngay cả bỏ closed CHECK. Cần forward migration cùng per-shipment provenance bất biến; bảo toàn legacy 100/0 và `protect_invoice_financial_snapshot` (`:26`).
+5. **Task3 — DB cohort invoice/completion blockers độc lập.** `1793466000008-DeliveryZeroFeeOperations.ts:219` `w3_live_invoice_guard` từ chối invoice cho **bất kỳ cohort W3 chưa cancelled**, kể cả invoice LEGACY hoặc ship 0. `w3_live_order_guard` (`:226`) chặn completion_requested_at và trạng thái completed/cancelled với cohort chưa cancelled. Cần targeted forward migration dùng eligibility thật; chỉ mở CHECK 0004 hoặc đổi writer là chưa đủ. Không hủy cohort giả để né guard.
+6. **Task3 — receipt/usage bridge.** `0008:200` chặn thay receivedAt/qr/status legacy; `:211` đóng item/usage. `TECHNICIAN_RECEIVED` chưa đáp ứng legacy billing nguồn ở generateInvoice. Cần kiểm parts lifecycle/custody admission/completion readiness cùng receipt canonical; không giả legacy receivedAt hoặc làm mất nghĩa vụ trả hàng.
+7. **Task3 — consumer allow-list.** `src/modules/finance/invoice-shipping-snapshot.ts:100` từ chối mọi W3. Callers đã trace: create/receive/replay cash intent; initiate/VNPay; mark paid; no-charge; wallet payment; cash apply; dues; `visit-charge.ts:59`; `voucher-frozen-invoice.ts:25`; `voucher-refund-commit.ts:66`; `custody-settlement.ts:17`; SettlementService. Thay predicate tại từng đường được hỗ trợ bằng snapshot+verified delivery; unsupported group/voucher/custody giữ lỗi rõ ràng trước thu tiền. Không thay bằng env/global flag.
+8. **Task3 — custody phân bổ khác.** `src/modules/wallet/custody-settlement.ts:30` đang dùng NET_LABOR=L−C, nonlabor=netTotal−netLabor; W3 t>0 có thể làm nonlabor âm hoặc phân loại sai. Cần sửa có test trong task sở hữu hoặc từ chối nhánh trước thu; không mặc định formula regular settlement đủ cho custody.
+
+## 4. Chuyển khoản trực tiếp và hợp đồng Web
+
+**Chưa có đường Admin xác nhận trực tiếp tiền khách chuyển vào tài khoản nhóm.** Source audit finance controllers/services/entities và payment enums không tìm thấy manual bank receipt mutation. `src/modules/finance/admin-payments.controller.ts:8` chỉ GET list; `admin-payments.service.ts:41` chỉ query. `finance.module.ts:57` bind generic verification vào `UnconfiguredPaymentVerificationAdapter` (`unconfigured-payment-verification.adapter.ts:14`) luôn unavailable; DEMO/generic port không phải chứng từ bank. VNPay signed verification và payOS rút ví không phải direct bank confirmation. Task4 cần Admin-only PENDING→CONFIRMED, exact order/amount/reference/payer, unique reference, audit/transaction lock; chống cash/wallet/VNPay race và chỉ reuse paid+settlement một lần. Không tạo callback giả, không tự chuyển tiền.
+
+Web đã kiểm **read-only bằng git show `1132d25`**, mốc `origin/dev` Lead cung cấp:
+
+- `web/src/components/DeliveryTermsPanel.vue:30` nhận shippingFee>0; consent qua terms API (`:107`); `sourceMatches` tại `:37`. Đây là positive terms UI đã tồn tại.
+- `web/src/components/DeliveryOperationsPanel.vue:47` chỉ source shippingFee===0; proposal/consent/actual gửi totalShippingFee=0 (`:224`, `:235`, `:243`); tiêu đề 0 ₫ (`:275`). Chưa có positive physical UI.
+- `web/src/api/w3-delivery-terms.api.ts` strict parser yêu cầu BLOCKED/null/false, đúng ba blocker và quote/actual shape. Task sau phải phối hợp consumer khi mở execution hoặc đổi projection; không tự đổi backend envelope trong Task1.
+
+Không sửa Web. Browser/runtime UAT, Mobile parity và consumer CI **NOT VERIFIED**; source audit không chứng minh thao tác UI thành công.
+
+## 5. PR slices được đề nghị (chưa triển khai)
+
+| Slice | Thay đổi nhỏ nhất | Regression bắt buộc trước mở |
+| --- | --- | --- |
+| Task2 | App + forward DB bridge terms→positive physical/evidence/event; giữ zero journal và full-source scope | positive dual consent→actual→reserve/issue/dispatch/receipt, missing/stale/source drift/over ceiling/CAS/replay, stock rollback và W1/W2/zero |
+| Task3 | Writer freeze actual theo từng shipment; forward CHECK + scoped invoice/order/usage guards; narrow money consumers | 200k/20k/30k invoice221k cash50k online171k, 2×1 VND, zero fee/C, legacy unchanged, no negative labor, concurrent cash/online exactly one posting, completion holds và custody/group/voucher boundaries |
+| Task4 | **CANCELLED bởi owner**: không phát triển Manual Bank, giữ VNPay/Ví FixHome/Tiền mặt | Xóa routes/service/test riêng, không đổi ba payment rails hiện có |
+| Task5 | Web consumer riêng, CI và isolated PG migration upgrade/replay, DEV UAT theo approval riêng | customer/technician/SM/Admin end-to-end, wallet history, no double charge; Mobile backward compatibility |
+
+Invoice snapshot phải dùng distinct request/actual version và full order coverage dưới Order lock, chỉ một lần mỗi shipment. Đối chiếu C frozen với approved labor/config, D=0 khi đúng demo contract; không suy D thiếu=0 từ readiness. Actual vượt quote/source hoặc thiếu consent/physical receipt phải từ chối. Không lấy recordedConditionalCeilings làm actual; không tính lại paid/legacy invoice.
+
+## 6. Tests, evidence và giới hạn
+
+- Trước sửa: focused 7 files **112 PASS** (shipping policy, order budget, invoice snapshot, closed cutover, wallet settlement, delivery operations, context). Đây là existing GREEN, không có RED giả và không sửa production để làm đỏ.
+- Sau thêm golden: cùng 7 files **118 PASS**. Policy thật kiểm L200k/S30k/C20k và các ca commission=0, fee=0, cả hai=0; literal expected gross/platformDue/net/payout. Hai shipment 1 VND **trên cùng order** chạy real aggregate policy + snapshot reader, c=2/t=0; chứng minh reader thiếu provenance hiện từ chối. Không mock guard để claim live wallet W3.
+- Physical mới: approved source/request S30000, explicit cap30000, uploaded quote evidence → real service vẫn 409 FINANCE_LEDGER_SOURCE_REQUIRED, không proposal/consent/event/movement, tồn kho không đổi. Existing tests còn kiểm positive actual/source mismatch bị chặn, dual consent/zero physical/replay/rollback.
+- DB mới: chạy **migration 0004 thật** trong transaction trên DB disposable; LEGACY S30000 INSERT được, W3 S30000/c21000/t9000 INSERT bị PostgreSQL `23514`, constraint `ck_invoice_shipping_cutover_closed`. Rollback cả DDL/test rows. Isolated W3 release gate **40/40 PASS**, không regex/source-only hoặc mock CHECK. 0008 cohort trigger blockers ở trên là source findings riêng, không gán bằng chứng CHECK này cho trigger đó.
+- Môi trường: Node 24.15.0, npm ci --ignore-scripts; PostgreSQL 16 Docker dùng riêng, loopback, random database do harness tạo/xóa; không đọc .env/shared DB, không gọi provider thật. CI script `.github/workflows/ci.yml:71` chạy W3 gate opt-in; CI remote chưa chạy. Workflow còn có deploy job trên push dev (`:95`), không được kích hoạt trong task này.
+- Lint/typecheck/build: **PASS**, lint 0 errors/5 warnings có sẵn. `npm test`: **4071 PASS / 98 skipped**, 312 files PASS / 6 skipped, exit 0. `npx vitest run test/context-doc.spec.ts`: **2 PASS**; `git diff --check`: **PASS**.
+- Full broad E2E, provider/network payment, Docker backend `/health`, Web/Mobile browser/runtime, DEV/shared migrations **NOT VERIFIED**. Không đổi runtime/image nên không cần restart/hard-refresh cho Task1; task cutover sau phải rebuild/restart Backend trước runtime QA.
+
+Tự review theo technical guide: BA/PM giữ Task1; architecture dùng module/nguồn thật; developer/tests không copy formula hoặc bypass guard; security giữ locks/RBAC/immutable history; QA phân biệt policy/DB với runtime; DevOps không đổi dependency/runtime/CI. Không dispatch subagent/reviewer. Spec chuẩn không cần sửa; roadmap Task2–5 vẫn chưa bắt đầu.
+
+Lệnh focused: `npx vitest run src/modules/finance/shipping-finance.policy.spec.ts src/modules/finance/order-shipping-labor-budget.policy.spec.ts src/modules/finance/invoice-shipping-snapshot.spec.ts src/modules/finance/w3-cutover.spec.ts src/modules/wallet/settlement.service.spec.ts src/modules/part-requests/delivery-operations.service.spec.ts test/context-doc.spec.ts`. DB: PowerShell `$env:CI='true'; $env:W3_DEV_ISOLATED_PG='1'; npx vitest run src/database/w3-dev-release.postgres.spec.ts` (chỉ DB disposable). Quality: `npm run lint`, `npm run typecheck`, `npm run build`, tất cả exit 0.
+
+## Task2 — positive physical bridge (07/11/2026)
+
+Base `9b8c147`. Migration `1793466000014-W3PositivePhysicalDelivery.ts` thêm nullable FK `warehouse_delivery_events.fee_terms_version` tới canonical terms head; legacy zero giữ NULL. Service và event/movement/evidence guard dùng cùng `w3_positive_physical_terms`: approved whole source, current assignment/customer/SM/warehouse, quote version, dual consent, actual evidence, actual <= quote/source và L/config freshness dưới Order lock. Replay positive kiểm lại source. Budget L-C-Σt tính cả sibling quote chưa actual; missing coverage/stale source/overbudget bị từ chối. Không dùng preparatory D làm tiền; statement D nonzero chưa đối soát giữ chặn. Hạ cap không hủy actual/consent lịch sử, cap chỉ áp quote/revision mới.
+
+Physical reserve/release/issue/dispatch/receipt tái dùng atomic stock và deferred movement completeness. Không sửa migration lịch sử hoặc tạo proposal zero giả. Source physical bị khóa sửa; append-only/assignment/warehouse guards cũ giữ nguyên. Receipt vẫn RECORDED_NOT_EXTERNALLY_VERIFIED; không promote legacy receivedAt/status/usage/invoice/completion/payment. Legacy `/delivery/proposal` và `/delivery/actual` zero-only; phí dương qua `/delivery/terms` rồi physical endpoints. Public terms envelope BLOCKED/null/false không đổi.
+
+TDD: service và real PostgreSQL lifecycle RED tại FINANCE_LEDGER_SOURCE_REQUIRED trước sửa, GREEN sau migration/service. Focused 4 files 118 PASS; full unit 4072 PASS/98 skipped (312 files PASS/6 skipped). PostgreSQL 16 disposable physical suite 54/54 PASS: positive/zero lifecycle, concurrent exact replay/CAS, missing consent/actual, source/authority drift, single/sibling budget, missing coverage, raw SQL wrong version/snapshot và deferred incomplete movement rollback. Storage provider là double; không chuyển tiền/đọc .env/ghi shared DB. Lần chạy physical cùng full unit có timeout 5s; rerun riêng PASS. Fixture mới thiếu partNameSnapshot đã sửa, không nới timeout hoặc DB guard. Final lint 0 errors/5 warnings cũ; typecheck/build/context/diff PASS.
+
+Tự review BA/PM/architecture/developer/security/tester/QA/DevOps: chỉ Task2; giữ NestJS module, JWT/RBAC/ownership, immutable history và financial consumers; không đổi dependency, không subagent. DEV gate hiện allow tới 0013, vẫn fail-closed với pending 0014; Task5 phải thêm whitelist/schema/ACL proof trước rollout. Full broad E2E, Docker backend health, provider thật, Web/Mobile/browser/consumer parity và shared DEV NOT VERIFIED. Apply migration rồi rebuild/restart Backend trước runtime QA; không chạy compose vì cấu hình repo nối DB dùng chung. Task3 mới nối invoice/usage/completion/money; Task2 không kích hoạt payment W3.
+
+## Task3 — slice local, chưa release (07/11/2026)
+
+Migration forward 0015 thêm invoice `shipping_shipments`, exact canonical source/receipt version, CHECK cộng share từng shipment và immutable provenance; không rewrite lịch sử. Invoice INSERT trước completionRequestedAt. Cho USED toàn bộ sau receipt chuẩn, giữ request legacy requested/receivedAt NULL; projection nội bộ cho readiness/billing. Source comparison chỉ bỏ usage_status/updated_at của request items; identity/quantity/price/approved source vẫn exact. Invoice C/L đối chiếu snapshot prequote; chặn net labor âm, duplicate approved cost/request, mixed legacy shipping, cancelled/incomplete cohort. Zero actual dùng positive quote 1 rồi actual 0 đúng nguồn, không biến source thật thành miễn phí.
+
+`assertInvoiceCollectionAllowed` chỉ mở SOLO W3 khi persisted financial facts + immutable provenance khớp DB predicate; guard legacy toàn cục vẫn đóng. Group/voucher/refund giữ guard cũ, custody hoặc mixed shipping bị chặn trước charge. Settlement W3 bỏ qua legacy custody helper sau DB no-custody/no-group check; khóa Order trước wallet creation/idempotency. Không đổi xác minh amount/provider hoặc keys PLATFORM_FEE/ONLINE_EARNING.
+
+TDD: PostgreSQL RED tại usage gate trước sửa; writer 2×1 VND L=C=0 RED tại aggregate helper rồi GREEN bằng per-shipment financial validation. PG fixture giữ parts 2000 trong các test invoice 223000/202000; golden money test có parts được duyệt giá 0, invoice221000, cash debit50000 và online credit171000, PAID/COMPLETED, concurrent invocation/repeated settlement kiểm đúng một wallet transaction. Test chạy real FinanceService applyConfirmedCash/markInvoicePaidOnline + WalletService + SettlementService và DB; không giả đây là full CashFirst/VNPay provider UAT. Lỗi fixture bigint string/enum uppercase đã sửa; lần chạy chung full unit gây timeout5s, rerun PG riêng, không nới timeout.
+
+Full unit `vitest run --reporter=json`: 4073 PASS/98 skipped, 0 fail, exit0. Lint PASS 0 errors/5 warnings có sẵn; typecheck/build/diff PASS. Final PostgreSQL physical/invoice/paid core suite **59/59 PASS**, exit0, 29.61s, chạy riêng sau khi sửa enum assertion theo enum thật. Lệnh: `CI=true GITHUB_ACTIONS=true npx vitest run --config vitest.config.e2e.ts test/warehouse-delivery-physical.e2e-spec.ts --reporter=dot` (PowerShell đặt env trước lệnh). Context 2/2 PASS.
+
+Task3 **PARTIALLY IMPLEMENTED**. Còn cần PG end-to-end CashFirst create/receive và customer-wallet/VNPay signed callback; hai actual receipts cùng order (unit writer đã kiểm 2×1, chưa full PG cohort); negative authority/source/race matrix mới cho invoice, completion holds, nonzero voucher/refund/custody policy. Full broad E2E, Docker health, provider, Web/Mobile/consumer parity và CI remote NOT VERIFIED. Không apply shared DB hoặc gọi provider thật. Gate DEV vẫn dừng0013, từ chối0014/0015; chỉ restart/rebuild Backend sau migration khi rollout được duyệt. Tự review BA/PM/architecture/developer/security/QA/DevOps, không subagent; giữ module/contract/permissions, không dependency hay finance ledger mới.
+
+## Task4 — loại bỏ Manual Bank theo quyết định owner (07/11/2026)
+
+Owner xác nhận chỉ có VNPay, Ví FixHome và Tiền mặt. Task4 Manual Bank là nhánh được thêm không cần thiết, **superseded**. Không còn endpoint customer/admin xác nhận chuyển khoản trực tiếp hoặc gọi settlement qua Manual Bank. Không thay đổi migration 0014/0015, snapshot 70/30, money guards và các payment rails được giữ lại. Các chi tiết Manual Bank trong phần audit lịch sử bên trên mô tả giả định cũ, không phải chức năng hiện hành.
+
+## Task5 — backend release qualification (07/11/2026)
+
+Base `35a1424`. Chỉ mở DEV release gate cho hai migration forward đã có; không sửa migration, business finance/settlement, schema hay dữ liệu. `W3_MIGRATIONS` nhận `1793466000014-W3PositivePhysicalDelivery` và `1793466000015-W3InvoicePaymentEnable` ở cuối chuỗi (index 10/11), giữ nguyên thứ tự cũ và cặp cash/reputation pending. `assertPrerequisiteSchema` bổ sung `part_custodies`, `bookings.visit_group_id`, `part_request_items.usage_status` vì function của 0015 phụ thuộc các object này; thiếu một object là từ chối trước khi chạy DDL.
+
+Gate fail-closed: unit planner **9/9 PASS** xác nhận thứ tự 0014→0015, image thiếu hoặc đảo thứ tự bị từ chối, ledger có 0015 mà thiếu 0014 bị từ chối. PostgreSQL 16 cô lập **42/42 PASS** xác nhận apply đúng một lần và proof/replay marker của 0014 (`fee_terms_version` nullable integer, FK validated, function ACL/return/guard) và 0015 (bỏ `ck_invoice_shipping_cutover_closed`, `ck_invoice_shipping_shares` chứa `W3_70_30_V1`, provenance trigger, 5 function với volatility/guard, PUBLIC và app role không có EXECUTE), invoice legacy 0004 vẫn đóng, injection thiếu FK/disable trigger/ledger thiếu hoặc dirty đều bị từ chối. Proof 0004 chấp nhận trạng thái legacy hoặc 0015 đã apply đầy đủ, độc lập ledger, để negative ledger test vẫn báo đúng lỗi đích thay vì lỗi invoice phụ.
+
+Kiểm chứng: `npx vitest run src/database/w3-dev-release-gate.spec.ts` 9/9 PASS; `CI=true W3_DEV_ISOLATED_PG=1 npx vitest run src/database/w3-dev-release.postgres.spec.ts` 42/42 PASS trên PostgreSQL 16 disposable tại loopback; full unit 4085 PASS/100 skipped, 0 fail; `npm run lint` 0 errors/5 warning có sẵn; `npm run typecheck`, `npm run build`, `test/context-doc.spec.ts` 2/2 và `git diff --check` PASS.
+
+Task5 backend **QUALIFIED FOR GATE ONLY**, không phải release-ready: chưa apply 0014/0015 lên shared DEV, chưa rebuild/restart Backend, chưa push/PR/merge/deploy. Task3 real payment E2E (CashFirst create/receive, customer-wallet debit/VNPay signed callback, multi-shipment PG cohort, refund) và Web/Mobile/DEV UAT vẫn **NOT VERIFIED**; migration gate không thay thế các kiểm chứng đó. Docker health, provider/bank thật, CI remote, browser/runtime và consumer parity **NOT VERIFIED**.
+
+## Task6 — expose frozen shipping snapshot on InvoiceResponseDto (07/11/2026)
+
+Base `b513844`. Added four optional read-only fields to `InvoiceResponseDto` and `toInvoiceResponse` mapper (`src/modules/finance/dto/finance.dto.ts`): `shippingPolicyVersion`, `customerShippingShare`, `technicianShippingShare`, `shippingShipments`. Values read directly from frozen entity columns — no recalculation, no schema change, no migration. Legacy null-share rows synthesise 100/0 for backward compat. New spec `src/modules/finance/dto/invoice-response-dto.spec.ts` 8/8 PASS (golden L200000/C20000/S30000→221000, two 1-VND shipments, paid not repriced, legacy 100/0). `npm run lint` 0 errors, typecheck/build PASS. NOT VERIFIED: PostgreSQL E2E, Web integration, DEV UAT.
+
+## Task3 — guarded follow-up trên baseline 5d91133 (07/11/2026)
+
+Git đầu phiên đúng nhánh `foxonworld/fixhome-w3-live-payment-integration-20261107`, HEAD `5d91133dbf6b66f87374336769be65d2be32ffca`, đúng ba file dirty được Lead giao. Chỉ tiến trình Codex của phiên này có command line trỏ vào worktree; không thấy writer khác qua kiểm tra tiến trình và Git. Giữ patch có sẵn trong service (C frozen và preclose cancellation), không làm lại Task1–2 hoặc sửa finance/settlement production ngoài allowlist.
+
+Migration 0015 dirty ban đầu có IF cancellation thiếu THEN/END IF và THEN thừa sau ELSIF. PostgreSQL thật tái hiện lỗi `syntax error at or near "NEW"`; sửa đúng cấu trúc và whitespace, không bỏ financial guard. COMPLETED cần invoice PAID cùng provenance W3 đã kiểm; cancellation cần mọi cohort đã cancelled, không còn physical obligation và không có invoice PAID. Writer dùng snapshot commission đã freeze; thay config sau receipt không reprice, còn approved labor drift vẫn từ chối invoice.
+
+Thêm test trong `test/warehouse-delivery-physical.e2e-spec.ts`, dùng service thật, TypeORM và migrations thật. Cho chạy migration CashPaymentIntents vốn không hardcode public trong `up()`; giữ exclusions của các migration không liên quan. Không mock guard/settlement/wallet. Storage là double; cấu hình/chữ ký VNPay chỉ là test fixture với URL example.test, không gọi mạng hoặc xác nhận tiền ngân hàng thật.
+
+- CashFirst create/replay chỉ PENDING, invoice UNPAID, không posting; sai role/amount bị chặn; receipt đồng thời/replay chỉ một CashSettlement/Payment và wallet debit 50000.
+- Customer-wallet kiểm ownership, concurrent retries chỉ một debit 221000, balance 79000 từ fixture 300000; technician credit 171000 đúng một lần.
+- VNPay tạo attempt qua public service, từ chối forged signature/signed wrong amount, signed callback đồng thời/replay chỉ một VERIFIED Payment và technician credit 171000.
+- Hai actual receipts 1 VND trên cùng order freeze hai provenance khác nhau: S=2/c=2/t=0, wallet debit 2 một lần; L=C=0 không tạo earning giả.
+- Completion hold giữ đơn UNDER_REPAIR và chưa settlement dù đã PAID; resolve hold rồi chạy finalize thật chỉ credit một lần. Hủy unused/released cohort thành công có history/audit; RESERVED/ISSUED/DISPATCHED rollback cả request/order. Cash selection cạnh tranh wallet chỉ một rail được chấp nhận.
+
+Kiểm chứng trên PostgreSQL 16 container dùng một lần, bind loopback, không đọc .env hoặc shared DEV:
+
+| Lệnh (PowerShell) | Kết quả |
+| --- | --- |
+| `$env:CI='true'; $env:GITHUB_ACTIONS='true'; npx vitest run --config vitest.config.e2e.ts test/warehouse-delivery-physical.e2e-spec.ts --reporter=dot` trước sửa | FAIL: migration0015 syntax, 62 tests chưa chạy |
+| Cùng lệnh sau sửa và bổ sung fixture/tests | PASS: 74/74, exit0, 47.09s |
+| `$env:CI='true'; $env:W3_DEV_ISOLATED_PG='1'; npx vitest run src/database/w3-dev-release.postgres.spec.ts --reporter=dot` | PASS: 42/42, exit0 |
+| `npx vitest run src/modules/finance src/modules/wallet/settlement.service.spec.ts --reporter=dot` | PASS: 593 passed/16 skipped, 33 files, exit0 |
+| `npm run lint` | PASS: 0 errors/5 warnings có sẵn |
+| `npm run typecheck`; `npm run build` | PASS: cả hai exit0 |
+| `npm test -- --reporter=json --outputFile="$env:TEMP/fixhome-w3-task3-unit.json"` (stdout/stderr lưu trong TEMP) | FAIL ban đầu: 4090 passed/100 skipped/3 failed; fixture `departure-sweep`, `repair-failed` thiếu manager.query và W3 `parts-billing` thiếu commission row |
+| `npx vitest run src/modules/service-orders/departure-sweep.spec.ts src/modules/service-orders/repair-failed.spec.ts src/modules/service-orders/parts-billing.spec.ts --reporter=dot` | PASS: 58/58 sau bổ sung đúng contract fixture, không đổi assertions nghiệp vụ |
+| `npm test -- --reporter=json --outputFile="$env:TEMP/fixhome-w3-task3-unit-final.json"` (stdout/stderr lưu trong TEMP) | PASS: 4093 passed/100 skipped/0 failed, exit0 |
+| `npx vitest run test/context-doc.spec.ts --reporter=dot`; `git diff --check` | PASS: 2/2 và exit0 |
+
+Các lượt test mới ban đầu FAIL do fixture dùng sai tên bảng stock, entity support có cột ngoài schema fixture, thiếu resolved_at/configService/AFTER evidence. Đã sửa fixture theo schema/real readiness, không nới constraint hay gate. Full-suite W3 cuối cùng phía trên GREEN.
+
+Ba unit fixture liên quan trực tiếp tới W3/legacy compatibility cũng được cập nhật: `src/modules/service-orders/departure-sweep.spec.ts`, `repair-failed.spec.ts`, `parts-billing.spec.ts`. Query double chỉ nhận đúng query cohort/receipt/shipping/commission đang dùng, query lạ gây lỗi; không trả PASS mặc định cho một nguồn thiếu. Service production giữ nguyên patch đầu phiên.
+
+Tự review BA/PM/architecture/developer/security/tester/QA/DevOps: giữ module, API/RBAC, state machine, invoice immutability và wallet idempotency; không dependency/ENV/CI mới, không subagent. Chưa commit/stage/push/merge/deploy; không chạy compose của repo vì nối shared DB. Full broad E2E, HTTP/JWT cho payment tests mới, provider/bank thật, Docker backend health, Web/Mobile và DEV UAT NOT VERIFIED. Group/voucher/refund/custody vẫn là subpath bị chặn theo contract hiện có, không mở finance rewrite.
+
+Handover cho Lead: READY_FOR_LEAD_REVIEW cho source/service-level Task3, chưa chứng nhận release/UAT. `docs/CONTEXT.md` nằm ngoài allowlist của worker; cần Lead mở scope/cập nhật đúng protocol trước commit. Sau review và rollout được duyệt, apply migration trên môi trường được phép rồi rebuild/restart Backend trước runtime QA; không apply shared DB trong task này.
+
+## PR #205 — sửa fixture CI theo migration stage (07/11/2026)
+
+Baseline `c7e2b9515388c2145947963afc2734c8d837ea23`, worktree sạch đầu phiên. Đã đọc `gh run view 42332112243 --log-failed`: Integration tests lỗi ở rollback 0015 forward-only, fixture legacy chạy 0015 trước 0004 và assertion CHECK closed đã lỗi thời. Production migrations, release gate, dependencies và business rules giữ nguyên.
+
+- `test/app.e2e-spec.ts`: DB HTTP vẫn chạy 0014/0015 vì entity Invoice cần `shipping_shipments`. Rollback/reapply và legacy user adoption dùng database tạm riêng tên UUID với create/drop guard, giữ CHECK closed validated và toàn bộ assertions lịch sử; chỉ DB replay loại 0014/0015. Không gọi down của 0015, không xóa lịch sử HTTP để giả lập downgrade. Database riêng cũng tránh global enum-name checks của migrations cũ nhìn nhầm schema khác.
+- `test/warehouse-w3-finance.e2e-spec.ts`: pin đúng migrations trước 0004, xác nhận cột W3 chưa tồn tại, insert invoice lịch sử rồi chạy 0004 thật; giữ 13 assertions immutable/legacy/closed cutover. Không chạy migration mới phụ thuộc 0004 trước migration được kiểm.
+- `test/delivery-consent-storage.e2e-spec.ts`: giữ schema mới nhất và RLS/no-grant assertions. Kiểm CHECK shares validated, INSERT W3 thiếu physical provenance bị `W3_SOURCE_REQUIRED`/P0001, INSERT legacy shares sai bị 23514/`ck_invoice_shipping_shares`; không có invoice được lưu. Assertion tương tự ở cuối Admin policy lifecycle trong app cũng được đổi sang current provenance guard, giữ warehouse gate đóng.
+
+Môi trường kiểm chứng: Node 20.19.5 theo `.nvmrc`, PostgreSQL 16 container tạm chỉ bind loopback, env fixture theo CI; không đọc .env/secret hoặc ghi shared DEV. Gọi Node 20 trực tiếp trong process kiểm thử, không đổi Node mặc định của máy. Chờ build hoàn tất trước E2E vì `nest build` xóa `dist`.
+
+Các lượt RED/thiết lập đã ghi nhận: loại 0015 khỏi HTTP runtime gây thiếu cột entity và 500, nên thiết kế cuối giữ đủ schema HTTP. Node 24.15.0 local có `Worker exited unexpectedly`, không dùng làm chứng nhận PASS. Node 20 chạy đủ app trước sửa assertion cuối: 131 PASS/1 FAIL ở CHECK obsolete; Admin policy sau sửa 10/10 PASS. Một lượt E2E khởi chạy chồng build bị thiếu dist/module/bảng, không dùng làm bằng chứng; typecheck union DataSourceOptions đã sửa bằng shared options có discriminator postgres. Hai suite legacy/consent riêng đã PASS 35/35; kết quả qualification cuối ghi bên dưới sau lượt chạy tuần tự.
+
+Qualification cuối chạy tuần tự, Node 20.19.5, `CI=true`, `GITHUB_ACTIONS=true`, `NODE_ENV=test`, DATABASE fixture loopback theo CI và `MAIL_TRANSPORT=json`:
+
+| Lệnh | Kết quả thực chạy |
+| --- | --- |
+| `node node_modules/vitest/vitest.mjs run --config vitest.config.e2e.ts test/app.e2e-spec.ts test/warehouse-w3-finance.e2e-spec.ts test/delivery-consent-storage.e2e-spec.ts --reporter=dot` | PASS: 3 files, 167/167, exit0, 200.96s |
+| `W3_DEV_ISOLATED_PG=1 node node_modules/vitest/vitest.mjs run src/database/w3-dev-release.postgres.spec.ts --reporter=dot` (PowerShell đặt env trước lệnh) | PASS: 42/42, exit0, 32.79s; giữ nguyên production release gate |
+| `node node_modules/vitest/vitest.mjs run test/context-doc.spec.ts --reporter=dot` | PASS: 2/2, exit0 |
+| `npm run lint` | PASS: 0 errors/5 warnings có sẵn, exit0 |
+| `npm run typecheck`; `npm run build`; `git diff --check` | PASS: từng lệnh exit0 |
+
+Chọn targeted E2E group + isolated release gate theo scope Lead; full `npm run test:e2e` và full unit không chạy lại trong lượt này. CI GitHub sau patch, Web/Mobile, provider/bank thật, shared DEV và deploy NOT VERIFIED. 74 physical W3 PASS trong run GitHub gốc là evidence lịch sử của head baseline, không gán thành lượt local mới.
+
+Review BA/PM/architecture/developer/security/QA/DevOps: chỉ ba fixture E2E và hai tài liệu; không production migration/API/permission/dependency change, không nới invoice/immutable guard hay bỏ release test. DB replay và container PostgreSQL dùng một lần được cleanup; không commit/stage/push/PR/merge/deploy. Handover READY_FOR_LEAD_REVIEW cho fixture fix; Lead push và yêu cầu CI PR #205 chạy lại.

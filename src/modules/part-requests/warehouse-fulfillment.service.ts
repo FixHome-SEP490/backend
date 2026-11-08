@@ -8,6 +8,7 @@ import { Warehouse } from '../warehouses/entities';
 import { PartRequest, PartRequestItem } from './entities';
 import { WarehouseAllocation } from './entities/warehouse-allocation.entity';
 import { canonicalWarehouseQuantities, hasWholeRequestStock, warehouseBalance, WarehouseQuantity } from './warehouse-fulfillment.rules';
+import { nearestEligible, point, straightLineKm } from './warehouse-distance.rules';
 
 type Actor = { id: string; role: string };
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -27,9 +28,24 @@ export class WarehouseFulfillmentService {
     const a = await manager.findOne(WarehouseAllocation, { where: { partRequestId: id } });
     if (!a) return { partRequestId: id, mode: 'legacy', status: null };
     const w = a.warehouseId ? await manager.findOne(Warehouse, { where: { id: a.warehouseId } }) : null;
-    return { partRequestId: id, mode: 'warehouse', status: a.status, warehouseId: a.warehouseId,
+    // Booking location is a stable reference; this is only an estimated straight-line km, NEVER a road ETA.
+    // It may differ from the nearest-ranking source (which can prioritize the technician's recent GPS).
+    let estimatedStraightLineKm: number | null = null;
+    if (w && point({ latitude: w.latitude, longitude: w.longitude })) {
+      const [bookingLocation]: Array<{ latitude: string | null; longitude: string | null }> = await manager.query(
+        `SELECT b.latitude_snapshot AS "latitude", b.longitude_snapshot AS "longitude"
+         FROM part_requests pr JOIN service_orders o ON o.id=pr.service_order_id
+         JOIN bookings b ON b.id=o.booking_id WHERE pr.id=$1`, [id]);
+      if (bookingLocation) {
+        const km = straightLineKm(bookingLocation, { latitude: w.latitude, longitude: w.longitude });
+        if (km !== null) estimatedStraightLineKm = Math.round(km * 10) / 10;
+      }
+    }
+    return { partRequestId: id, mode: 'warehouse', status: a.status === 'manual_assistance' ? 'stock_unavailable' : a.status, warehouseId: a.warehouseId,
       warehouseName: w?.name ?? null, warehouseAddress: w?.address ?? null, responsibleUserId: w?.responsibleUserId ?? null,
-      distanceNotVerified: true, reviewRequired: true, manualAssistanceReason: a.status === 'manual_assistance' ? 'NO_SINGLE_WAREHOUSE' : null,
+      distanceNotVerified: true, reviewRequired: a.warehouseId !== null, estimatedStraightLineKm,
+      distanceReference: estimatedStraightLineKm === null ? null : 'booking_snapshot',
+      stockUnavailable: a.status === 'manual_assistance',
       tokenExpiresAt: a.tokenExpiresAt, tokenVersion: a.tokenVersion, handedOverAt: a.handedOverAt, receivedAt: a.receivedAt };
   }
 
@@ -68,12 +84,32 @@ export class WarehouseFulfillmentService {
     if (!automatic && ![Role.SERVICE_MANAGER, Role.ADMIN].includes(actor.role as Role)) throw new ForbiddenException();
     const a = await this.allocation(manager, request.id);
     if (!a || request.fulfillmentMethod !== FulfillmentMethod.PICKUP) throw new ConflictException('Yêu cầu lịch sử tiếp tục dùng quy trình cũ.');
+    // The legacy DB check still names this initial state manual_assistance.
+    // Public API exposes stock_unavailable; no SM can reopen the unavailable path.
+    if (!automatic && a.status === 'manual_assistance') {
+      throw new ConflictException('Không có kho đủ linh kiện. Kỹ thuật viên cần tự chuẩn bị; không chuyển cho SM xử lý.');
+    }
     if (a.warehouseId && !automatic && actor.role === Role.SERVICE_MANAGER) await this.requireManager(manager, a, actor, false);
     const command = await this.command(manager, request.id, key, 'reserve', actor, {});
     if (command.replayed) return this.view(manager, request.id);
     if (request.status !== PartRequestStatus.REQUESTED || !['manual_assistance', 'reserved'].includes(a.status)) throw new ConflictException('Không thể giữ kho ở trạng thái này.');
     // SHARE locks stabilize active warehouse/manager selection; stock locks have global warehouse/SKU order.
-    const candidates: { id: string; responsibleUserId: string }[] = await manager.query(`SELECT w.id, w.responsible_user_id AS "responsibleUserId"
+    // Recent GPS fix wins. Otherwise use technician profile, then booking site;
+    // missing locations fall back to deterministic warehouse ID selection.
+    const [source]: Array<{ liveLatitude: string | null; liveLongitude: string | null; lastLocationAt: Date | null;
+      profileLatitude: string | null; profileLongitude: string | null; bookingLatitude: string | null; bookingLongitude: string | null }> =
+      await manager.query(`SELECT tp.last_lat AS "liveLatitude", tp.last_lng AS "liveLongitude",
+        tp.last_location_at AS "lastLocationAt", tp.latitude AS "profileLatitude", tp.longitude AS "profileLongitude",
+        b.latitude_snapshot AS "bookingLatitude", b.longitude_snapshot AS "bookingLongitude"
+        FROM service_orders o JOIN bookings b ON b.id=o.booking_id
+        LEFT JOIN technician_profiles tp ON tp.user_id=$1
+        WHERE o.id=$2`, [request.technicianId, request.serviceOrderId]);
+    const lastFix = source?.lastLocationAt ? new Date(source.lastLocationAt).getTime() : 0;
+    const recent = lastFix > 0 && lastFix <= Date.now() + 60_000 && Date.now() - lastFix <= 30 * 60_000;
+    const reference = (recent ? point({ latitude: source?.liveLatitude, longitude: source?.liveLongitude }) : null) ||
+      point({ latitude: source?.profileLatitude, longitude: source?.profileLongitude }) ||
+      point({ latitude: source?.bookingLatitude, longitude: source?.bookingLongitude });
+    const candidates: { id: string; responsibleUserId: string; latitude: string | null; longitude: string | null }[] = await manager.query(`SELECT w.id, w.responsible_user_id AS "responsibleUserId", w.latitude, w.longitude
       FROM warehouses w JOIN users u ON u.id=w.responsible_user_id
       WHERE w.status='active' AND u.role='service_manager' AND u.is_active AND u.status='active'
       ORDER BY w.id FOR SHARE OF w,u`);
@@ -82,24 +118,25 @@ export class WarehouseFulfillmentService {
       SELECT s.warehouse_id AS "warehouseId", s.part_id AS "partId", s.on_hand AS "onHand", s.reserved
       FROM warehouse_stock s WHERE s.warehouse_id=ANY($1::uuid[]) AND s.part_id=ANY($2::uuid[])
       ORDER BY s.warehouse_id,s.part_id FOR UPDATE`, [candidates.map(w => w.id), required.map(i => i.partId)]) : [];
-    const chosen = a.status === 'reserved' ? candidates.find(w => w.id === a.warehouseId) :
-      candidates.find(w => hasWholeRequestStock(required, stocks.filter(s => s.warehouseId === w.id)));
-    if (!automatic && actor.role === Role.SERVICE_MANAGER && chosen?.responsibleUserId !== actor.id) {
-      if (chosen) throw new ForbiddenException('Bạn không phụ trách kho được chọn.');
-    }
+    // Rank only whole-stock candidates; no partial stock, manual reassignment or QR on shortage.
+    const eligible = candidates.filter(w => hasWholeRequestStock(required, stocks.filter(s => s.warehouseId === w.id)));
+    const chosen = a.status === 'reserved' ? candidates.find(w => w.id === a.warehouseId)
+      : nearestEligible(eligible, reference);
     if (a.status === 'reserved') return this.view(manager, request.id);
     if (!chosen) {
-      const recipients = await manager.find(User, { where: { role: Role.SERVICE_MANAGER, status: AccountStatus.ACTIVE, isActive: true } });
-      if (recipients.length) await manager.insert(Notification, recipients.map(u => ({ userId: u.id, title: 'Yêu cầu linh kiện cần hỗ trợ',
-        message: 'Chưa có một kho đủ toàn bộ linh kiện và quản lý đang hoạt động. Vui lòng hỗ trợ thủ công; chưa giữ tồn hoặc phát mã nhận.',
-        type: 'PART_REQUEST_MANUAL_ASSISTANCE', referenceId: request.id, referenceType: 'part_request', isRead: false })));
+      // No whole-stock warehouse is available. The technician must source parts
+      // independently; do not send SM assistance tasks, reserve stock or issue QR.
+      await manager.insert(Notification, { userId: request.technicianId,
+        title: 'Kho FixHome không đủ linh kiện',
+        message: 'Hiện không có kho FixHome nào đủ toàn bộ linh kiện yêu cầu. Vui lòng tự chuẩn bị. Hệ thống không tự động tính phí linh kiện tự mua.',
+        type: 'PART_REQUEST_STOCK_UNAVAILABLE', referenceId: request.id, referenceType: 'part_request', isRead: false });
       return this.view(manager, request.id);
     }
     a.warehouseId = chosen.id; a.responsibleUserId = chosen.responsibleUserId; a.status = 'reserved';
     await this.move(manager, a, required, 'RESERVE', command.id);
     await manager.save(WarehouseAllocation, a);
     await manager.insert(Notification, { userId: chosen.responsibleUserId, title: 'Yêu cầu linh kiện tại kho',
-      message: 'Đã giữ đủ linh kiện tại kho bạn phụ trách. Khoảng cách chưa được xác minh; vui lòng kiểm tra trước khi chuẩn bị.',
+      message: 'Đã giữ đủ linh kiện tại kho được chọn theo khoảng cách ước tính nếu có tọa độ. Vui lòng kiểm tra địa chỉ trước khi chuẩn bị.',
       type: 'PART_REQUEST_NEW', referenceId: request.id, referenceType: 'part_request', isRead: false });
     return this.view(manager, request.id);
   }

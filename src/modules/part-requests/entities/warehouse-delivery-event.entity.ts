@@ -18,6 +18,8 @@ export class WarehouseDeliveryEvent {
   @Column({ name: 'result_version', type: 'integer' }) resultVersion: number;
   @Column({ type: 'char', length: 64 }) fingerprint: string;
   @Column({ type: 'jsonb' }) snapshot: DeliveryPhysicalState;
+  @Column({ name: 'fee_terms_version', type: 'integer', nullable: true })
+  feeTermsVersion: number | null;
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 }

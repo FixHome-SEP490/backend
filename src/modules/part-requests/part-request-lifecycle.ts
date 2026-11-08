@@ -44,7 +44,23 @@ export async function holderPartRequests(manager: EntityManager, orderId: string
   const all = (requests ?? await manager.find(PartRequest, { where: { serviceOrderId: orderId }, relations: ['items'] }))
     .filter(request => request.requestType !== PartRequestType.WARRANTY);
   const holder = await manager.findOneBy(TechnicianAssignment, { serviceOrderId: orderId, isActive: true });
-  return holder ? all.filter(request => request.technicianId === holder.technicianId) : all;
+  return projectW3ReceivedRequests(manager, holder ? all.filter(request => request.technicianId === holder.technicianId) : all);
+}
+
+/** Internal billing/readiness projection only. Never promote legacy receivedAt/status in storage. */
+export async function projectW3ReceivedRequests(manager: EntityManager, requests: PartRequest[]): Promise<PartRequest[]> {
+  const result: PartRequest[] = [];
+  for (const request of requests) {
+    if (request.status === PartRequestStatus.REQUESTED && request.fulfillmentMethod === 'delivery') {
+      const [row] = await manager.query('SELECT w3_received_request($1) AS received', [request.id]);
+      if (row?.received === true) {
+        result.push({ ...request, status: PartRequestStatus.RECEIVED });
+        continue;
+      }
+    }
+    result.push(request);
+  }
+  return result;
 }
 
 export function assertPartsResolved(requests: PartRequest[]): void {

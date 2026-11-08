@@ -142,6 +142,38 @@ export class InvoiceItemResponseDto {
   warrantyDaysSnapshot: number;
 }
 
+export class InvoiceShipmentSnapshotDto {
+  @ApiProperty({ format: 'uuid' })
+  partRequestId: string;
+
+  @ApiProperty({ format: 'uuid' })
+  additionalCostId: string;
+
+  @ApiProperty({ nullable: true })
+  termsVersion: number | null;
+
+  @ApiPropertyOptional()
+  zeroQuoteVersion?: number;
+
+  @ApiPropertyOptional()
+  consentVersion?: number;
+
+  @ApiProperty()
+  receiptVersion: number;
+
+  @ApiProperty({ enum: ['W3_70_30_V1'] })
+  shippingPolicyVersion: 'W3_70_30_V1';
+
+  @ApiProperty()
+  shippingFee: number;
+
+  @ApiProperty()
+  customerShippingShare: number;
+
+  @ApiProperty()
+  technicianShippingShare: number;
+}
+
 export class InvoiceResponseDto {
   @ApiProperty({ format: 'uuid' })
   id: string;
@@ -163,8 +195,36 @@ export class InvoiceResponseDto {
 
   @ApiPropertyOptional()
   technicianPartWarrantyFeeTotal?: number;
+
   @ApiPropertyOptional()
   shippingFee?: number;
+
+  /** Frozen W3 shipping policy label. 'LEGACY_100_0' for pre-W3 orders. Read-only. */
+  @ApiPropertyOptional({ enum: ['LEGACY_100_0', 'W3_70_30_V1'] })
+  shippingPolicyVersion?: string;
+
+  /** Exact frozen customer share of the total courier cost. Numbers only, no recalc. */
+  @ApiPropertyOptional({ nullable: true })
+  customerShippingShare?: number | null;
+
+  /** Exact frozen technician share of the total courier cost. Numbers only, no recalc. */
+  @ApiPropertyOptional({ nullable: true })
+  technicianShippingShare?: number | null;
+
+  /** Per-shipment immutable snapshots. Present only for W3_70_30_V1 invoices. */
+  @ApiPropertyOptional({ type: InvoiceShipmentSnapshotDto, isArray: true, nullable: true })
+  shippingShipments?: Array<{
+    partRequestId: string;
+    additionalCostId: string;
+    termsVersion: number | null;
+    zeroQuoteVersion?: number;
+    consentVersion?: number;
+    receiptVersion: number;
+    shippingPolicyVersion: 'W3_70_30_V1';
+    shippingFee: number;
+    customerShippingShare: number;
+    technicianShippingShare: number;
+  }> | null;
 
   @ApiProperty()
   grandTotal: number;
@@ -361,6 +421,33 @@ export const toInvoiceResponse = (invoice: Invoice): InvoiceResponseDto => ({
   technicianPartsTotal: Number(invoice.technicianPartsTotal ?? 0),
   technicianPartWarrantyFeeTotal: Number(invoice.technicianPartWarrantyFeeTotal ?? 0),
   shippingFee: Number(invoice.shippingFee ?? 0),
+  shippingPolicyVersion: invoice.shippingPolicyVersion ?? 'LEGACY_100_0',
+  customerShippingShare:
+    invoice.customerShippingShare == null
+      ? invoice.shippingPolicyVersion === 'LEGACY_100_0' || !invoice.shippingPolicyVersion
+        ? Number(invoice.shippingFee ?? 0)
+        : null
+      : Number(invoice.customerShippingShare),
+  technicianShippingShare:
+    invoice.technicianShippingShare == null
+      ? invoice.shippingPolicyVersion === 'LEGACY_100_0' || !invoice.shippingPolicyVersion
+        ? 0
+        : null
+      : Number(invoice.technicianShippingShare),
+  shippingShipments: invoice.shippingShipments
+    ? invoice.shippingShipments.map((s) => ({
+        partRequestId: s.partRequestId,
+        additionalCostId: s.additionalCostId,
+        termsVersion: s.termsVersion == null ? null : Number(s.termsVersion),
+        ...(s.zeroQuoteVersion === undefined ? {} : { zeroQuoteVersion: Number(s.zeroQuoteVersion) }),
+        ...(s.consentVersion === undefined ? {} : { consentVersion: Number(s.consentVersion) }),
+        receiptVersion: Number(s.receiptVersion),
+        shippingPolicyVersion: s.shippingPolicyVersion,
+        shippingFee: Number(s.shippingFee),
+        customerShippingShare: Number(s.customerShippingShare),
+        technicianShippingShare: Number(s.technicianShippingShare),
+      }))
+    : null,
   grandTotal: Number(invoice.grandTotal),
   commissionBase: invoice.commissionBase,
   commissionRateSnapshot: Number(invoice.commissionRateSnapshot ?? 0.1),

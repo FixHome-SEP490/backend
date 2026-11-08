@@ -41,6 +41,21 @@ export class Invoice extends BaseEntity {
   @Column({ name: 'technician_shipping_share', type: 'bigint', nullable: true })
   technicianShippingShare?: number | null;
 
+  // Generated/verified by PostgreSQL at INSERT; immutable with the financial snapshot.
+  @Column({ name: 'shipping_shipments', type: 'jsonb', nullable: true })
+  shippingShipments?: Array<{
+    partRequestId: string;
+    additionalCostId: string;
+    termsVersion: number | null;
+    zeroQuoteVersion?: number;
+    consentVersion?: number;
+    receiptVersion: number;
+    shippingPolicyVersion: 'W3_70_30_V1';
+    shippingFee: number;
+    customerShippingShare: number;
+    technicianShippingShare: number;
+  }> | null;
+
   @Column({ name: 'grand_total', type: 'bigint', default: 0 })
   grandTotal: number;
 

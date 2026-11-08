@@ -17,6 +17,7 @@ import { installKycBucket, kycBucket, uploadedKyc } from './kyc-bucket';
 
 // Always use a new schema; never synchronize/drop the configured database.
 const schema = `member1_e2e_${randomUUID().replace(/-/g, '')}`;
+const replayDatabase = `member1_replay_${randomUUID().replace(/-/g, '')}`;
 const password = 'SecurePassword123!';
 const accessSecret = 'e2e-only-access-secret-with-at-least-32-characters';
 const refreshSecret = 'e2e-only-refresh-secret-with-at-least-32-characters';
@@ -30,6 +31,7 @@ type Session = {
 describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
   let app: INestApplication;
   let db: DataSource;
+  let replayDb: DataSource;
   let adminClient: Client;
   let customer: Session;
   let technician: Session;
@@ -159,8 +161,8 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     await adminClient.connect();
     await adminClient.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;`);
     await adminClient.query(`CREATE SCHEMA "${schema}"`);
-    db = new DataSource({
-      type: 'postgres',
+    const databaseOptions = {
+      type: 'postgres' as const,
       host: connection.host,
       port: connection.port,
       username: connection.user,
@@ -172,7 +174,8 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
       migrations: [resolve('dist/database/migrations/*.js')],
       synchronize: false,
       logging: false,
-    });
+    };
+    db = new DataSource(databaseOptions);
     await db.initialize();
     // This legacy E2E fixture uses a private schema; funding F4 targets public and requires
     // the already-deployed voucher baseline. Exclude F4 from this unrelated fixture only.
@@ -183,10 +186,24 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
         'CashPaymentIntents1793293200000', 'TechnicianResponsibility1793293200001'].includes(m.name)
     ));
     expect(await db.runMigrations()).toHaveLength(db.migrations.length);
-    // Prove revert/reapply before exercising the migrated schema.
-    await db.undoLastMigration();
-    await db.undoLastMigration();
-    expect(await db.runMigrations()).toHaveLength(2);
+    // HTTP uses current entities, including 0015's invoice provenance column.
+    // Only historical rollback/adoption tests use a separate pre-cutover DB.
+    // A separate database also isolates old migrations' global enum-name checks.
+    if (!/^member1_replay_[a-f0-9]{32}$/.test(replayDatabase)) throw new Error('Unsafe replay fixture');
+    await adminClient.query(`CREATE DATABASE "${replayDatabase}"`);
+    replayDb = await new DataSource({ ...databaseOptions, database: replayDatabase, schema: 'public',
+      extra: { options: '-c search_path=public' } }).initialize();
+    await replayDb.query('CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public');
+    replayDb.migrations.splice(0, replayDb.migrations.length, ...replayDb.migrations.filter(m =>
+      db.migrations.some(current => current.name === m.name) &&
+      !['W3PositivePhysicalDelivery1793466000014', 'W3InvoicePaymentEnable1793466000015',
+        'W3ZeroFeeInvoice1793466000016', 'WarehouseNearestGeo1794048000000'].includes(m.name)));
+    expect(await replayDb.runMigrations()).toHaveLength(replayDb.migrations.length);
+    expect(await replayDb.query("SELECT convalidated FROM pg_constraint WHERE conrelid='invoices'::regclass AND conname='ck_invoice_shipping_cutover_closed'"))
+      .toEqual([{ convalidated: true }]);
+    await replayDb.undoLastMigration();
+    await replayDb.undoLastMigration();
+    expect(await replayDb.runMigrations()).toHaveLength(2);
     // The old private-schema suite omits F4; include its nullable SupportCase field
     // only as a fixture compatibility column, never as a substitute for funding DDL.
     await db.query('ALTER TABLE support_cases ADD COLUMN IF NOT EXISTS voucher_gross_refund_vnd bigint NULL');
@@ -263,7 +280,10 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
   afterAll(async () => {
     if (app) await app.close();
     if (db?.isInitialized) await db.destroy();
+    if (replayDb?.isInitialized) await replayDb.destroy();
     if (adminClient) {
+      if (!/^member1_replay_[a-f0-9]{32}$/.test(replayDatabase)) throw new Error('Unsafe replay cleanup');
+      await adminClient.query(`DROP DATABASE IF EXISTS "${replayDatabase}"`);
       await adminClient.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
       await adminClient.end();
     }
@@ -1279,6 +1299,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
   });
 
   it('reverts all migrations, adopts legacy users and preserves account state and timestamps', async () => {
+    const db = replayDb;
     // Empty W3 append-only tables still prohibit TRUNCATE CASCADE. Revert
     // these protected EMPTY schemas first, before resetting the legacy fixture.
     // No production immutability trigger is disabled by this disposable-schema replay.
@@ -1369,8 +1390,8 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
       ).then((rows) => Number(rows[0].n));
 
     beforeAll(async () => {
-      // The preceding migration-replay test resets the disposable CI schema.
-      // Re-seed RBAC and issue a new signed test JWT; never delete immutable history.
+      // Migration replay has its own DB; HTTP history stays intact.
+      // Re-seed RBAC idempotently and issue a new signed test JWT.
       const { seedRbac } = runtimeRequire('./dist/database/seeds/seed-rbac.js');
       await seedRbac(db);
       const synthetic = async (role: 'admin' | 'customer' | 'technician'): Promise<Session> => {
@@ -1714,8 +1735,20 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
       expect(history.body.data.versions.map((v: any) => v.state.status)).toEqual(['DRAFT','RETIRED','ACTIVE','DRAFT','DRAFT']);
       const [gate] = await db.query('SELECT enabled FROM warehouse_delivery_gate');
       expect(gate.enabled).toBe(false);
-      const [closed] = await db.query(`SELECT count(*)::int AS n FROM pg_constraint WHERE conrelid='invoices'::regclass AND conname='ck_invoice_shipping_cutover_closed'`);
-      expect(closed.n).toBe(1);
+      const [shares] = await db.query(`SELECT convalidated,pg_get_constraintdef(oid) AS definition FROM pg_constraint
+        WHERE conrelid='invoices'::regclass AND conname='ck_invoice_shipping_shares'`);
+      expect(shares.convalidated).toBe(true);
+      expect(shares.definition).toContain('w3_invoice_shipping_totals');
+      const category = await createCategory();
+      const service = await createService(category.id);
+      const booking = await db.getRepository('Booking').save({ customerId: customer.user.id, serviceId: service.id,
+        description: 'Policy lifecycle is not delivery provenance', status: 'matched' });
+      const order = await db.getRepository('ServiceOrder').save({ bookingId: booking.id, code: `W3-GUARD-${randomUUID()}`, status: 'under_repair' });
+      await expect(db.query(`INSERT INTO invoices(service_order_id,labor_total,commission_amount,shipping_fee,grand_total,
+        shipping_policy_version,customer_shipping_share,technician_shipping_share)
+        VALUES($1,100000,10000,20000,114000,'W3_70_30_V1',14000,6000)`, [order.id]))
+        .rejects.toMatchObject({ message: 'W3_SOURCE_REQUIRED', driverError: { code: 'P0001' } });
+      expect(await db.getRepository('Invoice').countBy({ serviceOrderId: order.id })).toBe(0);
     });
   });
 
