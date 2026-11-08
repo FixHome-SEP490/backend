@@ -1249,11 +1249,19 @@ export class PartRequestsService {
   }
 
   /**
-   * Service Manager / Admin: Query all part requests with pagination and filters
+   * W2: list work assigned to a Service Manager's current warehouses
    */
+  /** Read-only W2 queue for a manager's currently assigned warehouses. */
+  async findWarehouseTasks(query: QueryPartRequestsDto, actor: { id: string; role: string }) {
+    if (actor.role !== Role.SERVICE_MANAGER) throw new ForbiddenException('Service Manager role required');
+    return this.findAll(query, actor, true);
+  }
+
+  /** Shared paginated query; existing global staff listing remains unchanged unless explicitly scoped. */
   async findAll(
     query: QueryPartRequestsDto,
     actor: { id: string; role: string },
+    warehouseTasksOnly = false,
   ): Promise<{ data: PartRequest[]; total: number }> {
     if (![Role.SERVICE_MANAGER, Role.ADMIN, Role.TECHNICIAN].includes(actor.role as Role)) throw new ForbiddenException('Operation not permitted');
     if (query.createdFrom && query.createdTo && new Date(query.createdFrom) > new Date(query.createdTo)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid date range');
@@ -1266,6 +1274,14 @@ export class PartRequestsService {
       .orderBy('pr.createdAt', 'DESC')
       .skip((page - 1) * pageSize)
       .take(pageSize);
+
+    if (warehouseTasksOnly) {
+      // Scope counts and rows in SQL, never in the browser; use CURRENT warehouse owner
+      // so legitimately reassigned warehouses can reissue a new QR binding.
+      qb.innerJoin('part_request_warehouse_allocations', 'w2a', 'w2a.part_request_id = pr.id')
+        .innerJoin('warehouses', 'w2w', 'w2w.id = w2a.warehouse_id AND w2w.responsible_user_id = :warehouseSmId', { warehouseSmId: actor.id })
+        .andWhere('pr.fulfillmentMethod = :warehousePickup', { warehousePickup: FulfillmentMethod.PICKUP });
+    }
 
     if (query.status) {
       qb.andWhere('pr.status = :status', { status: query.status });

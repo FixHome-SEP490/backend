@@ -230,6 +230,18 @@ export class PartRequestsController {
 
   // ── 7. Get Part Request Detail ──
 
+  @Get('part-requests/warehouse-tasks')
+  @Roles(Role.SERVICE_MANAGER)
+  @ApiOperation({ summary: 'W2 PICKUP requests at warehouses assigned to the current Service Manager' })
+  @ApiOkResponse({ description: 'Paginated W2 warehouse task queue' })
+  async findWarehouseTasks(
+    @Query() query: QueryPartRequestsDto,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    const result = await this.partRequestsService.findWarehouseTasks(query, req.user);
+    return { data: result.data, meta: { total: result.total } };
+  }
+
   @Get('part-requests/:id')
   @Roles(Role.SERVICE_MANAGER, Role.ADMIN, Role.TECHNICIAN, Role.CUSTOMER)
   @ApiOperation({ summary: 'Get part request detail by ID' })
