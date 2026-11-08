@@ -6,6 +6,7 @@ const send = vi.fn();
 vi.mock('@aws-sdk/client-rekognition', () => ({
   RekognitionClient: class { send = send; },
   CompareFacesCommand: class { constructor(public input: unknown) {} },
+  DetectFacesCommand: class { constructor(public input: unknown) {} },
 }));
 
 const config = (v: Record<string, string>) => ({ get: (k: string) => v[k] }) as any;
@@ -49,5 +50,23 @@ describe('FaceMatchService', () => {
   it('reads the threshold from config, default 80', () => {
     expect(new FaceMatchService(config({})).threshold).toBe(80);
     expect(new FaceMatchService(config({ FACE_MATCH_THRESHOLD: '90' })).threshold).toBe(90);
+  });
+
+  it('analyze reports the largest face, its head turn and smile, and the face count', async () => {
+    send.mockResolvedValue({ FaceDetails: [
+      { BoundingBox: { Width: 0.1, Height: 0.1 }, Pose: { Yaw: 5 }, Smile: { Value: false, Confidence: 99 } },
+      { BoundingBox: { Width: 0.5, Height: 0.5 }, Pose: { Yaw: -27.5 }, Smile: { Value: true, Confidence: 91 } },
+    ] });
+    const result = await new FaceMatchService(config({ FACE_MATCH_ENABLED: 'true' })).analyze(jpeg);
+    expect(result).toEqual({ outcome: 'faces', count: 2, yaw: -27.5, smiling: true });
+  });
+
+  it('analyze answers no_face, and skipped when disabled or AWS fails', async () => {
+    const on = new FaceMatchService(config({ FACE_MATCH_ENABLED: 'true' }));
+    send.mockResolvedValueOnce({ FaceDetails: [] });
+    expect(await on.analyze(jpeg)).toEqual({ outcome: 'no_face' });
+    send.mockRejectedValueOnce(Object.assign(new Error('x'), { name: 'ThrottlingException' }));
+    expect(await on.analyze(jpeg)).toEqual({ outcome: 'skipped' });
+    expect(await new FaceMatchService(config({})).analyze(jpeg)).toEqual({ outcome: 'skipped' });
   });
 });

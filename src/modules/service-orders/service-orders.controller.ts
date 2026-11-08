@@ -18,10 +18,12 @@ import {
   Req,
   HttpCode,
   HttpStatus,
+  Optional,
   UploadedFile,
+  UploadedFiles,
   UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileFieldsInterceptor, FileInterceptor } from '@nestjs/platform-express';
 import type { EvidenceFile } from '../media/order-evidence-storage.service';
 import {
   ApiBadRequestResponse,
@@ -41,9 +43,12 @@ import { PermissionGuard } from '../../common/guards/permission.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
-import { Role } from '../../shared/enums';
+import { Role, EvidenceType } from '../../shared/enums';
 import { CheckInDto, UpdateLocationDto, EvidenceDto, CompletionRequestDto, CompletionConfirmationDto, ReasonDto, TrackOrderDto } from './order-command.dto';
 import { ServiceOrdersService } from './service-orders.service';
+import { BusinessException } from '../../common/exceptions/business.exception';
+import { ErrorCodes } from '../../shared/constants';
+import { CheckinFaceService } from './checkin-face.service';
 import { RiskLimit } from '../../common/rate-limit/risk-rate-limit';
 import {
   } from '../../shared/enums';
@@ -60,7 +65,10 @@ import {
 @ApiTags('Service Orders')
 @Controller()
 export class ServiceOrdersController {
-  constructor(private readonly serviceOrdersService: ServiceOrdersService) {}
+  constructor(
+    private readonly serviceOrdersService: ServiceOrdersService,
+    @Optional() private readonly checkinFace?: CheckinFaceService,
+  ) {}
 
   // ── 1. Order Queries ──
 
@@ -204,11 +212,61 @@ export class ServiceOrdersController {
     @Req() req: { user: { id: string; role: string } },
     @UploadedFile() file?: EvidenceFile,
   ) {
+    if (body.type === EvidenceType.CHECKIN_FACE && this.checkinFace?.enforced) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Vui lòng cập nhật ứng dụng để chụp ảnh khuôn mặt check-in (cần 2 ảnh).');
+    }
     const evidence = await this.serviceOrdersService.uploadEvidence(
       id,
       body,
       req.user,
       file,
+    );
+    return { data: evidence };
+  }
+
+  @Get('service-orders/:id/checkin-face/challenge')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('evidence:upload')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Technician: random liveness challenge for the check-in face', description: '`challenge` is null when face checks are off (use the single photo upload). Otherwise take a plain photo and a photo doing the challenge, then POST both to checkin-face with `challengeToken`.' })
+  getCheckinFaceChallenge(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    return { data: this.checkinFace?.issueChallenge(id, req.user.id) ?? { challenge: null } };
+  }
+
+  @Post('service-orders/:id/checkin-face')
+  @UseInterceptors(FileFieldsInterceptor(
+    [{ name: 'file', maxCount: 1 }, { name: 'challengeFile', maxCount: 1 }],
+    { limits: { fileSize: 10 * 1024 * 1024, files: 2, fields: 5 } },
+  ))
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('evidence:upload')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiBearerAuth()
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Technician: check-in face with liveness (plain photo + challenge photo)', description: 'Multipart: `file` (plain photo), `challengeFile` (photo doing the challenge), `challengeToken` from the challenge call. A failed challenge answers 400 with a retryable message. A weak match with the registered face is stored as a note for admin and does not block.' })
+  async uploadCheckinFace(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: { challengeToken?: string; capturedAt?: string },
+    @Req() req: { user: { id: string; role: string } },
+    @UploadedFiles() files?: { file?: EvidenceFile[]; challengeFile?: EvidenceFile[] },
+  ) {
+    const plain = files?.file?.[0];
+    if (!plain) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Thiếu ảnh khuôn mặt.');
+    const note = await this.checkinFace?.verify({
+      orderId: id,
+      userId: req.user.id,
+      token: body.challengeToken,
+      plain: plain.buffer,
+      challengePhoto: files?.challengeFile?.[0]?.buffer,
+    });
+    const evidence = await this.serviceOrdersService.uploadEvidence(
+      id,
+      { type: EvidenceType.CHECKIN_FACE, note, capturedAt: body.capturedAt },
+      req.user,
+      plain,
     );
     return { data: evidence };
   }

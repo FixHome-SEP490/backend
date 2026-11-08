@@ -40,6 +40,10 @@ export class EnvironmentVariables {
   @IsOptional()
   FACE_MATCH_THRESHOLD: number = 80;
 
+  // Check-in face liveness: `true` refuses the old single-photo check-in upload (turn on only once the app that sends challenges is out).
+  @IsIn(['true', 'false'])
+  FACE_CHECKIN_ENFORCE: string = 'false';
+
   @IsString()
   @IsOptional()
   AWS_REGION?: string;

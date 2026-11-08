@@ -1,13 +1,19 @@
 // src/modules/face-match/face-match.service.ts
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { CompareFacesCommand, RekognitionClient } from '@aws-sdk/client-rekognition';
+import { CompareFacesCommand, DetectFacesCommand, RekognitionClient } from '@aws-sdk/client-rekognition';
 import sharp from 'sharp';
 
 export type FaceMatchResult =
   | { outcome: 'skipped' }
   | { outcome: 'no_face' }
   | { outcome: 'scored'; similarity: number };
+
+/** What DetectFaces saw in one photo; used to check a liveness challenge. */
+export type FaceAnalysis =
+  | { outcome: 'skipped' }
+  | { outcome: 'no_face' }
+  | { outcome: 'faces'; count: number; yaw: number; smiling: boolean };
 
 /** Rekognition caps an inline image at 5 MB and reads only JPEG/PNG; a 1600 px JPEG is far under it. */
 const MAX_SIDE = 1600;
@@ -36,10 +42,7 @@ export class FaceMatchService {
     if (!this.enabled) return { outcome: 'skipped' };
     try {
       const [source, target] = await Promise.all([this.prepare(face), this.prepare(idCard)]);
-      this.client ??= new RekognitionClient({
-        region: this.config.get<string>('AWS_REGION') || 'ap-southeast-1',
-      });
-      const res = await this.client.send(
+      const res = await this.getClient().send(
         new CompareFacesCommand({
           SourceImage: { Bytes: source },
           TargetImage: { Bytes: target },
@@ -54,6 +57,34 @@ export class FaceMatchService {
       this.logger.warn(`Face match unavailable: ${(error as { name?: string }).name ?? 'unknown error'}`);
       return { outcome: 'skipped' };
     }
+  }
+
+  /** Head turn (degrees, + or -) and smile of the largest face; more than one face is reported via `count`. */
+  async analyze(photo: Buffer): Promise<FaceAnalysis> {
+    if (!this.enabled) return { outcome: 'skipped' };
+    try {
+      const res = await this.getClient().send(
+        new DetectFacesCommand({ Image: { Bytes: await this.prepare(photo) }, Attributes: ['ALL'] }),
+      );
+      const faces = res.FaceDetails ?? [];
+      if (faces.length === 0) return { outcome: 'no_face' };
+      const main = [...faces].sort(
+        (a, b) => (b.BoundingBox?.Width ?? 0) * (b.BoundingBox?.Height ?? 0) - (a.BoundingBox?.Width ?? 0) * (a.BoundingBox?.Height ?? 0),
+      )[0];
+      return {
+        outcome: 'faces',
+        count: faces.length,
+        yaw: main.Pose?.Yaw ?? 0,
+        smiling: main.Smile?.Value === true && (main.Smile.Confidence ?? 0) >= 70,
+      };
+    } catch (error) {
+      this.logger.warn(`Face analysis unavailable: ${(error as { name?: string }).name ?? 'unknown error'}`);
+      return { outcome: 'skipped' };
+    }
+  }
+
+  private getClient(): RekognitionClient {
+    return (this.client ??= new RekognitionClient({ region: this.config.get<string>('AWS_REGION') || 'ap-southeast-1' }));
   }
 
   private prepare(input: Buffer): Promise<Buffer> {
