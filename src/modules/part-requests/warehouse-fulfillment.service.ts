@@ -8,7 +8,7 @@ import { Warehouse } from '../warehouses/entities';
 import { PartRequest, PartRequestItem } from './entities';
 import { WarehouseAllocation } from './entities/warehouse-allocation.entity';
 import { canonicalWarehouseQuantities, hasWholeRequestStock, warehouseBalance, WarehouseQuantity } from './warehouse-fulfillment.rules';
-import { nearestEligible, point } from './warehouse-distance.rules';
+import { nearestEligible, point, straightLineKm } from './warehouse-distance.rules';
 
 type Actor = { id: string; role: string };
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -28,9 +28,24 @@ export class WarehouseFulfillmentService {
     const a = await manager.findOne(WarehouseAllocation, { where: { partRequestId: id } });
     if (!a) return { partRequestId: id, mode: 'legacy', status: null };
     const w = a.warehouseId ? await manager.findOne(Warehouse, { where: { id: a.warehouseId } }) : null;
+    // Booking location is a stable reference; this is only an estimated straight-line km, NEVER a road ETA.
+    // It may differ from the nearest-ranking source (which can prioritize the technician's recent GPS).
+    let estimatedStraightLineKm: number | null = null;
+    if (w && point({ latitude: w.latitude, longitude: w.longitude })) {
+      const [bookingLocation]: Array<{ latitude: string | null; longitude: string | null }> = await manager.query(
+        `SELECT b.latitude_snapshot AS "latitude", b.longitude_snapshot AS "longitude"
+         FROM part_requests pr JOIN service_orders o ON o.id=pr.service_order_id
+         JOIN bookings b ON b.id=o.booking_id WHERE pr.id=$1`, [id]);
+      if (bookingLocation) {
+        const km = straightLineKm(bookingLocation, { latitude: w.latitude, longitude: w.longitude });
+        if (km !== null) estimatedStraightLineKm = Math.round(km * 10) / 10;
+      }
+    }
     return { partRequestId: id, mode: 'warehouse', status: a.status === 'manual_assistance' ? 'stock_unavailable' : a.status, warehouseId: a.warehouseId,
       warehouseName: w?.name ?? null, warehouseAddress: w?.address ?? null, responsibleUserId: w?.responsibleUserId ?? null,
-      distanceNotVerified: true, reviewRequired: a.warehouseId !== null, stockUnavailable: a.status === 'manual_assistance',
+      distanceNotVerified: true, reviewRequired: a.warehouseId !== null, estimatedStraightLineKm,
+      distanceReference: estimatedStraightLineKm === null ? null : 'booking_snapshot',
+      stockUnavailable: a.status === 'manual_assistance',
       tokenExpiresAt: a.tokenExpiresAt, tokenVersion: a.tokenVersion, handedOverAt: a.handedOverAt, receivedAt: a.receivedAt };
   }
 

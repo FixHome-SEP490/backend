@@ -100,6 +100,18 @@ describe.skipIf(process.env.CI !== 'true')('W2 real PostgreSQL / JWT / custody a
     return { actor, tech, other, sm, wrong, customer, catalog, warehouse, order, req, base, balance, create, qr, issue };
   }
 
+  it('lists only assigned-warehouse W2 pickup tasks for the responsible SM', async () => {
+    const f = await fixture();
+    const own = await call('get', '/part-requests/warehouse-tasks', f.sm).expect(200);
+    expect(own.body.data.map((row: { id: string }) => row.id)).toContain(f.req.id);
+    expect(own.body.meta.total).toBeGreaterThanOrEqual(1);
+    const foreign = await call('get', '/part-requests/warehouse-tasks', f.wrong).expect(200);
+    expect(foreign.body.data).toEqual([]);
+    expect(foreign.body.meta.total).toBe(0);
+    await call('get', '/part-requests/warehouse-tasks', f.tech).expect(403);
+    await call('get', '/part-requests/warehouse-tasks').expect(401);
+  });
+
   it('reserves all SKUs at one warehouse, protects JWT/SM/tech, consumes two separate single-use QR phases and blocks new work before ACK', async () => {
     const f = await fixture();
     expect((await f.balance()).every(r => r.on_hand === r.reserved)).toBe(true);
