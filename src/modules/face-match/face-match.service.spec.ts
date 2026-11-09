@@ -52,13 +52,13 @@ describe('FaceMatchService', () => {
     expect(new FaceMatchService(config({ FACE_MATCH_THRESHOLD: '90' })).threshold).toBe(90);
   });
 
-  it('analyze reports the largest face, its head turn and smile, and the face count', async () => {
+  it('analyze reports the largest face, its head turn and tilt, and the face count', async () => {
     send.mockResolvedValue({ FaceDetails: [
-      { BoundingBox: { Width: 0.1, Height: 0.1 }, Pose: { Yaw: 5 }, Smile: { Value: false, Confidence: 99 } },
-      { BoundingBox: { Width: 0.5, Height: 0.5 }, Pose: { Yaw: -27.5 }, Smile: { Value: true, Confidence: 91 } },
+      { BoundingBox: { Width: 0.1, Height: 0.1 }, Pose: { Yaw: 5, Pitch: 1 } },
+      { BoundingBox: { Width: 0.5, Height: 0.5 }, Pose: { Yaw: -27.5, Pitch: 12 } },
     ] });
     const result = await new FaceMatchService(config({ FACE_MATCH_ENABLED: 'true' })).analyze(jpeg);
-    expect(result).toEqual({ outcome: 'faces', count: 2, yaw: -27.5, smiling: true });
+    expect(result).toEqual({ outcome: 'faces', count: 2, yaw: -27.5, pitch: 12 });
   });
 
   it('analyze answers no_face, and skipped when disabled or AWS fails', async () => {

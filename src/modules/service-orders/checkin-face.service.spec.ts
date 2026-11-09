@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { CheckinFaceService } from './checkin-face.service';
+import { describe, expect, it, vi } from 'vitest';
+import { CheckinFaceService, type FaceChallenge } from './checkin-face.service';
 
 const ORDER = 'order-1';
 const USER = 'user-1';
@@ -17,15 +17,17 @@ function make(opts: { enabled?: boolean; analyze?: any[]; compare?: any[]; doc?:
   const service = new CheckinFaceService(config, faceMatch, kyc, { createQueryBuilder: () => qb } as any);
   return { service, analyze, compare, kyc };
 }
-const face = (yaw: number, smiling = false, count = 1) => ({ outcome: 'faces', count, yaw, smiling });
+const face = (yaw: number, pitch = 0, count = 1) => ({ outcome: 'faces', count, yaw, pitch });
 /** A token the service itself issued, forced to a given challenge. */
-function tokenFor(service: CheckinFaceService, challenge: 'turn_head' | 'smile') {
-  for (let i = 0; i < 200; i++) {
+function tokenFor(service: CheckinFaceService, challenge: FaceChallenge) {
+  for (let i = 0; i < 500; i++) {
     const t = service.issueChallenge(ORDER, USER);
     if (t.challenge === challenge) return t.token;
   }
   throw new Error('challenge not produced');
 }
+const verify = (m: ReturnType<typeof make>, challenge: FaceChallenge) =>
+  m.service.verify({ orderId: ORDER, userId: USER, token: tokenFor(m.service, challenge), plain: buf, challengePhoto: buf });
 
 describe('CheckinFaceService', () => {
   it('issues no challenge while face checks are off', () => {
@@ -38,9 +40,16 @@ describe('CheckinFaceService', () => {
     expect(service.issueChallenge(ORDER, USER)).toEqual({ challenge: null });
   });
 
+  it('only asks for a head movement: left, right, up or down', () => {
+    const { service } = make({});
+    const seen = new Set<string>();
+    for (let i = 0; i < 400; i++) seen.add(service.issueChallenge(ORDER, USER).challenge as string);
+    expect([...seen].sort()).toEqual(['look_down', 'look_up', 'turn_left', 'turn_right']);
+  });
+
   it('rejects a token for another order, another technician, a forged one or an expired one', async () => {
     const { service } = make({});
-    const token = tokenFor(service, 'smile')!;
+    const token = tokenFor(service, 'turn_left')!;
     const call = (over: object) => service.verify({ orderId: ORDER, userId: USER, token, plain: buf, challengePhoto: buf, ...over });
     await expect(call({ orderId: 'other' })).rejects.toThrow(/hết hạn/);
     await expect(call({ userId: 'other' })).rejects.toThrow(/hết hạn/);
@@ -50,64 +59,59 @@ describe('CheckinFaceService', () => {
     await expect(call({})).rejects.toThrow(/hết hạn/);
   });
 
-  it('passes a smile challenge and writes the match on the evidence', async () => {
-    const { service } = make({
-      analyze: [face(0, false), face(0, true)],
-      compare: [{ outcome: 'scored', similarity: 97 }, { outcome: 'scored', similarity: 96.5 }],
-      doc: { storageObjectPath: 'kyc/u/face.jpg' },
-    });
-    const note = await service.verify({ orderId: ORDER, userId: USER, token: tokenFor(service, 'smile'), plain: buf, challengePhoto: buf });
-    expect(note).toContain('Liveness đạt');
-    expect(note).toContain('96.5%');
-  });
-
-  it('refuses a smile challenge when the second photo does not smile', async () => {
-    const { service } = make({ analyze: [face(0, false), face(0, false)] });
-    await expect(service.verify({ orderId: ORDER, userId: USER, token: tokenFor(service, 'smile'), plain: buf, challengePhoto: buf }))
-      .rejects.toThrow(/chưa thấy bạn cười/);
-  });
-
-  it('refuses a head-turn challenge when the head did not turn, or the first photo is already turned', async () => {
-    const a = make({ analyze: [face(2), face(8)] });
-    await expect(a.service.verify({ orderId: ORDER, userId: USER, token: tokenFor(a.service, 'turn_head'), plain: buf, challengePhoto: buf }))
-      .rejects.toThrow(/chưa quay đầu/);
-    const b = make({ analyze: [face(30), face(35)] });
-    await expect(b.service.verify({ orderId: ORDER, userId: USER, token: tokenFor(b.service, 'turn_head'), plain: buf, challengePhoto: buf }))
-      .rejects.toThrow(/nhìn thẳng/);
-  });
-
-  it('accepts a head turn to either side', async () => {
-    for (const yaw of [-28, 28]) {
-      const { service } = make({ analyze: [face(3), face(yaw)], compare: [{ outcome: 'scored', similarity: 95 }] });
-      await expect(service.verify({ orderId: ORDER, userId: USER, token: tokenFor(service, 'turn_head'), plain: buf, challengePhoto: buf }))
-        .resolves.toContain('Liveness đạt');
+  it('passes a left or right turn on either sign of the angle, and writes the match on the evidence', async () => {
+    for (const [challenge, yaw] of [['turn_left', -30], ['turn_left', 30], ['turn_right', 28], ['turn_right', -28]] as const) {
+      const m = make({
+        analyze: [face(2), face(yaw)],
+        compare: [{ outcome: 'scored', similarity: 97 }, { outcome: 'scored', similarity: 96.5 }],
+        doc: { storageObjectPath: 'kyc/u/face.jpg' },
+      });
+      const note = await verify(m, challenge);
+      expect(note).toContain('Liveness đạt');
+      expect(note).toContain('96.5%');
     }
   });
 
+  it('passes looking up or down', async () => {
+    for (const [challenge, pitch] of [['look_up', 25], ['look_down', -22]] as const) {
+      const m = make({ analyze: [face(0, 3), face(1, pitch)], compare: [{ outcome: 'scored', similarity: 95 }] });
+      await expect(verify(m, challenge)).resolves.toContain('Liveness đạt');
+    }
+  });
+
+  it('refuses a movement that is too small, or on the wrong axis', async () => {
+    await expect(verify(make({ analyze: [face(2), face(9)] }), 'turn_right')).rejects.toThrow(/chưa quay mặt sang phải đủ/);
+    await expect(verify(make({ analyze: [face(0, 2), face(0, 8)] }), 'look_up')).rejects.toThrow(/chưa ngẩng mặt lên đủ/);
+    // asked to look up, the head turned sideways instead
+    await expect(verify(make({ analyze: [face(0, 0), face(30, 16)] }), 'look_up')).rejects.toThrow(/chưa đúng hướng/);
+  });
+
+  it('refuses a first photo that is not looking straight', async () => {
+    await expect(verify(make({ analyze: [face(35), face(60)] }), 'turn_left')).rejects.toThrow(/nhìn thẳng/);
+    await expect(verify(make({ analyze: [face(0, 30), face(0, 55)] }), 'look_up')).rejects.toThrow(/nhìn thẳng/);
+  });
+
   it('refuses no face, several faces, or two photos of different people', async () => {
-    const none = make({ analyze: [{ outcome: 'no_face' }, face(0)] });
-    await expect(none.service.verify({ orderId: ORDER, userId: USER, token: tokenFor(none.service, 'smile'), plain: buf, challengePhoto: buf })).rejects.toThrow(/Không thấy khuôn mặt/);
-    const many = make({ analyze: [face(0, false, 2), face(0, true)] });
-    await expect(many.service.verify({ orderId: ORDER, userId: USER, token: tokenFor(many.service, 'smile'), plain: buf, challengePhoto: buf })).rejects.toThrow(/nhiều hơn một/);
-    const other = make({ analyze: [face(0), face(0, true)], compare: [{ outcome: 'scored', similarity: 30 }] });
-    await expect(other.service.verify({ orderId: ORDER, userId: USER, token: tokenFor(other.service, 'smile'), plain: buf, challengePhoto: buf })).rejects.toThrow(/không giống cùng một người/);
+    await expect(verify(make({ analyze: [{ outcome: 'no_face' }, face(30)] }), 'turn_left')).rejects.toThrow(/Không thấy khuôn mặt/);
+    await expect(verify(make({ analyze: [face(0, 0, 2), face(30)] }), 'turn_left')).rejects.toThrow(/nhiều hơn một/);
+    await expect(verify(make({ analyze: [face(0), face(30)], compare: [{ outcome: 'scored', similarity: 30 }] }), 'turn_left'))
+      .rejects.toThrow(/không giống cùng một người/);
   });
 
   it('does not block a weak match with the registered face, it flags it for admin', async () => {
-    const { service } = make({
-      analyze: [face(0), face(0, true)],
+    const m = make({
+      analyze: [face(0), face(30)],
       compare: [{ outcome: 'scored', similarity: 95 }, { outcome: 'scored', similarity: 55 }],
       doc: { storageObjectPath: 'kyc/u/face.jpg' },
     });
-    const note = await service.verify({ orderId: ORDER, userId: USER, token: tokenFor(service, 'smile'), plain: buf, challengePhoto: buf });
+    const note = await verify(m, 'turn_left');
     expect(note).toContain('CẦN KIỂM TRA');
     expect(note).toContain('55%');
   });
 
   it('fails open when Rekognition is unreachable', async () => {
-    const { service } = make({ analyze: [{ outcome: 'skipped' }, { outcome: 'skipped' }] });
-    await expect(service.verify({ orderId: ORDER, userId: USER, token: tokenFor(service, 'smile'), plain: buf, challengePhoto: buf }))
-      .resolves.toContain('Chưa kiểm tra được liveness');
+    const m = make({ analyze: [{ outcome: 'skipped' }, { outcome: 'skipped' }] });
+    await expect(verify(m, 'turn_left')).resolves.toContain('Chưa kiểm tra được liveness');
   });
 
   it('refuses the old single-photo upload only when enforced and enabled', () => {

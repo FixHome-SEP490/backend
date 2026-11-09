@@ -11,16 +11,22 @@ import { KycStorageService } from '../technician-verifications/kyc-storage.servi
 import { VerificationDocument } from '../technician-verifications/entities/verification-document.entity';
 import { DocumentType } from '../../shared/enums';
 
-export type FaceChallenge = 'turn_head' | 'smile';
-const CHALLENGES: FaceChallenge[] = ['turn_head', 'smile'];
+export type FaceChallenge = 'turn_left' | 'turn_right' | 'look_up' | 'look_down';
+const CHALLENGES: FaceChallenge[] = ['turn_left', 'turn_right', 'look_up', 'look_down'];
 const TTL_MS = 5 * 60 * 1000;
-/** The challenge photo must turn at least this far; the plain photo must stay below the lower bound. */
-const TURN_MIN_DEG = 20;
-const FRONT_MAX_DEG = 15;
+const CHALLENGE_VERB: Record<FaceChallenge, string> = {
+  turn_left: 'quay mặt sang trái',
+  turn_right: 'quay mặt sang phải',
+  look_up: 'ngẩng mặt lên',
+  look_down: 'cúi mặt xuống',
+};
+/** The plain photo must look roughly straight; the challenge photo must move at least this far from it on the asked axis. */
+const FRONT_MAX_DEG = 20;
+const MOVE_MIN_DEG = 15;
 
 /**
  * Light liveness for the check-in face (PO 09/11/2026): the technician takes a plain photo and then one
- * photo doing a random challenge asked by the server (turn the head or smile). A photographed photo cannot
+ * photo doing a random challenge asked by the server (turn left, turn right, look up or look down). A photographed photo cannot
  * follow a challenge it has not seen. Not a substitute for video liveness: a replayed video can still pass.
  * A weak match with the registered face does not block (bad light happens); it is written on the evidence for admin.
  */
@@ -65,13 +71,17 @@ export class CheckinFaceService {
     if (plain.outcome === 'no_face' || moved.outcome === 'no_face') throw this.fail('Không thấy khuôn mặt trong ảnh. Vui lòng chụp lại rõ mặt, đủ sáng.');
     if (plain.count > 1 || moved.count > 1) throw this.fail('Trong ảnh có nhiều hơn một khuôn mặt. Vui lòng chụp lại chỉ một mình bạn.');
 
-    if (challenge === 'turn_head') {
-      if (Math.abs(plain.yaw) >= FRONT_MAX_DEG) throw this.fail('Ảnh thứ nhất cần nhìn thẳng vào camera. Vui lòng chụp lại.');
-      if (Math.abs(moved.yaw) < TURN_MIN_DEG) throw this.fail('Ảnh thứ hai chưa quay đầu đủ. Hãy quay mặt sang một bên rồi chụp lại.');
-    } else {
-      if (plain.smiling) throw this.fail('Ảnh thứ nhất cần giữ mặt bình thường, không cười. Vui lòng chụp lại.');
-      if (!moved.smiling) throw this.fail('Ảnh thứ hai chưa thấy bạn cười. Hãy mỉm cười rồi chụp lại.');
+    if (Math.abs(plain.yaw) >= FRONT_MAX_DEG || Math.abs(plain.pitch) >= FRONT_MAX_DEG) {
+      throw this.fail('Ảnh thứ nhất cần nhìn thẳng vào camera. Vui lòng chụp lại.');
     }
+    // The movement is measured against the first photo. Left/right and up/down are judged by how far the head
+    // moved on that axis, not by sign: the sign depends on how each phone saves a front camera photo.
+    const horizontal = challenge === 'turn_left' || challenge === 'turn_right';
+    const moveDeg = Math.abs(horizontal ? moved.yaw - plain.yaw : moved.pitch - plain.pitch);
+    if (moveDeg < MOVE_MIN_DEG) throw this.fail(`Ảnh thứ hai chưa ${CHALLENGE_VERB[challenge]} đủ. Hãy ${CHALLENGE_VERB[challenge]} rõ hơn rồi chụp lại.`);
+    // Moving on the other axis instead of the asked one is not the challenge.
+    const otherDeg = Math.abs(horizontal ? moved.pitch - plain.pitch : moved.yaw - plain.yaw);
+    if (otherDeg > moveDeg) throw this.fail(`Ảnh thứ hai chưa đúng hướng. Hãy ${CHALLENGE_VERB[challenge]} rồi chụp lại.`);
 
     const same = await this.faceMatch.compare(input.plain, input.challengePhoto);
     if (same.outcome === 'scored' && same.similarity < this.faceMatch.threshold) {

@@ -13,7 +13,7 @@ export type FaceMatchResult =
 export type FaceAnalysis =
   | { outcome: 'skipped' }
   | { outcome: 'no_face' }
-  | { outcome: 'faces'; count: number; yaw: number; smiling: boolean };
+  | { outcome: 'faces'; count: number; yaw: number; pitch: number };
 
 /** Rekognition caps an inline image at 5 MB and reads only JPEG/PNG; a 1600 px JPEG is far under it. */
 const MAX_SIDE = 1600;
@@ -59,7 +59,7 @@ export class FaceMatchService {
     }
   }
 
-  /** Head turn (degrees, + or -) and smile of the largest face; more than one face is reported via `count`. */
+  /** Head turn left/right (yaw) and up/down (pitch), in degrees, of the largest face; more than one face is reported via `count`. */
   async analyze(photo: Buffer): Promise<FaceAnalysis> {
     if (!this.enabled) return { outcome: 'skipped' };
     try {
@@ -75,7 +75,7 @@ export class FaceMatchService {
         outcome: 'faces',
         count: faces.length,
         yaw: main.Pose?.Yaw ?? 0,
-        smiling: main.Smile?.Value === true && (main.Smile.Confidence ?? 0) >= 70,
+        pitch: main.Pose?.Pitch ?? 0,
       };
     } catch (error) {
       this.logger.warn(`Face analysis unavailable: ${(error as { name?: string }).name ?? 'unknown error'}`);
