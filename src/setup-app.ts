@@ -47,6 +47,15 @@ export const FILE_UPLOAD_ROUTES: RegExp[] = [
 ];
 
 /**
+ * Check-in face with liveness (09/11/2026): two photos of up to 10 MB each (multer enforces it per file).
+ * Missing from the lists above it fell under the 1 MB form limit and every upload came back 413.
+ */
+export const MAX_TWO_PHOTO_MULTIPART_BODY_BYTES = 21 * 1024 * 1024;
+export const TWO_PHOTO_UPLOAD_ROUTES: RegExp[] = [
+  new RegExp(`^/${API_PREFIX}/service-orders/[^/]+/checkin-face$`),
+];
+
+/**
  * Routes that also take a short video (PO 18/10/2026): one file of up to 50 MB
  * (multer enforces it per route), plus the form fields.
  */
@@ -68,6 +77,11 @@ export function formBodySizeGuard(req: Request, _res: Response, next: NextFuncti
   const multipart = String(req.headers['content-type'] ?? '').toLowerCase().startsWith('multipart/form-data');
   if (multipart && VIDEO_UPLOAD_ROUTES.some((route) => route.test(path))) {
     if (declared > MAX_VIDEO_MULTIPART_BODY_BYTES) next(new PayloadTooLargeException('Request payload is too large'));
+    else next();
+    return;
+  }
+  if (multipart && TWO_PHOTO_UPLOAD_ROUTES.some((route) => route.test(path))) {
+    if (declared > MAX_TWO_PHOTO_MULTIPART_BODY_BYTES) next(new PayloadTooLargeException('Request payload is too large'));
     else next();
     return;
   }

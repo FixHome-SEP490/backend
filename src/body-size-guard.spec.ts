@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PayloadTooLargeException } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { formBodySizeGuard, MAX_FORM_BODY_BYTES, MAX_MULTIPART_BODY_BYTES } from './setup-app';
+import { formBodySizeGuard, MAX_FORM_BODY_BYTES, MAX_MULTIPART_BODY_BYTES, MAX_TWO_PHOTO_MULTIPART_BODY_BYTES } from './setup-app';
 
 const run = (url: string, length: number, contentType = 'application/json') => {
   const next = vi.fn();
@@ -34,5 +34,13 @@ describe('Request body size', () => {
     expect(run('/api/v1/media/booking-photo-upload', 6 * MAX_FORM_BODY_BYTES)).toBeInstanceOf(PayloadTooLargeException);
     expect(run('/api/v1/bookings', 6 * MAX_FORM_BODY_BYTES, form)).toBeInstanceOf(PayloadTooLargeException);
     expect(run('/api/v1/media/booking-photo-upload/x', 6 * MAX_FORM_BODY_BYTES, form)).toBeInstanceOf(PayloadTooLargeException);
+  });
+
+  it('lets the two check-in face photos up (a 413 here made every check-in face upload fail)', () => {
+    const form = 'multipart/form-data; boundary=x';
+    const url = '/api/v1/service-orders/9b0c/checkin-face';
+    expect(run(url, 8 * MAX_FORM_BODY_BYTES, form)).toBeUndefined();
+    expect(run(url, MAX_TWO_PHOTO_MULTIPART_BODY_BYTES + 1, form)).toBeInstanceOf(PayloadTooLargeException);
+    expect(run(url, 8 * MAX_FORM_BODY_BYTES)).toBeInstanceOf(PayloadTooLargeException);
   });
 });
