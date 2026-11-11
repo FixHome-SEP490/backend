@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-11 19:02 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/bug-detector-1111
+> Cập nhật lần cuối: 2026-11-11 20:37 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/deploy-visit-group-address-migration
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -537,6 +537,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-11 20:37 (UTC+7) | ToanAltF4 | fix/deploy-visit-group-address-migration | Deploy dev áp migration BUG 59 bằng script visit-group-address-dev-release trước cổng W3 (deploy #215 bị cổng W3 từ chối vì migration chờ chạy lạ)
 - 2026-11-11 19:02 (UTC+7) | ToanAltF4 | fix/bug-detector-1111 | Sửa BUG DETECTOR 59 (xoá địa chỉ đã dùng cho lượt nhiều máy, khoá ngoại SET NULL), 60 (kiểm chữ ký QueryDR), 75 (hàng đợi SM gồm cả phiếu ngoài W2), 77 (phiếu kho không đủ hàng không tính là đã cấp nguồn), 80 (nhật ký kho gồm W2), 81 (hoàn trả theo kho SM), 82 (tìm theo mã PR-), 89 (đếm trạng thái toàn bộ), 90 (phân kho gộp trong hàng đợi)
 - 2026-11-09 12:24 (UTC+7) | Hgnv11 | dev | Thử thách liveness check-in đổi thành quay trái, quay phải, ngẩng lên hoặc cúi xuống (bỏ mỉm cười), đo bằng góc Yaw và Pitch so với ảnh nhìn thẳng
 - 2026-11-09 05:03 (UTC+7) | Hgnv11 | dev | Liveness nhẹ cho ảnh mặt check-in của thợ: thử thách ngẫu nhiên quay đầu hoặc mỉm cười, đối chiếu ảnh đăng ký bằng Rekognition (cờ FACE_CHECKIN_ENFORCE, endpoint challenge và checkin-face)
@@ -576,4 +577,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-05 16:56 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | B2b source: JWT owner preview chỉ đọc, denial 404 đồng nhất và giữ lỗi DB, không mount B1 hoặc mở finance; review code độc lập không có lỗi chặn; focused 425 và full unit 3776 PASS/58 skipped, typecheck/lint/build/diff PASS; HTTP/PG/runtime chưa kiểm. Checkpoint B2a 01:07: B2a source only: owner facts preview/read-only, denial đồng nhất, mọi action BLOCKED, 174 focused PASS, typecheck/build/lint/diff PASS; JWT/API/DB/finance chưa mở. Checkpoint trước 2026-11-04 23:50 (UTC+7): Phase A (20:54): Thêm Phase A domain dual consent/actual versioned thuần, giữ cutover đóng; ghi Phase B storage/auth/warehouse và gate Finance/team. B1 (22:54): Thêm B1 consent persistence inert, scope trigger/CAS/append-only; ghi 93 focused PASS, PG 22 skipped, giữ W3 cutover đóng, chưa có API/DB apply. Review-fix-01: warehouse bắt buộc NULL, bỏ đọc/bind W2, focused cuối 100 PASS, typecheck/build/lint PASS; khôi phục T8 nguyên văn, giữ 40 entry.
 - 2026-11-04 19:37 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | Chốt W3 scaffold và khóa cutover; ghi 3358 unit PASS/58 skipped, gate Finance/pháp lý, DELIVERY stock và PG/runtime chưa kiểm chứng.
 - 2026-11-04 18:45 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w2-warehouse-fulfillment-be-20261104 | Ghi CI đã xác minh JWT và 7 ca W2 PostgreSQL; sửa fixture receipt legacy sang order riêng, giữ unique active PRE_REPAIR.
-- 2026-11-04 18:34 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w2-warehouse-fulfillment-be-20261104 | Tích hợp Warranty từ dev 80fa61f, tách gate W2 và sửa JWT harness dùng effective secret; giữ CI/DB/runtime release gate.
