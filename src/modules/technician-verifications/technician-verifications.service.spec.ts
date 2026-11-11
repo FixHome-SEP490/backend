@@ -35,6 +35,8 @@ describe('TechnicianVerificationsService', () => {
     reviewedBy: null,
     rejectionReason: null,
     verifiedFullName: null,
+    faceMatchScore: null,
+    faceMatchAt: null,
     documents: [],
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -72,6 +74,7 @@ describe('TechnicianVerificationsService', () => {
     storageService = {
       validateObjectPath: vi.fn(),
       objectExists: vi.fn().mockResolvedValue(true),
+      download: vi.fn().mockResolvedValue(Buffer.from('img')),
       createSignedAccess: vi.fn().mockResolvedValue({
         signedUrl: 'https://project.supabase.co/signed/kyc-document',
         expiresIn: 300,
@@ -404,13 +407,15 @@ describe('TechnicianVerificationsService', () => {
       expect(result.reviewedById).toBe('admin-uuid-1');
       expect(result.reviewedAt).toBeInstanceOf(Date);
       expect(result.rejectionReason).toBeNull();
+      // Identity confirmed only invites the technician to the office: not approved, no wallet, not yet matchable.
       expect(profileRepository.update).toHaveBeenCalledWith(
         { userId: 'tech-uuid-1' },
         {
-          verificationStatus: VerificationStatus.VERIFIED,
-          onboardingStatus: OnboardingStatus.APPROVED,
+          identityVerifiedAt: expect.any(Date),
+          verificationStatus: VerificationStatus.PENDING,
         },
       );
+      expect(profileRepository.update.mock.calls[0][1]).not.toHaveProperty('onboardingStatus');
       expect(auditLogService.logWithManagerStrict).toHaveBeenCalledWith(
         manager,
         expect.objectContaining({
@@ -421,7 +426,7 @@ describe('TechnicianVerificationsService', () => {
           before: { status: VerificationStatus.PENDING },
           after: {
             status: VerificationStatus.VERIFIED,
-            profileVerificationStatus: VerificationStatus.VERIFIED,
+            profileVerificationStatus: VerificationStatus.PENDING,
             reviewedById: 'admin-uuid-1',
             rejectionReason: null,
           },
@@ -572,6 +577,51 @@ describe('TechnicianVerificationsService', () => {
           status: VerificationStatus.VERIFIED,
         }),
       });
+    });
+  });
+
+  describe('submitVerification face match', () => {
+    const build = (faceMatch: any) =>
+      new TechnicianVerificationsService(
+        verificationRepository,
+        documentRepository,
+        auditLogService,
+        storageService as KycStorageService,
+        undefined,
+        faceMatch,
+      );
+    const faceMatch = (compare: any, enabled = true) => ({ enabled, threshold: 80, compare });
+
+    beforeEach(() => verificationRepository.findOne.mockResolvedValue(null));
+
+    it('keeps the score for the admin when the faces match', async () => {
+      const compare = vi.fn().mockResolvedValue({ outcome: 'scored', similarity: 93.5 });
+      await build(faceMatch(compare)).submitVerification('tech-uuid-1', { documents: validDocuments });
+      expect(storageService.download).toHaveBeenCalledWith('kyc/tech-uuid-1/id-front.jpg', 'tech-uuid-1');
+      expect(storageService.download).toHaveBeenCalledWith('kyc/tech-uuid-1/face-photo.jpg', 'tech-uuid-1');
+      expect(verificationRepository.create).toHaveBeenCalledWith(expect.objectContaining({ faceMatchScore: 93.5, faceMatchAt: expect.any(Date) }));
+    });
+
+    it.each([
+      ['below the threshold', { outcome: 'scored', similarity: 42 }],
+      ['no face found', { outcome: 'no_face' }],
+    ])('rejects and saves nothing when %s', async (_name, result) => {
+      await expect(
+        build(faceMatch(vi.fn().mockResolvedValue(result))).submitVerification('tech-uuid-1', { documents: validDocuments }),
+      ).rejects.toThrow(BadRequestException);
+      expect(verificationRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('still submits for manual review when the provider is unavailable', async () => {
+      await build(faceMatch(vi.fn().mockResolvedValue({ outcome: 'skipped' }))).submitVerification('tech-uuid-1', { documents: validDocuments });
+      expect(verificationRepository.create).toHaveBeenCalledWith(expect.objectContaining({ faceMatchScore: null, faceMatchAt: null }));
+    });
+
+    it('does not read any image when face match is disabled', async () => {
+      const compare = vi.fn();
+      await build(faceMatch(compare, false)).submitVerification('tech-uuid-1', { documents: validDocuments });
+      expect(storageService.download).not.toHaveBeenCalled();
+      expect(compare).not.toHaveBeenCalled();
     });
   });
 });

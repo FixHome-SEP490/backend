@@ -9,6 +9,7 @@ import {
   WarrantyCustomerPrompt,
   WarrantyDeclineReason,
   WarrantyInspectionResult,
+  WarrantyStatus,
   WarrantyNotCoveredReason,
   WarrantyVisitStatus,
 } from '../../shared/enums';
@@ -314,6 +315,25 @@ describe('technician warranty commands', () => {
       }),
     );
     expect(ok.notifier.toManagers).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'WARRANTY_PROPOSAL_READY', 'order-1');
+  });
+
+  it('approves a workmanship fault without parts by itself, but still sends late or voided claims to a manager', async () => {
+    const run = (claim: object, coverage?: object) => {
+      const f = makeService({ claim: makeClaim({ status: WarrantyClaimStatus.ACCEPTED, ...claim }), visits: [makeVisit({ status: WarrantyVisitStatus.CHECKED_IN })], coverage });
+      return f.service.propose('claim-1', { result: WarrantyInspectionResult.COVERED_WORKMANSHIP, findings: 'Mối nối bị lỏng do lắp chưa chặt' }, TECH).then(() => f);
+    };
+    const auto = await run({});
+    expect(auto.claimTx.update).toHaveBeenCalledWith(
+      expect.objectContaining({ status: WarrantyClaimStatus.ACCEPTED }),
+      expect.objectContaining({ status: WarrantyClaimStatus.IN_PROGRESS, finalResult: WarrantyInspectionResult.COVERED_WORKMANSHIP, reviewedByManagerId: null }),
+    );
+    expect(auto.notifier.toManagers).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'WARRANTY_AUTO_APPROVED', 'order-1');
+    expect(auto.notifier.toUser).toHaveBeenCalledWith('customer-1', expect.any(String), expect.any(String), 'WARRANTY_DECISION_MADE', 'order-1');
+
+    for (const f of [await run({ submittedAfterExpiry: true }), await run({}, { status: WarrantyStatus.VOIDED, expiresAt: new Date(Date.now() + 86_400_000) })]) {
+      expect(f.claimTx.update).toHaveBeenCalledWith(expect.anything(), { status: WarrantyClaimStatus.INSPECTED });
+      expect(f.notifier.toManagers).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'WARRANTY_PROPOSAL_READY', 'order-1');
+    }
   });
 
   it('refuses a not-covered conclusion without evidence and stores the reason when it has one', async () => {

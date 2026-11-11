@@ -23,7 +23,7 @@ import { PaginationMeta } from '../../shared/dto';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { Wallet } from '../wallet/entities/wallet.entity';
+import { FaceMatchService } from '../face-match/face-match.service';
 import {
   KycStorageService,
   KycSignedAccess,
@@ -51,6 +51,7 @@ export class TechnicianVerificationsService {
     private readonly auditLogService: AuditLogService,
     private readonly storageService: KycStorageService,
     @Optional() private readonly notificationsService?: NotificationsService,
+    @Optional() private readonly faceMatch?: FaceMatchService,
   ) {}
 
   async submitVerification(
@@ -93,6 +94,7 @@ export class TechnicianVerificationsService {
       throw new BadRequestException(
         'Không tìm thấy giấy tờ đã tải lên. Vui lòng tải lại ảnh hoặc video rồi gửi hồ sơ.',
       );
+    const faceMatchScore = await this.matchFace(technicianId, dto);
     const verification = await this.verificationRepository.manager.transaction(async (manager) => {
       const technician = await manager
         .getRepository(User)
@@ -131,6 +133,8 @@ export class TechnicianVerificationsService {
         technicianId,
         status: VerificationStatus.PENDING,
         submittedAt: new Date(),
+        faceMatchScore,
+        faceMatchAt: faceMatchScore === null ? null : new Date(),
       });
 
       const savedVerification = await verifications.save(verification);
@@ -333,25 +337,13 @@ export class TechnicianVerificationsService {
           'Verification request is already processed',
         );
 
-      const profileUpdate: Partial<TechnicianProfile> = {
-        verificationStatus: status,
-      };
-      if (status === VerificationStatus.VERIFIED) {
-        profileUpdate.onboardingStatus = OnboardingStatus.APPROVED;
-
-        // Ensure wallet exists with initial 0 VND balance
-        const walletRepo = manager.getRepository(Wallet);
-        const existingWallet = await walletRepo.findOne({
-          where: { technicianId: verification.technicianId },
-        });
-        if (!existingWallet) {
-          const newWallet = walletRepo.create({
-            technicianId: verification.technicianId,
-            balance: 0,
-          });
-          await walletRepo.save(newWallet);
-        }
-      } else if (status === VerificationStatus.REJECTED) {
+      // Confirming identity only invites the technician to the office (PO 09/11/2026). The technician becomes
+      // APPROVED, gets a wallet and can take jobs only after the profile review that follows the visit.
+      const profileUpdate: Partial<TechnicianProfile> =
+        status === VerificationStatus.VERIFIED
+          ? { identityVerifiedAt: new Date(), verificationStatus: VerificationStatus.PENDING }
+          : { verificationStatus: status };
+      if (status === VerificationStatus.REJECTED) {
         profileUpdate.onboardingStatus = OnboardingStatus.REJECTED;
       }
 
@@ -376,7 +368,7 @@ export class TechnicianVerificationsService {
         before: { status: verification.status },
         after: {
           status,
-          profileVerificationStatus: status,
+          profileVerificationStatus: profileUpdate.verificationStatus,
           reviewedById: reviewerId,
           rejectionReason,
         },
@@ -386,12 +378,12 @@ export class TechnicianVerificationsService {
         if (status === VerificationStatus.VERIFIED) {
           void this.notificationsService.createNotification({
             userId: verification.technicianId,
-            title: 'Hồ sơ đã được duyệt - Nạp tiền ví để nhận việc',
+            title: 'Danh tính đã được xác nhận - Đặt lịch lên trụ sở',
             message:
-              'Chúc mừng bạn đã trở thành Đối tác Kỹ thuật viên FixHome! Số dư ví ban đầu là 0 ₫. Vui lòng nạp tối thiểu 200.000 ₫ vào ví để bắt đầu tiếp nhận các đơn sửa chữa từ khách hàng.',
-            type: 'WALLET_TOPUP_REQUIRED',
-            referenceType: 'wallet',
-            referenceId: verification.technicianId,
+              'Danh tính của bạn đã được xác nhận. Vui lòng chọn trụ sở và giờ hẹn để gặp trực tiếp, mang theo bản công chứng bằng cấp để FixHome kiểm tra và duyệt hồ sơ.',
+            type: 'KYC_IDENTITY_APPROVED',
+            referenceType: 'technician_verification',
+            referenceId: id,
           });
         } else if (status === VerificationStatus.REJECTED) {
           void this.notificationsService.createNotification({
@@ -453,6 +445,31 @@ export class TechnicianVerificationsService {
       document.storageObjectPath,
       document.verification.technicianId,
     );
+  }
+
+  /**
+   * Selfie vs the CCCD front photo, outside the row lock (it is a network call). Below the threshold or
+   * no face found => the technician retakes. Provider off/unreachable or no comparable image => null,
+   * and the admin reviews by eye as before.
+   */
+  private async matchFace(technicianId: string, dto: SubmitVerificationDto): Promise<number | null> {
+    if (!this.faceMatch?.enabled) return null;
+    const image = (type: DocumentType) =>
+      dto.documents.find((d) => d.documentType === type && d.mimeType.startsWith('image/'));
+    const front = image(DocumentType.CITIZEN_ID_FRONT);
+    const face = image(DocumentType.FACE_PHOTO);
+    if (!front || !face) return null;
+    const [idCard, selfie] = await Promise.all([
+      this.storageService.download(front.storageObjectPath, technicianId),
+      this.storageService.download(face.storageObjectPath, technicianId),
+    ]);
+    const result = await this.faceMatch.compare(selfie, idCard);
+    if (result.outcome === 'skipped') return null;
+    if (result.outcome === 'no_face')
+      throw new BadRequestException('Không nhận diện được khuôn mặt trong ảnh CCCD hoặc ảnh chân dung. Vui lòng chụp lại rõ mặt, đủ sáng.');
+    if (result.similarity < this.faceMatch.threshold)
+      throw new BadRequestException('Khuôn mặt ở ảnh chân dung không khớp với ảnh trên CCCD. Vui lòng chụp lại.');
+    return result.similarity;
   }
 
   private validateSubmissionDocuments(dto: SubmitVerificationDto): void {

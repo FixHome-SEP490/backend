@@ -112,6 +112,9 @@ export class TechnicianVerificationResponseDto {
   @ApiProperty({ type: String, nullable: true })
   rejectionReason: string | null;
 
+  @ApiProperty({ type: Number, nullable: true, description: 'Face similarity 0-100 between the CCCD photo and the selfie at submit; null = not compared' })
+  faceMatchScore: number | null;
+
   @ApiProperty({ type: [VerificationDocumentResponseDto] })
   documents: VerificationDocumentResponseDto[];
 

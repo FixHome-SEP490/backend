@@ -1,6 +1,9 @@
 // src/modules/service-orders/service-orders.module.ts
 import { Module } from '@nestjs/common';
 import { MediaModule } from '../media/media.module';
+import { FaceMatchModule } from '../face-match/face-match.module';
+import { TechnicianVerificationsModule } from '../technician-verifications/technician-verifications.module';
+import { CheckinFaceService } from './checkin-face.service';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ServiceOrdersController } from './service-orders.controller';
@@ -47,6 +50,8 @@ import { VouchersModule } from '../vouchers/vouchers.module';
 @Module({
   imports: [
     MediaModule,
+    FaceMatchModule,
+    TechnicianVerificationsModule,
     FinanceModule,
     WalletModule,
     NotificationsModule,
@@ -85,6 +90,7 @@ import { VouchersModule } from '../vouchers/vouchers.module';
     WarrantyClaimsManagerController,
   ],
   providers: [
+    CheckinFaceService,
     ServiceOrdersService,
     WarrantyClaimsService,
     WarrantyClaimsTechnicianService,

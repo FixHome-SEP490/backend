@@ -4,9 +4,10 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { TechnicianProfile } from './entities/technician-profile.entity';
 import { TechnicianSkill } from './entities/technician-skill.entity';
 import { TechnicianServiceArea } from './entities/technician-service-area.entity';
@@ -19,6 +20,9 @@ import {
   Role,
   VerificationStatus,
 } from '../../shared/enums';
+import { OfficeVisit, OfficeVisitStatus } from '../technician-office-visits/entities/office-visit.entity';
+import { deriveReviewStage } from '../technician-office-visits/office-visit-rules';
+import { BusinessConfigService } from '../system-config/business-config.service';
 import {
   SavePersonalInfoDto,
   SaveSkillsDto,
@@ -42,6 +46,10 @@ export class TechnicianOnboardingService {
     private readonly serviceRepo: Repository<Service>,
     @InjectRepository(TechnicianVerification)
     private readonly verificationRepo: Repository<TechnicianVerification>,
+    @Optional()
+    @InjectRepository(OfficeVisit)
+    private readonly visitRepo?: Repository<OfficeVisit>,
+    @Optional() private readonly configService?: BusinessConfigService,
   ) {}
 
   // ── Helpers ────────────────────────────────────────────────────────────
@@ -99,18 +107,25 @@ export class TechnicianOnboardingService {
     let rejectionReason: string | null = null;
     let shouldSave = false;
 
-    // Self-heal and sync onboarding status with KYC verification status
-    if (
-      profile.verificationStatus === VerificationStatus.VERIFIED ||
-      latestKyc?.status === VerificationStatus.VERIFIED
-    ) {
-      if (profile.verificationStatus !== VerificationStatus.VERIFIED) {
-        profile.verificationStatus = VerificationStatus.VERIFIED;
-        shouldSave = true;
-      }
+    // Self-heal and sync onboarding status. Only the final profile review makes a technician approved
+    // (profile.verificationStatus); a verified KYC alone is just the identity step (PO 09/11/2026).
+    if (profile.verificationStatus === VerificationStatus.VERIFIED) {
       if (profile.onboardingStatus !== OnboardingStatus.APPROVED) {
         profile.onboardingStatus = OnboardingStatus.APPROVED;
         shouldSave = true;
+      }
+    } else if (latestKyc?.status === VerificationStatus.VERIFIED) {
+      // Identity confirmed, waiting for the office visit and the profile review.
+      if (profile.verificationStatus !== VerificationStatus.PENDING) {
+        profile.verificationStatus = VerificationStatus.PENDING;
+        shouldSave = true;
+      }
+      if (!profile.identityVerifiedAt) {
+        profile.identityVerifiedAt = latestKyc.reviewedAt ?? new Date();
+        shouldSave = true;
+      }
+      if (profile.onboardingStatus === OnboardingStatus.REJECTED) {
+        rejectionReason = profile.profileReviewRejectionReason ?? null;
       }
     } else if (latestKyc?.status === VerificationStatus.PENDING) {
       if (profile.verificationStatus !== VerificationStatus.PENDING) {
@@ -146,6 +161,8 @@ export class TechnicianOnboardingService {
       where: { technicianId: profile.id },
     });
 
+    const review = await this.reviewInfo(profile, userId, latestKyc);
+
     let formattedDob: string | undefined;
     if (user.dateOfBirth) {
       formattedDob =
@@ -179,6 +196,58 @@ export class TechnicianOnboardingService {
       yearsExperience: profile.yearsExperience,
       bio: profile.bio || undefined,
       selectedServiceIds: skills.map((s) => s.serviceId),
+      skills: skills.map((s) => ({
+        serviceId: s.serviceId,
+        declaredLevel: s.declaredLevel ?? null,
+        level: s.level,
+        verificationStatus: s.verificationStatus,
+      })),
+      ...review,
+    };
+  }
+
+  /** Giai đoạn xét duyệt và lịch hẹn lên trụ sở, tính từ dữ liệu hiện có (xem `deriveReviewStage`). */
+  private async reviewInfo(
+    profile: TechnicianProfile,
+    userId: string,
+    latestKyc: TechnicianVerification | null,
+  ): Promise<Partial<OnboardingStatusResponseDto>> {
+    const visits = this.visitRepo
+      ? await this.visitRepo.find({
+          where: { technicianId: userId, status: In([OfficeVisitStatus.SCHEDULED, OfficeVisitStatus.ATTENDED, OfficeVisitStatus.MISSED]) },
+          relations: ['office'],
+          order: { scheduledAt: 'DESC' },
+        })
+      : [];
+    const scheduled = visits.find((v) => v.status === OfficeVisitStatus.SCHEDULED) ?? null;
+    const maxMissed = (await this.configService?.getInt('office.max_missed_visits', 2)) ?? 2;
+    const missedVisits = visits.filter((v) => v.status === OfficeVisitStatus.MISSED).length;
+    const reviewStage = deriveReviewStage({
+      onboardingStatus: profile.onboardingStatus,
+      profileVerified: profile.verificationStatus === VerificationStatus.VERIFIED,
+      identityVerified: !!profile.identityVerifiedAt || latestKyc?.status === VerificationStatus.VERIFIED,
+      kycRejected: latestKyc?.status === VerificationStatus.REJECTED,
+      profileRejectionReason: profile.profileReviewRejectionReason ?? null,
+      hasScheduledVisit: !!scheduled,
+      hasAttendedVisit: visits.some((v) => v.status === OfficeVisitStatus.ATTENDED),
+      missedVisits,
+      maxMissedVisits: maxMissed,
+    });
+    return {
+      reviewStage,
+      identityVerifiedAt: profile.identityVerifiedAt?.toISOString(),
+      profileRejectionReason: profile.profileReviewRejectionReason ?? undefined,
+      officeVisit: scheduled
+        ? {
+            id: scheduled.id,
+            officeId: scheduled.officeId,
+            officeName: scheduled.office?.name ?? '',
+            officeAddress: scheduled.office?.address ?? '',
+            scheduledAt: scheduled.scheduledAt.toISOString(),
+          }
+        : null,
+      supportPhone:
+        reviewStage === 'visit_blocked' ? ((await this.configService?.getString('office.support_phone', '')) || undefined) : undefined,
     };
   }
 
@@ -241,6 +310,10 @@ export class TechnicianOnboardingService {
         'Một số dịch vụ không tồn tại hoặc đã bị vô hiệu hóa.',
       );
     }
+    const declared = new Map((dto.skills ?? []).map((item) => [item.serviceId, item.level]));
+    if ([...declared.keys()].some((id) => !dto.serviceIds.includes(id))) {
+      throw new BadRequestException('Cấp độ chỉ được khai cho kỹ năng đã chọn.');
+    }
 
     // Upsert skills (delete old ones not in new list, create new ones)
     const existingSkills = await this.skillRepo.find({
@@ -262,12 +335,23 @@ export class TechnicianOnboardingService {
         this.skillRepo.create({
           technicianId: profile.id,
           serviceId,
-          level: 'INTERMEDIATE',
+          level: declared.get(serviceId) ?? 'INTERMEDIATE',
+          declaredLevel: declared.get(serviceId) ?? null,
           isActive: true,
         }),
       );
       await this.skillRepo.save(newSkills);
     }
+
+    // A skill still waiting for review follows the latest self-declared level; a confirmed one keeps the confirmed level.
+    const toUpdate = existingSkills.filter(
+      (s) => newServiceIds.has(s.serviceId) && declared.has(s.serviceId) && s.verificationStatus !== VerificationStatus.VERIFIED,
+    );
+    for (const skill of toUpdate) {
+      skill.declaredLevel = declared.get(skill.serviceId) ?? null;
+      skill.level = declared.get(skill.serviceId) ?? skill.level;
+    }
+    if (toUpdate.length > 0) await this.skillRepo.save(toUpdate);
 
     // Update profile
     profile.yearsExperience = dto.yearsExperience;
@@ -354,6 +438,7 @@ export class TechnicianOnboardingService {
 
     profile.onboardingStatus = OnboardingStatus.SUBMITTED;
     profile.verificationStatus = VerificationStatus.PENDING;
+    profile.profileReviewRejectionReason = null;
     profile.onboardingStep = 5;
     await this.profileRepo.save(profile);
 

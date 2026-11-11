@@ -9,6 +9,7 @@ import { VerificationDocument } from './entities/verification-document.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { KycStorageService } from './kyc-storage.service';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { FaceMatchModule } from '../face-match/face-match.module';
 import { Wallet } from '../wallet/entities/wallet.entity';
 
 @Module({
@@ -20,6 +21,7 @@ import { Wallet } from '../wallet/entities/wallet.entity';
       Wallet,
     ]),
     NotificationsModule,
+    FaceMatchModule,
   ],
   controllers: [
     TechnicianVerificationsController,

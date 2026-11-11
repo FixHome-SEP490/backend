@@ -92,6 +92,13 @@ export class TechnicianProfile extends BaseEntity {
   })
   onboardingStatus: OnboardingStatus;
 
+  /** Lúc admin xác nhận danh tính (KYC); từ đây thợ được mời lên trụ sở. Chưa phải duyệt hồ sơ. */
+  @Column({ name: 'identity_verified_at', type: 'timestamptz', nullable: true })
+  identityVerifiedAt?: Date | null;
+
+  @Column({ name: 'profile_review_rejection_reason', type: 'text', nullable: true })
+  profileReviewRejectionReason?: string | null;
+
   /** 1-5 representing the current wizard step. */
   @Column({ name: 'onboarding_step', type: 'int', default: 1 })
   onboardingStep: number;

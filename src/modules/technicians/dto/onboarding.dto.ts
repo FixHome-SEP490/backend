@@ -16,10 +16,13 @@ import {
   ArrayMinSize,
   IsUUID,
   IsInt,
+  IsIn,
+  ValidateNested,
 } from 'class-validator';
 import { Trim } from '../../../shared/validation/input.transforms';
 import { IsPersonName } from '../../../shared/validation/text.validators';
-import { OnboardingStatus, Gender, VerificationStatus } from '../../../shared/enums';
+import { Type } from 'class-transformer';
+import { OnboardingStatus, Gender, VerificationStatus, SkillLevel, SKILL_LEVELS } from '../../../shared/enums';
 
 // ── Step 1: Personal Info ──────────────────────────────────────────────
 
@@ -60,6 +63,16 @@ export class SavePersonalInfoDto {
 
 // ── Step 3: Skills Selection ───────────────────────────────────────────
 
+export class SkillLevelItemDto {
+  @ApiProperty({ example: 'uuid-1' })
+  @IsUUID('4')
+  serviceId: string;
+
+  @ApiProperty({ enum: SkillLevel, description: 'Cấp độ tự khai; cấp độ thật do admin xác nhận sau khi xem bằng cấp' })
+  @IsIn(SKILL_LEVELS)
+  level: string;
+}
+
 export class SaveSkillsDto {
   @ApiProperty({
     description: 'At least 1 service ID the technician specializes in',
@@ -82,6 +95,13 @@ export class SaveSkillsDto {
   @IsString()
   @MaxLength(2000)
   bio?: string;
+
+  @ApiPropertyOptional({ type: [SkillLevelItemDto], description: 'Cấp độ tự khai cho từng kỹ năng (thiếu thì mặc định INTERMEDIATE)' })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SkillLevelItemDto)
+  skills?: SkillLevelItemDto[];
 }
 
 // ── Step 4: Address & Service Area ─────────────────────────────────────
@@ -200,4 +220,24 @@ export class OnboardingStatusResponseDto {
 
   @ApiPropertyOptional({ isArray: true, type: String })
   selectedServiceIds?: string[];
+
+  @ApiPropertyOptional({ description: 'Kỹ năng đã chọn kèm cấp độ tự khai, cấp độ hiện hiệu lực và trạng thái xác nhận' })
+  skills?: { serviceId: string; declaredLevel: string | null; level: string; verificationStatus: VerificationStatus }[];
+
+  @ApiPropertyOptional({
+    description: 'Giai đoạn xét duyệt: identity_review, visit_required, visit_scheduled, visit_blocked, profile_review, approved, identity_rejected, profile_rejected',
+  })
+  reviewStage?: string | null;
+
+  @ApiPropertyOptional({ description: 'Lúc admin xác nhận danh tính' })
+  identityVerifiedAt?: string;
+
+  @ApiPropertyOptional({ description: 'Lý do từ chối hồ sơ (ở bước duyệt hồ sơ, khác lý do từ chối danh tính)' })
+  profileRejectionReason?: string;
+
+  @ApiPropertyOptional({ description: 'Lượt hẹn lên trụ sở đang chờ' })
+  officeVisit?: { id: string; officeId: string; officeName: string; officeAddress: string; scheduledAt: string } | null;
+
+  @ApiPropertyOptional({ description: 'Số điện thoại liên hệ quản lý dịch vụ, chỉ có khi bị khóa đặt lịch vì vắng' })
+  supportPhone?: string;
 }

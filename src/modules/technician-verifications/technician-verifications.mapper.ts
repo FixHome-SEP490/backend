@@ -53,6 +53,7 @@ export function toTechnicianVerificationResponse(
     reviewedAt: verification.reviewedAt,
     reviewedById: verification.reviewedById,
     rejectionReason: verification.rejectionReason,
+    faceMatchScore: verification.faceMatchScore ?? null,
     documents: (verification.documents ?? []).map(toVerificationDocumentResponse),
     reviewedBy: verification.reviewedBy
       ? toVerificationUserSummary(verification.reviewedBy)

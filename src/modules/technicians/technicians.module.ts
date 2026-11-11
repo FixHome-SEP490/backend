@@ -23,6 +23,7 @@ import { TechnicianVerification } from '../technician-verifications/entities/tec
 import { TechnicianAssignment } from '../service-orders/entities/technician-assignment.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { CommissionDue } from '../service-orders/entities/commission-due.entity';
+import { OfficeVisit } from '../technician-office-visits/entities/office-visit.entity';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { CommissionDue } from '../service-orders/entities/commission-due.entity'
       User,
       Service,
       TechnicianVerification,
+      OfficeVisit,
     ]),
   ],
   controllers: [TechniciansController, TechnicianOnboardingController, AdminTechniciansController],

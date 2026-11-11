@@ -30,6 +30,24 @@ export class EnvironmentVariables {
   @IsIn(['true', 'false'])
   PART_RETURNS_TRACKING_ENABLED: string = 'false';
 
+  // Face match (Amazon Rekognition CompareFaces). Off by default: no AWS call, KYC stays manual review.
+  @IsIn(['true', 'false'])
+  FACE_MATCH_ENABLED: string = 'false';
+
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  @IsOptional()
+  FACE_MATCH_THRESHOLD: number = 80;
+
+  // Check-in face liveness: `true` refuses the old single-photo check-in upload (turn on only once the app that sends challenges is out).
+  @IsIn(['true', 'false'])
+  FACE_CHECKIN_ENFORCE: string = 'false';
+
+  @IsString()
+  @IsOptional()
+  AWS_REGION?: string;
+
   @IsEnum(Environment)
   @IsOptional()
   NODE_ENV: Environment = Environment.Development;

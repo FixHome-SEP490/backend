@@ -106,6 +106,7 @@ export class WarrantyClaimReadService {
         outcomeCode: claim.outcomeCode ?? null,
         refundAmount: claim.refundAmount ?? null,
         noShowFlaggedAt: claim.noShowFlaggedAt ?? null,
+        autoApproved: claim.finalResult === 'covered_workmanship' && !!claim.reviewedAt && !claim.reviewedByManagerId,
         partRequest: requestByClaim.has(claim.id)
           ? (() => {
               const r = requestByClaim.get(claim.id) as PartRequest;
