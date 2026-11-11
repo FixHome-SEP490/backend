@@ -63,4 +63,8 @@ export class StockMovementResponseDto {
 
   @ApiProperty({ format: 'date-time' })
   createdAt: Date;
+
+  /** Set for part request movements (reserve, release, issue, return); null for manual stock changes. */
+  @ApiProperty({ format: 'uuid', nullable: true, required: false })
+  partRequestId?: string | null;
 }

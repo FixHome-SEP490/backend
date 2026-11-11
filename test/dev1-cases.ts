@@ -408,6 +408,13 @@ export function registerDev1Cases(context: () => Context) {
         const consult = unwrap((await post('/visit-groups/consultation', f.owner, { message: 'Nhà có 5 máy lạnh', devices: ['Máy 1', 'Máy 2'] }).expect(201)).body);
         const [supportCase] = await db.query('SELECT case_type, customer_id, booking_id FROM support_cases WHERE id = $1', [consult.id]);
         expect(supportCase).toMatchObject({ case_type: 'other', customer_id: f.owner.user.id, booking_id: null });
+
+        // BUG DETECTOR 59: the address used by a cancelled and an open visit can be deleted (it was a 500);
+        // the groups lose only the reference and keep showing their devices.
+        const removed = await request(context().app.getHttpServer()).delete(`/api/v1/me/addresses/${f.address.id}`).set('Authorization', `Bearer ${f.owner.accessToken}`);
+        expect(removed.status, JSON.stringify(removed.body)).toBe(204);
+        expect((await db.query('SELECT address_id FROM visit_groups WHERE id = ANY($1) ORDER BY created_at', [[group.id, five.id]])).map((row: any) => row.address_id)).toEqual([null, null]);
+        expect(unwrap((await get(`/visit-groups/${five.id}`, f.owner).expect(200)).body).items).toHaveLength(5);
       } finally {
         await setGroups(false);
       }

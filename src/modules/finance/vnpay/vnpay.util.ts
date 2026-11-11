@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from 'crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { vnParts } from '../../../shared/utils/vn-time';
 
 export interface VnpayBuildUrlInput {
@@ -179,4 +179,27 @@ export function pickWebOrigin(candidate: string | undefined, allowedOrigins: str
   if (origin !== candidate.replace(/\/+$/, '')) return fallback;
   const allowed = allowedOrigins.split(',').map((o) => o.trim().replace(/\/+$/, '')).filter(Boolean);
   return allowed.includes(origin) ? origin : fallback;
+}
+
+/** Fields of a querydr response that VNPay signs, in the order of the 2.1.0 specification. */
+const QUERYDR_RESPONSE_FIELDS = [
+  'vnp_ResponseId', 'vnp_Command', 'vnp_ResponseCode', 'vnp_Message', 'vnp_TmnCode', 'vnp_TxnRef',
+  'vnp_Amount', 'vnp_BankCode', 'vnp_PayDate', 'vnp_TransactionNo', 'vnp_TransactionType',
+  'vnp_TransactionStatus', 'vnp_OrderInfo', 'vnp_PromotionCode', 'vnp_PromotionAmount',
+] as const;
+
+/**
+ * BUG DETECTOR 60: a querydr answer is trusted only when VNPay's own signature
+ * over it checks out and it is about this merchant and this transaction.
+ */
+export function verifyQueryDrResponse(
+  data: Record<string, unknown> | null | undefined,
+  expected: { hashSecret: string; tmnCode: string; txnRef: string },
+): boolean {
+  if (!data || typeof data.vnp_SecureHash !== 'string' || !data.vnp_SecureHash) return false;
+  if (data.vnp_TmnCode !== expected.tmnCode || data.vnp_TxnRef !== expected.txnRef) return false;
+  const signed = QUERYDR_RESPONSE_FIELDS.map((key) => (data[key] == null ? '' : String(data[key]))).join('|');
+  const digest = createHmac('sha512', expected.hashSecret).update(Buffer.from(signed, 'utf-8')).digest('hex');
+  const given = data.vnp_SecureHash.toLowerCase();
+  return given.length === digest.length && timingSafeEqual(Buffer.from(given), Buffer.from(digest));
 }

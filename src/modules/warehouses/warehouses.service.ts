@@ -115,13 +115,34 @@ export class WarehousesService {
 
   async listMovements(id: string, actor: User, page: ListWarehouseRowsDto) {
     const warehouse = await this.getWarehouse(id, actor);
-    const [data, total] = await this.movements.findAndCount({
-      where: { warehouseId: warehouse.id },
-      order: { createdAt: 'DESC', id: 'ASC' },
-      take: page.limit,
-      skip: page.offset,
-    });
-    return { data: data.map((row) => this.toMovementResponse(row)), meta: { total, limit: page.limit, offset: page.offset } };
+    // BUG DETECTOR 80: the log read only manual stock changes (W1). Part request work
+    // (W2 reserve, release, issue, return) is written elsewhere, so a warehouse that had
+    // handed parts over showed an empty history. Both are read together, newest first.
+    const movements = `
+      SELECT m.id, m.warehouse_id, m.part_id, m.actor_user_id, m.kind::text AS kind, m.delta, m.reason,
+             m.idempotency_key::text AS idempotency_key, m.on_hand_after, m.reserved_after, m.created_at,
+             NULL::uuid AS part_request_id
+        FROM stock_movements m WHERE m.warehouse_id = $1
+      UNION ALL
+      SELECT f.id, f.warehouse_id, f.part_id, c.actor_user_id, lower(f.kind) AS kind, f.delta,
+             'Phiếu PR-' || upper(left(c.part_request_id::text, 8)) AS reason,
+             c.command_key AS idempotency_key, f.on_hand_after, f.reserved_after, f.created_at,
+             c.part_request_id
+        FROM warehouse_fulfillment_movements f
+        JOIN warehouse_fulfillment_commands c ON c.id = f.command_id
+       WHERE f.warehouse_id = $1`;
+    const [rows, [{ total }]] = await Promise.all([
+      this.dataSource.query(`${movements} ORDER BY created_at DESC, id ASC LIMIT $2 OFFSET $3`,
+        [warehouse.id, page.limit, page.offset]),
+      this.dataSource.query(`SELECT COUNT(*)::int AS total FROM (${movements}) all_rows`, [warehouse.id]),
+    ]);
+    const data: StockMovementResponseDto[] = rows.map((row: Record<string, any>) => ({
+      id: row.id, warehouseId: row.warehouse_id, partId: row.part_id, actorUserId: row.actor_user_id,
+      kind: row.kind, delta: Number(row.delta), reason: row.reason, idempotencyKey: row.idempotency_key,
+      onHandAfter: Number(row.on_hand_after), reservedAfter: Number(row.reserved_after),
+      createdAt: new Date(row.created_at), partRequestId: row.part_request_id ?? null,
+    }));
+    return { data, meta: { total, limit: page.limit, offset: page.offset } };
   }
 
   async adjustStock(id: string, dto: AdjustStockDto, actor: User): Promise<StockMovementResponseDto> {
