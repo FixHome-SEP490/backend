@@ -1,5 +1,6 @@
+import { createHmac } from 'crypto';
 import { describe, expect, it } from 'vitest';
-import { buildPaymentUrl, formatVnpayDate, pickWebOrigin, verifySignature, withWebOrigin } from './vnpay.util';
+import { buildPaymentUrl, formatVnpayDate, pickWebOrigin, verifyQueryDrResponse, verifySignature, withWebOrigin } from './vnpay.util';
 
 describe('vnpay.util', () => {
   const hashSecret = 'TESTSECRET123';
@@ -98,3 +99,34 @@ describe('vnpay.util', () => {
   });
 });
 
+
+describe('verifyQueryDrResponse (BUG DETECTOR 60)', () => {
+  const secret = 'querydr-secret';
+  const fields = ['vnp_ResponseId', 'vnp_Command', 'vnp_ResponseCode', 'vnp_Message', 'vnp_TmnCode', 'vnp_TxnRef',
+    'vnp_Amount', 'vnp_BankCode', 'vnp_PayDate', 'vnp_TransactionNo', 'vnp_TransactionType',
+    'vnp_TransactionStatus', 'vnp_OrderInfo', 'vnp_PromotionCode', 'vnp_PromotionAmount'];
+  const sign = (data: Record<string, string>, key = secret) => ({
+    ...data,
+    vnp_SecureHash: createHmac('sha512', key).update(fields.map((f) => data[f] ?? '').join('|')).digest('hex'),
+  });
+  const answer = {
+    vnp_ResponseId: 'r1', vnp_Command: 'querydr', vnp_ResponseCode: '00', vnp_Message: 'QueryDR Success',
+    vnp_TmnCode: 'TMN01', vnp_TxnRef: 'pay-1', vnp_Amount: '15000000', vnp_BankCode: 'NCB',
+    vnp_PayDate: '20261111100000', vnp_TransactionNo: '1400', vnp_TransactionType: '01',
+    vnp_TransactionStatus: '00', vnp_OrderInfo: 'Thanh toan hoa don inv-1',
+  };
+  const expected = { hashSecret: secret, tmnCode: 'TMN01', txnRef: 'pay-1' };
+
+  it('accepts an answer VNPay signed for this merchant and transaction', () => {
+    expect(verifyQueryDrResponse(sign(answer), expected)).toBe(true);
+  });
+
+  it('refuses a tampered, foreign, unsigned or wrongly keyed answer', () => {
+    expect(verifyQueryDrResponse({ ...sign(answer), vnp_Amount: '99900000' }, expected)).toBe(false);
+    expect(verifyQueryDrResponse(sign(answer, 'other-secret'), expected)).toBe(false);
+    expect(verifyQueryDrResponse(sign({ ...answer, vnp_TxnRef: 'pay-2' }), expected)).toBe(false);
+    expect(verifyQueryDrResponse(sign({ ...answer, vnp_TmnCode: 'OTHER' }), expected)).toBe(false);
+    expect(verifyQueryDrResponse(answer, expected)).toBe(false);
+    expect(verifyQueryDrResponse(null, expected)).toBe(false);
+  });
+});

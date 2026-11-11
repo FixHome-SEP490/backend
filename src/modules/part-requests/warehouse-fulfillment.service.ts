@@ -24,6 +24,46 @@ export class WarehouseFulfillmentService {
         'tokenVersion', 'receiptHash', 'receiptExpiresAt', 'handedOverAt', 'handedOverBy', 'receivedAt', 'createdAt'] });
   }
 
+  /**
+   * BUG DETECTOR 90: the same answer as view() for a whole page of requests in one
+   * query, so the manager's list does not call the allocation endpoint once per row.
+   */
+  async views(manager: EntityManager, ids: string[]): Promise<Map<string, Awaited<ReturnType<WarehouseFulfillmentService['view']>>>> {
+    const result = new Map<string, Awaited<ReturnType<WarehouseFulfillmentService['view']>>>();
+    if (!ids.length) return result;
+    const rows: Array<Record<string, any>> = await manager.query(`
+      SELECT a.part_request_id AS "partRequestId", a.warehouse_id AS "warehouseId", a.status,
+             a.token_expires_at AS "tokenExpiresAt", a.token_version AS "tokenVersion",
+             a.handed_over_at AS "handedOverAt", a.received_at AS "receivedAt",
+             w.name AS "warehouseName", w.address AS "warehouseAddress", w.responsible_user_id AS "responsibleUserId",
+             w.latitude AS "warehouseLatitude", w.longitude AS "warehouseLongitude",
+             b.latitude_snapshot AS "bookingLatitude", b.longitude_snapshot AS "bookingLongitude"
+        FROM part_request_warehouse_allocations a
+        LEFT JOIN warehouses w ON w.id = a.warehouse_id
+        JOIN part_requests pr ON pr.id = a.part_request_id
+        JOIN service_orders o ON o.id = pr.service_order_id
+        JOIN bookings b ON b.id = o.booking_id
+       WHERE a.part_request_id = ANY($1::uuid[])`, [ids]);
+    for (const a of rows) {
+      let estimatedStraightLineKm: number | null = null;
+      if (a.warehouseId && point({ latitude: a.warehouseLatitude, longitude: a.warehouseLongitude })) {
+        const km = straightLineKm({ latitude: a.bookingLatitude, longitude: a.bookingLongitude },
+          { latitude: a.warehouseLatitude, longitude: a.warehouseLongitude });
+        if (km !== null) estimatedStraightLineKm = Math.round(km * 10) / 10;
+      }
+      result.set(a.partRequestId, { partRequestId: a.partRequestId, mode: 'warehouse',
+        status: a.status === 'manual_assistance' ? 'stock_unavailable' : a.status, warehouseId: a.warehouseId,
+        warehouseName: a.warehouseId ? a.warehouseName : null, warehouseAddress: a.warehouseId ? a.warehouseAddress : null,
+        responsibleUserId: a.warehouseId ? a.responsibleUserId : null,
+        distanceNotVerified: true, reviewRequired: a.warehouseId !== null, estimatedStraightLineKm,
+        distanceReference: estimatedStraightLineKm === null ? null : 'booking_snapshot',
+        stockUnavailable: a.status === 'manual_assistance',
+        tokenExpiresAt: a.tokenExpiresAt, tokenVersion: a.tokenVersion, handedOverAt: a.handedOverAt, receivedAt: a.receivedAt } as any);
+    }
+    for (const id of ids) if (!result.has(id)) result.set(id, { partRequestId: id, mode: 'legacy', status: null } as any);
+    return result;
+  }
+
   async view(manager: EntityManager, id: string) {
     const a = await manager.findOne(WarehouseAllocation, { where: { partRequestId: id } });
     if (!a) return { partRequestId: id, mode: 'legacy', status: null };

@@ -178,14 +178,27 @@ describe('PartRequestsService', () => {
         andWhere: vi.fn().mockReturnThis(),
         getManyAndCount: vi.fn().mockResolvedValue([[], 0]),
       };
+      const counting: any = { getRawMany: vi.fn().mockResolvedValue([{ status: 'requested', n: '7' }, { status: 'ready', n: 2 }]) };
+      for (const step of ['orderBy', 'skip', 'take', 'select', 'addSelect', 'groupBy']) counting[step] = vi.fn().mockReturnValue(counting);
+      qb.clone = vi.fn().mockReturnValue(counting);
       mockPartRequestRepo.createQueryBuilder.mockReturnValue(qb);
-      await expect(service.findWarehouseTasks({}, { id: 'sm-owner', role: Role.SERVICE_MANAGER })).resolves.toEqual({ data: [], total: 0 });
-      expect(qb.innerJoin).toHaveBeenCalledWith('part_request_warehouse_allocations', 'w2a', 'w2a.part_request_id = pr.id');
-      expect(qb.innerJoin).toHaveBeenCalledWith('warehouses', 'w2w', expect.stringContaining('w2w.responsible_user_id = :warehouseSmId'), { warehouseSmId: 'sm-owner' });
-      expect(qb.andWhere).toHaveBeenCalledWith('pr.fulfillmentMethod = :warehousePickup', { warehousePickup: FulfillmentMethod.PICKUP });
-      qb.innerJoin.mockClear();
+      // BUG DETECTOR 89: status totals cover the whole filtered list, not the page.
+      await expect(service.findWarehouseTasks({ status: 'ready' } as never, { id: 'sm-owner', role: Role.SERVICE_MANAGER }))
+        .resolves.toEqual({ data: [], total: 0, statusCounts: { requested: 7, ready: 2 } });
+      expect(counting.groupBy).toHaveBeenCalledWith('pr.status');
+      expect(qb.clone.mock.invocationCallOrder[0]).toBeLessThan(qb.andWhere.mock.invocationCallOrder[qb.andWhere.mock.calls.findIndex(([sql]: [string]) => sql === 'pr.status = :status')]);
+      // W2 pickups at this manager's warehouses, plus every request outside W2 (BUG DETECTOR 75).
+      const scope = qb.andWhere.mock.calls.find(([sql]: [string]) => sql.includes('w2w.responsible_user_id = :warehouseSmId'));
+      expect(scope?.[0]).toContain('pr.fulfillmentMethod = :warehousePickup');
+      expect(scope?.[0]).toContain('OR NOT EXISTS (SELECT 1 FROM part_request_warehouse_allocations');
+      expect(scope?.[1]).toEqual({ warehouseSmId: 'sm-owner', warehousePickup: FulfillmentMethod.PICKUP });
+      qb.andWhere.mockClear();
       await service.findAll({}, { id: 'admin', role: Role.ADMIN });
-      expect(qb.innerJoin).not.toHaveBeenCalled();
+      expect(qb.andWhere.mock.calls.some(([sql]: [string]) => sql.includes('warehouseSmId'))).toBe(false);
+      // The technician's list shows no tiles, so it costs no counting query (free tier, PO 11/11).
+      qb.clone.mockClear();
+      await expect(service.findAll({}, { id: 'tech-1', role: Role.TECHNICIAN })).resolves.toMatchObject({ statusCounts: {} });
+      expect(qb.clone).not.toHaveBeenCalled();
     });
   });
 

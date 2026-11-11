@@ -225,7 +225,7 @@ export class PartRequestsController {
     @Req() req: { user: { id: string; role: string } },
   ) {
     const result = await this.partRequestsService.findAll(query, req.user);
-    return { data: result.data, meta: { total: result.total } };
+    return { data: result.data, meta: { total: result.total, statusCounts: result.statusCounts } };
   }
 
   // ── 7. Get Part Request Detail ──
@@ -239,7 +239,7 @@ export class PartRequestsController {
     @Req() req: { user: { id: string; role: string } },
   ) {
     const result = await this.partRequestsService.findWarehouseTasks(query, req.user);
-    return { data: result.data, meta: { total: result.total } };
+    return { data: result.data, meta: { total: result.total, statusCounts: result.statusCounts } };
   }
 
   @Get('part-requests/:id')

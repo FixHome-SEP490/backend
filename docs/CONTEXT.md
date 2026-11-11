@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-09 12:24 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
+> Cập nhật lần cuối: 2026-11-11 19:02 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/bug-detector-1111
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -537,6 +537,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-11 19:02 (UTC+7) | ToanAltF4 | fix/bug-detector-1111 | Sửa BUG DETECTOR 59 (xoá địa chỉ đã dùng cho lượt nhiều máy, khoá ngoại SET NULL), 60 (kiểm chữ ký QueryDR), 75 (hàng đợi SM gồm cả phiếu ngoài W2), 77 (phiếu kho không đủ hàng không tính là đã cấp nguồn), 80 (nhật ký kho gồm W2), 81 (hoàn trả theo kho SM), 82 (tìm theo mã PR-), 89 (đếm trạng thái toàn bộ), 90 (phân kho gộp trong hàng đợi)
 - 2026-11-09 12:24 (UTC+7) | Hgnv11 | dev | Thử thách liveness check-in đổi thành quay trái, quay phải, ngẩng lên hoặc cúi xuống (bỏ mỉm cười), đo bằng góc Yaw và Pitch so với ảnh nhìn thẳng
 - 2026-11-09 05:03 (UTC+7) | Hgnv11 | dev | Liveness nhẹ cho ảnh mặt check-in của thợ: thử thách ngẫu nhiên quay đầu hoặc mỉm cười, đối chiếu ảnh đăng ký bằng Rekognition (cờ FACE_CHECKIN_ENFORCE, endpoint challenge và checkin-face)
 - 2026-11-09 02:43 (UTC+7) | Hgnv11 | dev | Tách duyệt danh tính khỏi duyệt hồ sơ: xác nhận danh tính chỉ mời thợ lên trụ sở (nhiều trụ sở cấu hình được, chọn gần nhất, vắng 2 lần thì khóa và báo số hỗ trợ), duyệt hồ sơ cuối xác nhận cấp độ kỹ năng rồi mới APPROVED; cấp độ tự khai khi đăng ký; migration `TechnicianOfficeVisits` kèm script dev-release trong CD
@@ -576,4 +577,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-04 19:37 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | Chốt W3 scaffold và khóa cutover; ghi 3358 unit PASS/58 skipped, gate Finance/pháp lý, DELIVERY stock và PG/runtime chưa kiểm chứng.
 - 2026-11-04 18:45 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w2-warehouse-fulfillment-be-20261104 | Ghi CI đã xác minh JWT và 7 ca W2 PostgreSQL; sửa fixture receipt legacy sang order riêng, giữ unique active PRE_REPAIR.
 - 2026-11-04 18:34 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w2-warehouse-fulfillment-be-20261104 | Tích hợp Warranty từ dev 80fa61f, tách gate W2 và sửa JWT harness dùng effective secret; giữ CI/DB/runtime release gate.
-- 2026-11-04 14:35 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w2-warehouse-fulfillment-be-20261104 | Thêm W2 PICKUP nguyên tử, QR hai bước/recovery và trả kho cùng custody; ghi migration tiến, gate warranty, zero stock và PostgreSQL/runtime chưa kiểm chứng.
