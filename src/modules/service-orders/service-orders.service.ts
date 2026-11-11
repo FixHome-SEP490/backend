@@ -2268,6 +2268,18 @@ interface OrderViewParts {
   afterEvidenceCount: number;
 }
 
+/**
+ * The status history in the order it happened. Two steps written in one transaction share the same
+ * time (a technician withdraws, then the order is cancelled), and the database returns ties in any
+ * order: the step that led to the order's current status goes last, the others keep their order.
+ */
+export function orderTimeline(order: Pick<ServiceOrder, 'status'>, history: OrderStatusHistory[]) {
+  return [...history]
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()
+      || Number(a.toStatus === order.status) - Number(b.toStatus === order.status))
+    .map(h => ({ status: h.toStatus, title: h.reason, timestamp: h.createdAt.toISOString(), actor: h.actorRole }));
+}
+
 /** The order as the apps read it, one shape for the detail and for every list. */
 function orderView(order: ServiceOrder, parts: OrderViewParts): ServiceOrder {
   const { booking, stop, finance, assignment, technician, customer } = parts;
@@ -2309,6 +2321,6 @@ function orderView(order: ServiceOrder, parts: OrderViewParts): ServiceOrder {
     arrivalVerified: parts.arrivalVerified,
     beforeEvidenceCount: parts.beforeEvidenceCount,
     afterEvidenceCount: parts.afterEvidenceCount,
-    timeline: parts.history.map(h => ({ status: h.toStatus, title: h.reason, timestamp: h.createdAt.toISOString(), actor: h.actorRole })),
+    timeline: orderTimeline(order, parts.history),
   });
 }
