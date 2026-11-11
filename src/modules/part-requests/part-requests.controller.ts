@@ -224,7 +224,7 @@ export class PartRequestsController {
     @Query() query: QueryPartRequestsDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
-    const result = await this.partRequestsService.findAll(query, req.user);
+    const result = await this.partRequestsService.findForList(query, req.user);
     return { data: result.data, meta: { total: result.total, statusCounts: result.statusCounts } };
   }
 

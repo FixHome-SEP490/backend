@@ -1269,9 +1269,21 @@ export class PartRequestsService {
   /** Read-only W2 queue for a manager's currently assigned warehouses. */
   async findWarehouseTasks(query: QueryPartRequestsDto, actor: { id: string; role: string }) {
     if (actor.role !== Role.SERVICE_MANAGER) throw new ForbiddenException('Service Manager role required');
-    const result = await this.findAll(query, actor, true);
+    return this.withWarehouseAllocations(await this.findAll(query, actor, true));
+  }
+
+  /**
+   * The staff list (GET /part-requests): an Admin's rows carry their W2 allocation like the manager's
+   * queue does, read for the whole page at once instead of one request per row from the page.
+   */
+  async findForList(query: QueryPartRequestsDto, actor: { id: string; role: string }) {
+    const result = await this.findAll(query, actor);
+    return actor.role === Role.ADMIN ? this.withWarehouseAllocations(result) : result;
+  }
+
+  // BUG DETECTOR 90: each row carries its W2 allocation, read for the whole page at once.
+  private async withWarehouseAllocations<T extends { data: PartRequest[] }>(result: T): Promise<T> {
     if (!this.warehouseFulfillment || !result.data.length) return result;
-    // BUG DETECTOR 90: each row carries its W2 allocation, read for the whole page at once.
     const allocations = await this.warehouseFulfillment.views(this.dataSource.manager, result.data.map(row => row.id));
     return { ...result, data: result.data.map(row => Object.assign(row, { warehouseAllocation: allocations.get(row.id) ?? null })) };
   }

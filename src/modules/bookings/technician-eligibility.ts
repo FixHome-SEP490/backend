@@ -87,7 +87,11 @@ export interface EligibilityBulk {
   preloads: Map<string, EligibilityPreload>;
 }
 
-export async function loadEligibilityBulk(manager: EntityManager, booking: Booking, profiles: TechnicianProfile[]): Promise<EligibilityBulk> {
+export async function loadEligibilityBulk(
+  manager: EntityManager, booking: Booking, profiles: TechnicianProfile[],
+  /** Rows the caller already read for these technicians (the candidate list's location pre-filter); not read twice. */
+  known: { addresses?: Address[]; areas?: TechnicianServiceArea[] } = {},
+): Promise<EligibilityBulk> {
   const userIds = profiles.map((p) => p.userId);
   const profileIds = profiles.map((p) => p.id);
   const ids = (rows: Array<{ id: string }>) => new Set(rows.map((r) => r.id));
@@ -108,8 +112,8 @@ export async function loadEligibilityBulk(manager: EntityManager, booking: Booki
     manager.find(Wallet, { where: { technicianId: In(userIds) } }),
     manager.findOneBy(SystemConfig, { key: 'wallet.minimum_balance' }),
     manager.findOneBy(SystemConfig, { key: 'matching.gps_fresh_minutes' }),
-    manager.find(Address, { where: { userId: In(userIds), isDefault: true } }),
-    manager.find(TechnicianServiceArea, { where: { technicianId: In(profileIds) } }),
+    known.addresses ?? manager.find(Address, { where: { userId: In(userIds), isDefault: true } }),
+    known.areas ?? manager.find(TechnicianServiceArea, { where: { technicianId: In(profileIds) } }),
     manager.find(TechnicianSchedule, { where: { technicianId: In(profileIds) } }),
     windowOk
       ? manager.createQueryBuilder(TechnicianTimeOff, 't').where('t.technicianId IN (:...profileIds)', { profileIds }).andWhere('t.startAt < :end AND t.endAt > :start', { start: arrivalStart, end }).getMany()
