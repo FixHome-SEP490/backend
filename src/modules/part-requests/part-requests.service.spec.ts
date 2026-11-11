@@ -200,6 +200,30 @@ describe('PartRequestsService', () => {
       await expect(service.findAll({}, { id: 'tech-1', role: Role.TECHNICIAN })).resolves.toMatchObject({ statusCounts: {} });
       expect(qb.clone).not.toHaveBeenCalled();
     });
+
+    it("gives the Admin's list each row's W2 allocation in one read for the page, and the technician's list none", async () => {
+      const rows = () => [{ id: 'pr-1' }, { id: 'pr-2' }];
+      const qb: any = { getManyAndCount: vi.fn(async () => [rows(), 2]) };
+      for (const step of ['leftJoinAndSelect', 'orderBy', 'skip', 'take', 'innerJoin', 'andWhere']) qb[step] = vi.fn().mockReturnValue(qb);
+      const counting: any = { getRawMany: vi.fn().mockResolvedValue([]) };
+      for (const step of ['orderBy', 'skip', 'take', 'select', 'addSelect', 'groupBy']) counting[step] = vi.fn().mockReturnValue(counting);
+      qb.clone = vi.fn().mockReturnValue(counting);
+      mockPartRequestRepo.createQueryBuilder.mockReturnValue(qb);
+      const views = vi.fn(async (_manager: unknown, ids: string[]) => new Map(ids.map(id => [id, { partRequestId: id, mode: 'legacy', status: null }])));
+      (service as any).warehouseFulfillment = { views };
+
+      const admin = await service.findForList({}, { id: 'admin', role: Role.ADMIN });
+      expect(views).toHaveBeenCalledTimes(1);
+      expect(views.mock.calls[0][1]).toEqual(['pr-1', 'pr-2']);
+      expect(admin.data.map((row: any) => row.warehouseAllocation)).toEqual([
+        { partRequestId: 'pr-1', mode: 'legacy', status: null }, { partRequestId: 'pr-2', mode: 'legacy', status: null },
+      ]);
+
+      views.mockClear();
+      const tech = await service.findForList({}, { id: 'tech-1', role: Role.TECHNICIAN });
+      expect(views).not.toHaveBeenCalled();
+      expect(tech.data.every((row: any) => !('warehouseAllocation' in row))).toBe(true);
+    });
   });
 
   describe('createPreRepairRequest', () => {

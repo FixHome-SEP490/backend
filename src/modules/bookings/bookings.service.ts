@@ -712,18 +712,19 @@ export class BookingsService {
     // booking's district if they chose service areas. Missing coordinates never match.
     // ponytail: in-memory scan of every skilled technician; move to SQL/PostGIS if it grows.
     const userIds = withSkill.map((tp) => tp.userId);
-    const workAddresses = userIds.length
-      ? await this.addressRepo.find({ where: { userId: In(userIds), isDefault: true } })
-      : [];
-    const addressByUserId = new Map(workAddresses.map((a) => [a.userId, a]));
     const profileIds = withSkill.map((tp) => tp.id);
-    const allAreas = profileIds.length
-      ? await this.dataSource.manager.find(TechnicianServiceArea, { where: { technicianId: In(profileIds) } })
-      : [];
+    // Read side by side, and handed to the eligibility bulk read below instead of being read again.
+    const [workAddresses, allAreas, gpsFreshMinutes] = await Promise.all([
+      userIds.length ? this.addressRepo.find({ where: { userId: In(userIds), isDefault: true } }) : Promise.resolve([] as Address[]),
+      profileIds.length
+        ? this.dataSource.manager.find(TechnicianServiceArea, { where: { technicianId: In(profileIds) } })
+        : Promise.resolve([] as TechnicianServiceArea[]),
+      this.configService.getInt('matching.gps_fresh_minutes', 15),
+    ]);
+    const addressByUserId = new Map(workAddresses.map((a) => [a.userId, a]));
     const areasByProfile = new Map<string, TechnicianServiceArea[]>();
     for (const area of allAreas) areasByProfile.set(area.technicianId, [...(areasByProfile.get(area.technicianId) ?? []), area]);
     const mode = booking.bookingMode === 'urgent' ? 'urgent' : 'scheduled';
-    const gpsFreshMinutes = await this.configService.getInt('matching.gps_fresh_minutes', 15);
     const distanceByProfileId = new Map<string, number | null>();
     let originUnknown = 0;
     let coverageRejected = 0;
@@ -762,7 +763,14 @@ export class BookingsService {
     // The full check costs about a dozen queries per technician; run a batch of them at once and keep
     // the ranking order, stopping as soon as 20 are eligible (was one technician at a time: 8-11 s).
     // ponytail: one bulk read for the whole ranked list; per-technician queries were ~16 round trips each.
-    const bulk = ranked.length ? await loadEligibilityBulk(this.dataSource.manager, booking, ranked) : undefined;
+    const rankedUsers = new Set(ranked.map((p) => p.userId));
+    const rankedProfiles = new Set(ranked.map((p) => p.id));
+    const bulk = ranked.length
+      ? await loadEligibilityBulk(this.dataSource.manager, booking, ranked, {
+        addresses: workAddresses.filter((a) => rankedUsers.has(a.userId)),
+        areas: allAreas.filter((a) => rankedProfiles.has(a.technicianId)),
+      })
+      : undefined;
     const eligibilityReasons: string[] = [];
     const profiles = await firstEligible(
       ranked,

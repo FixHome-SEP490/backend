@@ -106,6 +106,27 @@ export function registerDev1Cases(context: () => Context) {
       }
     });
 
+    it('order lists read the page in bulk and show each order exactly as its detail does', async () => {
+      const f = await fixture();
+      const started = await accept(f);
+      await arrived(started.order.id, f.tech);
+      // Same technician, the next day: a session already booked would refuse the invitation.
+      const nextDay = (iso: string) => new Date(Date.parse(iso) + 86400000).toISOString();
+      const later = await post('/bookings', f.owner, { ...f.body, preferredStartAt: nextDay(f.body.preferredStartAt), preferredEndAt: nextDay(f.body.preferredEndAt) });
+      expect(later.status, JSON.stringify(later.body)).toBe(201);
+      const waiting = await accept(f, unwrap(later.body));
+      for (const actor of [f.owner, f.tech]) {
+        const list = unwrap((await get('/service-orders/my?page=1&pageSize=20', actor).expect(200)).body);
+        for (const id of [started.order.id, waiting.order.id]) {
+          const detail = unwrap((await get(`/service-orders/${id}`, actor).expect(200)).body);
+          expect(list.find((row: { id: string }) => row.id === id)).toEqual(detail);
+        }
+      }
+      const detail = unwrap((await get(`/service-orders/${started.order.id}`, f.owner).expect(200)).body);
+      expect(detail).toMatchObject({ arrivalVerified: true, beforeEvidenceCount: 1, afterEvidenceCount: 0, technician: { id: f.tech.user.id } });
+      expect(detail.timeline.length).toBeGreaterThan(1);
+    });
+
     it('validates booking DTO, address ownership, snapshots and creates no pre-Accept order', async () => {
       const f = await fixture();
       for (const changes of [{ preferredEndAt: undefined }, { quantity: 0 }, { quantity: 1.5 }, { preferredStartAt: '2020-01-01T00:00:00Z' }, { status: 'matched' }]) denied(await post('/bookings', f.owner, { ...f.body, ...changes }));
