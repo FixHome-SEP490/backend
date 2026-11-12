@@ -150,7 +150,16 @@ export class PartCustodyService {
     const rows = await query
       .orderBy("(SELECT COALESCE(SUM((d->>'quantity')::int), 0) FROM jsonb_array_elements(COALESCE(c.state->'declarations', '[]'::jsonb)) d) > (c.state->>'managerAcceptedQty')::int", 'DESC')
       .addOrderBy('c.handedOverAt', 'ASC').addOrderBy('c.id', 'ASC').take(100).getMany();
-    return rows.map(row => this.view(row));
+    // Whether a return goes back into a warehouse's stock (W2) is read for the whole page in one
+    // query, so the manager's queue does not ask the allocation endpoint once per request.
+    const requestIds = [...new Set(rows.map(row => row.partRequestId))];
+    const allocated = new Set<string>(requestIds.length
+      ? (await this.dataSource.manager.query(
+        'SELECT part_request_id AS "partRequestId" FROM part_request_warehouse_allocations WHERE part_request_id = ANY($1::uuid[])',
+        [requestIds],
+      ) as Array<{ partRequestId: string }>).map(row => row.partRequestId)
+      : []);
+    return rows.map(row => ({ ...this.view(row), warehouseAllocated: allocated.has(row.partRequestId) }));
   }
 
   /**

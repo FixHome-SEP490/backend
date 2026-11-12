@@ -182,7 +182,10 @@ describe.skipIf(process.env.CI !== 'true')('W2 real PostgreSQL / JWT / custody a
     // BUG DETECTOR 81: the parts held go back to this warehouse; another manager does not see the return.
     const pendingFor = async (who: Actor) => (await call('get', '/part-returns/pending', who).expect(200)).body.data
       .filter((row: { partRequestId: string }) => row.partRequestId === f.req.id);
-    expect(await pendingFor(f.sm)).toHaveLength(f.catalog.length);
+    const mineReturns = await pendingFor(f.sm);
+    expect(mineReturns).toHaveLength(f.catalog.length);
+    // The queue marks a W2 return itself, so the web never reads the allocation per request.
+    expect(mineReturns.every((row: { warehouseAllocated: boolean }) => row.warehouseAllocated === true)).toBe(true);
     expect(await pendingFor(f.wrong)).toEqual([]);
     // BUG DETECTOR 80: the warehouse log shows the reserve and issue of this request, not an empty history.
     const Warehouses = load('modules/warehouses/warehouses.service', 'WarehousesService');

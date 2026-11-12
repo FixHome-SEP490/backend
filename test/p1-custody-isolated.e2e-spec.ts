@@ -162,7 +162,7 @@ describe.skipIf(!port)('P1 isolated PostgreSQL / real JWT / transaction entrypoi
     // The manager's queue puts returns waiting to be received first (BUG DETECTOR 10).
     const queue = await f.get('/part-returns/pending', f.manager);
     expect(queue.status, JSON.stringify(queue.body)).toBe(200);
-    expect(queue.body.data[0]).toMatchObject({ partRequestItemId: f.item.id, declaredQty: 1, managerAcceptedQty: 0 });
+    expect(queue.body.data[0]).toMatchObject({ partRequestItemId: f.item.id, declaredQty: 1, managerAcceptedQty: 0, warehouseAllocated: false });
     expect((await f.post(`${f.returns}/accept-return`, f.customer, { quantity: 1, expectedVersion: 2, idempotencyKey: 'accept-test' })).status).toBe(403);
     const receipts = await Promise.all(['accept-a', 'accept-b'].map(idempotencyKey => f.post(`${f.returns}/accept-return`, f.manager, { quantity: 1, expectedVersion: 2, idempotencyKey })));
     expect(receipts.map(r => r.status).sort()).toEqual([200, 409]);
