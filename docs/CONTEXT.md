@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-12 12:21 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: perf/detail-warranty-returns
+> Cập nhật lần cuối: 2026-11-12 13:56 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: perf/part-returns-allocation-mode
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -537,6 +537,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-12 13:56 (UTC+7) | ToanAltF4 | perf/part-returns-allocation-mode | GET /part-returns/pending gắn warehouseAllocated cho từng dòng (một query cho cả trang), web không còn gọi warehouse-allocation từng phiếu
 - 2026-11-12 12:21 (UTC+7) | ToanAltF4 | perf/detail-warranty-returns | GET /bookings/:id đọc một lần khi booking không còn ghép thợ; đơn bị dừng sửa đọc bằng chứng một lần, song song; thêm GET /warranties/mine?orderIds= (khách) và GET /part-returns/by-orders?orderIds= (SM) để trang danh sách đọc gộp
 - 2026-11-12 02:31 (UTC+7) | ToanAltF4 | fix/order-timeline-ties | Sửa BUG 93: tiến trình đơn xếp đúng thứ tự khi hai bước cùng thời điểm (thợ rút rồi đơn huỷ trong một giao dịch); bước dẫn tới trạng thái hiện tại xếp cuối, danh sách và chi tiết luôn giống nhau.
 - 2026-11-12 00:52 (UTC+7) | ToanAltF4 | perf/order-list-batch | Tối ưu tốc độ danh sách đơn: GET /service-orders và /service-orders/my dựng cả trang theo lô (khoảng 15 query thay vì ~18 query mỗi đơn), bản chi tiết và danh sách dùng chung một hàm dựng; danh sách thợ cho khách không đọc trùng địa chỉ/khu vực; GET /part-requests của Admin trả kèm cấp phát kho W2 cho cả trang.
@@ -576,4 +577,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-06 02:01 (UTC+7) | foxonworld | foxonworld/fixhome-w3-dev-release-gate-20261106 | Thêm W3 DEV release gate cho đúng migration 0004–0008: prerequisite W1/W2/voucher, giữ cặp cash pending cho gate cũ, advisory lock/ledger một lần/một transaction/replay refusal, CI PostgreSQL harness và deploy order W3 → cash → restart; unit 6/6, typecheck/lint/build PASS, PG/shared DEV NOT VERIFIED.
 - 2026-11-06 00:15 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | W3 physical PostgreSQL CI #42071519421 phát hiện `jsonb @>` với [] chấp nhận quantities không rỗng dù gate đóng; thay bằng so sánh JSONB EXACT cho quantities/evidence [] và warehouse/SM/courier null, thêm negative E2E cả forged evidence. Chờ CI PostgreSQL chạy lại; Finance/physical vẫn BLOCKED, không shared DEV migration.
 - 2026-11-06 00:03 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | Thêm W3 physical source CLOSED: domain/blocked persistence/CAS/dormant stock/JWT preview/migration 0007; 42 unit mới, full 3871 PASS/58 skipped, typecheck/build/lint PASS; independent review 44 PASS, PG16 skipped/HTTP/runtime chưa kiểm chứng, giữ W2/legacy/Finance.
-- 2026-11-05 23:05 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | Backend W3 B3a real Admin HTTP/JWT/RBAC/CAS/audit E2E 7/7 CI PASS: #42060181287 (HEAD 44a6a76), tổng 3836 unit PASS/58 skipped và 198 PostgreSQL integration PASS/39 skipped; B2b 4 HTTP tests cũng giữ PASS. Lần CI đầu #42058256895 FAIL fixture RETURNING và legacy rollback immutable history; sửa đọc TypeORM tuple, chuyển B3a xuống sau replay và khởi tạo lại actors/RBAC trong CI schema, không tắt trigger. Lint/typecheck/build/security PASS; không shared DEV migration, Finance/warehouse/courier/legal gate vẫn đóng.

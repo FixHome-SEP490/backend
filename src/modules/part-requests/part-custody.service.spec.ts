@@ -296,6 +296,20 @@ describe('persistent P1 custody', () => {
       getMany: vi.fn(async () => rows.filter(row => row.state.outstandingQty > 0 && (!owner || row.technicianId === owner))),
     };
     db.createQueryBuilder = vi.fn(() => { owner = undefined; return query; });
+    // The warehouse mark of the whole page comes from one query, not one call per request.
+    db.query = vi.fn(async () => []);
+    const legacy = await service.pending(managerActor);
+    expect(legacy).toHaveLength(1);
+    expect(legacy[0]).toMatchObject({ partRequestId: 'request', warehouseAllocated: false });
+    db.query = vi.fn(async (_sql, params) => params[0].map((partRequestId: string) => ({ partRequestId })));
+    expect((await service.pending(managerActor))[0]).toMatchObject({ warehouseAllocated: true });
+    expect(db.query).toHaveBeenCalledTimes(1);
+    expect(db.query.mock.calls[0][1]).toEqual([['request']]);
+    query.getMany.mockResolvedValueOnce([]);
+    db.query = vi.fn();
+    expect(await service.pending(managerActor)).toEqual([]);
+    expect(db.query).not.toHaveBeenCalled();
+    db.query = vi.fn(async () => []);
     expect(await service.pending(managerActor)).toHaveLength(1);
     expect(await service.pending(tech)).toHaveLength(1);
     expect(await service.pending({ id: 'other', role: Role.TECHNICIAN })).toEqual([]);
