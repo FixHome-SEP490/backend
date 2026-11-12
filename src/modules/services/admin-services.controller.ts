@@ -36,6 +36,7 @@ import { CurrentUser, RequirePermission, Roles } from '../../common/decorators';
 import { Role } from '../../shared/enums';
 import { UpdateActiveStatusDto } from '../../shared/dto/update-active-status.dto';
 import { User } from '../users/entities/user.entity';
+import { ServicePriceVariantsService, UpdatePriceVariantDto } from './service-price-variants.service';
 
 @ApiTags('Admin / Services')
 @Controller('admin/services')
@@ -44,7 +45,30 @@ import { User } from '../users/entities/user.entity';
 @RequirePermission('service:manage')
 @ApiBearerAuth()
 export class AdminServicesController {
-  constructor(private readonly servicesService: ServicesService) {}
+  constructor(
+    private readonly servicesService: ServicesService,
+    private readonly priceVariants: ServicePriceVariantsService,
+  ) {}
+
+  @Get(':id/price-variants')
+  @ApiOperation({ summary: 'Admin: list the Catalog V3 price tiers of a service (ADMIN 47)' })
+  @ApiParam({ name: 'id', format: 'uuid', description: 'Service UUID' })
+  listPriceVariants(@Param('id', ParseUUIDPipe) id: string) {
+    return this.priceVariants.list(id);
+  }
+
+  @Patch(':id/price-variants/:variantId')
+  @ApiOperation({ summary: 'Admin: change a price tier (labour price, scope, offered or not); new bookings only' })
+  @ApiParam({ name: 'id', format: 'uuid', description: 'Service UUID' })
+  @ApiParam({ name: 'variantId', format: 'uuid', description: 'Price tier UUID' })
+  updatePriceVariant(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('variantId', ParseUUIDPipe) variantId: string,
+    @Body() dto: UpdatePriceVariantDto,
+    @CurrentUser() user: User,
+  ) {
+    return this.priceVariants.update(id, variantId, dto, user);
+  }
 
   @Delete(':id')
   @ApiOperation({ summary: 'Deactivate a service without deleting referenced data' })

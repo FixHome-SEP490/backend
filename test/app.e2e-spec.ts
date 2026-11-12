@@ -687,6 +687,22 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     }
     await http().get('/api/v1/bookings/my/activity-counts?excludeVisitGroups=yes').set('Authorization', bearer(customer)).expect(400);
   });
+  it('private note: only a technician of the order, 2.000 characters at most (TECH 42)', async () => {
+    const order = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b';
+    await http().get(`/api/v1/service-orders/${order}/my-note`).set('Authorization', bearer(technician)).expect(404);
+    await http().put(`/api/v1/service-orders/${order}/my-note`).set('Authorization', bearer(technician)).send({ note: 'ghi chú' }).expect(404);
+    await http().get(`/api/v1/service-orders/${order}/my-note`).set('Authorization', bearer(customer)).expect(403);
+    await http().put(`/api/v1/service-orders/${order}/my-note`).set('Authorization', bearer(technician)).send({ note: 'x'.repeat(2001) }).expect(400);
+  });
+  it('admin lists and edits service price tiers; others are refused (ADMIN 47)', async () => {
+    const category = await createCategory();
+    const service = await createService(category.id);
+    const listed = await http().get(`/api/v1/admin/services/${service.id}/price-variants`).set('Authorization', bearer(admin)).expect(200);
+    expect(Array.isArray(listed.body.data)).toBe(true);
+    await http().get(`/api/v1/admin/services/${service.id}/price-variants`).set('Authorization', bearer(technician)).expect(403);
+    await http().patch(`/api/v1/admin/services/${service.id}/price-variants/6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b`).set('Authorization', bearer(admin)).send({ isActive: false }).expect(404);
+    await http().patch(`/api/v1/admin/services/${service.id}/price-variants/6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b`).set('Authorization', bearer(admin)).send({ fixedLaborPriceVnd: -1 }).expect(400);
+  });
   it('catalog uses active category AND service, including direct IDs and bypass query flags', async () => {
     const category = await createCategory();
     const service = await createService(category.id);

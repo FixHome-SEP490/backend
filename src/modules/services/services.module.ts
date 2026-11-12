@@ -5,6 +5,7 @@ import { ServicesController } from './services.controller';
 import { AdminServicesController } from './admin-services.controller';
 import { PartsController } from './parts.controller';
 import { ServicesService } from './services.service';
+import { ServicePriceVariantsService } from './service-price-variants.service';
 import { Service } from './entities/service.entity';
 import { PartCatalog } from './entities/part-catalog.entity';
 import { ServiceCategory } from '../categories/entities/category.entity';
@@ -18,7 +19,7 @@ import { RbacModule } from '../rbac/rbac.module';
     RbacModule,
   ],
   controllers: [ServicesController, AdminServicesController, PartsController],
-  providers: [ServicesService],
+  providers: [ServicesService, ServicePriceVariantsService],
   exports: [ServicesService, TypeOrmModule],
 })
 export class ServicesModule {}
