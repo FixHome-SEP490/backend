@@ -1,4 +1,6 @@
+import { In, type EntityManager } from 'typeorm';
 import { WarrantyStatus } from '../../shared/enums';
+import { InvoiceItem } from './entities/invoice-item.entity';
 import { WarrantyCoverage } from './entities/warranty-coverage.entity';
 
 /**
@@ -13,4 +15,15 @@ export function effectiveWarrantyStatus(
 ): WarrantyStatus {
   if (coverage.status !== WarrantyStatus.ACTIVE) return coverage.status;
   return new Date(coverage.expiresAt).getTime() <= now.getTime() ? WarrantyStatus.EXPIRED : coverage.status;
+}
+
+/** Coverages as the API shows them: the effective status and the invoice line each one covers, read in one query. */
+export async function presentCoverages(manager: EntityManager, coverages: WarrantyCoverage[], now: Date = new Date()) {
+  const itemIds = coverages.map(c => c.invoiceItemId).filter((id): id is string => !!id);
+  const items = itemIds.length ? await manager.findBy(InvoiceItem, { id: In(itemIds) }) : [];
+  const byId = new Map(items.map(item => [item.id, item]));
+  return coverages.map(coverage => {
+    const item = coverage.invoiceItemId ? byId.get(coverage.invoiceItemId) : undefined;
+    return { ...coverage, status: effectiveWarrantyStatus(coverage, now), itemType: item?.type ?? null, itemDescription: item?.description ?? null };
+  });
 }

@@ -60,7 +60,7 @@ import {
 import { PaymentVerificationPort, PAYMENT_VERIFICATION_PORT } from './payment-verification.port';
 import { SupportCasesService } from '../support-cases/support-cases.service';
 import {
-  buildPaymentUrl, buildQueryDrRequest, isAbandonedVnpayAttempt, verifySignature, vnpayExpiry, withWebOrigin,
+  buildPaymentUrl, buildQueryDrRequest, isAbandonedVnpayAttempt, verifyQueryDrResponse, verifySignature, vnpayExpiry, withWebOrigin,
   VNPAY_EXPIRY_GRACE_MS, VNPAY_PAID_AFTER_EXPIRY, VNPAY_URL_EXPIRED,
 } from './vnpay/vnpay.util';
 import { loadVisitCharge, sameAllocations, type VisitCharge } from './visit-charge';
@@ -1460,7 +1460,12 @@ export class FinanceService {
       this.httpService.post(queryDrUrl, body).pipe(timeout(8000)),
     );
     const data = response.data as Record<string, string>;
-    if (data?.vnp_ResponseCode === '00' && data?.vnp_TransactionStatus === '00') {
+    // BUG DETECTOR 60: an unsigned or forged answer, or one about another transaction, proves nothing.
+    if (!verifyQueryDrResponse(data, { hashSecret, tmnCode, txnRef: payment.idempotencyKey })) {
+      this.logger.warn(`VNPay querydr answer for payment ${payment.id} failed signature check; payment left as is`);
+      return;
+    }
+    if (data.vnp_ResponseCode === '00' && data.vnp_TransactionStatus === '00') {
       const fundedLink = await this.findOptionalVoucherPaymentLink({ paymentId: payment.id });
       if (fundedLink) {
         // Querydr can close a funded payment only with the same signed PayDate proof as an IPN.

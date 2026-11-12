@@ -105,9 +105,32 @@ describe.skipIf(process.env.CI !== 'true')('W2 real PostgreSQL / JWT / custody a
     const own = await call('get', '/part-requests/warehouse-tasks', f.sm).expect(200);
     expect(own.body.data.map((row: { id: string }) => row.id)).toContain(f.req.id);
     expect(own.body.meta.total).toBeGreaterThanOrEqual(1);
+    // BUG DETECTOR 90: the row carries the same allocation the per-request endpoint returns.
+    const row = own.body.data.find((r: { id: string }) => r.id === f.req.id);
+    const single = (await call('get', `${f.base}/warehouse-allocation`, f.sm).expect(200)).body.data;
+    expect(row.warehouseAllocation).toEqual(single);
+    // BUG DETECTOR 89: status totals over the whole filtered queue.
+    expect(own.body.meta.statusCounts.requested).toBeGreaterThanOrEqual(1);
     const foreign = await call('get', '/part-requests/warehouse-tasks', f.wrong).expect(200);
-    expect(foreign.body.data).toEqual([]);
-    expect(foreign.body.meta.total).toBe(0);
+    expect(foreign.body.data.map((row: { id: string }) => row.id)).not.toContain(f.req.id);
+
+    // BUG DETECTOR 75: delivery requests have no W2 allocation and stay every manager's work.
+    // One active PRE_REPAIR per order is a real invariant: the delivery request gets its own order.
+    const firstBooking = await repo('Booking').findOneByOrFail({ id: f.order.bookingId });
+    const deliveryBooking = await save('Booking', { customerId: firstBooking.customerId, serviceId: firstBooking.serviceId,
+      description: 'W2 synthetic delivery request', status: 'matched' });
+    const deliveryOrder = await save('ServiceOrder', { bookingId: deliveryBooking.id, code: `W2-${randomUUID()}`, status: 'accepted' });
+    await save('TechnicianAssignment', { serviceOrderId: deliveryOrder.id, technicianId: f.tech.id, isActive: true });
+    const delivery = await save('PartRequest', { serviceOrderId: deliveryOrder.id, technicianId: f.tech.id, status: 'requested',
+      requestType: 'pre_repair', fulfillmentMethod: 'delivery' });
+    for (const manager of [f.sm, f.wrong]) {
+      const queue = await call('get', '/part-requests/warehouse-tasks', manager).expect(200);
+      expect(queue.body.data.map((row: { id: string }) => row.id)).toContain(delivery.id);
+    }
+    // BUG DETECTOR 82: the code as shown on screen ("PR-" + start of the id) finds the request.
+    const code = `PR-${String(f.req.id).slice(0, 8).toUpperCase()}`;
+    const found = await call('get', `/part-requests/warehouse-tasks?search=${code}`, f.sm).expect(200);
+    expect(found.body.data.map((row: { id: string }) => row.id)).toEqual([f.req.id]);
     await call('get', '/part-requests/warehouse-tasks', f.tech).expect(403);
     await call('get', '/part-requests/warehouse-tasks').expect(401);
   });
@@ -137,6 +160,19 @@ describe.skipIf(process.env.CI !== 'true')('W2 real PostgreSQL / JWT / custody a
     await call('post', `${f.base}/receive`, f.tech, { qrToken: receipt }).expect(409);
     await call('post', `${f.base}/receive`, f.tech, { qrToken: recovered }).expect(200);
     await call('post', `${f.base}/receive`, f.tech, { qrToken: recovered }).expect(409);
+    // BUG DETECTOR 81: the parts held go back to this warehouse; another manager does not see the return.
+    const pendingFor = async (who: Actor) => (await call('get', '/part-returns/pending', who).expect(200)).body.data
+      .filter((row: { partRequestId: string }) => row.partRequestId === f.req.id);
+    expect(await pendingFor(f.sm)).toHaveLength(f.catalog.length);
+    expect(await pendingFor(f.wrong)).toEqual([]);
+    // BUG DETECTOR 80: the warehouse log shows the reserve and issue of this request, not an empty history.
+    const Warehouses = load('modules/warehouses/warehouses.service', 'WarehousesService');
+    const log = await new Warehouses(repo('Warehouse'), repo('WarehouseStock'), repo('StockMovement'), repo('User'), repo('FixHomePart'), db)
+      .listMovements(f.warehouse.id, { id: f.sm.id, role: 'service_manager' }, { limit: 50, offset: 0 });
+    const mine = log.data.filter((row: { partRequestId: string | null }) => row.partRequestId === f.req.id);
+    expect(mine.map((row: { kind: string }) => row.kind).sort()).toEqual([...f.catalog.map(() => 'issue'), ...f.catalog.map(() => 'reserve')].sort());
+    expect(mine.every((row: { reason: string }) => row.reason === `Phiếu PR-${String(f.req.id).slice(0, 8).toUpperCase()}`)).toBe(true);
+    expect(log.meta.total).toBeGreaterThanOrEqual(mine.length);
     expect(await db.query('SELECT * FROM warehouse_fulfillment_movements WHERE kind=\'ISSUE\' AND warehouse_id=$1', [f.warehouse.id])).toHaveLength(f.catalog.length);
     const redacted = (await call('get', `${f.base}/warehouse-allocation`, f.wrong).expect(200)).body.data;
     expect(JSON.stringify(redacted)).not.toContain(recovered); expect(redacted).not.toHaveProperty('receiptHash');
@@ -158,6 +194,15 @@ describe.skipIf(process.env.CI !== 'true')('W2 real PostgreSQL / JWT / custody a
     expect(await repo('Notification').countBy({ referenceId: r.id, type: 'PART_REQUEST_STOCK_UNAVAILABLE', userId: f.tech.id })).toBe(1);
     expect(await repo('Notification').countBy({ referenceId: r.id, type: 'PART_REQUEST_MANUAL_ASSISTANCE' })).toBe(0);
     await call('post', `/part-requests/${r.id}/warehouse-reserve`, f.sm, { idempotencyKey: randomUUID() }).expect(409);
+
+    // BUG DETECTOR 77: the customer approves a quote using that SKU. The unsourced request is no
+    // supply, so the approval opens its own request for the part instead of counting it as covered.
+    const quote = await save('Quotation', { serviceOrderId: f.order.id, technicianId: f.tech.id, status: 'approved' });
+    const line = await save('QuotationItem', { quotationId: quote.id, type: 'parts_equipment', description: 'W2 shortage quote line',
+      partSource: 'fixhome', partCatalogId: f.catalog[0].id, partNameSnapshot: 'W2 synthetic SKU', quantity: 1, unitPrice: 50000, lineTotal: 50000 });
+    const opened: any = await db.transaction(manager => parts.createRequestFromApprovedQuotation(manager, { ...quote, items: [line] }, { id: f.tech.id, role: 'technician' }));
+    expect(opened).toMatchObject({ requestType: 'quotation', quotationId: quote.id });
+    expect(opened.items.map((item: { partCatalogId: string; quantity: number }) => [item.partCatalogId, item.quantity])).toEqual([[f.catalog[0].id, 1]]);
   });
 
   it('serializes two distinct requests racing for the last units: exactly one wins', async () => {

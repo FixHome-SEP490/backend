@@ -106,6 +106,33 @@ export function registerDev1Cases(context: () => Context) {
       }
     });
 
+    it('order lists read the page in bulk and show each order exactly as its detail does', async () => {
+      const f = await fixture();
+      const started = await accept(f);
+      await arrived(started.order.id, f.tech);
+      // Same technician, the next day: a session already booked would refuse the invitation.
+      const nextDay = (iso: string) => new Date(Date.parse(iso) + 86400000).toISOString();
+      const later = await post('/bookings', f.owner, { ...f.body, preferredStartAt: nextDay(f.body.preferredStartAt), preferredEndAt: nextDay(f.body.preferredEndAt) });
+      expect(later.status, JSON.stringify(later.body)).toBe(201);
+      const waiting = await accept(f, unwrap(later.body));
+      // A booking past matching is answered from one read, still the full booking with its order.
+      const booked = unwrap((await get(`/bookings/${waiting.booking.id}`, f.owner).expect(200)).body);
+      expect(booked).toMatchObject({ id: waiting.booking.id, status: 'matched', serviceOrderId: waiting.order.id });
+      expect(booked.addressTextSnapshot).toContain('1 Test Street');
+      expect(unwrap((await get(`/bookings/${waiting.booking.id}`, f.tech).expect(200)).body)).toMatchObject({ id: waiting.booking.id, serviceOrderId: waiting.order.id });
+      denied(await get(`/bookings/${waiting.booking.id}`, f.outsider));
+      for (const actor of [f.owner, f.tech]) {
+        const list = unwrap((await get('/service-orders/my?page=1&pageSize=20', actor).expect(200)).body);
+        for (const id of [started.order.id, waiting.order.id]) {
+          const detail = unwrap((await get(`/service-orders/${id}`, actor).expect(200)).body);
+          expect(list.find((row: { id: string }) => row.id === id)).toEqual(detail);
+        }
+      }
+      const detail = unwrap((await get(`/service-orders/${started.order.id}`, f.owner).expect(200)).body);
+      expect(detail).toMatchObject({ arrivalVerified: true, beforeEvidenceCount: 1, afterEvidenceCount: 0, technician: { id: f.tech.user.id } });
+      expect(detail.timeline.length).toBeGreaterThan(1);
+    });
+
     it('validates booking DTO, address ownership, snapshots and creates no pre-Accept order', async () => {
       const f = await fixture();
       for (const changes of [{ preferredEndAt: undefined }, { quantity: 0 }, { quantity: 1.5 }, { preferredStartAt: '2020-01-01T00:00:00Z' }, { status: 'matched' }]) denied(await post('/bookings', f.owner, { ...f.body, ...changes }));
@@ -408,6 +435,13 @@ export function registerDev1Cases(context: () => Context) {
         const consult = unwrap((await post('/visit-groups/consultation', f.owner, { message: 'Nhà có 5 máy lạnh', devices: ['Máy 1', 'Máy 2'] }).expect(201)).body);
         const [supportCase] = await db.query('SELECT case_type, customer_id, booking_id FROM support_cases WHERE id = $1', [consult.id]);
         expect(supportCase).toMatchObject({ case_type: 'other', customer_id: f.owner.user.id, booking_id: null });
+
+        // BUG DETECTOR 59: the address used by a cancelled and an open visit can be deleted (it was a 500);
+        // the groups lose only the reference and keep showing their devices.
+        const removed = await request(context().app.getHttpServer()).delete(`/api/v1/me/addresses/${f.address.id}`).set('Authorization', `Bearer ${f.owner.accessToken}`);
+        expect(removed.status, JSON.stringify(removed.body)).toBe(204);
+        expect((await db.query('SELECT address_id FROM visit_groups WHERE id = ANY($1) ORDER BY created_at', [[group.id, five.id]])).map((row: any) => row.address_id)).toEqual([null, null]);
+        expect(unwrap((await get(`/visit-groups/${five.id}`, f.owner).expect(200)).body).items).toHaveLength(5);
       } finally {
         await setGroups(false);
       }
@@ -1817,6 +1851,16 @@ export function registerDev1Cases(context: () => Context) {
         const [coverage] = unwrap((await get(`/service-orders/${order.id}/warranties`, f.owner).expect(200)).body);
         const claim = unwrap((await post(`/service-orders/${order.id}/warranty-claims`, f.owner, { warrantyCoverageId: coverage.id, description: 'Vòi lại rỉ nước sau hai ngày' }).expect(201)).body);
         expect(await thread(f.owner)).toMatchObject({ canSend: true, closedReason: null });
+        // The warranties page reads a whole page of orders at once, exactly as the two per-order endpoints answer.
+        const bulk = unwrap((await get(`/warranties/mine?orderIds=${order.id},${order.id.toUpperCase()}`, f.owner).expect(200)).body);
+        expect(bulk).toEqual([{ orderId: order.id,
+          coverages: unwrap((await get(`/service-orders/${order.id}/warranties`, f.owner).expect(200)).body),
+          claims: unwrap((await get(`/service-orders/${order.id}/warranty-claims`, f.owner).expect(200)).body) }]);
+        expect(bulk[0].claims).toHaveLength(1);
+        for (const who of [f.outsider, f.tech]) denied(await get(`/warranties/mine?orderIds=${order.id}`, who));
+        // One order that is not the customer's refuses the whole read, so nothing leaks beside the owned ones.
+        denied(await get(`/warranties/mine?orderIds=${order.id},${randomUUID()}`, f.owner));
+        for (const bad of ['', 'not-a-uuid', Array.from({ length: 51 }, () => randomUUID()).join(',')]) denied(await get(`/warranties/mine?orderIds=${bad}`, f.owner));
         await post(`/conversations/${conversation.id}/messages`, f.owner, { content: 'Anh ơi vòi lại rỉ ạ' }).expect(201);
         await post(`/conversations/${conversation.id}/messages`, f.tech, { content: 'Chiều nay em ghé xem' }).expect(201);
 

@@ -118,12 +118,33 @@ export class PartCustodyService {
     return owned.map(row => this.view(row));
   }
 
+  /** Service Manager: byOrder for several orders in one read; every asked order is a key, empty when it has none. */
+  async byOrders(orderIds: string[], actor: PartCustodyActor): Promise<Record<string, Record<string, unknown>[]>> {
+    if (actor.role !== Role.SERVICE_MANAGER) throw new ForbiddenException();
+    const manager = this.dataSource.manager;
+    await this.requireActive(manager);
+    const rows = orderIds.length
+      ? await manager.find(PartCustody, { where: { serviceOrderId: In(orderIds) }, order: { handedOverAt: 'ASC', id: 'ASC' } })
+      : [];
+    const out: Record<string, Record<string, unknown>[]> = Object.fromEntries(orderIds.map(id => [id, []]));
+    for (const row of rows) out[row.serviceOrderId]?.push(this.view(row));
+    return out;
+  }
+
   async pending(actor: PartCustodyActor): Promise<Record<string, unknown>[]> {
     if (![Role.SERVICE_MANAGER, Role.TECHNICIAN].includes(actor.role as Role)) throw new ForbiddenException();
     await this.requireActive(this.dataSource.manager);
     const query = this.dataSource.manager.createQueryBuilder(PartCustody, 'c')
       .where("(c.state->>'outstandingQty')::int > 0");
     if (actor.role === Role.TECHNICIAN) query.andWhere('c.technicianId = :technicianId', { technicianId: actor.id });
+    // BUG DETECTOR 81: a W2 return goes back to the warehouse it came from; only that
+    // warehouse's manager sees it (receiving it is already refused to anyone else).
+    // Returns with no W2 allocation stay every manager's work.
+    if (actor.role === Role.SERVICE_MANAGER) query.andWhere(`NOT EXISTS (
+      SELECT 1 FROM part_request_items ri
+      JOIN part_request_warehouse_allocations wa ON wa.part_request_id = ri.part_request_id
+      JOIN warehouses w ON w.id = wa.warehouse_id
+      WHERE ri.id = c.part_request_item_id AND w.responsible_user_id <> :managerId)`, { managerId: actor.id });
     // Returns declared and not yet received come first (BUG DETECTOR 10), so the cap never hides
     // what the manager has to receive behind parts still held and not declared.
     const rows = await query

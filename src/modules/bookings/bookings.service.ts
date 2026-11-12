@@ -530,10 +530,8 @@ export class BookingsService {
     actor: { id: string; role: string },
   ): Promise<Booking | TechnicianBookingPreviewDto> {
     await this.closeOverdueBookings();
-    const booking = await this.bookingRepo.findOne({
-      where: { id },
-      relations: ['invitations'],
-    });
+    // Only the owner is needed to decide who may read; the full rows are read once below.
+    const booking = await this.bookingRepo.findOne({ where: { id }, select: { id: true, customerId: true } });
     if (!booking) {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
     }
@@ -598,16 +596,24 @@ export class BookingsService {
     });
   }
   private async findFullBooking(id: string): Promise<Booking> {
-    const booking = await this.bookingRepo.findOne({
-      where: { id },
-      relations: ['service', 'address', 'media', 'invitations'],
-      relationLoadStrategy: 'query',
-    });
+    // The booking, its order and its latest diagnosis only need the id, so they are read side by side.
+    const [booking, order, diagnosis] = await Promise.all([
+      this.bookingRepo.findOne({
+        where: { id },
+        relations: ['service', 'address', 'media', 'invitations'],
+        relationLoadStrategy: 'query',
+      }),
+      this.dataSource.manager.findOneBy(ServiceOrder, { bookingId: id }),
+      this.latestDiagnosis(id),
+    ]);
     if (!booking) {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
     }
-    const order = await this.dataSource.manager.findOneBy(ServiceOrder, { bookingId: id });
-    return this.addBookingReadDetails(booking, order);
+    return Object.assign(booking, { serviceOrderId: order?.id, diagnosis });
+  }
+
+  private latestDiagnosis(bookingId: string, manager: EntityManager = this.dataSource.manager) {
+    return manager.findOne(AiDiagnosis, { where: { bookingId }, order: { createdAt: 'DESC' } });
   }
 
   private async addBookingReadDetails(
@@ -615,10 +621,7 @@ export class BookingsService {
     order: ServiceOrder | null,
     manager: EntityManager = this.dataSource.manager,
   ): Promise<Booking> {
-    const diagnosis = await manager.findOne(AiDiagnosis, {
-      where: { bookingId: booking.id },
-      order: { createdAt: 'DESC' },
-    });
+    const diagnosis = await this.latestDiagnosis(booking.id, manager);
     return Object.assign(booking, { serviceOrderId: order?.id, diagnosis });
   }
 
@@ -712,18 +715,19 @@ export class BookingsService {
     // booking's district if they chose service areas. Missing coordinates never match.
     // ponytail: in-memory scan of every skilled technician; move to SQL/PostGIS if it grows.
     const userIds = withSkill.map((tp) => tp.userId);
-    const workAddresses = userIds.length
-      ? await this.addressRepo.find({ where: { userId: In(userIds), isDefault: true } })
-      : [];
-    const addressByUserId = new Map(workAddresses.map((a) => [a.userId, a]));
     const profileIds = withSkill.map((tp) => tp.id);
-    const allAreas = profileIds.length
-      ? await this.dataSource.manager.find(TechnicianServiceArea, { where: { technicianId: In(profileIds) } })
-      : [];
+    // Read side by side, and handed to the eligibility bulk read below instead of being read again.
+    const [workAddresses, allAreas, gpsFreshMinutes] = await Promise.all([
+      userIds.length ? this.addressRepo.find({ where: { userId: In(userIds), isDefault: true } }) : Promise.resolve([] as Address[]),
+      profileIds.length
+        ? this.dataSource.manager.find(TechnicianServiceArea, { where: { technicianId: In(profileIds) } })
+        : Promise.resolve([] as TechnicianServiceArea[]),
+      this.configService.getInt('matching.gps_fresh_minutes', 15),
+    ]);
+    const addressByUserId = new Map(workAddresses.map((a) => [a.userId, a]));
     const areasByProfile = new Map<string, TechnicianServiceArea[]>();
     for (const area of allAreas) areasByProfile.set(area.technicianId, [...(areasByProfile.get(area.technicianId) ?? []), area]);
     const mode = booking.bookingMode === 'urgent' ? 'urgent' : 'scheduled';
-    const gpsFreshMinutes = await this.configService.getInt('matching.gps_fresh_minutes', 15);
     const distanceByProfileId = new Map<string, number | null>();
     let originUnknown = 0;
     let coverageRejected = 0;
@@ -762,7 +766,14 @@ export class BookingsService {
     // The full check costs about a dozen queries per technician; run a batch of them at once and keep
     // the ranking order, stopping as soon as 20 are eligible (was one technician at a time: 8-11 s).
     // ponytail: one bulk read for the whole ranked list; per-technician queries were ~16 round trips each.
-    const bulk = ranked.length ? await loadEligibilityBulk(this.dataSource.manager, booking, ranked) : undefined;
+    const rankedUsers = new Set(ranked.map((p) => p.userId));
+    const rankedProfiles = new Set(ranked.map((p) => p.id));
+    const bulk = ranked.length
+      ? await loadEligibilityBulk(this.dataSource.manager, booking, ranked, {
+        addresses: workAddresses.filter((a) => rankedUsers.has(a.userId)),
+        areas: allAreas.filter((a) => rankedProfiles.has(a.technicianId)),
+      })
+      : undefined;
     const eligibilityReasons: string[] = [];
     const profiles = await firstEligible(
       ranked,

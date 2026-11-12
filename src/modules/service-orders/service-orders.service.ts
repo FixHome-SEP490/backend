@@ -87,9 +87,9 @@ import {
 import type { EntityManager } from 'typeorm';
 import { OrderEvidenceStorage, EvidenceFile, evidenceStampText } from '../media/order-evidence-storage.service';
 import { expireAdditionalCosts } from './expire-additional-costs';
-import { effectiveWarrantyStatus } from './warranty-coverage-status';
+import { presentCoverages } from './warranty-coverage-status';
 import { authorizeOrder } from './order-access';
-import { assertNoOnsiteInterruption, ONSITE_INTERRUPTION_ACTION, ONSITE_STOP_ACTION, validAssignmentCheckIn, verifiedOnsiteInterruption } from './onsite-interruption';
+import { assertNoOnsiteInterruption, hasOnsiteInterruption, ONSITE_INTERRUPTION_ACTION, ONSITE_STOP_ACTION, validAssignmentCheckIn, verifiedOnsiteInterruption } from './onsite-interruption';
 import { loadOnsiteStopFinance } from './onsite-stop-finance';
 import { groupSiblings, mirrorGroupStatus, recordVisitOutcome, refuseLoneGroupedBookingAction } from '../bookings/visit-group-guard';
 import { REPAIR_FAILURE_REASONS, type RepairFailedDto } from './dto/repair-failed.dto';
@@ -436,7 +436,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       .take(limit);
 
     const [data, total] = await qb.getManyAndCount();
-    return { data: await Promise.all(data.map(order => this.presentOrder(order))), total };
+    return { data: await this.presentOrders(data), total };
   }
 
   async findMyOrders(
@@ -487,16 +487,16 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       .take(limit);
 
     const [data, total] = await qb.getManyAndCount();
+    if (role !== Role.TECHNICIAN) return { data: await this.presentOrders(data), total };
+    // A technician sees the full order only while holding it; one they stepped off is a short summary.
+    const mine = data.length
+      ? await this.dataSource.manager.find(TechnicianAssignment, { where: { serviceOrderId: In(data.map(o => o.id)), technicianId: userId } })
+      : [];
+    const holding = new Set(mine.filter(a => a.isActive).map(a => a.serviceOrderId));
+    const full = new Map((await this.presentOrders(data.filter(o => holding.has(o.id)))).map(o => [o.id, o]));
     return {
-      data: await Promise.all(data.map(async order => {
-        if (role !== Role.TECHNICIAN) return this.presentOrder(order);
-        const assignment = await this.dataSource.manager.findOneBy(TechnicianAssignment, {
-          serviceOrderId: order.id, technicianId: userId, isActive: true,
-        });
-        if (assignment) return this.presentOrder(order);
-        const historical = await this.dataSource.manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, technicianId: userId });
-        return this.presentHistoricalOrder(order, historical);
-      })),
+      data: await Promise.all(data.map(order => full.get(order.id)
+        ?? this.presentHistoricalOrder(order, mine.find(a => a.serviceOrderId === order.id) ?? null))),
       total,
     };
   }
@@ -595,8 +595,10 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   private async presentOrder(order: ServiceOrder): Promise<ServiceOrder> {
     const manager = this.dataSource.manager;
     const booking = await manager.findOneByOrFail(Booking, { id: order.bookingId });
-    const stop = await verifiedOnsiteInterruption(manager, order, booking);
-    const finance = await loadOnsiteStopFinance(manager, order, booking);
+    // Both read models start from an interruption receipt; without one (almost every order) neither reads further.
+    const interrupted = await hasOnsiteInterruption(manager, order.id);
+    const stop = interrupted ? await verifiedOnsiteInterruption(manager, order, booking) : null;
+    const finance = interrupted ? await loadOnsiteStopFinance(manager, order, booking, { proof: stop }) : null;
     // The technician holding the order now. A technician who withdrew or was
     // replaced is not shown (name, phone, last GPS); a completed order keeps
     // its finishing technician because that assignment stays active.
@@ -605,51 +607,105 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         ? await manager.findOne(TechnicianAssignment, { where: { serviceOrderId: order.id }, order: { assignedAt: 'DESC' } })
         : null);
     const technician = assignment ? await manager.findOneBy(User, { id: assignment.technicianId }) : null;
-    if (!assignment) {
-      order.technicianLastLat = null;
-      order.technicianLastLng = null;
-      order.technicianLocationUpdatedAt = null;
-    }
     const customer = await manager.findOneBy(User, { id: booking.customerId });
     const quotation = await manager.findOne(Quotation, { where: { serviceOrderId: order.id }, relations: ['items'], order: { version: 'DESC' } });
     const history = await this.historyRepo.find({ where: { serviceOrderId: order.id }, order: { createdAt: 'ASC' } });
     // What the customer attached when booking; bytes are read through /bookings/:id/media, which already admits the technician holding the order.
-    const bookingMedia = (await manager.find(BookingMedia, { where: { bookingId: booking.id }, order: { createdAt: 'ASC' } })).map(toBookingMediaResponse);
-    return Object.assign(order, {
-      bookingMedia,
-      // PO 31/10/2026: what the customer needs to answer a delay notice; the raw columns below name another order and a manager's case, so they never leave.
-      delayNotice: delayNoticeView(order),
-      delayCurrentOrderId: null, delaySupportCaseId: null,
-      ...(finance ? { failedWorkFinance: finance.customer } : {}),
-      ...(stop?.workStopped ? { workStopped: true, assignmentReleased: true, operationalDisposition: 'STOPPED', oldObligationsReviewRequired: true } : {}),
-      serviceName: booking.serviceNameSnapshot || '', addressSummary: booking.addressTextSnapshot || '',
-      pricingMode: booking.pricingModeSnapshot,
-      fixedUnitPrice: booking.fixedUnitPriceSnapshot ? Number(booking.fixedUnitPriceSnapshot) : null,
-      quantity: booking.quantity || 1,
-      scopeDescription: booking.scopeSnapshot || '',
-      bookingDescription: booking.description || '',
-      // One device of a visit is paid, moved and cancelled with the visit (PO 21/10/2026).
-      visitGroupId: booking.visitGroupId ?? null,
-      customerNote: booking.customerNote ?? null,
-      bookingMode: booking.bookingMode ?? 'scheduled',
-      slot: booking.slot ?? null,
-      departAvailableAt: booking.preferredStartAt
-        ? new Date(booking.preferredStartAt.getTime() - (await this.configService.getInt('order.depart_early_minutes', 60)) * 60_000).toISOString()
-        : null,
-      customerName: customer?.fullName || '', customerPhone: customer?.phoneNumber || '',
-      technician: technician ? { id: technician.id, fullName: technician.fullName, phoneNumber: technician.phoneNumber } : undefined,
-      destination: booking.latitudeSnapshot != null && booking.longitudeSnapshot != null
-        ? { lat: Number(booking.latitudeSnapshot), lng: Number(booking.longitudeSnapshot) }
-        : null,
-      technicianLocation: order.technicianLastLat != null && order.technicianLastLng != null
-        ? { lat: Number(order.technicianLastLat), lng: Number(order.technicianLastLng), updatedAt: order.technicianLocationUpdatedAt?.toISOString() ?? null }
-        : null,
-      quotation, customerConfirmed: !!await manager.findOneBy(CustomerServiceConfirmation, { serviceOrderId: order.id }),
+    const bookingMedia = await manager.find(BookingMedia, { where: { bookingId: booking.id }, order: { createdAt: 'ASC' } });
+    const departEarlyMinutes = booking.preferredStartAt ? await this.configService.getInt('order.depart_early_minutes', 60) : 0;
+    return orderView(order, {
+      booking, stop, finance, assignment, technician, customer, quotation, history, bookingMedia, departEarlyMinutes,
+      customerConfirmed: !!await manager.findOneBy(CustomerServiceConfirmation, { serviceOrderId: order.id }),
       arrivalVerified: !!await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: order.id, technicianId: assignment?.technicianId, result: CheckInResult.VALID }),
       beforeEvidenceCount: await manager.count(RepairEvidence, { where: { serviceOrderId: order.id, type: EvidenceType.BEFORE } }),
       afterEvidenceCount: await manager.count(RepairEvidence, { where: { serviceOrderId: order.id, type: EvidenceType.AFTER } }),
-      timeline: history.map(h => ({ status: h.toStatus, title: h.reason, timestamp: h.createdAt.toISOString(), actor: h.actorRole })),
     });
+  }
+
+  /**
+   * presentOrder() for a whole page of a list, same fields: each kind of data is read once for the page
+   * instead of about 18 queries per order (20 orders were ~360 round trips to the database, 3-6 s).
+   * The rare order with an on-site interruption record keeps the per-order proof checks.
+   */
+  private async presentOrders(orders: ServiceOrder[]): Promise<ServiceOrder[]> {
+    if (!orders.length) return [];
+    const manager = this.dataSource.manager;
+    const orderIds = orders.map(o => o.id);
+    const bookingIds = [...new Set(orders.map(o => o.bookingId))];
+    const [bookings, assignments, interruptions, quotations, history, media, confirmations, checkIns, evidence] = await Promise.all([
+      manager.find(Booking, { where: { id: In(bookingIds) } }),
+      manager.find(TechnicianAssignment, { where: { serviceOrderId: In(orderIds) }, order: { assignedAt: 'DESC' } }),
+      manager.find(AuditLog, { select: { id: true, resourceId: true }, where: {
+        resourceType: 'service_order', resourceId: In(orderIds), action: In([ONSITE_INTERRUPTION_ACTION, ONSITE_STOP_ACTION]),
+      } }),
+      manager.find(Quotation, { where: { serviceOrderId: In(orderIds) }, relations: ['items'], order: { version: 'DESC' } }),
+      this.historyRepo.find({ where: { serviceOrderId: In(orderIds) }, order: { createdAt: 'ASC' } }),
+      manager.find(BookingMedia, { where: { bookingId: In(bookingIds) }, order: { createdAt: 'ASC' } }),
+      manager.find(CustomerServiceConfirmation, { select: { id: true, serviceOrderId: true }, where: { serviceOrderId: In(orderIds) } }),
+      manager.find(ArrivalCheckIn, { select: { id: true, serviceOrderId: true, technicianId: true }, where: { serviceOrderId: In(orderIds), result: CheckInResult.VALID } }),
+      manager.createQueryBuilder(RepairEvidence, 'e')
+        .select('e.service_order_id', 'orderId').addSelect('e.type', 'type').addSelect('COUNT(*)', 'n')
+        .where('e.service_order_id IN (:...orderIds)', { orderIds })
+        .andWhere('e.type IN (:...types)', { types: [EvidenceType.BEFORE, EvidenceType.AFTER] })
+        .groupBy('e.service_order_id').addGroupBy('e.type')
+        .getRawMany<{ orderId: string; type: string; n: string }>(),
+    ]);
+    const bookingById = new Map(bookings.map(b => [b.id, b]));
+    const group = <T>(rows: T[], key: (row: T) => string) => {
+      const map = new Map<string, T[]>();
+      for (const row of rows) map.set(key(row), [...(map.get(key(row)) ?? []), row]);
+      return map;
+    };
+    const assignmentsBy = group(assignments, a => a.serviceOrderId);
+    const holder = (order: ServiceOrder) => {
+      const rows = assignmentsBy.get(order.id) ?? [];
+      return rows.find(a => a.isActive) ?? (order.status === ServiceOrderStatus.COMPLETED ? rows[0] ?? null : null);
+    };
+    const userIds = new Set<string>();
+    for (const order of orders) {
+      const technicianId = holder(order)?.technicianId;
+      if (technicianId) userIds.add(technicianId);
+      const customerId = bookingById.get(order.bookingId)?.customerId;
+      if (customerId) userIds.add(customerId);
+    }
+    const users = userIds.size ? await manager.find(User, { where: { id: In([...userIds]) } }) : [];
+    const userById = new Map(users.map(u => [u.id, u]));
+    const interrupted = new Set(interruptions.map(row => row.resourceId));
+    const quotationBy = new Map<string, Quotation>();
+    for (const q of quotations) if (!quotationBy.has(q.serviceOrderId)) quotationBy.set(q.serviceOrderId, q);
+    const historyBy = group(history, h => h.serviceOrderId);
+    const mediaBy = group(media, m => m.bookingId);
+    const confirmed = new Set(confirmations.map(c => c.serviceOrderId));
+    const checkInsBy = group(checkIns, c => c.serviceOrderId);
+    const evidenceCount = new Map(evidence.map(row => [`${row.orderId}:${row.type}`, Number(row.n)]));
+    const departEarlyMinutes = bookings.some(b => b.preferredStartAt) ? await this.configService.getInt('order.depart_early_minutes', 60) : 0;
+
+    return Promise.all(orders.map(async order => {
+      const booking = bookingById.get(order.bookingId);
+      // A missing booking fails the same way the single read does.
+      if (!booking) return this.presentOrder(order);
+      const assignment = holder(order);
+      // With no holder the single read asks for any valid check-in of the order (technicianId undefined is no filter).
+      const orderCheckIns = checkInsBy.get(order.id) ?? [];
+      // `interrupted` holds the orders with a receipt, so the proof is computed once and handed to the finance view.
+      const stop = interrupted.has(order.id) ? await verifiedOnsiteInterruption(manager, order, booking) : null;
+      return orderView(order, {
+        booking,
+        stop,
+        finance: interrupted.has(order.id) ? await loadOnsiteStopFinance(manager, order, booking, { proof: stop }) : null,
+        assignment,
+        technician: assignment ? userById.get(assignment.technicianId) ?? null : null,
+        customer: userById.get(booking.customerId) ?? null,
+        quotation: quotationBy.get(order.id) ?? null,
+        history: historyBy.get(order.id) ?? [],
+        bookingMedia: mediaBy.get(booking.id) ?? [],
+        departEarlyMinutes,
+        customerConfirmed: confirmed.has(order.id),
+        arrivalVerified: assignment ? orderCheckIns.some(c => c.technicianId === assignment.technicianId) : orderCheckIns.length > 0,
+        beforeEvidenceCount: evidenceCount.get(`${order.id}:${EvidenceType.BEFORE}`) ?? 0,
+        afterEvidenceCount: evidenceCount.get(`${order.id}:${EvidenceType.AFTER}`) ?? 0,
+      });
+    }));
   }
 
   private async presentHistoricalOrder(order: ServiceOrder, assignment: TechnicianAssignment | null): Promise<HistoricalOrderSummary> {
@@ -1559,14 +1615,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       where: { serviceOrderId: orderId },
       order: { expiresAt: 'ASC' },
     });
-    const itemIds = coverages.map(c => c.invoiceItemId).filter((id): id is string => !!id);
-    const items = itemIds.length ? await this.dataSource.manager.findBy(InvoiceItem, { id: In(itemIds) }) : [];
-    const byId = new Map(items.map(item => [item.id, item]));
-    const now = new Date();
-    return coverages.map(coverage => {
-      const item = coverage.invoiceItemId ? byId.get(coverage.invoiceItemId) : undefined;
-      return { ...coverage, status: effectiveWarrantyStatus(coverage, now), itemType: item?.type ?? null, itemDescription: item?.description ?? null };
-    });
+    return presentCoverages(this.dataSource.manager, coverages);
   }
 
   // ── Spec v1.2: Cash Settlement & Commission Tracking ──
@@ -2196,4 +2245,79 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   }
 
 
+}
+
+/** What presentOrder() and presentOrders() read about one order; the view below is built from it alone. */
+interface OrderViewParts {
+  booking: Booking;
+  stop: Awaited<ReturnType<typeof verifiedOnsiteInterruption>>;
+  finance: Awaited<ReturnType<typeof loadOnsiteStopFinance>>;
+  assignment: TechnicianAssignment | null;
+  technician: User | null;
+  customer: User | null;
+  quotation: Quotation | null;
+  history: OrderStatusHistory[];
+  bookingMedia: BookingMedia[];
+  departEarlyMinutes: number;
+  customerConfirmed: boolean;
+  arrivalVerified: boolean;
+  beforeEvidenceCount: number;
+  afterEvidenceCount: number;
+}
+
+/**
+ * The status history in the order it happened. Two steps written in one transaction share the same
+ * time (a technician withdraws, then the order is cancelled), and the database returns ties in any
+ * order: the step that led to the order's current status goes last, the others keep their order.
+ */
+export function orderTimeline(order: Pick<ServiceOrder, 'status'>, history: OrderStatusHistory[]) {
+  return [...history]
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()
+      || Number(a.toStatus === order.status) - Number(b.toStatus === order.status))
+    .map(h => ({ status: h.toStatus, title: h.reason, timestamp: h.createdAt.toISOString(), actor: h.actorRole }));
+}
+
+/** The order as the apps read it, one shape for the detail and for every list. */
+function orderView(order: ServiceOrder, parts: OrderViewParts): ServiceOrder {
+  const { booking, stop, finance, assignment, technician, customer } = parts;
+  if (!assignment) {
+    order.technicianLastLat = null;
+    order.technicianLastLng = null;
+    order.technicianLocationUpdatedAt = null;
+  }
+  return Object.assign(order, {
+    bookingMedia: parts.bookingMedia.map(toBookingMediaResponse),
+    // PO 31/10/2026: what the customer needs to answer a delay notice; the raw columns below name another order and a manager's case, so they never leave.
+    delayNotice: delayNoticeView(order),
+    delayCurrentOrderId: null, delaySupportCaseId: null,
+    ...(finance ? { failedWorkFinance: finance.customer } : {}),
+    ...(stop?.workStopped ? { workStopped: true, assignmentReleased: true, operationalDisposition: 'STOPPED', oldObligationsReviewRequired: true } : {}),
+    serviceName: booking.serviceNameSnapshot || '', addressSummary: booking.addressTextSnapshot || '',
+    pricingMode: booking.pricingModeSnapshot,
+    fixedUnitPrice: booking.fixedUnitPriceSnapshot ? Number(booking.fixedUnitPriceSnapshot) : null,
+    quantity: booking.quantity || 1,
+    scopeDescription: booking.scopeSnapshot || '',
+    bookingDescription: booking.description || '',
+    // One device of a visit is paid, moved and cancelled with the visit (PO 21/10/2026).
+    visitGroupId: booking.visitGroupId ?? null,
+    customerNote: booking.customerNote ?? null,
+    bookingMode: booking.bookingMode ?? 'scheduled',
+    slot: booking.slot ?? null,
+    departAvailableAt: booking.preferredStartAt
+      ? new Date(booking.preferredStartAt.getTime() - parts.departEarlyMinutes * 60_000).toISOString()
+      : null,
+    customerName: customer?.fullName || '', customerPhone: customer?.phoneNumber || '',
+    technician: technician ? { id: technician.id, fullName: technician.fullName, phoneNumber: technician.phoneNumber } : undefined,
+    destination: booking.latitudeSnapshot != null && booking.longitudeSnapshot != null
+      ? { lat: Number(booking.latitudeSnapshot), lng: Number(booking.longitudeSnapshot) }
+      : null,
+    technicianLocation: order.technicianLastLat != null && order.technicianLastLng != null
+      ? { lat: Number(order.technicianLastLat), lng: Number(order.technicianLastLng), updatedAt: order.technicianLocationUpdatedAt?.toISOString() ?? null }
+      : null,
+    quotation: parts.quotation, customerConfirmed: parts.customerConfirmed,
+    arrivalVerified: parts.arrivalVerified,
+    beforeEvidenceCount: parts.beforeEvidenceCount,
+    afterEvidenceCount: parts.afterEvidenceCount,
+    timeline: orderTimeline(order, parts.history),
+  });
 }

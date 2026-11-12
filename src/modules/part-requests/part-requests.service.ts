@@ -3,7 +3,8 @@ import { Injectable, Logger, ForbiddenException, Optional, BadRequestException }
 import { ModuleRef } from '@nestjs/core';
 import { PartCustodyService } from './part-custody.service';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, Repository, Not } from 'typeorm';
+import { DataSource, EntityManager, In, Repository, Not } from 'typeorm';
+import { WarehouseAllocation } from './entities/warehouse-allocation.entity';
 import * as crypto from 'crypto';
 import {
   PartRequestStatus,
@@ -469,7 +470,7 @@ export class PartRequestsService {
     // A quote only tells the customer what they pay for. With return tracking on, the technician settles the real use and the
     // leftover afterwards (usedQty never exceeds the approved quote), so a quote may take fewer pieces than were issued.
     const partialQuoteAllowed = !!await custodyActivation(manager);
-    const requests = await manager.find(PartRequest, { where: { serviceOrderId: orderId, technicianId }, relations: ['items'] });
+    const requests = await this.withoutUnsourced(manager, await manager.find(PartRequest, { where: { serviceOrderId: orderId, technicianId }, relations: ['items'] }));
     const lines = requests.filter(request => request.technicianId === technicianId && request.requestType === PartRequestType.PRE_REPAIR &&
       [PartRequestStatus.REQUESTED, PartRequestStatus.READY, PartRequestStatus.DELIVERING, PartRequestStatus.RECEIVED].includes(request.status))
       .flatMap(request => request.items).filter(item => item.partSource === PartSource.FIXHOME && item.usageStatus !== PartUsageStatus.RETURNED);
@@ -514,7 +515,7 @@ export class PartRequestsService {
         name: prior?.name ?? item.partNameSnapshot ?? item.description, unitPrice: prior?.unitPrice ?? Number(item.unitPrice) });
     }
     if (!required.size) return null;
-    const requests = await manager.find(PartRequest, { where: { serviceOrderId: quote.serviceOrderId, technicianId: quote.technicianId }, relations: ['items'] });
+    const requests = await this.withoutUnsourced(manager, await manager.find(PartRequest, { where: { serviceOrderId: quote.serviceOrderId, technicianId: quote.technicianId }, relations: ['items'] }));
     for (const request of requests) {
       if (request.technicianId !== quote.technicianId || request.requestType !== PartRequestType.PRE_REPAIR ||
           ![PartRequestStatus.REQUESTED, PartRequestStatus.READY, PartRequestStatus.DELIVERING, PartRequestStatus.RECEIVED].includes(request.status)) continue;
@@ -549,6 +550,20 @@ export class PartRequestsService {
   }
 
   /**
+   * BUG DETECTOR 77: a request no FixHome warehouse could stock (W2 stock_unavailable, kept in the
+   * database as manual_assistance) is not a source of parts. Counting it as one let an approved quote
+   * skip the request it needed, so the parts were billed as supplied but never came.
+   */
+  private async withoutUnsourced(manager: EntityManager, requests: PartRequest[]): Promise<PartRequest[]> {
+    const waiting = requests.filter(request => request.status === PartRequestStatus.REQUESTED).map(request => request.id);
+    if (!waiting.length) return requests;
+    const rows = await manager.find(WarehouseAllocation, {
+      where: { partRequestId: In(waiting), status: 'manual_assistance' }, select: ['partRequestId'] });
+    const unsourced = new Set(rows.map(row => row.partRequestId));
+    return unsourced.size ? requests.filter(request => !unsourced.has(request.id)) : requests;
+  }
+
+  /**
    * FixHome parts the technician holds (or has on the way) for this order that no approval has
    * claimed yet (BUG DETECTOR 14): every live line not returned, less what the technician has
    * declared going back, less what the approved quotation and approved additional costs use.
@@ -560,7 +575,7 @@ export class PartRequestsService {
     const add = (id: string, quantity: number) => stock.set(id, (stock.get(id) ?? 0) + quantity);
     const custody = await manager.find(PartCustody, { where: { serviceOrderId: orderId, technicianId } });
     const goingBack = new Map(custody.map(row => [row.partRequestItemId, (row.state?.declarations ?? []).reduce((sum, d) => sum + d.quantity, 0)]));
-    const requests = await manager.find(PartRequest, { where: { serviceOrderId: orderId, technicianId }, relations: ['items'] });
+    const requests = await this.withoutUnsourced(manager, await manager.find(PartRequest, { where: { serviceOrderId: orderId, technicianId }, relations: ['items'] }));
     for (const request of requests) {
       if (!live.includes(request.status)) continue;
       for (const item of request.items) {
@@ -1254,7 +1269,23 @@ export class PartRequestsService {
   /** Read-only W2 queue for a manager's currently assigned warehouses. */
   async findWarehouseTasks(query: QueryPartRequestsDto, actor: { id: string; role: string }) {
     if (actor.role !== Role.SERVICE_MANAGER) throw new ForbiddenException('Service Manager role required');
-    return this.findAll(query, actor, true);
+    return this.withWarehouseAllocations(await this.findAll(query, actor, true));
+  }
+
+  /**
+   * The staff list (GET /part-requests): an Admin's rows carry their W2 allocation like the manager's
+   * queue does, read for the whole page at once instead of one request per row from the page.
+   */
+  async findForList(query: QueryPartRequestsDto, actor: { id: string; role: string }) {
+    const result = await this.findAll(query, actor);
+    return actor.role === Role.ADMIN ? this.withWarehouseAllocations(result) : result;
+  }
+
+  // BUG DETECTOR 90: each row carries its W2 allocation, read for the whole page at once.
+  private async withWarehouseAllocations<T extends { data: PartRequest[] }>(result: T): Promise<T> {
+    if (!this.warehouseFulfillment || !result.data.length) return result;
+    const allocations = await this.warehouseFulfillment.views(this.dataSource.manager, result.data.map(row => row.id));
+    return { ...result, data: result.data.map(row => Object.assign(row, { warehouseAllocation: allocations.get(row.id) ?? null })) };
   }
 
   /** Shared paginated query; existing global staff listing remains unchanged unless explicitly scoped. */
@@ -1262,7 +1293,7 @@ export class PartRequestsService {
     query: QueryPartRequestsDto,
     actor: { id: string; role: string },
     warehouseTasksOnly = false,
-  ): Promise<{ data: PartRequest[]; total: number }> {
+  ): Promise<{ data: PartRequest[]; total: number; statusCounts: Record<string, number> }> {
     if (![Role.SERVICE_MANAGER, Role.ADMIN, Role.TECHNICIAN].includes(actor.role as Role)) throw new ForbiddenException('Operation not permitted');
     if (query.createdFrom && query.createdTo && new Date(query.createdFrom) > new Date(query.createdTo)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Invalid date range');
     const page = query.page || 1;
@@ -1278,19 +1309,25 @@ export class PartRequestsService {
     if (warehouseTasksOnly) {
       // Scope counts and rows in SQL, never in the browser; use CURRENT warehouse owner
       // so legitimately reassigned warehouses can reissue a new QR binding.
-      qb.innerJoin('part_request_warehouse_allocations', 'w2a', 'w2a.part_request_id = pr.id')
-        .innerJoin('warehouses', 'w2w', 'w2w.id = w2a.warehouse_id AND w2w.responsible_user_id = :warehouseSmId', { warehouseSmId: actor.id })
-        .andWhere('pr.fulfillmentMethod = :warehousePickup', { warehousePickup: FulfillmentMethod.PICKUP });
+      // BUG DETECTOR 75: the queue was W2 pickups only, so delivery, warranty and older
+      // requests (no W2 allocation, still every manager's work as in the global list)
+      // vanished. A stock-unavailable W2 request stays out: the technician sources it.
+      qb.andWhere(`(
+          (pr.fulfillmentMethod = :warehousePickup AND EXISTS (
+            SELECT 1 FROM part_request_warehouse_allocations w2a
+            JOIN warehouses w2w ON w2w.id = w2a.warehouse_id
+            WHERE w2a.part_request_id = pr.id AND w2w.responsible_user_id = :warehouseSmId))
+          OR NOT EXISTS (SELECT 1 FROM part_request_warehouse_allocations w2x WHERE w2x.part_request_id = pr.id)
+        )`, { warehouseSmId: actor.id, warehousePickup: FulfillmentMethod.PICKUP });
     }
 
-    if (query.status) {
-      qb.andWhere('pr.status = :status', { status: query.status });
-    }
     if (query.requestType) qb.andWhere('pr.requestType = :requestType', { requestType: query.requestType });
     if (query.fulfillmentMethod) qb.andWhere('pr.fulfillmentMethod = :fulfillmentMethod', { fulfillmentMethod: query.fulfillmentMethod });
     if (query.createdFrom) qb.andWhere('pr.createdAt >= :createdFrom', { createdFrom: query.createdFrom });
     if (query.createdTo) qb.andWhere('pr.createdAt <= :createdTo', { createdTo: query.createdTo });
-    if (query.search) qb.andWhere('(CAST(pr.id AS text) ILIKE :search OR CAST(pr.serviceOrderId AS text) ILIKE :search OR CAST(pr.technicianId AS text) ILIKE :search OR EXISTS (SELECT 1 FROM part_request_items item WHERE item.part_request_id = pr.id AND item.part_name_snapshot ILIKE :search))', { search: `%${query.search}%` });
+    // BUG DETECTOR 82: the screen shows "PR-6C523040" (start of the id); a pasted code must match.
+    const search = query.search?.trim().replace(/^PR-/i, '');
+    if (search) qb.andWhere('(CAST(pr.id AS text) ILIKE :search OR CAST(pr.serviceOrderId AS text) ILIKE :search OR CAST(pr.technicianId AS text) ILIKE :search OR EXISTS (SELECT 1 FROM part_request_items item WHERE item.part_request_id = pr.id AND item.part_name_snapshot ILIKE :search))', { search: `%${search}%` });
 
     if (query.serviceOrderId) {
       qb.andWhere('pr.serviceOrderId = :orderId', {
@@ -1310,8 +1347,17 @@ export class PartRequestsService {
       qb.andWhere('EXISTS (SELECT 1 FROM technician_assignments a WHERE a.service_order_id = pr.service_order_id AND a.technician_id = :selfId AND a.is_active = true)');
     }
 
-    const [data, total] = await qb.getManyAndCount();
-    return { data: data.map(request => this.visible(request, actor)), total };
+    // BUG DETECTOR 89: the status tiles counted only the 20 rows on screen. Count every
+    // status over the same filters (all but the status itself), in SQL. One extra query, only
+    // for the staff list that shows the tiles; the technician's lists have none (free tier, PO 11/11).
+    const counting = actor.role === Role.TECHNICIAN ? null : qb.clone().orderBy().skip(undefined).take(undefined)
+      .select('pr.status', 'status').addSelect('COUNT(DISTINCT pr.id)', 'n').groupBy('pr.status');
+    if (query.status) qb.andWhere('pr.status = :status', { status: query.status });
+
+    const [[data, total], counted] = await Promise.all([qb.getManyAndCount(), counting ? counting.getRawMany() : Promise.resolve([])]);
+    const statusCounts: Record<string, number> = {};
+    for (const row of counted as Array<{ status: string; n: string | number }>) statusCounts[row.status] = Number(row.n);
+    return { data: data.map(request => this.visible(request, actor)), total, statusCounts };
   }
 
   /**

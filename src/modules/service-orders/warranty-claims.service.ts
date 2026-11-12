@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, IsNull, Repository } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
@@ -24,6 +24,9 @@ import { WarrantyCoverage } from './entities/warranty-coverage.entity';
 import { WarrantyVisit } from './entities/warranty-visit.entity';
 import { authorizeOrder, type OrderActor } from './order-access';
 import { toClaimView } from './warranty-claim.mapper';
+import { presentCoverages } from './warranty-coverage-status';
+import { Booking } from '../bookings/entities/booking.entity';
+import { ServiceOrder } from './entities/service-order.entity';
 import { WarrantyNotifier } from './warranty-notifier.service';
 
 @Injectable()
@@ -132,6 +135,32 @@ export class WarrantyClaimsService {
     });
     const times = await this.scheduledTimes(claims.map((claim) => claim.id));
     return claims.map((claim) => toClaimView(claim, times.get(claim.id) ?? null));
+  }
+
+  /**
+   * The customer's warranties page: coverages and claims of several of their own orders in one read
+   * (the page used to ask two endpoints per order). Each order comes back exactly as
+   * GET /service-orders/:id/warranties and GET /service-orders/:id/warranty-claims return it; an id that
+   * is not one of this customer's orders is refused, as those endpoints refuse it.
+   */
+  async customerWarranties(orderIds: string[], customer: OrderActor) {
+    const ids = [...new Set(orderIds.map(id => id.toLowerCase()))];
+    if (!ids.length) return [];
+    const manager = this.dataSource.manager;
+    const owned = await manager.createQueryBuilder(ServiceOrder, 'o')
+      .innerJoin(Booking, 'b', 'b.id = o.bookingId AND b.customerId = :customerId', { customerId: customer.id })
+      .where('o.id IN (:...ids)', { ids }).select('o.id', 'id').getRawMany<{ id: string }>();
+    if (owned.length !== ids.length) throw new ForbiddenException('Order not found or access denied');
+    const [coverages, claims] = await Promise.all([
+      manager.find(WarrantyCoverage, { where: { serviceOrderId: In(ids) }, order: { expiresAt: 'ASC' } }),
+      this.claimRepo.find({ where: { serviceOrderId: In(ids) }, relations: ['technician'], order: { submittedAt: 'DESC' } }),
+    ]);
+    const [views, times] = await Promise.all([presentCoverages(manager, coverages), this.scheduledTimes(claims.map(claim => claim.id))]);
+    return ids.map(orderId => ({
+      orderId,
+      coverages: views.filter(view => view.serviceOrderId === orderId),
+      claims: claims.filter(claim => claim.serviceOrderId === orderId).map(claim => toClaimView(claim, times.get(claim.id) ?? null)),
+    }));
   }
 
   async respond(

@@ -18,6 +18,11 @@ function harness(active: boolean) {
       if (entity.name === 'Booking') return { customerId: 'customer' };
       return null;
     }),
+    // The list reads the technician's assignments of the whole page at once.
+    find: vi.fn(async (entity: { name: string }, options: { where: { technicianId: string } }) =>
+      entity.name === 'TechnicianAssignment' && options.where.technicianId === 'tech-old'
+        ? [{ serviceOrderId: order.id, technicianId: 'tech-old', isActive: active, assignedAt: new Date('2030-01-01T01:00:00Z') }]
+        : []),
   };
   const repo = { find: vi.fn(async () => []), findOneBy: vi.fn(async () => order),
     createQueryBuilder: vi.fn(() => ({

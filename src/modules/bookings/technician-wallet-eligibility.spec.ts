@@ -74,6 +74,19 @@ describe('#42 new-work wallet authority', () => {
       if (balance !== null) expect(bulk.wallets.get(f.user.id)).toBe(balance);
     });
 
+  it('the candidate list hands over the addresses and areas it already read: same verdict, not read again', async () => {
+    const f = fixture(200000);
+    const read = await f.bulk();
+    const readsOf = (name: string) => f.manager.find.mock.calls.filter((call) => call[0].name === name).length;
+    const before = { address: readsOf('Address'), areas: readsOf('TechnicianServiceArea') };
+    const reused = await loadEligibilityBulk(f.asManager, f.booking, [f.profile] as never,
+      { addresses: [...read.addresses.values()], areas: [...read.areas.values()].flat() });
+    expect(readsOf('Address')).toBe(before.address);
+    expect(readsOf('TechnicianServiceArea')).toBe(before.areas);
+    expect(reused.addresses).toEqual(read.addresses);
+    expect(await f.direct({ bulk: reused })).toEqual(await f.direct({ bulk: read }));
+  });
+
   it.each([null, 0, 199999])('preserves accepted-work rescheduling with balance %s', async balance => {
     const f = fixture(balance);
     f.profile.isAvailable = false;
