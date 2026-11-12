@@ -530,10 +530,8 @@ export class BookingsService {
     actor: { id: string; role: string },
   ): Promise<Booking | TechnicianBookingPreviewDto> {
     await this.closeOverdueBookings();
-    const booking = await this.bookingRepo.findOne({
-      where: { id },
-      relations: ['invitations'],
-    });
+    // Only the owner is needed to decide who may read; the full rows are read once below.
+    const booking = await this.bookingRepo.findOne({ where: { id }, select: { id: true, customerId: true } });
     if (!booking) {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
     }
@@ -598,16 +596,24 @@ export class BookingsService {
     });
   }
   private async findFullBooking(id: string): Promise<Booking> {
-    const booking = await this.bookingRepo.findOne({
-      where: { id },
-      relations: ['service', 'address', 'media', 'invitations'],
-      relationLoadStrategy: 'query',
-    });
+    // The booking, its order and its latest diagnosis only need the id, so they are read side by side.
+    const [booking, order, diagnosis] = await Promise.all([
+      this.bookingRepo.findOne({
+        where: { id },
+        relations: ['service', 'address', 'media', 'invitations'],
+        relationLoadStrategy: 'query',
+      }),
+      this.dataSource.manager.findOneBy(ServiceOrder, { bookingId: id }),
+      this.latestDiagnosis(id),
+    ]);
     if (!booking) {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Booking not found');
     }
-    const order = await this.dataSource.manager.findOneBy(ServiceOrder, { bookingId: id });
-    return this.addBookingReadDetails(booking, order);
+    return Object.assign(booking, { serviceOrderId: order?.id, diagnosis });
+  }
+
+  private latestDiagnosis(bookingId: string, manager: EntityManager = this.dataSource.manager) {
+    return manager.findOne(AiDiagnosis, { where: { bookingId }, order: { createdAt: 'DESC' } });
   }
 
   private async addBookingReadDetails(
@@ -615,10 +621,7 @@ export class BookingsService {
     order: ServiceOrder | null,
     manager: EntityManager = this.dataSource.manager,
   ): Promise<Booking> {
-    const diagnosis = await manager.findOne(AiDiagnosis, {
-      where: { bookingId: booking.id },
-      order: { createdAt: 'DESC' },
-    });
+    const diagnosis = await this.latestDiagnosis(booking.id, manager);
     return Object.assign(booking, { serviceOrderId: order?.id, diagnosis });
   }
 

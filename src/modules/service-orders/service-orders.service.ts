@@ -87,9 +87,9 @@ import {
 import type { EntityManager } from 'typeorm';
 import { OrderEvidenceStorage, EvidenceFile, evidenceStampText } from '../media/order-evidence-storage.service';
 import { expireAdditionalCosts } from './expire-additional-costs';
-import { effectiveWarrantyStatus } from './warranty-coverage-status';
+import { presentCoverages } from './warranty-coverage-status';
 import { authorizeOrder } from './order-access';
-import { assertNoOnsiteInterruption, ONSITE_INTERRUPTION_ACTION, ONSITE_STOP_ACTION, validAssignmentCheckIn, verifiedOnsiteInterruption } from './onsite-interruption';
+import { assertNoOnsiteInterruption, hasOnsiteInterruption, ONSITE_INTERRUPTION_ACTION, ONSITE_STOP_ACTION, validAssignmentCheckIn, verifiedOnsiteInterruption } from './onsite-interruption';
 import { loadOnsiteStopFinance } from './onsite-stop-finance';
 import { groupSiblings, mirrorGroupStatus, recordVisitOutcome, refuseLoneGroupedBookingAction } from '../bookings/visit-group-guard';
 import { REPAIR_FAILURE_REASONS, type RepairFailedDto } from './dto/repair-failed.dto';
@@ -595,8 +595,10 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   private async presentOrder(order: ServiceOrder): Promise<ServiceOrder> {
     const manager = this.dataSource.manager;
     const booking = await manager.findOneByOrFail(Booking, { id: order.bookingId });
-    const stop = await verifiedOnsiteInterruption(manager, order, booking);
-    const finance = await loadOnsiteStopFinance(manager, order, booking);
+    // Both read models start from an interruption receipt; without one (almost every order) neither reads further.
+    const interrupted = await hasOnsiteInterruption(manager, order.id);
+    const stop = interrupted ? await verifiedOnsiteInterruption(manager, order, booking) : null;
+    const finance = interrupted ? await loadOnsiteStopFinance(manager, order, booking, { proof: stop }) : null;
     // The technician holding the order now. A technician who withdrew or was
     // replaced is not shown (name, phone, last GPS); a completed order keeps
     // its finishing technician because that assignment stays active.
@@ -685,10 +687,12 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       const assignment = holder(order);
       // With no holder the single read asks for any valid check-in of the order (technicianId undefined is no filter).
       const orderCheckIns = checkInsBy.get(order.id) ?? [];
+      // `interrupted` holds the orders with a receipt, so the proof is computed once and handed to the finance view.
+      const stop = interrupted.has(order.id) ? await verifiedOnsiteInterruption(manager, order, booking) : null;
       return orderView(order, {
         booking,
-        stop: interrupted.has(order.id) ? await verifiedOnsiteInterruption(manager, order, booking) : null,
-        finance: interrupted.has(order.id) ? await loadOnsiteStopFinance(manager, order, booking) : null,
+        stop,
+        finance: interrupted.has(order.id) ? await loadOnsiteStopFinance(manager, order, booking, { proof: stop }) : null,
         assignment,
         technician: assignment ? userById.get(assignment.technicianId) ?? null : null,
         customer: userById.get(booking.customerId) ?? null,
@@ -1611,14 +1615,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       where: { serviceOrderId: orderId },
       order: { expiresAt: 'ASC' },
     });
-    const itemIds = coverages.map(c => c.invoiceItemId).filter((id): id is string => !!id);
-    const items = itemIds.length ? await this.dataSource.manager.findBy(InvoiceItem, { id: In(itemIds) }) : [];
-    const byId = new Map(items.map(item => [item.id, item]));
-    const now = new Date();
-    return coverages.map(coverage => {
-      const item = coverage.invoiceItemId ? byId.get(coverage.invoiceItemId) : undefined;
-      return { ...coverage, status: effectiveWarrantyStatus(coverage, now), itemType: item?.type ?? null, itemDescription: item?.description ?? null };
-    });
+    return presentCoverages(this.dataSource.manager, coverages);
   }
 
   // ── Spec v1.2: Cash Settlement & Commission Tracking ──

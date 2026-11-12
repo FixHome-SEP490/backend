@@ -143,6 +143,13 @@ describe.skipIf(!port)('P1 isolated PostgreSQL / real JWT / transaction entrypoi
     expect((await f.get(`/service-orders/${f.order.id}/part-returns`, f.tech)).body.data[0]).toMatchObject({ issuedQty: 3, usedQty: 2, outstandingQty: 1, version: 1 });
     expect((await f.get(`/service-orders/${f.order.id}/part-returns`, f.other)).status).toBe(403);
     expect((await f.get(`/service-orders/${f.order.id}/part-returns`, f.customer)).status).toBe(403);
+    // The manager's part-request page reads every order of the page at once, the same rows per order.
+    const empty = randomUUID();
+    const bulk = await f.get(`/part-returns/by-orders?orderIds=${f.order.id},${empty}`, f.manager);
+    expect(bulk.status, JSON.stringify(bulk.body)).toBe(200);
+    expect(bulk.body.data).toEqual({ [f.order.id]: (await f.get(`/service-orders/${f.order.id}/part-returns`, f.manager)).body.data, [empty]: [] });
+    for (const who of [f.tech, f.customer]) expect((await f.get(`/part-returns/by-orders?orderIds=${f.order.id}`, who)).status).toBe(403);
+    expect((await f.get('/part-returns/by-orders?orderIds=x', f.manager)).status).toBe(400);
     const forged = { ...f.customer, token: jwt.sign({ sub: f.customer.id, role: 'service_manager' }) };
     expect((await f.post(`${f.returns}/accept-return`, forged, { quantity: 1, expectedVersion: 1, idempotencyKey: 'forged-role' })).status).toBe(403);
     const body = { quantity: 1, expectedVersion: 1, idempotencyKey: 'declare-concurrent' };

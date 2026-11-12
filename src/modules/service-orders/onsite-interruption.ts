@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { isUUID } from 'class-validator';
-import type { EntityManager } from 'typeorm';
+import { In, type EntityManager } from 'typeorm';
 import { BookingStatus, CheckInResult, Role, ServiceOrderStatus, SupportCaseType } from '../../shared/enums';
 import { AuditLog } from '../audit-log/entities/audit-log.entity';
 import { Booking } from '../bookings/entities/booking.entity';
@@ -36,14 +36,11 @@ export function onsiteInterruptionFingerprint(orderId: string, actorId: string, 
 
 /** Existence blocks a second outcome even when a damaged receipt cannot grant continuation. */
 export async function hasOnsiteInterruption(manager: EntityManager, orderId: string): Promise<boolean> {
+  // One read for either receipt: an order detail asks this on every load.
   const row = await manager.findOne(AuditLog, { where: {
-    action: ONSITE_INTERRUPTION_ACTION, resourceType: 'service_order', resourceId: orderId,
+    action: In([ONSITE_INTERRUPTION_ACTION, ONSITE_STOP_ACTION]), resourceType: 'service_order', resourceId: orderId,
   } });
-  if (row?.action === ONSITE_INTERRUPTION_ACTION) return true;
-  const stop = await manager.findOne(AuditLog, { where: {
-    action: ONSITE_STOP_ACTION, resourceType: 'service_order', resourceId: orderId,
-  } });
-  return stop?.action === ONSITE_STOP_ACTION;
+  return row?.action === ONSITE_INTERRUPTION_ACTION || row?.action === ONSITE_STOP_ACTION;
 }
 
 export async function assertNoOnsiteInterruption(manager: EntityManager, orderId: string): Promise<void> {
@@ -60,12 +57,6 @@ export async function verifiedOnsiteInterruption(manager: EntityManager, order: 
   if (receipts.length !== 1 || booking.id !== order.bookingId || booking.status !== BookingStatus.MATCHED) return null;
   const receipt = receipts[0];
   const after = receipt.after;
-  const finals = await manager.find(AuditLog, { where: {
-    action: ONSITE_STOP_ACTION, resourceType: 'service_order', resourceId: order.id,
-  } });
-  if (finals.length > 1) return null;
-  const final = finals[0];
-  const stopped = final?.after;
   if (receipt.actorRole !== Role.TECHNICIAN || !receipt.actorUserId || after?.version !== 1
     || after.serviceOutcome !== 'VERIFIED_INTERRUPTION_RECORDED' || after.sourceBookingId !== booking.id
     || after.customerId !== booking.customerId || after.sourceVisitGroupId !== (booking.visitGroupId ?? null)
@@ -79,19 +70,27 @@ export async function verifiedOnsiteInterruption(manager: EntityManager, order: 
   try { request = onsiteInterruptionRequest(after.request as CannotContinueDto); } catch { return null; }
   const fingerprint = onsiteInterruptionFingerprint(order.id, receipt.actorUserId, request);
   if (after.fingerprint !== fingerprint) return null;
-  const incident = await manager.findOneBy(SupportCase, { id: after.incidentId,
-    bookingId: booking.id, serviceOrderId: order.id, customerId: booking.customerId,
-    technicianId: receipt.actorUserId, createdByUserId: receipt.actorUserId,
-    caseType: SupportCaseType.TECHNICIAN_REPLACEMENT });
+  // These four reads depend only on the receipt, so they go out together; every check below
+  // still runs in the same order on the same rows, so the answer is the one a sequential read gives.
+  const [finals, incident, assignment, checkin] = await Promise.all([
+    manager.find(AuditLog, { where: { action: ONSITE_STOP_ACTION, resourceType: 'service_order', resourceId: order.id } }),
+    manager.findOneBy(SupportCase, { id: after.incidentId,
+      bookingId: booking.id, serviceOrderId: order.id, customerId: booking.customerId,
+      technicianId: receipt.actorUserId, createdByUserId: receipt.actorUserId,
+      caseType: SupportCaseType.TECHNICIAN_REPLACEMENT }),
+    manager.findOneBy(TechnicianAssignment, { id: after.assignmentId as string,
+      serviceOrderId: order.id, technicianId: receipt.actorUserId }),
+    manager.findOneBy(ArrivalCheckIn, { id: after.checkInId as string,
+      serviceOrderId: order.id, technicianId: receipt.actorUserId, result: CheckInResult.VALID }),
+  ]);
+  if (finals.length > 1) return null;
+  const final = finals[0];
+  const stopped = final?.after;
   if (!incident || incident.interruptionCommandId !== request.commandId || incident.interruptionFingerprint !== fingerprint) return null;
   // The final proof binds the original immutable request, not later case edits.
   if (!final && (incident.reason !== request.reason || incident.reasonClass !== request.reasonClass || incident.reasonCode !== request.reasonCode
     || !Array.isArray(incident.evidenceRefs)
     || JSON.stringify([...incident.evidenceRefs].sort()) !== JSON.stringify(request.photoEvidenceIds))) return null;
-  const assignment = await manager.findOneBy(TechnicianAssignment, { id: after.assignmentId,
-    serviceOrderId: order.id, technicianId: receipt.actorUserId });
-  const checkin = await manager.findOneBy(ArrivalCheckIn, { id: after.checkInId,
-    serviceOrderId: order.id, technicianId: receipt.actorUserId, result: CheckInResult.VALID });
   if (!assignment || !checkin || !validAssignmentCheckIn(assignment, checkin)) return null;
   if (!booking.visitGroupId && ['customer_absent', 'customer_unreachable'].includes(request.reasonCode)) {
     const ids = after.contactEvidenceIds;
@@ -118,8 +117,10 @@ export async function verifiedOnsiteInterruption(manager: EntityManager, order: 
       || await manager.findOneBy(TechnicianAssignment, { serviceOrderId: order.id, isActive: true })) return null;
   } else if (!assignment.isActive) return null;
   if (booking.visitGroupId) {
-    const group = await manager.findOneBy(VisitGroup, { id: booking.visitGroupId, customerId: booking.customerId });
-    const item = await manager.findOneBy(VisitGroupItem, { groupId: booking.visitGroupId, bookingId: booking.id });
+    const [group, item] = await Promise.all([
+      manager.findOneBy(VisitGroup, { id: booking.visitGroupId, customerId: booking.customerId }),
+      manager.findOneBy(VisitGroupItem, { groupId: booking.visitGroupId, bookingId: booking.id }),
+    ]);
     if (!group || !item || (final ? item.outcome !== 'interrupted' || !item.outcomeAt
       || new Date(item.outcomeAt).getTime() !== Date.parse(stopped!.stoppedAt as string) : item.outcome != null)) return null;
   }

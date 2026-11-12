@@ -10,6 +10,7 @@ import { PartCustodyService } from './part-custody.service';
 import { PartCustodyActor } from './part-custody.types';
 import { LegacyManualReviewDto } from './dto/legacy-manual-review.dto';
 import { RiskLimit } from '../../common/rate-limit/risk-rate-limit';
+import { parseIdList } from '../../shared/dto/id-list-query';
 
 @ApiTags('Part Returns')
 @ApiBearerAuth()
@@ -22,6 +23,13 @@ export class PartReturnsController {
   @Roles(Role.TECHNICIAN, Role.SERVICE_MANAGER)
   async byOrder(@Param('orderId', ParseUUIDPipe) orderId: string, @Req() req: { user: PartCustodyActor }) {
     return { data: await this.custody.byOrder(orderId, req.user) };
+  }
+
+  /** One page of the manager's part-request list: the same rows GET service-orders/:orderId/part-returns gives, per order. */
+  @Get('part-returns/by-orders')
+  @Roles(Role.SERVICE_MANAGER)
+  async byOrders(@Query('orderIds') orderIds: string, @Req() req: { user: PartCustodyActor }) {
+    return { data: await this.custody.byOrders(parseIdList(orderIds), req.user) };
   }
 
   @Get('part-returns/pending')

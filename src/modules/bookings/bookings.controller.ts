@@ -36,6 +36,7 @@ import { ReasonDto } from '../service-orders/order-command.dto';
 import { toBookingInvitationResponse, toBookingMediaResponse, toBookingResponse } from './booking-privacy.dto';
 import { BookingPrivateMediaContentService } from './booking-private-media-content.service';
 import { RiskLimit } from '../../common/rate-limit/risk-rate-limit';
+import { BookingStatus } from '../../shared/enums';
 
 @ApiTags('Bookings')
 @Controller('bookings')
@@ -111,7 +112,12 @@ export class BookingsController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get booking by ID' })
   async findById(@Param('id', ParseUUIDPipe) id: string, @Req() req: { user: { id: string; role: string } }) {
-    await this.bookingsService.findById(id, req.user);
+    // The first read is also the access check: nobody else's booking can trigger matching.
+    const first = await this.bookingsService.findById(id, req.user);
+    // Only a booking still matching can move on (refreshMatching returns at once otherwise), so any
+    // other booking is answered from this read. A technician's invitation preview carries no status
+    // and keeps the full path.
+    if ('status' in first && first.status !== BookingStatus.MATCHING) return { data: toBookingResponse(first) };
     await this.invitationsService.refreshMatching(id);
     const booking = await this.bookingsService.findById(id, req.user);
     return { data: toBookingResponse(booking) };
