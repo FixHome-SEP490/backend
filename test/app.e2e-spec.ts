@@ -651,6 +651,42 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
         .set('Authorization', bearer(admin))
         .expect(400);
   });
+  it('admin user search ignores Vietnamese marks and treats % literally', async () => {
+    const before = await http().get('/api/v1/users/me').set('Authorization', bearer(technician)).expect(200);
+    await http()
+      .patch('/api/v1/users/me')
+      .set('Authorization', bearer(technician))
+      .send({ fullName: 'Nguyễn Thị Kiểm Thử Dấu' })
+      .expect(200);
+    try {
+      for (const term of ['nguyen thi kiem thu dau', 'NGUYỄN THỊ KIỂM', 'kiểm thử dấu']) {
+        const found = await http()
+          .get(`/api/v1/admin/users?search=${encodeURIComponent(term)}&limit=10`)
+          .set('Authorization', bearer(admin))
+          .expect(200);
+        expect(found.body.data.map((u: { id: string }) => u.id)).toContain(technician.user.id);
+      }
+      const literal = await http()
+        .get(`/api/v1/admin/users?search=${encodeURIComponent('%')}&limit=10`)
+        .set('Authorization', bearer(admin))
+        .expect(200);
+      expect(literal.body.meta.total).toBe(0);
+    } finally {
+      await http()
+        .patch('/api/v1/users/me')
+        .set('Authorization', bearer(technician))
+        .send({ fullName: before.body.data.fullName })
+        .expect(200);
+    }
+  });
+  it('activity counts take the same multi-device opt-in as the booking list (M-4)', async () => {
+    for (const flag of ['', '?excludeVisitGroups=true', '?excludeVisitGroups=false']) {
+      const res = await http().get(`/api/v1/bookings/my/activity-counts${flag}`).set('Authorization', bearer(customer)).expect(200);
+      expect(res.body.data.repair).toMatchObject({ all: expect.any(Number) });
+      expect(res.body.data.request).toMatchObject({ all: expect.any(Number) });
+    }
+    await http().get('/api/v1/bookings/my/activity-counts?excludeVisitGroups=yes').set('Authorization', bearer(customer)).expect(400);
+  });
   it('catalog uses active category AND service, including direct IDs and bypass query flags', async () => {
     const category = await createCategory();
     const service = await createService(category.id);

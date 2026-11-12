@@ -9,6 +9,7 @@ import { AccountStatus, Role } from '../../shared/enums';
 import { startBackgroundJob } from '../../common/background-job';
 import { ReputationEvent } from './entities/reputation-event.entity';
 import { clampPoints, penaltyFor, REPUTATION_START, suspensionEnd } from './reputation-rules';
+import { andWhereTextMatches } from '../../shared/utils/list-search';
 
 export interface ReputationViolation {
   userId: string;
@@ -221,9 +222,7 @@ export class ReputationService implements OnModuleInit, OnModuleDestroy {
       .select(['u.id AS id', 'u.fullName AS "fullName"', 'u.email AS email', 'u.phoneNumber AS "phoneNumber"', 'u.role AS role', 'u.status AS status',
         'u.reputationPoints AS "reputationPoints"', 'u.bookingSuspendedUntil AS "bookingSuspendedUntil"', 'tp.workSuspendedUntil AS "workSuspendedUntil"'])
       .where('u.role IN (:...roles)', { roles: query.role === 'customer' || query.role === 'technician' ? [query.role] : ['customer', 'technician'] });
-    if (query.search?.trim()) {
-      qb.andWhere('(u.fullName ILIKE :s OR u.email ILIKE :s OR u.phoneNumber ILIKE :s)', { s: `%${query.search.trim()}%` });
-    }
+    andWhereTextMatches(qb, ['u.fullName', 'u.email', 'u.phoneNumber'], query.search);
     const total = await qb.getCount();
     const data = await qb.orderBy('u.reputationPoints', 'ASC').addOrderBy('u.fullName', 'ASC').offset((page - 1) * pageSize).limit(pageSize).getRawMany();
     return {

@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-12 18:29 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: perf/part-returns-allocation-mode
+> Cập nhật lần cuối: 2026-11-12 22:41 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/be-bugs-1211
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -537,6 +537,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-12 22:41 (UTC+7) | ToanAltF4 | fix/be-bugs-1211 | Sửa lỗi console 12/11: tìm không dấu (người dùng, dịch vụ, linh kiện, uy tín, ví thợ), W3 với tài khoản seed id không v4 (W-15), Chuẩn bị xong trên phiếu W3 trả 409 (W-6), preview + danh sách phiếu có tiến trình W3 có phí (W-16), thu nhập thợ trừ phần phí giao (W-17), đếm tab Hoạt động nhận excludeVisitGroups (M-4), tra cứu đơn mã chữ thường (M-27)
 - 2026-11-12 18:29 (UTC+7) | ToanAltF4 | perf/part-returns-allocation-mode | GET /part-returns/pending gắn warehouseAllocated cho từng dòng (một query cho cả trang), web không còn gọi warehouse-allocation từng phiếu
 - 2026-11-12 14:08 (UTC+7) | ToanAltF4 | fix/f3-unsourced-parts | F3: duyệt báo giá/chi phí phát sinh bị từ chối nguyên tử (PARTS_SOURCE_UNAVAILABLE) khi không kho nào đủ linh kiện FixHome; GET /quotations/:id/parts-sourcing; thợ được huỷ phiếu PRE_REPAIR thiếu kho
 - 2026-11-12 12:21 (UTC+7) | ToanAltF4 | perf/detail-warranty-returns | GET /bookings/:id đọc một lần khi booking không còn ghép thợ; đơn bị dừng sửa đọc bằng chứng một lần, song song; thêm GET /warranties/mine?orderIds= (khách) và GET /part-returns/by-orders?orderIds= (SM) để trang danh sách đọc gộp
@@ -576,4 +577,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-06 10:39 (UTC+7) | foxonworld | foxonworld/fixhome-w3-admin-lifecycle-20261106 | Thêm W3 B3b operating-only lifecycle với preview receipt/Admin/CAS/audit bất biến, migration tiến 0009 và gate/CI fixture; giữ DRAFT API Web cũ và finance BLOCKED, PostgreSQL/consumer/release chờ Lead.
 - 2026-11-06 02:07 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | Thêm operational zero-fee DELIVERY JWT/evidence/dual consent/stock/courier journal và migration tiến 0008; full unit 3897 PASS/58 skipped, lint/typecheck/build PASS, review độc lập; giữ phí dương/Finance/custody/billing chặn, PG/DEV/consumer chưa kiểm chứng.
 - 2026-11-06 02:01 (UTC+7) | foxonworld | foxonworld/fixhome-w3-dev-release-gate-20261106 | Thêm W3 DEV release gate cho đúng migration 0004–0008: prerequisite W1/W2/voucher, giữ cặp cash pending cho gate cũ, advisory lock/ledger một lần/một transaction/replay refusal, CI PostgreSQL harness và deploy order W3 → cash → restart; unit 6/6, typecheck/lint/build PASS, PG/shared DEV NOT VERIFIED.
-- 2026-11-06 00:15 (UTC+7) | foxonworld | foxonworld/fixhome-review2-p3-w3-finance-delivery-be-20261104 | W3 physical PostgreSQL CI #42071519421 phát hiện `jsonb @>` với [] chấp nhận quantities không rỗng dù gate đóng; thay bằng so sánh JSONB EXACT cho quantities/evidence [] và warehouse/SM/courier null, thêm negative E2E cả forged evidence. Chờ CI PostgreSQL chạy lại; Finance/physical vẫn BLOCKED, không shared DEV migration.

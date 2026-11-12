@@ -9,6 +9,8 @@ export interface CompletedOrderEarning {
   serviceName: string | null;
   laborTotal: number;
   commission: number;
+  /** W3 paid delivery: the technician's share of the shipping fee, taken from the payout (W-17). */
+  shippingShare: number;
   /** What the customer was billed for the whole order (labour, parts, extras). */
   orderValue: number;
   paid: boolean;
@@ -42,6 +44,7 @@ export async function completedOrderEarnings(
             u.full_name AS "customerName", b.service_name_snapshot AS "serviceName",
             COALESCE(i.labor_total, so.labor_total, 0) AS "laborTotal",
             COALESCE(i.commission_amount, 0) AS "commission",
+            COALESCE(i.technician_shipping_share, 0) AS "shippingShare",
             COALESCE(i.grand_total, so.grand_total, 0) AS "orderValue",
             (LOWER(so.payment_status::text) = 'paid') AS "paid"
        FROM technician_assignments ta
@@ -62,6 +65,7 @@ export async function completedOrderEarnings(
     serviceName: (row.serviceName as string | null) ?? null,
     laborTotal: Number(row.laborTotal ?? 0),
     commission: Number(row.commission ?? 0),
+    shippingShare: Number(row.shippingShare ?? 0),
     orderValue: Number(row.orderValue ?? 0),
     paid: row.paid === true,
   }));

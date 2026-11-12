@@ -225,6 +225,17 @@ describe('TechniciansService', () => {
       expect(sql).toContain('LEFT JOIN invoices i');
     });
 
+    it('takes the technician share of a W3 shipping fee out of the payout (W-17)', async () => {
+      mockAssignmentRepo.manager.query = vi.fn(async (sql: string) =>
+        sql.includes('system_configs')
+          ? [{ value: '1000' }]
+          : [{ orderId: 'order-3', code: 'FH-003', completedAt: new Date('2026-11-12'), customerName: 'C', laborTotal: '300000', commission: '30000', shippingShare: '10500', orderValue: '379500', paid: true }]);
+      const earnings = await service.getMyEarnings('user-tech-uuid');
+      expect(earnings.payouts[0]).toMatchObject({ gross: 300000, platformFee: 30000, shippingShare: 10500, net: 259500 });
+      expect(earnings.totalShippingShare).toBe(10500);
+      expect(earnings.totalNet).toBe(259500);
+    });
+
     it('limits to a Vietnam calendar period and pages the list, totals over the whole period (PO 12/10/2026)', async () => {
       const rows = Array.from({ length: 25 }, (_, i) => ({
         orderId: `o-${i}`, code: `FH-${i}`, completedAt: new Date('2026-10-08T03:00:00Z'), customerName: 'C', serviceName: 'Sửa quạt',

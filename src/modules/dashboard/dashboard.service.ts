@@ -130,7 +130,7 @@ export class DashboardService {
     const monthStart = startOfVietnamMonth();
     const monthlyEarnings = completedOrders
       .filter((row) => row.completedAt && row.completedAt >= monthStart)
-      .reduce((sum, row) => sum + row.laborTotal - row.commission, 0);
+      .reduce((sum, row) => sum + row.laborTotal - row.commission - row.shippingShare, 0);
 
     const latestInvitation = await this.invitationRepo.findOne({
       where: {

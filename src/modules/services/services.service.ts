@@ -18,6 +18,7 @@ import { ServicePricingMode } from '../../shared/enums';
 import { resolveCatalogV2Pricing } from '../../database/catalog-v2/catalog-v2-pricing-binding';
 import { CatalogV2PricingQueryDto } from './dto/catalog-v2-pricing-query.dto';
 import { addCatalogV2PriceSummaries } from '../../database/catalog-v2/catalog-v2-price-summary';
+import { andWhereTextMatches } from '../../shared/utils/list-search';
 
 @Injectable()
 export class ServicesService {
@@ -62,13 +63,7 @@ export class ServicesService {
       });
     }
 
-    if (query.search) {
-      const search = `%${query.search.trim()}%`;
-      qb.andWhere(
-        '(service.name ILIKE :search OR service.code ILIKE :search OR service.slug ILIKE :search OR service.description ILIKE :search)',
-        { search },
-      );
-    }
+    andWhereTextMatches(qb, ['service.name', 'service.code', 'service.slug', 'service.description'], query.search);
 
     // Services of one category stay together across pages (PO 21/10/2026): the
     // category's own order, then its name, then the service name.

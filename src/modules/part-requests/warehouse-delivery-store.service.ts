@@ -32,6 +32,8 @@ const fail = (code: string): never => {
 };
 const uuid =
   /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+// Stored rows (users, orders, warehouses) may hold any UUID version: seed accounts are not v4.
+const entityId = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 
 /** Internal only, NOT a Nest provider. Caller authenticates actor and owns transaction/rollback.
  * No HTTP adapter can enroll/execute this store. Lock order matches W2: Order -> Technician
@@ -48,7 +50,7 @@ export class WarehouseDeliveryStore {
     actor: { id: string; role: string },
   ) {
     this.transaction(manager);
-    if (actor.role !== Role.TECHNICIAN || !uuid.test(actor.id))
+    if (actor.role !== Role.TECHNICIAN || !entityId.test(actor.id))
       fail('ACTOR_DENIED');
     const reference = await manager.findOne(PartRequest, { where: { id } });
     if (!reference || reference.technicianId !== actor.id)
@@ -121,7 +123,7 @@ export class WarehouseDeliveryStore {
   ) {
     this.transaction(manager);
     if (
-      !uuid.test(id) ||
+      !entityId.test(id) ||
       !command ||
       Object.keys(command).some(
         (k) =>
