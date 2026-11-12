@@ -47,6 +47,8 @@ import { WalletModule } from '../wallet/wallet.module';
 import { ReputationModule } from '../reputation/reputation.module';
 import { VouchersModule } from '../vouchers/vouchers.module';
 
+import { TechnicianPrivateNoteService } from './technician-private-note.service';
+
 @Module({
   imports: [
     MediaModule,
@@ -90,6 +92,7 @@ import { VouchersModule } from '../vouchers/vouchers.module';
     WarrantyClaimsManagerController,
   ],
   providers: [
+    TechnicianPrivateNoteService,
     CheckinFaceService,
     ServiceOrdersService,
     WarrantyClaimsService,
