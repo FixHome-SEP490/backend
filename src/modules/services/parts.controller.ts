@@ -5,6 +5,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PartCatalog } from './entities/part-catalog.entity';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { andWhereTextMatches } from '../../shared/utils/list-search';
 
 @ApiTags('Parts Catalog')
 @Controller('parts')
@@ -29,9 +30,7 @@ export class PartsController {
       qb.andWhere('(p.service_id = :serviceId OR p.service_id IS NULL)', { serviceId });
     }
 
-    if (search) {
-      qb.andWhere('(p.name ILIKE :search OR p.code ILIKE :search)', { search: `%${search}%` });
-    }
+    andWhereTextMatches(qb, ['p.name', 'p.code'], search);
 
     qb.orderBy('p.name', 'ASC');
 

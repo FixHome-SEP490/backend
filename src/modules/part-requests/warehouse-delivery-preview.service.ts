@@ -21,6 +21,7 @@ export class WarehouseDeliveryPreviewService {
     await this.owners.preview(id, actor);
     let cohort: { part_request_id: string } | undefined;
     let head: WarehouseDeliveryEvent | null;
+    let actual: Record<string, unknown> | null = null;
     try {
       [cohort] = await this.dataSource.manager.query(
         'SELECT part_request_id FROM warehouse_delivery_cohorts WHERE part_request_id=$1',
@@ -32,6 +33,15 @@ export class WarehouseDeliveryPreviewService {
             order: { resultVersion: 'DESC' },
           })
         : null;
+      // Paid W3 path: the physical steps and the actual fee live in events and delivery_fee_terms,
+      // part_requests.status stays 'requested' by design (legacy guard), so project them here.
+      if (head?.feeTermsVersion != null) {
+        const [terms] = await this.dataSource.manager.query(
+          `SELECT state->'actual' AS actual FROM delivery_fee_terms WHERE part_request_id=$1 ORDER BY result_version DESC LIMIT 1`,
+          [id],
+        );
+        actual = terms?.actual ?? null;
+      }
     } catch {
       throw new ServiceUnavailableException(
         'Chưa thể đọc điều kiện giao linh kiện. Vui lòng thử lại sau.',
@@ -78,6 +88,15 @@ export class WarehouseDeliveryPreviewService {
         ? ('RECORDED_NOT_EXTERNALLY_VERIFIED' as const)
         : ('NOT_RECORDED' as const),
       actualCourierCost: null,
+      progress:
+        head?.feeTermsVersion != null
+          ? {
+              status: head.snapshot.status,
+              actualShippingFee: (actual?.totalShippingFee as number | undefined) ?? null,
+              customerShippingShare: (actual?.customerShippingShare as number | undefined) ?? null,
+              technicianShippingShare: (actual?.technicianShippingShare as number | undefined) ?? null,
+            }
+          : null,
       courierPayment: 'NOT_RECORDED' as const,
       blockers: [...new Set([...facts.blockers, ...physicalDeliveryBlockers])],
       actions: {

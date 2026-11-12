@@ -1,5 +1,5 @@
 // src/modules/bookings/bookings.controller.ts
-import { BookingListQueryDto, MyBookingListQueryDto } from './dto/booking-list-query.dto';
+import { ActivityCountsQueryDto, BookingListQueryDto, MyBookingListQueryDto } from './dto/booking-list-query.dto';
 import {
   Controller,
   ParseUUIDPipe,
@@ -85,8 +85,8 @@ export class BookingsController {
   @RequirePermission('booking:read_own')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'My Activity counts: repair orders (in_progress, completed, cancelled) and booking requests (no_technician, sent, cancelled)' })
-  async activityCounts(@Req() req: { user: { id: string } }) {
-    return { data: await this.bookingsService.activityCounts(req.user.id) };
+  async activityCounts(@Req() req: { user: { id: string } }, @Query() query: ActivityCountsQueryDto) {
+    return { data: await this.bookingsService.activityCounts(req.user.id, { excludeVisitGroups: query.excludeVisitGroups }) };
   }
 
   @Get()

@@ -705,7 +705,15 @@ export class PartRequestsService {
     if (fulfillmentMethod === FulfillmentMethod.DELIVERY && isDeepStrictEqual(
       canonicalWarehouseQuantities(savedRequest.items),
       canonicalWarehouseQuantities(wanted.map(i => ({ partCatalogId: i.partCatalogId, partSource: i.partSource, quantity: i.quantity }))),
-    )) await new WarehouseDeliveryStore().enrollNew(manager, savedRequest.id, { id: technicianId, role: Role.TECHNICIAN });
+    )) {
+      try {
+        await new WarehouseDeliveryStore().enrollNew(manager, savedRequest.id, { id: technicianId, role: Role.TECHNICIAN });
+      } catch (error) {
+        // The store throws plain Errors; the customer gets a reason instead of a 500.
+        if (error instanceof Error && error.message.startsWith('WAREHOUSE_DELIVERY_')) throw new BusinessException(ErrorCodes.CONFLICT, 'Chưa ghi nhận được phiếu giao linh kiện cho đơn này. Vui lòng thử lại hoặc liên hệ quản lý dịch vụ.');
+        throw error;
+      }
+    }
 
     // Audit log
     await this.auditLogService.logWithManager(manager, {
@@ -751,6 +759,10 @@ export class PartRequestsService {
           'Part request not found',
         );
       }
+
+      // W3 delivery requests move through warehouse delivery events; the old QR path is closed by a DB trigger.
+      const [w3] = await manager.query('SELECT 1 FROM warehouse_delivery_cohorts WHERE part_request_id = $1 LIMIT 1', [requestId]);
+      if (w3) throw new BusinessException(ErrorCodes.CONFLICT, 'Phiếu này giao linh kiện theo luồng giao hàng có phí. Vui lòng xử lý ở khối Giao linh kiện, không dùng Chuẩn bị xong.');
 
       // Check state machine
       if (
@@ -1400,7 +1412,29 @@ export class PartRequestsService {
     const [[data, total], counted] = await Promise.all([qb.getManyAndCount(), counting ? counting.getRawMany() : Promise.resolve([])]);
     const statusCounts: Record<string, number> = {};
     for (const row of counted as Array<{ status: string; n: string | number }>) statusCounts[row.status] = Number(row.n);
+    await this.attachW3Delivery(data);
     return { data: data.map(request => this.visible(request, actor)), total, statusCounts };
+  }
+
+  /**
+   * W-16: a request enrolled in W3 keeps part_requests.status = 'requested' (the legacy guard
+   * forbids the old QR path), so the list carries the W3 stage: ENROLLED before any physical
+   * step, else the latest event status (RESERVED, ISSUED_TO_COURIER, DISPATCH_RECORDED,
+   * TECHNICIAN_RECEIVED...). One query for the whole page, only when it has delivery rows.
+   */
+  private async attachW3Delivery(requests: PartRequest[]): Promise<void> {
+    const ids = requests.filter(r => r.fulfillmentMethod === FulfillmentMethod.DELIVERY).map(r => r.id);
+    if (!ids.length) return;
+    const rows: Array<{ id: string; status: string | null }> = await this.dataSource.query(
+      `SELECT c.part_request_id AS id, e.snapshot->>'status' AS status
+       FROM warehouse_delivery_cohorts c
+       LEFT JOIN LATERAL (SELECT snapshot FROM warehouse_delivery_events we
+         WHERE we.part_request_id = c.part_request_id ORDER BY we.result_version DESC LIMIT 1) e ON true
+       WHERE c.part_request_id = ANY($1::uuid[])`,
+      [ids],
+    );
+    const stage = new Map(rows.map(row => [row.id, row.status ?? 'ENROLLED']));
+    for (const request of requests) (request as PartRequest & { w3DeliveryStage?: string | null }).w3DeliveryStage = stage.get(request.id) ?? null;
   }
 
   /**

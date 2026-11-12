@@ -16,7 +16,7 @@ import { JwtAuthGuard, RolesGuard } from '../../common/guards';
 import { Role } from '../../shared/enums';
 import { RiskLimit } from '../../common/rate-limit/risk-rate-limit';
 import { User } from '../users/entities/user.entity';
-import { AdjustStockDto, CreateWarehouseDto, ListWarehouseRowsDto, UpdateWarehouseDto } from './dto';
+import { AdjustStockDto, CreateWarehouseDto, ListWarehouseRowsDto, ListWarehouseStockDto, UpdateWarehouseDto } from './dto';
 import { WarehousesService } from './warehouses.service';
 
 @ApiTags('Warehouses')
@@ -63,7 +63,7 @@ export class WarehousesController {
   stock(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: User,
-    @Query() page: ListWarehouseRowsDto,
+    @Query() page: ListWarehouseStockDto,
   ) {
     return this.warehouses.listStock(id, user, page);
   }

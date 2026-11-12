@@ -467,8 +467,9 @@ export class BookingsService {
   }
 
   /** Exact counts of the customer's Activity tabs and their filters, so a client shows numbers without loading every page. */
-  async activityCounts(customerId: string): Promise<CustomerActivityCounts> {
+  async activityCounts(customerId: string, options: { excludeVisitGroups?: boolean } = {}): Promise<CustomerActivityCounts> {
     await this.closeOverdueBookings();
+    const solo = options.excludeVisitGroups ? ' AND NOT EXISTS (SELECT 1 FROM visit_group_items vgi WHERE vgi.booking_id = b.id)' : '';
     const [orders, bookings] = await Promise.all([
       this.dataSource.query(
         `SELECT
@@ -476,7 +477,7 @@ export class BookingsService {
            count(*) FILTER (WHERE ${orderStageSql('completed')})::int AS completed,
            count(*) FILTER (WHERE ${orderStageSql('cancelled')})::int AS cancelled
          FROM service_orders o JOIN bookings b ON b.id = o.booking_id
-         WHERE b.customer_id = $1`,
+         WHERE b.customer_id = $1${solo}`,
         [customerId],
       ),
       this.dataSource.query(
@@ -485,7 +486,7 @@ export class BookingsService {
            count(*) FILTER (WHERE ${bookingStageSql('sent')})::int AS sent,
            count(*) FILTER (WHERE ${bookingStageSql('cancelled')})::int AS cancelled
          FROM bookings b
-         WHERE b.customer_id = $1`,
+         WHERE b.customer_id = $1${solo}`,
         [customerId],
       ),
     ]);

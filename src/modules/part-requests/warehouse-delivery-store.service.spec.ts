@@ -14,9 +14,9 @@ import { AdditionalCostRequest } from '../service-orders/entities/additional-cos
 import { AdditionalCostItem } from '../service-orders/entities/additional-cost-item.entity';
 import { Role } from '../../shared/enums';
 
-function fixture() {
+function fixture(technicianId?: string) {
   const id = randomUUID(),
-    tech = randomUUID(),
+    tech = technicianId ?? randomUUID(),
     orderId = randomUUID(),
     partId = randomUUID();
   const events: any[] = [];
@@ -109,6 +109,11 @@ function fixture() {
   };
 }
 describe('W3 internal transactional delivery store, closed authority', () => {
+  it('accepts seed accounts whose id is not a v4 UUID (W-15)', async () => {
+    const f = fixture('c0000000-0000-0000-0000-000000000012');
+    const r = await f.store.execute(f.manager, f.id, f.command, f.actor);
+    expect(r.state).toMatchObject({ status: 'PENDING_ASSISTANCE', version: 1 });
+  });
   it('persists blocked assessment, never reserves stock or infers consent', async () => {
     const f = fixture();
     const r = await f.store.execute(f.manager, f.id, f.command, f.actor);

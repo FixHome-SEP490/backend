@@ -89,10 +89,10 @@ export class WarehousesService {
     await this.warehouses.delete(id);
   }
 
-  async listStock(id: string, actor: User, page: ListWarehouseRowsDto) {
+  async listStock(id: string, actor: User, page: ListWarehouseRowsDto & { partId?: string }) {
     const warehouse = await this.getWarehouse(id, actor);
     const [rows, total] = await this.stock.findAndCount({
-      where: { warehouseId: warehouse.id },
+      where: page.partId ? { warehouseId: warehouse.id, partId: page.partId } : { warehouseId: warehouse.id },
       relations: { part: true },
       order: { createdAt: 'DESC', id: 'ASC' },
       take: page.limit,

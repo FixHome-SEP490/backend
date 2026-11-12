@@ -118,6 +118,7 @@ describe('PartRequestsService', () => {
 
   beforeEach(() => {
     mockEntityManager = {
+      query: vi.fn().mockResolvedValue([]),
       findOne: vi.fn(),
       findOneOrFail: vi.fn(),
       findOneBy: vi.fn(),
@@ -375,6 +376,13 @@ describe('PartRequestsService', () => {
       expect(result.qrToken).toMatch(/^FH-PR-/);
       expect(result.preparedByUserId).toBe('sm-1');
       expect(mockNotificationsService.createNotification).toHaveBeenCalled();
+    });
+
+    it('refuses the old QR path for a W3 delivery request with a 409, never a DB 500 (W-6)', async () => {
+      mockMutation({ id: 'pr-w3', status: PartRequestStatus.REQUESTED, fulfillmentMethod: FulfillmentMethod.DELIVERY, technicianId: 'tech-1', serviceOrderId: 'order-1' });
+      mockEntityManager.query.mockResolvedValueOnce([{ '?column?': 1 }]);
+      await expect(service.markReady('pr-w3', { id: 'sm-1', role: Role.SERVICE_MANAGER })).rejects.toMatchObject({ status: 409 });
+      expect(mockEntityManager.save).not.toHaveBeenCalled();
     });
   });
 

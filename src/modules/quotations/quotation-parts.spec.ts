@@ -28,6 +28,7 @@ function setup(preRepair: any[] = []) {
   const cost: any = { id: 'cost', serviceOrderId: 'order', technicianId: 'tech', status: 'pending_approval', totalLaborDelta: 0,
     totalPartsDelta: 200, expiresAt: new Date(Date.now() + 600000), items: [{ id: 'aci', type: 'parts_equipment', partSource: 'fixhome', partCatalogId: 'sku', description: 'Extra', quantity: 1, unitPrice: 200 }] };
   const manager: any = {
+    query: vi.fn(async () => []),
     findOne: vi.fn(async (entity, options) => {
       if (entity === ServiceOrder) return order;
       if (entity === Booking) return { id: 'booking', pricingModeSnapshot: 'inspection_required' };

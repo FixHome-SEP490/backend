@@ -496,12 +496,14 @@ export class TechniciansService {
 
     let totalGrossLabor = 0;
     let totalCommission = 0;
+    let totalShippingShare = 0;
     let totalOrderValue = 0;
     let paidOrders = 0;
 
     const allPayouts = earnings.map((row) => {
       totalGrossLabor += row.laborTotal;
       totalCommission += row.commission;
+      totalShippingShare += row.shippingShare;
       totalOrderValue += row.orderValue;
       if (row.paid) paidOrders += 1;
       return {
@@ -513,7 +515,8 @@ export class TechniciansService {
         serviceName: row.serviceName ?? '',
         gross: row.laborTotal,
         platformFee: row.commission,
-        net: row.laborTotal - row.commission,
+        shippingShare: row.shippingShare,
+        net: row.laborTotal - row.commission - row.shippingShare,
         orderValue: row.orderValue,
         paid: row.paid,
         status: 'COMPLETED',
@@ -534,7 +537,8 @@ export class TechniciansService {
       totalCompletedOrders: allPayouts.length,
       totalGross: totalGrossLabor,
       totalCommission,
-      totalNet: totalGrossLabor - totalCommission,
+      totalShippingShare,
+      totalNet: totalGrossLabor - totalCommission - totalShippingShare,
       totalOrderValue,
       paidOrders,
       pendingDueCount: pendingDues.length,

@@ -118,3 +118,23 @@ describe('warehouse route roles', () => {
     ]);
   });
 });
+
+describe('warehouse stock list', () => {
+  it('reads the chosen SKU row whatever page it is on (W-11)', async () => {
+    const findAndCount = vi.fn().mockResolvedValue([[{ warehouseId: 'warehouse-1', partId: 'part-9', part: { name: 'Adapter', sku: 'AD-24' }, onHand: 5, reserved: 1, version: 0 }], 1]);
+    const service = new WarehousesService(
+      { findOneBy: vi.fn().mockResolvedValue({ id: 'warehouse-1', responsibleUserId: 'sm-1', status: WarehouseStatus.ACTIVE }) } as never,
+      { findAndCount } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const actor = { id: 'sm-1', role: Role.SERVICE_MANAGER, status: AccountStatus.ACTIVE, isActive: true } as never;
+    const result = await service.listStock('warehouse-1', actor, { limit: 1, offset: 0, partId: 'part-9' } as never);
+    expect(findAndCount.mock.calls[0][0].where).toEqual({ warehouseId: 'warehouse-1', partId: 'part-9' });
+    expect(result.data[0]).toMatchObject({ partId: 'part-9', available: 4 });
+    await service.listStock('warehouse-1', actor, { limit: 20, offset: 0 } as never);
+    expect(findAndCount.mock.calls[1][0].where).toEqual({ warehouseId: 'warehouse-1' });
+  });
+});
