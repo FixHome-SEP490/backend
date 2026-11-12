@@ -31,6 +31,7 @@ import { PartRequestsService } from '../part-requests/part-requests.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Optional } from '@nestjs/common';
 import { assertFixedPriceQuote } from './visit-fixed-quote';
+import { isPartsSourceUnavailable, PartsSourcing } from '../part-requests/parts-sourcing';
 import { recordVisitOutcome } from '../bookings/visit-group-guard';
 import { VisitGroup } from '../visit-groups/entities/visit-group.entity';
 import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity';
@@ -149,9 +150,56 @@ export class QuotationsService {
     return quote;
   }
 
+  /**
+   * F3 (TECH 66, CUSTOMER 72): whether the FixHome parts of a quote still waiting for the
+   * customer can be supplied now. Read-only and advisory; the approval re-checks under locks.
+   */
+  async partsSourcing(id: string, actor: Actor): Promise<PartsSourcing & { quotationId: string; quotationStatus: QuotationStatus }> {
+    const quote = await this.quotationRepo.findOne({ where: { id }, relations: ['items'] });
+    if (!quote) throw new ForbiddenException('Quotation not found');
+    const manager = this.dataSource.manager;
+    await authorizeOrder(manager, quote.serviceOrderId, actor);
+    const sourcing: PartsSourcing = quote.status === QuotationStatus.SENT
+      ? await this.partRequestsService.quotationSourcing(manager, quote.serviceOrderId, quote.technicianId, quote.items)
+      : { status: 'none', missing: [] };
+    return { quotationId: quote.id, quotationStatus: quote.status, ...sourcing };
+  }
+
+  /** After a rolled-back approval (F3): tell the technician once per unread notice, outside the transaction. */
+  private async noticePartsUnavailable(technicianId: string | null, orderId: string, what: 'quotation' | 'additional_cost'): Promise<void> {
+    if (!this.notificationsService || !technicianId) return;
+    try {
+      const type = 'QUOTATION_PARTS_UNAVAILABLE';
+      const [open] = await this.dataSource.query(
+        'SELECT 1 FROM notifications WHERE user_id = $1 AND type = $2 AND reference_id = $3 AND is_read = false LIMIT 1', [technicianId, type, orderId]);
+      if (open) return;
+      await this.notificationsService.createNotification({
+        userId: technicianId,
+        title: 'Khách chưa duyệt được vì thiếu linh kiện',
+        message: what === 'quotation'
+          ? 'Chưa có kho FixHome nào đủ linh kiện trong báo giá nên khách chưa duyệt được. Vui lòng lập lại báo giá (bỏ hoặc đổi linh kiện thiếu), hoặc chờ kho bổ sung rồi nhờ khách duyệt lại.'
+          : 'Chưa có kho FixHome nào đủ linh kiện trong chi phí phát sinh nên khách chưa duyệt được. Vui lòng sửa lại chi phí phát sinh, hoặc chờ kho bổ sung rồi nhờ khách duyệt lại.',
+        type,
+        referenceId: orderId,
+        referenceType: 'SERVICE_ORDER',
+      });
+    } catch {
+      // A notice never changes the outcome of the refused approval.
+    }
+  }
+
   async decideQuotation(id: string, action: 'APPROVE' | 'REJECT', actor: Actor, paidWarrantyItemIds: string[] = []): Promise<Quotation> {
     const ref = await this.quotationRepo.findOneBy({ id });
     if (!ref) throw new ForbiddenException('Quotation not found');
+    try {
+      return await this.applyQuotationDecision(ref, id, action, actor, paidWarrantyItemIds);
+    } catch (error) {
+      if (isPartsSourceUnavailable(error)) await this.noticePartsUnavailable(ref.technicianId, ref.serviceOrderId, 'quotation');
+      throw error;
+    }
+  }
+
+  private async applyQuotationDecision(ref: Quotation, id: string, action: 'APPROVE' | 'REJECT', actor: Actor, paidWarrantyItemIds: string[]): Promise<Quotation> {
     const decided = await this.dataSource.transaction(async manager => {
       if (action === 'REJECT') {
         // Rejection closes the Booking below. Take its locks BEFORE the Order,
@@ -281,6 +329,15 @@ export class QuotationsService {
   async decideAdditionalCost(id: string, action: 'APPROVE' | 'REJECT', actor: Actor, paidWarrantyItemIds: string[] = []): Promise<AdditionalCostRequest> {
     const ref = await this.additionalCostRepo.findOneBy({ id });
     if (!ref) throw new ForbiddenException('Additional cost not found');
+    try {
+      return await this.applyAdditionalCostDecision(ref, id, action, actor, paidWarrantyItemIds);
+    } catch (error) {
+      if (isPartsSourceUnavailable(error)) await this.noticePartsUnavailable(ref.technicianId, ref.serviceOrderId, 'additional_cost');
+      throw error;
+    }
+  }
+
+  private async applyAdditionalCostDecision(ref: AdditionalCostRequest, id: string, action: 'APPROVE' | 'REJECT', actor: Actor, paidWarrantyItemIds: string[]): Promise<AdditionalCostRequest> {
     return this.dataSource.transaction(async manager => {
       const order = await authorizeOrder(manager, ref.serviceOrderId, actor, 'customer', true);
       const cost = await manager.findOneOrFail(AdditionalCostRequest, { where: { id }, relations: ['items'] });

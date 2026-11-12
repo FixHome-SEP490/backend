@@ -373,3 +373,66 @@ describe('no more parts bought outside (BUG DETECTOR 14)', () => {
       .rejects.toMatchObject({ status: 422, response: { code: 'VALIDATION_FAILED' } });
   });
 });
+
+describe('F3: parts no warehouse can supply are never approved as supplied (TECH 66, CUSTOMER 72)', () => {
+  function gated(status: 'reserved' | 'stock_unavailable', stock: any[] = []) {
+    const s = setup();
+    const fulfillment: any = { enroll: vi.fn(async () => ({ status })) };
+    const notices = { createNotification: vi.fn(async () => undefined) };
+    s.manager.query = vi.fn(async () => stock);
+    const dataSource: any = { transaction: (run: any) => run(s.manager), manager: s.manager, query: vi.fn(async () => []) };
+    const audit: any = { logWithManager: async () => undefined };
+    const parts = new PartRequestsService(dataSource, {} as any, {} as any, {} as any, audit, notices as any, undefined, undefined, fulfillment);
+    const service = new QuotationsService({ findOneBy: async () => s.quote, findOne: async () => s.quote } as any, {} as any,
+      { findOneBy: async () => s.cost } as any, {} as any, {} as any, {} as any, {} as any, dataSource, {} as any, audit, parts, notices as any);
+    return { ...s, service, parts, fulfillment, notices, dataSource };
+  }
+
+  it('refuses the approval with PARTS_SOURCE_UNAVAILABLE and the missing lines, and tells the technician once', async () => {
+    const s = gated('stock_unavailable');
+    await expect(s.service.decideQuotation('quote', 'APPROVE', { id: 'customer', role: Role.CUSTOMER })).rejects.toMatchObject({
+      status: 409, response: { code: 'PARTS_SOURCE_UNAVAILABLE', details: { missing: [{ partCatalogId: 'sku', name: 'Approved name', quantity: 3 }] } } });
+    expect(s.notices.createNotification).toHaveBeenCalledTimes(1);
+    expect(s.notices.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: 'tech', type: 'QUOTATION_PARTS_UNAVAILABLE', referenceId: 'order' }));
+  });
+
+  it('does not repeat the notice while the last one is unread', async () => {
+    const s = gated('stock_unavailable');
+    s.dataSource.query.mockResolvedValue([{ '?column?': 1 }]);
+    await expect(s.service.decideQuotation('quote', 'APPROVE', { id: 'customer', role: Role.CUSTOMER })).rejects.toMatchObject({ status: 409 });
+    expect(s.notices.createNotification).not.toHaveBeenCalled();
+  });
+
+  it('approves when a warehouse reserved the parts', async () => {
+    const s = gated('reserved');
+    await s.service.decideQuotation('quote', 'APPROVE', { id: 'customer', role: Role.CUSTOMER });
+    expect(s.quote.status).toBe('approved');
+    expect(s.fulfillment.enroll).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses an additional cost the same way', async () => {
+    const s = gated('stock_unavailable');
+    s.order.status = 'under_repair';
+    await expect(s.service.decideAdditionalCost('cost', 'APPROVE', { id: 'customer', role: Role.CUSTOMER }))
+      .rejects.toMatchObject({ status: 409, response: { code: 'PARTS_SOURCE_UNAVAILABLE' } });
+  });
+
+  it.each([
+    ['none', [{ type: 'labor', partSource: null, partCatalogId: null, quantity: 1, unitPrice: 100, description: 'Labor' }], []],
+    ['available', null, [{ warehouseId: 'w1', partId: 'sku', onHand: 3, reserved: 0 }]],
+    ['unavailable', null, [{ warehouseId: 'w1', partId: 'sku', onHand: 3, reserved: 1 }, { warehouseId: 'w2', partId: 'sku', onHand: 2, reserved: 0 }]],
+  ])('reads the sourcing of a pending quote as %s', async (status, items, stock) => {
+    const s = gated('reserved', stock as any[]);
+    const result = await s.parts.quotationSourcing(s.manager, 'order', 'tech', (items ?? s.quote.items) as any);
+    expect(result.status).toBe(status);
+    expect(result.missing).toEqual(status === 'unavailable' ? [{ partCatalogId: 'sku', name: 'Approved name', quantity: 3 }] : []);
+  });
+
+  it('reads covered when the parts held already cover the quote, without a stock query', async () => {
+    const s = gated('reserved');
+    s.requests.push({ id: 'pre', serviceOrderId: 'order', technicianId: 'tech', requestType: 'pre_repair', status: 'received',
+      items: [{ id: 'held', partSource: 'fixhome', partCatalogId: 'sku', quantity: 3, usageStatus: 'pending' }] });
+    expect(await s.parts.quotationSourcing(s.manager, 'order', 'tech', s.quote.items as any)).toEqual({ status: 'covered', missing: [] });
+    expect(s.manager.query).not.toHaveBeenCalled();
+  });
+});
