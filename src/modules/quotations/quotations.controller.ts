@@ -64,6 +64,15 @@ export class QuotationsController {
     return { data: quotation };
   }
 
+  @Get('quotations/:id/parts-sourcing')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('quotation:read_related')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Whether the FixHome parts of a pending quotation can be supplied now (advisory)' })
+  async getPartsSourcing(@Param('id', ParseUUIDPipe) id: string, @Req() req: { user: { id: string; role: string } }) {
+    return { data: await this.quotationsService.partsSourcing(id, req.user) };
+  }
+
   @Post('quotations/:id/decision')
   @UseGuards(JwtAuthGuard, PermissionGuard)
   @HttpCode(HttpStatus.OK)

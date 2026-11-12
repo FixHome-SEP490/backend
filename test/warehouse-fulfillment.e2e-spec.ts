@@ -21,7 +21,7 @@ type Actor = { id: string; role: string; token: string };
 
 describe.skipIf(process.env.CI !== 'true')('W2 real PostgreSQL / JWT / custody atomic fulfillment', () => {
   const schema = `warehouse_w2_e2e_${randomUUID().replaceAll('-', '')}`;
-  let root: DataSource, db: DataSource, app: INestApplication, jwt: JwtService, parts: any, custody: any, fulfillment: any;
+  let root: DataSource, db: DataSource, app: INestApplication, jwt: JwtService, parts: any, custody: any, fulfillment: any, quotes: any, warehouses: any;
   const repo = (name: string) => db.getRepository(name);
   const save = (name: string, value: object) => repo(name).save(value);
   const call = (method: 'post' | 'patch' | 'get', path: string, actor?: Actor, body?: object) => {
@@ -53,6 +53,13 @@ describe.skipIf(process.env.CI !== 'true')('W2 real PostgreSQL / JWT / custody a
     const Audit = load('modules/audit-log/audit-log.service', 'AuditLogService');
     const Notices = load('modules/notifications/notifications.service', 'NotificationsService');
     parts = new Parts(db, repo('PartRequest'), repo('PartRequestItem'), repo('FixHomePart'), new Audit(repo('AuditLog')), new Notices(repo('Notification')), custody, undefined, fulfillment);
+    // F3: the real approval services on the same private schema (no module graph, no RBAC guard here).
+    const Quotes = load('modules/quotations/quotations.service', 'QuotationsService');
+    quotes = new Quotes(repo('Quotation'), repo('QuotationItem'), repo('AdditionalCostRequest'), repo('AdditionalCostItem'), repo('ServiceOrder'),
+      repo('Booking'), repo('TechnicianAssignment'), db, { getInt: async (_key: string, fallback: number) => fallback },
+      new Audit(repo('AuditLog')), parts, new Notices(repo('Notification')));
+    const Warehouses = load('modules/warehouses/warehouses.service', 'WarehousesService');
+    warehouses = new Warehouses(repo('Warehouse'), repo('WarehouseStock'), repo('StockMovement'), repo('User'), repo('FixHomePart'), db);
     const User = load('modules/users/entities/user.entity', 'User');
     const JwtStrategy = load('modules/auth/strategies/jwt.strategy', 'JwtStrategy');
     const RolesGuard = load('common/guards/roles.guard', 'RolesGuard');
@@ -99,6 +106,18 @@ describe.skipIf(process.env.CI !== 'true')('W2 real PostgreSQL / JWT / custody a
     };
     return { actor, tech, other, sm, wrong, customer, catalog, warehouse, order, req, base, balance, create, qr, issue };
   }
+
+  // F3 helpers: a quote waiting for the customer with labor and `quantity` of the first SKU.
+  async function sentQuote(f: Awaited<ReturnType<typeof fixture>>, quantity: number, orderId = f.order.id, technicianId = f.tech.id) {
+    const quote = await save('Quotation', { serviceOrderId: orderId, technicianId, status: 'sent', version: 1,
+      laborTotal: 100000, partsTotal: 50000 * quantity, sentAt: new Date() });
+    await save('QuotationItem', { quotationId: quote.id, type: 'labor', description: 'F3 labor', quantity: 1, unitPrice: 100000, lineTotal: 100000 });
+    await save('QuotationItem', { quotationId: quote.id, type: 'parts_equipment', description: 'F3 part', partSource: 'fixhome',
+      partCatalogId: f.catalog[0].id, partNameSnapshot: 'W2 synthetic SKU', quantity, unitPrice: 50000, lineTotal: 50000 * quantity });
+    return quote;
+  }
+  const customerOf = (f: { customer: Actor }) => ({ id: f.customer.id, role: 'customer' });
+  const failure = (promise: Promise<unknown>) => promise.then(() => { throw new Error('expected a refusal'); }, (error: any) => error);
 
   it('lists only assigned-warehouse W2 pickup tasks for the responsible SM', async () => {
     const f = await fixture();
@@ -206,6 +225,106 @@ describe.skipIf(process.env.CI !== 'true')('W2 real PostgreSQL / JWT / custody a
     const opened: any = await db.transaction(manager => parts.createRequestFromApprovedQuotation(manager, { ...quote, items: [line] }, { id: f.tech.id, role: 'technician' }));
     expect(opened).toMatchObject({ requestType: 'quotation', quotationId: quote.id });
     expect(opened.items.map((item: { partCatalogId: string; quantity: number }) => [item.partCatalogId, item.quantity])).toEqual([[f.catalog[0].id, 1]]);
+    // F3: the unsourced request supplies nothing, so the technician may drop it even with that SKU approved.
+    await call('patch', `/part-requests/${r.id}/cancel`, f.tech, { reason: 'No warehouse had it' }).expect(200);
+    expect((await repo('WarehouseAllocation').findOneByOrFail({ partRequestId: opened.id })).status).toBe('reserved');
+  });
+
+  it('F3: refuses an approval no warehouse can supply and keeps nothing of it; SM restock races the approval; two tabs then approve once', async () => {
+    const f = await fixture([1]); // the pre-repair request already holds the only unit
+    await repo('ServiceOrder').update(f.order.id, { status: 'en_route' });
+    const quote = await sentQuote(f, 2);
+    const before = await repo('ServiceOrder').findOneByOrFail({ id: f.order.id });
+    expect(await quotes.partsSourcing(quote.id, customerOf(f))).toMatchObject({ quotationStatus: 'sent', status: 'unavailable',
+      missing: [{ partCatalogId: f.catalog[0].id, quantity: 1 }] });
+    await failure(quotes.partsSourcing(quote.id, { id: f.other.id, role: 'technician' }));
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const error = await failure(quotes.decideQuotation(quote.id, 'APPROVE', customerOf(f)));
+      expect(error.getStatus()).toBe(409);
+      expect(error.getResponse()).toMatchObject({ code: 'PARTS_SOURCE_UNAVAILABLE', details: { missing: [{ partCatalogId: f.catalog[0].id, quantity: 1 }] } });
+    }
+    expect(await repo('Quotation').findOneByOrFail({ id: quote.id })).toMatchObject({ status: 'sent', decidedAt: null });
+    const after = await repo('ServiceOrder').findOneByOrFail({ id: f.order.id });
+    expect([after.grandTotal, after.partsTotal, after.laborTotal]).toEqual([before.grandTotal, before.partsTotal, before.laborTotal]);
+    expect(await repo('PartRequest').countBy({ serviceOrderId: f.order.id })).toBe(1);
+    expect(await f.balance()).toMatchObject([{ on_hand: 1, reserved: 1 }]);
+    // One notice for the technician however often the customer retries; the rolled-back W2 notice never lands.
+    expect(await repo('Notification').countBy({ userId: f.tech.id, type: 'QUOTATION_PARTS_UNAVAILABLE', referenceId: f.order.id })).toBe(1);
+    expect(await repo('Notification').countBy({ userId: f.tech.id, type: 'PART_REQUEST_STOCK_UNAVAILABLE' })).toBe(0);
+
+    const [approval, restock] = await Promise.allSettled([
+      quotes.decideQuotation(quote.id, 'APPROVE', customerOf(f)),
+      warehouses.adjustStock(f.warehouse.id, { partId: f.catalog[0].id, delta: 1, kind: 'stock_in', reason: 'F3 restock', idempotencyKey: randomUUID() },
+        { id: f.sm.id, role: 'service_manager' }),
+    ]);
+    expect(restock.status).toBe('fulfilled');
+    if (approval.status === 'rejected') expect(approval.reason.getResponse()).toMatchObject({ code: 'PARTS_SOURCE_UNAVAILABLE' });
+    expect((await quotes.partsSourcing(quote.id, customerOf(f))).status).toBe(approval.status === 'fulfilled' ? 'none' : 'available');
+    const tabs = await Promise.allSettled([1, 2].map(() => quotes.decideQuotation(quote.id, 'APPROVE', customerOf(f))));
+    expect(tabs.map(tab => tab.status)).toEqual(['fulfilled', 'fulfilled']);
+    expect(await repo('Quotation').findOneByOrFail({ id: quote.id })).toMatchObject({ status: 'approved' });
+    const supply = await repo('PartRequest').findBy({ serviceOrderId: f.order.id, requestType: 'quotation' });
+    expect(supply).toHaveLength(1);
+    expect((await repo('WarehouseAllocation').findOneByOrFail({ partRequestId: supply[0].id })).status).toBe('reserved');
+    expect(await f.balance()).toMatchObject([{ on_hand: 2, reserved: 2 }]);
+    expect(Number((await repo('ServiceOrder').findOneByOrFail({ id: f.order.id })).partsTotal)).toBe(100000);
+  });
+
+  it('F3: two orders racing for the last unit approve exactly one; the other recovers by a new quote version while the customer retries', async () => {
+    const f = await fixture([1]);
+    await call('patch', `${f.base}/cancel`, f.tech, { reason: 'F3 free the unit' }).expect(200);
+    const first = await repo('Booking').findOneByOrFail({ id: f.order.bookingId });
+    await repo('Booking').update(first.id, { pricingModeSnapshot: 'inspection_required' });
+    await repo('ServiceOrder').update(f.order.id, { status: 'en_route' });
+    const second = await save('Booking', { customerId: f.customer.id, serviceId: first.serviceId, description: 'F3 race', status: 'matched', pricingModeSnapshot: 'inspection_required' });
+    const otherOrder = await save('ServiceOrder', { bookingId: second.id, code: `W2-${randomUUID()}`, status: 'en_route' });
+    await save('TechnicianAssignment', { serviceOrderId: otherOrder.id, technicianId: f.other.id, isActive: true });
+    const sides = [{ quote: await sentQuote(f, 1), order: f.order.id, tech: f.tech.id },
+      { quote: await sentQuote(f, 1, otherOrder.id, f.other.id), order: otherOrder.id, tech: f.other.id }];
+    const results = await Promise.allSettled(sides.map(side => quotes.decideQuotation(side.quote.id, 'APPROVE', customerOf(f))));
+    expect(results.map(result => result.status).sort()).toEqual(['fulfilled', 'rejected']);
+    const lost = sides[results.findIndex(result => result.status === 'rejected')];
+    expect((results.find(result => result.status === 'rejected') as PromiseRejectedResult).reason.getResponse()).toMatchObject({ code: 'PARTS_SOURCE_UNAVAILABLE' });
+    expect(await repo('Quotation').findOneByOrFail({ id: lost.quote.id })).toMatchObject({ status: 'sent' });
+    expect(await f.balance()).toMatchObject([{ on_hand: 1, reserved: 1 }]);
+
+    // Recovery: the technician sends a new version without the missing part while the customer retries the old one.
+    await save('ArrivalCheckIn', { serviceOrderId: lost.order, technicianId: lost.tech, lat: 10.77, lng: 106.69, accuracyMeters: 5, result: 'valid' });
+    const [retry, revision] = await Promise.allSettled([
+      quotes.decideQuotation(lost.quote.id, 'APPROVE', customerOf(f)),
+      quotes.createQuotation(lost.order, { items: [{ type: 'labor', description: 'F3 labor only', quantity: 1, unitPrice: 100000 }] }, { id: lost.tech, role: 'technician' }),
+    ]);
+    expect(revision.status).toBe('fulfilled');
+    expect(retry.status).toBe('rejected');
+    expect((retry as PromiseRejectedResult).reason.getStatus()).toBe(409);
+    expect(await repo('Quotation').findOneByOrFail({ id: lost.quote.id })).toMatchObject({ status: 'superseded' });
+    const fresh = (revision as PromiseFulfilledResult<any>).value;
+    expect(await quotes.partsSourcing(fresh.id, customerOf(f))).toMatchObject({ status: 'none', missing: [] });
+    await quotes.decideQuotation(fresh.id, 'APPROVE', customerOf(f));
+    const order = await repo('ServiceOrder').findOneByOrFail({ id: lost.order });
+    expect([Number(order.laborTotal), Number(order.partsTotal)]).toEqual([100000, 0]);
+    expect(await repo('PartRequest').countBy({ serviceOrderId: lost.order, requestType: 'quotation' })).toBe(0);
+    expect(await f.balance()).toMatchObject([{ on_hand: 1, reserved: 1 }]);
+  });
+
+  it('F3: an additional cost whose FixHome part no warehouse holds stays pending with the order totals untouched', async () => {
+    const f = await fixture([1]);
+    await repo('ServiceOrder').update(f.order.id, { status: 'under_repair', laborTotal: 100000, partsTotal: 0, grandTotal: 100000 });
+    const cost = await save('AdditionalCostRequest', { serviceOrderId: f.order.id, technicianId: f.tech.id, status: 'pending_approval',
+      reason: 'F3 extra part', totalLaborDelta: 0, totalPartsDelta: 50000, fulfillmentMethod: 'pickup', shippingFee: 0,
+      expiresAt: new Date(Date.now() + 3600000) });
+    await save('AdditionalCostItem', { requestId: cost.id, type: 'parts_equipment', description: 'F3 extra part', partSource: 'fixhome',
+      partCatalogId: f.catalog[0].id, partNameSnapshot: 'W2 synthetic SKU', quantity: 1, unitPrice: 50000, lineTotal: 50000, warrantyDays: 0 });
+    // The pre-repair unit is reserved and unclaimed, so the cost first uses it: ask for one more than that.
+    await repo('AdditionalCostItem').update({ requestId: cost.id }, { quantity: 2, lineTotal: 100000 });
+    const error = await failure(quotes.decideAdditionalCost(cost.id, 'APPROVE', customerOf(f)));
+    expect(error.getResponse()).toMatchObject({ code: 'PARTS_SOURCE_UNAVAILABLE' });
+    expect(await repo('AdditionalCostRequest').findOneByOrFail({ id: cost.id })).toMatchObject({ status: 'pending_approval' });
+    const order = await repo('ServiceOrder').findOneByOrFail({ id: f.order.id });
+    expect([Number(order.partsTotal), Number(order.grandTotal)]).toEqual([0, 100000]);
+    expect(await repo('PartRequest').countBy({ serviceOrderId: f.order.id })).toBe(1);
+    expect(await f.balance()).toMatchObject([{ on_hand: 1, reserved: 1 }]);
+    expect(await repo('Notification').countBy({ userId: f.tech.id, type: 'QUOTATION_PARTS_UNAVAILABLE', referenceId: f.order.id })).toBe(1);
   });
 
   it('serializes two distinct requests racing for the last units: exactly one wins', async () => {

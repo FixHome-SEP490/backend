@@ -38,6 +38,9 @@ export const ErrorCodes = {
   // W3 shipping safety cap (does not authorize financial execution)
   W3_SHIPPING_CAP_EXCEEDED: 'W3_SHIPPING_CAP_EXCEEDED',
 
+  // Parts: no FixHome warehouse holds the approved parts (F3), so the approval is not kept
+  PARTS_SOURCE_UNAVAILABLE: 'PARTS_SOURCE_UNAVAILABLE',
+
   // Warranty
   WARRANTY_CANNOT_SHORTEN: 'WARRANTY_CANNOT_SHORTEN',
 
@@ -97,6 +100,7 @@ export const ErrorCodeHttpStatus: Record<string, number> = {
   [ErrorCodes.ADDITIONAL_COST_ALREADY_DECIDED]: 409,
   [ErrorCodes.ADDITIONAL_COST_IMMUTABLE]: 409,
   [ErrorCodes.W3_SHIPPING_CAP_EXCEEDED]: 409,
+  [ErrorCodes.PARTS_SOURCE_UNAVAILABLE]: 409,
   [ErrorCodes.WARRANTY_CANNOT_SHORTEN]: 409,
   [ErrorCodes.BOOKING_SUSPENDED]: 403,
   [ErrorCodes.WORK_SUSPENDED]: 403,
