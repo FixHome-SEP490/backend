@@ -115,6 +115,12 @@ export function registerDev1Cases(context: () => Context) {
       const later = await post('/bookings', f.owner, { ...f.body, preferredStartAt: nextDay(f.body.preferredStartAt), preferredEndAt: nextDay(f.body.preferredEndAt) });
       expect(later.status, JSON.stringify(later.body)).toBe(201);
       const waiting = await accept(f, unwrap(later.body));
+      // A booking past matching is answered from one read, still the full booking with its order.
+      const booked = unwrap((await get(`/bookings/${waiting.booking.id}`, f.owner).expect(200)).body);
+      expect(booked).toMatchObject({ id: waiting.booking.id, status: 'matched', serviceOrderId: waiting.order.id });
+      expect(booked.addressTextSnapshot).toContain('1 Test Street');
+      expect(unwrap((await get(`/bookings/${waiting.booking.id}`, f.tech).expect(200)).body)).toMatchObject({ id: waiting.booking.id, serviceOrderId: waiting.order.id });
+      denied(await get(`/bookings/${waiting.booking.id}`, f.outsider));
       for (const actor of [f.owner, f.tech]) {
         const list = unwrap((await get('/service-orders/my?page=1&pageSize=20', actor).expect(200)).body);
         for (const id of [started.order.id, waiting.order.id]) {
@@ -1845,6 +1851,16 @@ export function registerDev1Cases(context: () => Context) {
         const [coverage] = unwrap((await get(`/service-orders/${order.id}/warranties`, f.owner).expect(200)).body);
         const claim = unwrap((await post(`/service-orders/${order.id}/warranty-claims`, f.owner, { warrantyCoverageId: coverage.id, description: 'Vòi lại rỉ nước sau hai ngày' }).expect(201)).body);
         expect(await thread(f.owner)).toMatchObject({ canSend: true, closedReason: null });
+        // The warranties page reads a whole page of orders at once, exactly as the two per-order endpoints answer.
+        const bulk = unwrap((await get(`/warranties/mine?orderIds=${order.id},${order.id.toUpperCase()}`, f.owner).expect(200)).body);
+        expect(bulk).toEqual([{ orderId: order.id,
+          coverages: unwrap((await get(`/service-orders/${order.id}/warranties`, f.owner).expect(200)).body),
+          claims: unwrap((await get(`/service-orders/${order.id}/warranty-claims`, f.owner).expect(200)).body) }]);
+        expect(bulk[0].claims).toHaveLength(1);
+        for (const who of [f.outsider, f.tech]) denied(await get(`/warranties/mine?orderIds=${order.id}`, who));
+        // One order that is not the customer's refuses the whole read, so nothing leaks beside the owned ones.
+        denied(await get(`/warranties/mine?orderIds=${order.id},${randomUUID()}`, f.owner));
+        for (const bad of ['', 'not-a-uuid', Array.from({ length: 51 }, () => randomUUID()).join(',')]) denied(await get(`/warranties/mine?orderIds=${bad}`, f.owner));
         await post(`/conversations/${conversation.id}/messages`, f.owner, { content: 'Anh ơi vòi lại rỉ ạ' }).expect(201);
         await post(`/conversations/${conversation.id}/messages`, f.tech, { content: 'Chiều nay em ghé xem' }).expect(201);
 

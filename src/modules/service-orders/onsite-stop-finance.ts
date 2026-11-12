@@ -13,10 +13,17 @@ import { Invoice } from './entities/invoice.entity';
 import { ServiceOrder } from './entities/service-order.entity';
 import { hasOnsiteInterruption, verifiedOnsiteInterruption } from './onsite-interruption';
 
-/** Informational only. STOP is not proof of genuine failed work, a zero receivable or refund. */
-export async function loadOnsiteStopFinance(manager: EntityManager, order: ServiceOrder, booking: Booking) {
-  if (!await hasOnsiteInterruption(manager, order.id)) return null;
-  const proof = await verifiedOnsiteInterruption(manager, order, booking);
+type OnsiteProof = Awaited<ReturnType<typeof verifiedOnsiteInterruption>>;
+
+/**
+ * Informational only. STOP is not proof of genuine failed work, a zero receivable or refund.
+ * `known.proof` is for a caller that has already seen an interruption receipt for this order and
+ * computed verifiedOnsiteInterruption for it; it is then not read a second time.
+ */
+export async function loadOnsiteStopFinance(manager: EntityManager, order: ServiceOrder, booking: Booking,
+  known?: { proof: OnsiteProof }) {
+  if (!known && !await hasOnsiteInterruption(manager, order.id)) return null;
+  const proof = known ? known.proof : await verifiedOnsiteInterruption(manager, order, booking);
   const reasonCodes = ['FAILED_WORK_NOT_PROVEN'];
   if (!proof?.workStopped) reasonCodes.push('STOP_PROOF_INVALID_OR_NOT_FINALIZED');
   if (order.paymentStatus !== PaymentStatus.UNPAID) reasonCodes.push('ORDER_PAYMENT_REQUIRES_REVIEW');
@@ -35,30 +42,49 @@ export async function loadOnsiteStopFinance(manager: EntityManager, order: Servi
   // Allowlist IDs/states only: never provider refs, customer/technician IDs, notes or tokens.
   const ids = (rows: { id: string }[]) => rows.map(row => ({ id: row.id }));
   const states = (rows: { id: string; status: string }[]) => rows.map(row => ({ id: row.id, status: row.status }));
+  // Every read starts at once (a read waits only for the rows it needs); results are taken in the
+  // original order, so a failed read leaves the later kinds empty exactly as before.
+  const reads = (() => {
+    const invoices = manager.find(Invoice, { where: { serviceOrderId: order.id }, order: { id: 'ASC' } });
+    const reservations = manager.find(VoucherReservation, { where: { scopeId: In(scopeIds) }, order: { id: 'ASC' } });
+    const links = manager.find(VoucherPaymentLink, { where: { scopeId: In(scopeIds) }, order: { id: 'ASC' } });
+    return {
+      invoices,
+      payments: invoices.then(rows => rows.length ? manager.find(Payment, { where: { invoiceId: In(rows.map(row => row.id)) }, order: { id: 'ASC' } }) : []),
+      cashSettlements: manager.find(CashSettlement, { where: { serviceOrderId: order.id }, order: { id: 'ASC' } }),
+      cashIntents: manager.find(CashPaymentIntent, { where: { scopeId: In(scopeIds) }, order: { id: 'ASC' } }),
+      visitPayments: booking.visitGroupId ? manager.find(VisitGroupPayment, { where: { visitGroupId: booking.visitGroupId }, order: { id: 'ASC' } }) : Promise.resolve([]),
+      reservations,
+      claims: reservations.then(rows => manager.find(VoucherClaim, { where: [
+        { sourceId: In(scopeIds) }, ...(rows.length ? [{ id: In(rows.map(row => row.claimId)) }] : []),
+      ], order: { id: 'ASC' } })),
+      links,
+      funding: Promise.all([links, invoices]).then(([linkRows, invoiceRows]) => {
+        const fundingWhere = [
+          ...(linkRows.length ? [{ linkId: In(linkRows.map(row => row.id)) }] : []),
+          ...(invoiceRows.length ? [{ invoiceId: In(invoiceRows.map(row => row.id)) }] : []),
+        ];
+        return fundingWhere.length ? manager.find(VoucherFundingEntry, { where: fundingWhere, order: { id: 'ASC' } }) : [];
+      }),
+      // Any parts source remains an internal obligation; do not infer physical receipt/return.
+      partRequests: manager.find(PartRequest, { where: { serviceOrderId: order.id }, order: { id: 'ASC' } }),
+      partCustodies: manager.find(PartCustody, { where: { serviceOrderId: order.id }, order: { id: 'ASC' } }),
+    };
+  })();
+  // A read that fails after an earlier one already failed is never awaited below; keep it from becoming unhandled.
+  for (const read of Object.values(reads)) (read as Promise<unknown>).catch(() => undefined);
   try {
-    const invoices = await manager.find(Invoice, { where: { serviceOrderId: order.id }, order: { id: 'ASC' } });
-    evidence.invoices = invoices.map(row => ({ id: row.id, paymentStatus: row.paymentStatus }));
-    evidence.payments = invoices.length ? states(await manager.find(Payment, { where: { invoiceId: In(invoices.map(row => row.id)) }, order: { id: 'ASC' } })) : [];
-    evidence.cashSettlements = states(await manager.find(CashSettlement, { where: { serviceOrderId: order.id }, order: { id: 'ASC' } }));
-    evidence.cashIntents = states(await manager.find(CashPaymentIntent, { where: { scopeId: In(scopeIds) }, order: { id: 'ASC' } }));
-    evidence.visitPayments = booking.visitGroupId ? states(await manager.find(VisitGroupPayment, { where: { visitGroupId: booking.visitGroupId }, order: { id: 'ASC' } })) : [];
-    const reservations = await manager.find(VoucherReservation, { where: { scopeId: In(scopeIds) }, order: { id: 'ASC' } });
-    evidence.voucherReservations = reservations.map(row => ({ id: row.id, state: row.state }));
-    const claims = await manager.find(VoucherClaim, { where: [
-      { sourceId: In(scopeIds) }, ...(reservations.length ? [{ id: In(reservations.map(row => row.claimId)) }] : []),
-    ], order: { id: 'ASC' } });
-    evidence.voucherClaims = ids(claims);
-    const links = await manager.find(VoucherPaymentLink, { where: { scopeId: In(scopeIds) }, order: { id: 'ASC' } });
-    evidence.voucherLinks = ids(links);
-    const fundingWhere = [
-      ...(links.length ? [{ linkId: In(links.map(row => row.id)) }] : []),
-      ...(invoices.length ? [{ invoiceId: In(invoices.map(row => row.id)) }] : []),
-    ];
-    evidence.voucherFunding = fundingWhere.length ? (await manager.find(VoucherFundingEntry, { where: fundingWhere, order: { id: 'ASC' } }))
-      .map(row => ({ id: row.id, kind: row.kind })) : [];
-    // Any parts source remains an internal obligation; do not infer physical receipt/return.
-    evidence.partRequests = ids(await manager.find(PartRequest, { where: { serviceOrderId: order.id }, order: { id: 'ASC' } }));
-    evidence.partCustodies = ids(await manager.find(PartCustody, { where: { serviceOrderId: order.id }, order: { id: 'ASC' } }));
+    evidence.invoices = (await reads.invoices).map(row => ({ id: row.id, paymentStatus: row.paymentStatus }));
+    evidence.payments = states(await reads.payments);
+    evidence.cashSettlements = states(await reads.cashSettlements);
+    evidence.cashIntents = states(await reads.cashIntents);
+    evidence.visitPayments = states(await reads.visitPayments);
+    evidence.voucherReservations = (await reads.reservations).map(row => ({ id: row.id, state: row.state }));
+    evidence.voucherClaims = ids(await reads.claims);
+    evidence.voucherLinks = ids(await reads.links);
+    evidence.voucherFunding = (await reads.funding).map(row => ({ id: row.id, kind: row.kind }));
+    evidence.partRequests = ids(await reads.partRequests);
+    evidence.partCustodies = ids(await reads.partCustodies);
   } catch {
     // Missing legacy schema or failed reads never become absence of money/parts.
     reasonCodes.push('EVIDENCE_UNAVAILABLE');

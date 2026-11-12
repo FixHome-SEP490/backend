@@ -7,6 +7,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -31,6 +32,7 @@ import {
   WarrantyClaimViewDto,
 } from './dto/warranty-claim.dto';
 import { WarrantyClaimsService } from './warranty-claims.service';
+import { parseIdList } from '../../shared/dto/id-list-query';
 
 type Req = { user: { id: string; role: string } };
 
@@ -54,6 +56,15 @@ export class WarrantyClaimsController {
     @Req() req: Req,
   ) {
     return { data: await this.claimsService.create(id, dto, req.user) };
+  }
+
+  @Get('warranties/mine')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionGuard)
+  @Roles(Role.CUSTOMER)
+  @RequirePermission('order:read_related')
+  @ApiOperation({ summary: 'Customer: coverages and claims of several of their orders (one page of the warranties screen)' })
+  async mine(@Query('orderIds') orderIds: string, @Req() req: Req) {
+    return { data: await this.claimsService.customerWarranties(parseIdList(orderIds), req.user) };
   }
 
   @Get('service-orders/:id/warranty-claims')
