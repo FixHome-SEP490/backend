@@ -131,6 +131,7 @@ export class VouchersService implements OnModuleInit, OnModuleDestroy {
       endsAt: new Date(input.endsAt),
       autoCompensation: input.autoCompensation === true,
       quota: input.quota,
+      perCustomerLimit: input.perCustomerLimit ?? 1,
       policy: {
         discount: input.discount,
         value: input.value,
@@ -199,7 +200,7 @@ export class VouchersService implements OnModuleInit, OnModuleDestroy {
 
   private campaignTermsFromEntity(campaign: VoucherCampaign) {
     return { code: campaign.code, name: campaign.name, kind: campaign.kind, policy: campaign.policy,
-      startsAt: campaign.startsAt, endsAt: campaign.endsAt, quota: campaign.quota, autoCompensation: campaign.autoCompensation };
+      startsAt: campaign.startsAt, endsAt: campaign.endsAt, quota: campaign.quota, perCustomerLimit: campaign.perCustomerLimit, autoCompensation: campaign.autoCompensation };
   }
 
   private async campaignReplay(manager: EntityManager, id: string, commandId: string, fingerprint: string, actorId: string): Promise<boolean> {
@@ -361,12 +362,17 @@ export class VouchersService implements OnModuleInit, OnModuleDestroy {
       });
       if (!campaign) this.unavailable();
       this.available(campaign, await this.now(manager));
-      const existing = await manager.findOne(VoucherClaim, {
+      // BUG 62: one unused claim at a time; a new one only after the previous was used, up to the
+      // campaign's per-customer limit. The campaign row lock above serialises concurrent claims.
+      const mine = await manager.find(VoucherClaim, {
         where: { campaignId: campaign.id, customerId: actor.id },
+        order: { createdAt: 'DESC' },
       });
-      const claim =
-        existing ??
-        (await this.newClaim(manager, campaign, actor.id, null, actor.id));
+      const unused = mine.find((c) => !c.redeemedAt);
+      if (unused) return customerClaim(unused, campaign);
+      if (mine.length >= (campaign.perCustomerLimit ?? 1))
+        throw new ConflictException(mine.length === 1 ? 'Bạn đã dùng ưu đãi này. Mỗi khách chỉ được dùng một lần.' : `Bạn đã dùng hết ${mine.length} lần của ưu đãi này.`);
+      const claim = await this.newClaim(manager, campaign, actor.id, null, actor.id);
       return customerClaim(claim, campaign);
     });
   }

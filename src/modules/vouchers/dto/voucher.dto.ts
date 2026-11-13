@@ -7,6 +7,7 @@ import {
   IsDateString,
   IsEnum,
   IsInt,
+  IsOptional,
   IsIn,
   IsString,
   IsUUID,
@@ -57,6 +58,12 @@ export class VoucherCampaignTermsDto {
   @Min(1)
   @Max(2147483647)
   quota: number;
+  @ApiPropertyOptional({ minimum: 1, maximum: 100, default: 1, description: 'Số lần mỗi khách được dùng mã chung này (1 = một lần)' })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  perCustomerLimit?: number;
 }
 export class VoucherCampaignStatusDto {
   @ApiProperty() @IsBoolean() active: boolean;

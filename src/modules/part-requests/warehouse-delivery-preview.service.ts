@@ -88,6 +88,8 @@ export class WarehouseDeliveryPreviewService {
         ? ('RECORDED_NOT_EXTERNALLY_VERIFIED' as const)
         : ('NOT_RECORDED' as const),
       actualCourierCost: null,
+      // Paid path: fee terms carry the actual fee. Zero-fee path (no fee terms): a recorded physical
+      // step means the agreed fee is 0, so its progress is shown too (BUG found 13/11 on the 0đ path).
       progress:
         head?.feeTermsVersion != null
           ? {
@@ -96,7 +98,9 @@ export class WarehouseDeliveryPreviewService {
               customerShippingShare: (actual?.customerShippingShare as number | undefined) ?? null,
               technicianShippingShare: (actual?.technicianShippingShare as number | undefined) ?? null,
             }
-          : null,
+          : head && ['RESERVED', 'RELEASED', 'ISSUED_TO_COURIER', 'DISPATCH_RECORDED', 'TECHNICIAN_RECEIVED'].includes(head.snapshot.status)
+            ? { status: head.snapshot.status, actualShippingFee: 0, customerShippingShare: 0, technicianShippingShare: 0 }
+            : null,
       courierPayment: 'NOT_RECORDED' as const,
       blockers: [...new Set([...facts.blockers, ...physicalDeliveryBlockers])],
       actions: {

@@ -34,7 +34,9 @@ function fixtureStore() {
   };
   const matches = (row: Record<string, any>, where: Record<string, any>) =>
     Object.entries(where).every(([key, value]) =>
-      value instanceof FindOperator && value.type === 'in'
+      value instanceof FindOperator && value.type === 'isNull'
+        ? row[key] === null || row[key] === undefined
+        : value instanceof FindOperator && value.type === 'in'
         ? value.value.includes(row[key])
         : value instanceof FindOperator && value.type === 'jsonContains'
           ? Object.entries(value.value).every(([field, entry]) => row[key]?.[field] === entry)
@@ -350,6 +352,20 @@ describe('standalone voucher lifecycle (no database concurrency claim)', () => {
     expect(store.rows(VoucherReservation)).toHaveLength(0);
     expect(campaign.redeemed).toBe(0);
     expect(store.rows(VoucherClaim)[0].customerId).toBe(customer.id);
+  });
+  it('BUG 62: once by default; a used voucher is saved again only up to the campaign limit', async () => {
+    const { campaign, claim } = await setup();
+    const stored = store.rows(VoucherClaim).find((row) => row.id === claim.id)!;
+    stored.redeemedAt = new Date();
+    await expect(service.claim(customer, campaign.code)).rejects.toThrow('một lần');
+    store.rows(VoucherCampaign).find((row) => row.id === campaign.id)!.perCustomerLimit = 3;
+    const second = await service.claim(customer, campaign.code);
+    expect(second.id).not.toBe(claim.id);
+    expect((await service.claim(customer, campaign.code)).id).toBe(second.id);
+    store.rows(VoucherClaim).find((row) => row.id === second.id)!.redeemedAt = new Date();
+    const third = await service.claim(customer, campaign.code);
+    store.rows(VoucherClaim).find((row) => row.id === third.id)!.redeemedAt = new Date();
+    await expect(service.claim(customer, campaign.code)).rejects.toThrow('hết 3 lần');
   });
   it('reserves exactly 15 minutes; attempt replay never extends TTL', async () => {
     const { reservation, dto, campaign } = await reserve();
