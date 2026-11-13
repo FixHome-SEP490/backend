@@ -26,14 +26,13 @@ export class VoucherCampaign extends BaseEntity {
   @Column({ name: 'published_at', type: 'timestamptz', nullable: true }) publishedAt: Date | null;
   @Column({ name: 'auto_compensation', type: 'boolean', default: false }) autoCompensation: boolean;
   @Column({ type: 'int' }) quota: number;
+  /** BUG 62: how many times one customer may use this general voucher (1 = once). */
+  @Column({ name: 'per_customer_limit', type: 'int', default: 1 }) perCustomerLimit: number;
   @Column({ type: 'int', default: 0 }) redeemed: number;
 }
 
 @Entity('voucher_claims')
-@Index('uq_voucher_claim_customer', ['campaignId', 'customerId'], {
-  unique: true,
-  where: 'source_key IS NULL',
-})
+@Index('idx_voucher_claim_customer', ['campaignId', 'customerId'], { where: 'source_key IS NULL' })
 @Index('uq_voucher_compensation_source', ['sourceKind', 'sourceId'], {
   unique: true,
   where: 'source_id IS NOT NULL',

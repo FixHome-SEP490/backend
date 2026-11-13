@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-13 01:26 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/private-note-deploy
+> Cập nhật lần cuối: 2026-11-13 11:11 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/voucher-per-customer
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -537,6 +537,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-13 11:11 (UTC+7) | ToanAltF4 | fix/voucher-per-customer | BUG 62: voucher_campaigns.per_customer_limit (1-100, mặc định 1), khách lưu lại mã sau khi đã dùng tới hết số lần; bỏ unique index một-lần (kiểm trong service dưới khoá chiến dịch). Preview W3 có tiến trình cho đường 0đ
 - 2026-11-13 01:26 (UTC+7) | ToanAltF4 | fix/private-note-deploy | Deploy DEV: thêm bước technician-private-note-dev-release cho migration 1794480000000 (TECH 42)
 - 2026-11-13 00:34 (UTC+7) | ToanAltF4 | feat/admin-price-variants-1211 | ADMIN 47 API biến thể giá dịch vụ (GET/PATCH /admin/services/:id/price-variants, audit). TECH 42 ghi chú riêng của thợ: cột technician_assignments.private_note (migration 1794480000000), GET/PUT /service-orders/:id/my-note
 - 2026-11-12 22:41 (UTC+7) | ToanAltF4 | fix/be-bugs-1211 | Sửa lỗi console 12/11: tìm không dấu (người dùng, dịch vụ, linh kiện, uy tín, ví thợ), W3 với tài khoản seed id không v4 (W-15), Chuẩn bị xong trên phiếu W3 trả 409 (W-6), preview + danh sách phiếu có tiến trình W3 có phí (W-16), thu nhập thợ trừ phần phí giao (W-17), đếm tab Hoạt động nhận excludeVisitGroups (M-4), tra cứu đơn mã chữ thường (M-27)
@@ -576,4 +577,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-06 13:28 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-positive-20261106 | Chốt conditional terms/0010 và review ACL; focused 287, PostgreSQL gate 14, E2E 70 PASS, tiền BLOCKED; không push/deploy.
 - 2026-11-06 12:41 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-aggregate-20261106 | Hợp nhất Admin lifecycle và Finance aggregate vào PR #200, bảo toàn policy 0009 cùng hai mục 20–21, kiểm lại tài liệu tích hợp.
 - 2026-11-06 10:44 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-aggregate-20261106 | Thêm kiểm ngân sách phần thợ tổng hợp theo toàn bộ DELIVERY source immutable, per-shipment rounding và guard không thiếu sibling; Finance vẫn BLOCKED, 47 focused/3973 full PASS, chưa chi tiền hay áp DB.
-- 2026-11-06 10:39 (UTC+7) | foxonworld | foxonworld/fixhome-w3-admin-lifecycle-20261106 | Thêm W3 B3b operating-only lifecycle với preview receipt/Admin/CAS/audit bất biến, migration tiến 0009 và gate/CI fixture; giữ DRAFT API Web cũ và finance BLOCKED, PostgreSQL/consumer/release chờ Lead.
