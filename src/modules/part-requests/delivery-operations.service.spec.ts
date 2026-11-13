@@ -312,6 +312,26 @@ describe('conditional positive shipping terms (no financial authority)', () => {
     expect(f.rows('WarehouseDeliveryEvent')[0].feeTermsVersion).toBe(4);
     expect(f.rows('DeliveryShippingProposal')).toHaveLength(0);
   });
+  it('read projects the paid terms so the web panel can operate a paid request (13/11)', async () => {
+    const f = fixture();
+    f.cost.shippingFee = f.request.shippingFee = 20000;
+    const terms = { result_version: 5, source_current: true, state: {
+      version: 5, customerConsented: true, technicianConsented: true,
+      quote: { quoteVersion: 2, fingerprint: 'a'.repeat(64), policyVersion: 'W3_70_30_V1', totalShippingFee: 20000, customerShippingShare: 14000, technicianShippingShare: 6000,
+        warehouseId: f.warehouse.id, responsibleUserId: f.sm.id, assignmentId: f.assignment.id, courierReference: 'positive' },
+      actual: { quoteVersion: 2, totalShippingFee: 18000, customerShippingShare: 12600, technicianShippingShare: 5400 },
+    }};
+    const original = f.manager.query.getMockImplementation()!;
+    f.manager.query.mockImplementation(async (sql: string, args: any[]) => {
+      if (sql.includes('FROM delivery_fee_terms')) return [terms];
+      return original(sql, args);
+    });
+    const r = await f.service.read(f.request.id, f.actor(f.customer));
+    expect(r).toMatchObject({ version: 5, invalidated: false, customerConsented: true, technicianConsented: true,
+      quote: { quoteVersion: 2, totalShippingFee: 20000, customerShippingShare: 14000, technicianShippingShare: 6000, laborBudget: 'UNVERIFIED' },
+      actual: { totalShippingFee: 18000, quoteVersion: 2 } });
+    expect(JSON.stringify(r.quote)).not.toContain(f.warehouse.id);
+  });
   const proposal = (f: ReturnType<typeof fixture>, extra = {}) => ({
     commandId: randomUUID(),
     expectedVersion: 0,
