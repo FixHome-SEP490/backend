@@ -104,9 +104,12 @@ export class TechnicianAssignmentService {
       ...(payment ? ['PAYMENT_EXPOSURE'] : []),
       ...(voucher ? ['VOUCHER_EXPOSURE'] : []),
       ...(parts ? ['PARTS_CUSTODY_REVIEW'] : []),
-      ...(approvedQuote ? ['APPROVED_QUOTE'] : []),
     ];
-    const direct = [...common, ...(booking.visitGroupId ? ['VISIT_GROUP_CHILD'] : [])];
+    // BUG 148 (PO 13/11/2026): a customer can only ask to stop once repair started, i.e. after
+    // approving the quote, so an approved quote must not block closing for a new booking. The
+    // order closes at 0 đ with no invoice; the approved quote stays as recorded (immutable).
+    // Invoice, payment, voucher and parts custody still block.
+    const direct = [...common, ...(approvedQuote ? ['APPROVED_QUOTE'] : []), ...(booking.visitGroupId ? ['VISIT_GROUP_CHILD'] : [])];
     const close = [...common, ...(openQuote ? ['OPEN_QUOTE'] : [])];
     return { caseId: supportCase.id, caseStatus: supportCase.status, caseVersion: supportCase.workflowVersion,
       serviceOrderId: order.id, visitGroupId: booking.visitGroupId ?? null, requestIntent: supportCase.requestIntent ?? null,
