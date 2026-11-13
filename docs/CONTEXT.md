@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-13 15:19 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/stop-replace-close-rebook
+> Cập nhật lần cuối: 2026-11-13 18:21 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/w3-paid-read
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -537,6 +537,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-13 18:21 (UTC+7) | ToanAltF4 | fix/w3-paid-read | W3 có phí: GET /part-requests/:id/delivery chiếu điều khoản có phí (quote, đồng ý, phí thực tế) để khối Giao linh kiện trên web thao tác được
 - 2026-11-13 15:19 (UTC+7) | ToanAltF4 | fix/stop-replace-close-rebook | GET /service-orders/:id/part-requests có w3DeliveryStage (trang thợ/khách biết phiếu W3 đã giao)
 - 2026-11-13 15:16 (UTC+7) | ToanAltF4 | fix/stop-replace-close-rebook | BUG 148: SM kết thúc đơn để khách đặt lại được cả khi báo giá đã duyệt (đơn về 0đ, không hoá đơn); vẫn chặn khi có hoá đơn/thanh toán/voucher/linh kiện
 - 2026-11-13 11:11 (UTC+7) | ToanAltF4 | fix/voucher-per-customer | BUG 62: voucher_campaigns.per_customer_limit (1-100, mặc định 1), khách lưu lại mã sau khi đã dùng tới hết số lần; bỏ unique index một-lần (kiểm trong service dưới khoá chiến dịch). Preview W3 có tiến trình cho đường 0đ
@@ -576,4 +577,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-06 18:01 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-readiness-20261106 | Thêm D preparation/diagnostics 0012 và ma trận sáu signoff; unit 4044/E2E 244/PG gate 37 PASS, không writer API hoặc execution tiền.
 - 2026-11-06 17:00 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-governance-20261106 | Sửa P2 release gate bỏ lọt sequence ACL; PG RED 12/GREEN 28, typecheck/lint/build PASS; không mở W3 tiền.
 - 2026-11-06 16:49 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-governance-20261106 | C prequote/config version 0011 và simulation owner 1–5; full unit 4031, full E2E 237, final focused 124/PG gate 16/W3 E2E 77 PASS; mọi money execution BLOCKED.
-- 2026-11-06 13:28 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-positive-20261106 | Chốt conditional terms/0010 và review ACL; focused 287, PostgreSQL gate 14, E2E 70 PASS, tiền BLOCKED; không push/deploy.

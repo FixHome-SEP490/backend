@@ -462,6 +462,26 @@ export class DeliveryOperationsService {
         where: { partRequestId: id },
         order: { resultVersion: 'DESC' },
       });
+      // Paid W3 path (13/11): the terms live in delivery_fee_terms, not in the zero-fee consent
+      // store, so this read returned no quote and the web panel offered no physical step for
+      // a paid request. Project the latest terms the same way; the zero-fee state wins if both.
+      const terms = !state ? s.termsHead?.state : null;
+      if (terms?.quote) {
+        const termsInvalidated = !s.termsHead.source_current;
+        return {
+          version: terms.version ?? 0,
+          quote: publicQuote({ quote: terms.quote } as never),
+          invalidated: termsInvalidated,
+          customerConsented: !!terms.customerConsented && !termsInvalidated,
+          technicianConsented: !!terms.technicianConsented && !termsInvalidated,
+          actual: terms.actual
+            ? { totalShippingFee: terms.actual.totalShippingFee, quoteVersion: terms.actual.quoteVersion }
+            : null,
+          physical: physical?.snapshot ?? null,
+          financialExecution: 'BLOCKED',
+          financialBlocker: 'FINANCE_LEDGER_SOURCE_REQUIRED',
+        };
+      }
       return {
         version: state?.version ?? 0,
         quote: publicQuote(state),
