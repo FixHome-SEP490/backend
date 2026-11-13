@@ -11,6 +11,7 @@ import { VOUCHER_ENTITIES, VoucherCampaign, VoucherClaim } from './entities/vouc
 import { VouchersService } from './vouchers.service';
 import { VoucherEvidence } from './voucher.ports';
 import { CheckoutFacts, SettlementFacts, VoucherDiscount, VoucherKind } from './voucher.types';
+import { VoucherPerCustomerLimit1794566400000 } from '../../database/migrations/1794566400000-VoucherPerCustomerLimit';
 
 // Explicit opt-in. Creates its OWN disposable container/database, never uses dotenv or DB env.
 // Minimal legacy tables support the real Core + F4 + lifecycle DDL; this is not a full-app E2E.
@@ -143,8 +144,8 @@ describe.skipIf(process.env.VOUCHER_CAMPAIGN_ISOLATED_PG !== '1')('campaign life
     [historicSnapshot] = await db.query('SELECT * FROM public.voucher_claims WHERE id=$1', [historicClaim]);
     [historicReservation] = await db.query('SELECT * FROM public.voucher_reservations WHERE id=$1', [reserved.id]);
     [genericGuard] = (await db.query("SELECT pg_get_functiondef('public.voucher_guard_write()'::regprocedure) AS body")).map(row => row.body);
-    db.migrations.push(new VoucherCampaignLifecycle1793116800000());
-    expect((await db.runMigrations()).map(m => m.name)).toEqual(['VoucherCampaignLifecycle1793116800000']);
+    db.migrations.push(new VoucherCampaignLifecycle1793116800000(), new VoucherPerCustomerLimit1794566400000());
+    expect((await db.runMigrations()).map(m => m.name)).toEqual(['VoucherCampaignLifecycle1793116800000', 'VoucherPerCustomerLimit1794566400000']);
     const evidence: VoucherEvidence = {
       checkout: async (_m, customerId, scopeId) => {
         const facts = checkouts.get(scopeId);

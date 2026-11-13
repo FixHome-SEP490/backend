@@ -39,6 +39,7 @@ const make = (options: { claimStatus?: WarrantyClaimStatus; requestStatus?: Part
   };
   const order = { id: 'order-1', status: ServiceOrderStatus.COMPLETED, completionRequestedAt: new Date() };
   const manager: any = {
+    query: vi.fn(async () => []),
     findOne: vi.fn(async (entity: { name: string }) =>
       entity.name === 'PartRequest' ? request
         : entity.name === 'PartRequestItem' ? item

@@ -10,6 +10,7 @@ import {
   Get,
   Post,
   Patch,
+  Put,
   Delete,
   Body,
   Param,
@@ -23,6 +24,7 @@ import {
   UploadedFiles,
   UseInterceptors,
 } from '@nestjs/common';
+import { TechnicianPrivateNoteDto, TechnicianPrivateNoteService } from './technician-private-note.service';
 import { FileFieldsInterceptor, FileInterceptor } from '@nestjs/platform-express';
 import type { EvidenceFile } from '../media/order-evidence-storage.service';
 import {
@@ -68,6 +70,7 @@ export class ServiceOrdersController {
   constructor(
     private readonly serviceOrdersService: ServiceOrdersService,
     @Optional() private readonly checkinFace?: CheckinFaceService,
+    @Optional() private readonly privateNotes?: TechnicianPrivateNoteService,
   ) {}
 
   // ── 1. Order Queries ──
@@ -114,6 +117,24 @@ export class ServiceOrdersController {
       { page: query.page, limit: query.pageSize, status: query.status, statuses: query.statuses, search: query.search, stage: query.stage, excludeVisitGroups: query.excludeVisitGroups, history: query.history },
     );
     return { data: result.data, meta: { total: result.total } };
+  }
+
+  @Get('service-orders/:id/my-note')
+  @Roles(Role.TECHNICIAN)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'TECH 42: my private note on this order (only me)' })
+  async readMyNote(@Param('id', ParseUUIDPipe) id: string, @Req() req: { user: { id: string } }) {
+    return { data: await this.privateNotes!.read(id, req.user.id) };
+  }
+
+  @Put('service-orders/:id/my-note')
+  @Roles(Role.TECHNICIAN)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'TECH 42: save my private note on this order; empty clears it' })
+  async writeMyNote(@Param('id', ParseUUIDPipe) id: string, @Body() body: TechnicianPrivateNoteDto, @Req() req: { user: { id: string } }) {
+    return { data: await this.privateNotes!.write(id, req.user.id, body.note) };
   }
 
   @Get('service-orders/:id')

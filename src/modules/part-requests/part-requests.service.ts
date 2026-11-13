@@ -45,7 +45,8 @@ import { WarrantyNotifier } from '../service-orders/warranty-notifier.service';
 import { partRequestCostSource } from './part-request-lifecycle';
 import { MAX_PART_QUANTITY } from './part-custody.rules';
 import { WarehouseDeliveryStore } from './warehouse-delivery-store.service';
-import { canonicalWarehouseQuantities } from './warehouse-fulfillment.rules';
+import { canonicalWarehouseQuantities, hasWholeRequestStock } from './warehouse-fulfillment.rules';
+import { partsSourceUnavailable, PartsSourcing, SourcingLine } from './parts-sourcing';
 import { isDeepStrictEqual } from 'node:util';
 import {
   CreatePartRequestDto,
@@ -503,28 +504,7 @@ export class PartRequestsService {
     }
     const existing = await manager.findOne(PartRequest, { where: { quotationId: quote.id }, relations: ['items'] });
     if (existing) return existing;
-    const required = new Map<string, { quantity: number; name: string; unitPrice: number }>();
-    for (const item of quote.items) {
-      if (item.type !== CostItemType.PARTS_EQUIPMENT || item.partSource !== PartSource.FIXHOME) continue;
-      if (!item.partCatalogId || !Number.isSafeInteger(item.quantity) || item.quantity < 1 ||
-          !Number.isSafeInteger(Number(item.unitPrice)) || Number(item.unitPrice) < 0) {
-        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Linh kiện trong báo giá không hợp lệ.');
-      }
-      const prior = required.get(item.partCatalogId);
-      required.set(item.partCatalogId, { quantity: (prior?.quantity ?? 0) + item.quantity,
-        name: prior?.name ?? item.partNameSnapshot ?? item.description, unitPrice: prior?.unitPrice ?? Number(item.unitPrice) });
-    }
-    if (!required.size) return null;
-    const requests = await this.withoutUnsourced(manager, await manager.find(PartRequest, { where: { serviceOrderId: quote.serviceOrderId, technicianId: quote.technicianId }, relations: ['items'] }));
-    for (const request of requests) {
-      if (request.technicianId !== quote.technicianId || request.requestType !== PartRequestType.PRE_REPAIR ||
-          ![PartRequestStatus.REQUESTED, PartRequestStatus.READY, PartRequestStatus.DELIVERING, PartRequestStatus.RECEIVED].includes(request.status)) continue;
-      for (const item of request.items) {
-        const need = item.partCatalogId && required.get(item.partCatalogId);
-        if (need && item.partSource === PartSource.FIXHOME && item.usageStatus !== PartUsageStatus.RETURNED) need.quantity = Math.max(0, need.quantity - item.quantity);
-      }
-    }
-    const deficit = [...required].filter(([, item]) => item.quantity > 0);
+    const deficit = await this.quotationDeficit(manager, quote.serviceOrderId, quote.technicianId, quote.items);
     if (!deficit.length) return null;
     for (const [partCatalogId] of deficit) {
       if (!await manager.findOne(FixHomePart, { where: { id: partCatalogId, isActive: true } })) {
@@ -545,8 +525,65 @@ export class PartRequestsService {
     await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role,
       action: 'QUOTATION_PART_REQUEST_CREATED', resourceType: 'part_request', resourceId: request.id,
       after: { serviceOrderId: quote.serviceOrderId, quotationId: quote.id, itemCount: request.items.length } });
-    await this.warehouseFulfillment?.enroll(manager, request, actor);
+    // F3 (TECH 66, CUSTOMER 72): no warehouse holds the whole shortfall, so the parts cannot be supplied.
+    // Throwing rolls back the caller's approval: the quote stays SENT, totals and the request are undone.
+    const placed = await this.warehouseFulfillment?.enroll(manager, request, actor);
+    if (placed?.status === 'stock_unavailable') {
+      throw partsSourceUnavailable(deficit.map(([partCatalogId, item]) => ({ partCatalogId, name: item.name, quantity: item.quantity })));
+    }
     return request;
+  }
+
+  /**
+   * FixHome parts an approval of these lines still needs from a warehouse: the quoted quantity
+   * per SKU less the live pre-repair lines that have a real source (BUG DETECTOR 77).
+   */
+  private async quotationDeficit(manager: EntityManager, orderId: string, technicianId: string, items: SourcingLine[]) {
+    const required = new Map<string, { quantity: number; name: string; unitPrice: number }>();
+    for (const item of items) {
+      if (item.type !== CostItemType.PARTS_EQUIPMENT || item.partSource !== PartSource.FIXHOME) continue;
+      if (!item.partCatalogId || !Number.isSafeInteger(item.quantity) || item.quantity < 1 ||
+          !Number.isSafeInteger(Number(item.unitPrice)) || Number(item.unitPrice) < 0) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Linh kiện trong báo giá không hợp lệ.');
+      }
+      const prior = required.get(item.partCatalogId);
+      required.set(item.partCatalogId, { quantity: (prior?.quantity ?? 0) + item.quantity,
+        name: prior?.name ?? item.partNameSnapshot ?? item.description, unitPrice: prior?.unitPrice ?? Number(item.unitPrice) });
+    }
+    if (!required.size) return [];
+    const requests = await this.withoutUnsourced(manager, await manager.find(PartRequest, { where: { serviceOrderId: orderId, technicianId }, relations: ['items'] }));
+    for (const request of requests) {
+      if (request.technicianId !== technicianId || request.requestType !== PartRequestType.PRE_REPAIR ||
+          ![PartRequestStatus.REQUESTED, PartRequestStatus.READY, PartRequestStatus.DELIVERING, PartRequestStatus.RECEIVED].includes(request.status)) continue;
+      for (const item of request.items) {
+        const need = item.partCatalogId && required.get(item.partCatalogId);
+        if (need && item.partSource === PartSource.FIXHOME && item.usageStatus !== PartUsageStatus.RETURNED) need.quantity = Math.max(0, need.quantity - item.quantity);
+      }
+    }
+    return [...required].filter(([, item]) => item.quantity > 0);
+  }
+
+  /**
+   * F3 (TECH 66, CUSTOMER 72): read-only answer to "can these lines be approved now?".
+   * none: no FixHome part; covered: parts already held cover it; available: one active
+   * warehouse holds every missing SKU; unavailable: no warehouse does, with the missing lines.
+   * Advisory only, two queries at most: the approval re-checks under stock locks.
+   */
+  async quotationSourcing(manager: EntityManager, orderId: string, technicianId: string, items: SourcingLine[]): Promise<PartsSourcing> {
+    if (!items.some(item => item.type === CostItemType.PARTS_EQUIPMENT && item.partSource === PartSource.FIXHOME)) return { status: 'none', missing: [] };
+    const deficit = await this.quotationDeficit(manager, orderId, technicianId, items);
+    if (!deficit.length) return { status: 'covered', missing: [] };
+    if (!this.warehouseFulfillment) return { status: 'available', missing: [] };
+    const missing = deficit.map(([partCatalogId, item]) => ({ partCatalogId, name: item.name, quantity: item.quantity }));
+    const required = missing.map(item => ({ partId: item.partCatalogId, quantity: item.quantity }));
+    const stock: Array<{ warehouseId: string; partId: string; onHand: number; reserved: number }> = await manager.query(`
+      SELECT s.warehouse_id AS "warehouseId", s.part_id AS "partId", s.on_hand AS "onHand", s.reserved
+        FROM warehouse_stock s JOIN warehouses w ON w.id = s.warehouse_id JOIN users u ON u.id = w.responsible_user_id
+       WHERE w.status = 'active' AND u.role = 'service_manager' AND u.is_active AND u.status = 'active'
+         AND s.part_id = ANY($1::uuid[])`, [required.map(item => item.partId)]);
+    const available = [...new Set(stock.map(row => row.warehouseId))]
+      .some(id => hasWholeRequestStock(required, stock.filter(row => row.warehouseId === id)));
+    return available ? { status: 'available', missing: [] } : { status: 'unavailable', missing };
   }
 
   /**
@@ -668,7 +705,15 @@ export class PartRequestsService {
     if (fulfillmentMethod === FulfillmentMethod.DELIVERY && isDeepStrictEqual(
       canonicalWarehouseQuantities(savedRequest.items),
       canonicalWarehouseQuantities(wanted.map(i => ({ partCatalogId: i.partCatalogId, partSource: i.partSource, quantity: i.quantity }))),
-    )) await new WarehouseDeliveryStore().enrollNew(manager, savedRequest.id, { id: technicianId, role: Role.TECHNICIAN });
+    )) {
+      try {
+        await new WarehouseDeliveryStore().enrollNew(manager, savedRequest.id, { id: technicianId, role: Role.TECHNICIAN });
+      } catch (error) {
+        // The store throws plain Errors; the customer gets a reason instead of a 500.
+        if (error instanceof Error && error.message.startsWith('WAREHOUSE_DELIVERY_')) throw new BusinessException(ErrorCodes.CONFLICT, 'Chưa ghi nhận được phiếu giao linh kiện cho đơn này. Vui lòng thử lại hoặc liên hệ quản lý dịch vụ.');
+        throw error;
+      }
+    }
 
     // Audit log
     await this.auditLogService.logWithManager(manager, {
@@ -685,7 +730,11 @@ export class PartRequestsService {
       },
     });
 
-    await this.warehouseFulfillment?.enroll(manager, savedRequest, { id: technicianId, role: Role.TECHNICIAN });
+    // F3: same gate as a quotation. No warehouse holds the shortfall: the approval rolls back, the cost stays pending.
+    const placed = await this.warehouseFulfillment?.enroll(manager, savedRequest, { id: technicianId, role: Role.TECHNICIAN });
+    if (placed?.status === 'stock_unavailable') {
+      throw partsSourceUnavailable(fixHomeItems.map(item => ({ partCatalogId: item.partCatalogId!, name: item.partName, quantity: item.quantity })));
+    }
     return savedRequest;
   }
 
@@ -710,6 +759,10 @@ export class PartRequestsService {
           'Part request not found',
         );
       }
+
+      // W3 delivery requests move through warehouse delivery events; the old QR path is closed by a DB trigger.
+      const [w3] = await manager.query('SELECT 1 FROM warehouse_delivery_cohorts WHERE part_request_id = $1 LIMIT 1', [requestId]);
+      if (w3) throw new BusinessException(ErrorCodes.CONFLICT, 'Phiếu này giao linh kiện theo luồng giao hàng có phí. Vui lòng xử lý ở khối Giao linh kiện, không dùng Chuẩn bị xong.');
 
       // Check state machine
       if (
@@ -1176,7 +1229,9 @@ export class PartRequestsService {
         );
       }
 
-      if ([PartRequestType.QUOTATION, PartRequestType.PRE_REPAIR].includes(request.requestType)) {
+      // F3: a request no warehouse could stock supplies nothing; the technician may always drop it.
+      if ([PartRequestType.QUOTATION, PartRequestType.PRE_REPAIR].includes(request.requestType) &&
+        !(request.requestType === PartRequestType.PRE_REPAIR && allocation?.status === 'manual_assistance')) {
         const quote = await manager.findOne(Quotation, {
           where: { serviceOrderId: request.serviceOrderId, technicianId: request.technicianId, status: QuotationStatus.APPROVED,
             ...(request.requestType === PartRequestType.QUOTATION ? { id: request.quotationId! } : {}) },
@@ -1228,6 +1283,9 @@ export class PartRequestsService {
         relations: ['items'],
         order: { createdAt: 'DESC' },
       });
+      // The order pages (technician, customer) need the W3 stage too: a delivered W3 request stays
+      // 'requested' in storage, and completion reads it as received from its events (13/11).
+      await this.attachW3Delivery(requests);
       return requests.map(request => this.visible(request, actor));
     });
   }
@@ -1357,7 +1415,29 @@ export class PartRequestsService {
     const [[data, total], counted] = await Promise.all([qb.getManyAndCount(), counting ? counting.getRawMany() : Promise.resolve([])]);
     const statusCounts: Record<string, number> = {};
     for (const row of counted as Array<{ status: string; n: string | number }>) statusCounts[row.status] = Number(row.n);
+    await this.attachW3Delivery(data);
     return { data: data.map(request => this.visible(request, actor)), total, statusCounts };
+  }
+
+  /**
+   * W-16: a request enrolled in W3 keeps part_requests.status = 'requested' (the legacy guard
+   * forbids the old QR path), so the list carries the W3 stage: ENROLLED before any physical
+   * step, else the latest event status (RESERVED, ISSUED_TO_COURIER, DISPATCH_RECORDED,
+   * TECHNICIAN_RECEIVED...). One query for the whole page, only when it has delivery rows.
+   */
+  private async attachW3Delivery(requests: PartRequest[]): Promise<void> {
+    const ids = requests.filter(r => r.fulfillmentMethod === FulfillmentMethod.DELIVERY).map(r => r.id);
+    if (!ids.length) return;
+    const rows: Array<{ id: string; status: string | null }> = await this.dataSource.query(
+      `SELECT c.part_request_id AS id, e.snapshot->>'status' AS status
+       FROM warehouse_delivery_cohorts c
+       LEFT JOIN LATERAL (SELECT snapshot FROM warehouse_delivery_events we
+         WHERE we.part_request_id = c.part_request_id ORDER BY we.result_version DESC LIMIT 1) e ON true
+       WHERE c.part_request_id = ANY($1::uuid[])`,
+      [ids],
+    );
+    const stage = new Map(rows.map(row => [row.id, row.status ?? 'ENROLLED']));
+    for (const request of requests) (request as PartRequest & { w3DeliveryStage?: string | null }).w3DeliveryStage = stage.get(request.id) ?? null;
   }
 
   /**

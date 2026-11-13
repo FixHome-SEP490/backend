@@ -17,6 +17,7 @@ import {
 import { PaginationMeta } from '../../shared/dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { User } from '../users/entities/user.entity';
+import { andWhereTextMatches } from '../../shared/utils/list-search';
 
 const RESOURCE_TYPE = 'fixhome_part';
 const PUBLIC_PRICES_TTL_MS = 5 * 60 * 1000;
@@ -87,13 +88,7 @@ export class PartsCatalogService {
       });
     }
 
-    if (query.search) {
-      const search = `%${query.search.trim()}%`;
-      qb.andWhere(
-        '(part.name ILIKE :search OR part.sku ILIKE :search OR part.description ILIKE :search)',
-        { search },
-      );
-    }
+    andWhereTextMatches(qb, ['part.name', 'part.sku', 'part.description'], query.search);
 
     qb.orderBy('part.name', 'ASC');
     qb.skip(query.skip).take(query.limit);

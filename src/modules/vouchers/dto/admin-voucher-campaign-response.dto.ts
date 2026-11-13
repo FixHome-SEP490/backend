@@ -9,6 +9,7 @@ export class AdminVoucherCampaignDto extends CustomerGeneralVoucherDto {
   @ApiProperty({ description: 'Chỉ true khi status=PUBLISHED; vẫn cần kiểm cửa sổ thời gian' }) active: boolean;
   @ApiProperty() autoCompensation: boolean;
   @ApiProperty({ minimum: 1 }) quota: number;
+  @ApiProperty({ minimum: 1, maximum: 100, description: 'Số lần mỗi khách được dùng mã chung (1 = một lần)' }) perCustomerLimit: number;
   @ApiProperty({ minimum: 0, description: 'Lượt đã thanh toán thành công, không phải số người lưu mã' }) redeemed: number;
   @ApiProperty({ minimum: 1 }) version: number;
   @ApiProperty({ type: String, format: 'date-time', nullable: true }) publishedAt: Date | null;

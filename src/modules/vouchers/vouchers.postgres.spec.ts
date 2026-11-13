@@ -22,6 +22,7 @@ import {
   VoucherDiscount,
   VoucherKind,
 } from './voucher.types';
+import { VoucherPerCustomerLimit1794566400000 } from '../../database/migrations/1794566400000-VoucherPerCustomerLimit';
 
 // Opt-in only. No dotenv, project DataSource, external URL or database env credentials.
 // Evidence is synthetic; SQL/locks/transactions/indexes below are real PostgreSQL.
@@ -168,7 +169,7 @@ describe.skipIf(!enabled)(
       await db.undoLastMigration();
       roundTrip.push('EMPTY_DOWN');
       roundTrip.push(...(await db.runMigrations()).map((m) => m.name));
-      db.migrations.push(new VoucherCampaignLifecycle1793116800000());
+      db.migrations.push(new VoucherCampaignLifecycle1793116800000(), new VoucherPerCustomerLimit1794566400000());
       roundTrip.push(...(await db.runMigrations()).map((m) => m.name));
       admin = { id: randomUUID(), role: Role.ADMIN };
       await db.query('INSERT INTO users(id) VALUES ($1)', [admin.id]);
@@ -196,6 +197,7 @@ describe.skipIf(!enabled)(
         'EMPTY_DOWN',
         'VoucherCore1792994400000',
         'VoucherCampaignLifecycle1793116800000',
+        'VoucherPerCustomerLimit1794566400000',
       ]);
       const a = db.createQueryRunner(),
         b = db.createQueryRunner();

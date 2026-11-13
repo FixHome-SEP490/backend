@@ -51,3 +51,12 @@ export class MyBookingListQueryDto extends BookingListQueryDto {
   @IsBoolean()
   excludeVisitGroups?: boolean;
 }
+
+/** M-4: the Activity tab counts take the same multi-device opt-in as the list, so numbers match. */
+export class ActivityCountsQueryDto {
+  @ApiPropertyOptional({ description: 'Exclude bookings that belong to a multi-device visit', default: false })
+  @IsOptional()
+  @Transform(({ value }) => (value === 'true' ? true : value === 'false' ? false : value))
+  @IsBoolean()
+  excludeVisitGroups?: boolean;
+}

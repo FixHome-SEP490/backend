@@ -137,6 +137,10 @@ jobs:
             docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml run --rm --no-deps -e TECHNICIAN_OFFICE_VISITS_DEV_RELEASE=1 backend node dist/database/technician-office-visits-dev-release.js
             # BUG DETECTOR 59: visit_groups.address_id nullable + ON DELETE SET NULL (existing column/constraint only).
             docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml run --rm --no-deps -e VISIT_GROUP_ADDRESS_DEV_RELEASE=1 backend node dist/database/visit-group-address-dev-release.js
+            # TECH 42: technician_assignments.private_note (additive nullable column, no new table).
+            docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml run --rm --no-deps -e TECHNICIAN_PRIVATE_NOTE_DEV_RELEASE=1 backend node dist/database/technician-private-note-dev-release.js
+            # BUG DETECTOR 62: voucher_campaigns.per_customer_limit (additive column; per-customer unique index becomes a service rule).
+            docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml run --rm --no-deps -e VOUCHER_PER_CUSTOMER_DEV_RELEASE=1 backend node dist/database/voucher-per-customer-dev-release.js
             docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml run --rm --no-deps -e W3_DEV_RELEASE=1 backend node dist/database/w3-dev-release.js
             docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml run --rm --no-deps -e CASH_REPUTATION_DEV_RELEASE=1 -e CASH_FIRST_DEV_ACTIVATION="$activation" backend node dist/database/cash-reputation-dev-release.js
             docker compose -f docker-compose.prod.yml -f docker-compose.part-returns.dev.yml up -d --no-build backend

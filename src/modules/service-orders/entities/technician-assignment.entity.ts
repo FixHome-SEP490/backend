@@ -36,4 +36,8 @@ export class TechnicianAssignment extends BaseEntity {
 
   @Column({ name: 'unassign_reason', type: 'text', nullable: true })
   unassignReason?: string | null;
+
+  /** TECH 42: the technician's own note on the order; never sent to customers or staff. */
+  @Column({ name: 'private_note', type: 'text', nullable: true, select: false })
+  privateNote?: string | null;
 }

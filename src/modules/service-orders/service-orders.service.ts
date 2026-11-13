@@ -564,7 +564,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
    * to avoid letting a caller enumerate order codes.
    */
   async trackPublic(orderCode: string, phone: string) {
-    const order = await this.orderRepo.findOneBy({ code: orderCode });
+    // M-27: codes are stored upper case (FH-20261112-E6DD02C0); "fh-20261112-e6dd02c0" is the same order.
+    const order = await this.orderRepo.findOneBy({ code: orderCode.trim().toUpperCase() });
     if (!order) {
       throw new BusinessException(ErrorCodes.OWNERSHIP_DENIED, 'Order not found');
     }
@@ -1107,7 +1108,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         void this.notificationsService.createNotification({
           userId: assignment.technicianId,
           title: 'Đơn hàng đã bị huỷ',
-          message: `Đơn hàng #${order.code} đã bị huỷ bởi ${actor.role === Role.CUSTOMER ? 'Khách hàng' : 'Quản trị viên'}. Lý do: "${body.reason}".`,
+          message: `Đơn hàng #${order.code} đã bị huỷ bởi ${actor.role === Role.CUSTOMER ? 'Khách hàng' : actor.role === Role.SERVICE_MANAGER ? 'Quản lý dịch vụ' : 'Quản trị viên'}. Lý do: "${body.reason}".`,
           type: 'ORDER_CANCELLED',
           referenceId: order.id,
           referenceType: 'SERVICE_ORDER',

@@ -145,7 +145,7 @@ describe('W2 physical authority and legacy safety', () => {
   it('does not enroll Warranty pickup requests or mutate their warehouse state', async () => {
     const { service, manager, request } = setup();
     request.requestType = PartRequestType.WARRANTY;
-    await expect(service.enroll(manager as never, request as never, { id: 'sm', role: Role.SERVICE_MANAGER })).resolves.toBeUndefined();
+    await expect(service.enroll(manager as never, request as never, { id: 'sm', role: Role.SERVICE_MANAGER })).resolves.toBeNull();
     expect(manager.insert).not.toHaveBeenCalled(); expect(manager.query).not.toHaveBeenCalled();
   });
   it('keeps historical requests legacy without inventory mutation', async () => {

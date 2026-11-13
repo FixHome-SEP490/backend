@@ -32,6 +32,7 @@ import {
   WalletTransaction,
   WithdrawalRequest,
 } from './entities';
+import { andWhereTextMatches } from '../../shared/utils/list-search';
 
 @Injectable()
 export class WalletService {
@@ -460,12 +461,7 @@ export class WalletService {
       .leftJoinAndSelect('w.technician', 'u')
       .where('u.role = :role', { role: Role.TECHNICIAN });
 
-    if (query.search?.trim()) {
-      qb.andWhere(
-        '(u.fullName ILIKE :search OR u.phoneNumber ILIKE :search OR u.email ILIKE :search)',
-        { search: `%${query.search.trim()}%` },
-      );
-    }
+    andWhereTextMatches(qb, ['u.fullName', 'u.phoneNumber', 'u.email'], query.search);
 
     if (query.eligible === 'true') {
       qb.andWhere('w.balance >= :min', { min: minimumBalance });

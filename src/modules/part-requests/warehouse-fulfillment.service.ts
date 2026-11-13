@@ -112,11 +112,11 @@ export class WarehouseFulfillmentService {
   }
 
   /** Creates ONLY new PICKUP allocations. Historical requests never enter this method. */
-  async enroll(manager: EntityManager, request: PartRequest, actor: Actor): Promise<void> {
-    if (request.fulfillmentMethod !== FulfillmentMethod.PICKUP || !eligibleRequestType(request.requestType)) return;
+  async enroll(manager: EntityManager, request: PartRequest, actor: Actor): Promise<{ status: string | null } | null> {
+    if (request.fulfillmentMethod !== FulfillmentMethod.PICKUP || !eligibleRequestType(request.requestType)) return null;
     await manager.insert(WarehouseAllocation, { partRequestId: request.id, technicianId: request.technicianId,
       warehouseId: null, responsibleUserId: null, status: 'manual_assistance' });
-    await this.reserve(manager, request, actor, `auto:${request.id}`, true);
+    return this.reserve(manager, request, actor, `auto:${request.id}`, true);
   }
 
   async reserve(manager: EntityManager, request: PartRequest, actor: Actor, key: string, automatic = false) {

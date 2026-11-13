@@ -39,6 +39,28 @@ function fixture(fresh = true) {
   };
 }
 describe('W3 physical JWT preview only', () => {
+  it('projects the paid W3 stage and actual fee from events and fee terms (W-16)', async () => {
+    const f = fixture();
+    f.manager.findOne.mockResolvedValue({ resultVersion: 4, feeTermsVersion: 5, snapshot: { status: 'TECHNICIAN_RECEIVED', reason: null, evidence: [] } } as never);
+    (f.manager.query as any).mockImplementation(async (sql: string) =>
+      sql.includes('delivery_fee_terms')
+        ? [{ actual: { totalShippingFee: 35000, customerShippingShare: 24500, technicianShippingShare: 10500 } }]
+        : [{ part_request_id: owner.requestId }],
+    );
+    const result = await f.service.preview(owner.requestId, { id: randomUUID(), role: Role.CUSTOMER });
+    expect(result.progress).toEqual({ status: 'TECHNICIAN_RECEIVED', actualShippingFee: 35000, customerShippingShare: 24500, technicianShippingShare: 10500 });
+  });
+  it('projects the zero-fee path once a physical step is recorded', async () => {
+    const f = fixture();
+    f.manager.findOne.mockResolvedValue({ resultVersion: 3, feeTermsVersion: null, snapshot: { status: 'TECHNICIAN_RECEIVED', reason: null, evidence: [] } } as never);
+    const result = await f.service.preview(owner.requestId, { id: randomUUID(), role: Role.CUSTOMER });
+    expect(result.progress).toEqual({ status: 'TECHNICIAN_RECEIVED', actualShippingFee: 0, customerShippingShare: 0, technicianShippingShare: 0 });
+  });
+  it('has no paid progress for the zero-fee or legacy path', async () => {
+    const f = fixture();
+    const result = await f.service.preview(owner.requestId, { id: randomUUID(), role: Role.CUSTOMER });
+    expect(result.progress).toBeNull();
+  });
   it('authorizes through existing owner facts before reading physical tables', async () => {
     const f = fixture();
     const actor = { id: randomUUID(), role: Role.TECHNICIAN };

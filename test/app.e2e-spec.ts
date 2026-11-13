@@ -651,6 +651,58 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
         .set('Authorization', bearer(admin))
         .expect(400);
   });
+  it('admin user search ignores Vietnamese marks and treats % literally', async () => {
+    const before = await http().get('/api/v1/users/me').set('Authorization', bearer(technician)).expect(200);
+    await http()
+      .patch('/api/v1/users/me')
+      .set('Authorization', bearer(technician))
+      .send({ fullName: 'Nguyễn Thị Kiểm Thử Dấu' })
+      .expect(200);
+    try {
+      for (const term of ['nguyen thi kiem thu dau', 'NGUYỄN THỊ KIỂM', 'kiểm thử dấu']) {
+        const found = await http()
+          .get(`/api/v1/admin/users?search=${encodeURIComponent(term)}&limit=10`)
+          .set('Authorization', bearer(admin))
+          .expect(200);
+        expect(found.body.data.map((u: { id: string }) => u.id)).toContain(technician.user.id);
+      }
+      const literal = await http()
+        .get(`/api/v1/admin/users?search=${encodeURIComponent('%')}&limit=10`)
+        .set('Authorization', bearer(admin))
+        .expect(200);
+      expect(literal.body.meta.total).toBe(0);
+    } finally {
+      await http()
+        .patch('/api/v1/users/me')
+        .set('Authorization', bearer(technician))
+        .send({ fullName: before.body.data.fullName })
+        .expect(200);
+    }
+  });
+  it('activity counts take the same multi-device opt-in as the booking list (M-4)', async () => {
+    for (const flag of ['', '?excludeVisitGroups=true', '?excludeVisitGroups=false']) {
+      const res = await http().get(`/api/v1/bookings/my/activity-counts${flag}`).set('Authorization', bearer(customer)).expect(200);
+      expect(res.body.data.repair).toMatchObject({ all: expect.any(Number) });
+      expect(res.body.data.request).toMatchObject({ all: expect.any(Number) });
+    }
+    await http().get('/api/v1/bookings/my/activity-counts?excludeVisitGroups=yes').set('Authorization', bearer(customer)).expect(400);
+  });
+  it('private note: only a technician of the order, 2.000 characters at most (TECH 42)', async () => {
+    const order = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b';
+    await http().get(`/api/v1/service-orders/${order}/my-note`).set('Authorization', bearer(technician)).expect(404);
+    await http().put(`/api/v1/service-orders/${order}/my-note`).set('Authorization', bearer(technician)).send({ note: 'ghi chú' }).expect(404);
+    await http().get(`/api/v1/service-orders/${order}/my-note`).set('Authorization', bearer(customer)).expect(403);
+    await http().put(`/api/v1/service-orders/${order}/my-note`).set('Authorization', bearer(technician)).send({ note: 'x'.repeat(2001) }).expect(400);
+  });
+  it('admin lists and edits service price tiers; others are refused (ADMIN 47)', async () => {
+    const category = await createCategory();
+    const service = await createService(category.id);
+    const listed = await http().get(`/api/v1/admin/services/${service.id}/price-variants`).set('Authorization', bearer(admin)).expect(200);
+    expect(Array.isArray(listed.body.data)).toBe(true);
+    await http().get(`/api/v1/admin/services/${service.id}/price-variants`).set('Authorization', bearer(technician)).expect(403);
+    await http().patch(`/api/v1/admin/services/${service.id}/price-variants/6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b`).set('Authorization', bearer(admin)).send({ isActive: false }).expect(404);
+    await http().patch(`/api/v1/admin/services/${service.id}/price-variants/6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b`).set('Authorization', bearer(admin)).send({ fixedLaborPriceVnd: -1 }).expect(400);
+  });
   it('catalog uses active category AND service, including direct IDs and bypass query flags', async () => {
     const category = await createCategory();
     const service = await createService(category.id);

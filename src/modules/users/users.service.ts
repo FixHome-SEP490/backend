@@ -20,6 +20,7 @@ import { CustomerVerification } from '../customer-verifications/entities/custome
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
+import { andWhereTextMatches } from '../../shared/utils/list-search';
 
 @Injectable()
 export class UsersService {
@@ -110,13 +111,8 @@ export class UsersService {
       queryBuilder.andWhere('user.status = :status', { status: query.status });
     }
 
-    if (query.search) {
-      const searchTerm = `%${query.search.trim()}%`;
-      queryBuilder.andWhere(
-        '(user.email ILIKE :search OR user.fullName ILIKE :search OR user.phoneNumber ILIKE :search)',
-        { search: searchTerm },
-      );
-    }
+    // "khach hang" finds "Khách hàng"; % and _ typed by the admin are literal.
+    andWhereTextMatches(queryBuilder, ['user.email', 'user.fullName', 'user.phoneNumber'], query.search);
 
     queryBuilder.orderBy('user.createdAt', 'DESC');
     queryBuilder.skip(query.skip).take(query.limit);

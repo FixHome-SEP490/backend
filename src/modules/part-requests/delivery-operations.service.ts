@@ -56,6 +56,8 @@ export type ShippingConsentInput = Identity & {
 export type DeliveryPhysicalInput = Identity & { evidenceId?: string };
 const uuid =
   /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+// Stored rows (users, orders, warehouses) may hold any UUID version: seed accounts are not v4.
+const entityId = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const hash = (value: unknown) =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const explicitDatabaseZero = (value: unknown) => value === 0 || value === '0';
@@ -155,8 +157,8 @@ export class DeliveryOperationsService {
     warehouseId?: string,
   ) {
     if (
-      !uuid.test(id) ||
-      !uuid.test(actor.id) ||
+      !entityId.test(id) ||
+      !entityId.test(actor.id) ||
       ![Role.CUSTOMER, Role.TECHNICIAN, Role.SERVICE_MANAGER].includes(
         actor.role as Role,
       )
@@ -460,6 +462,26 @@ export class DeliveryOperationsService {
         where: { partRequestId: id },
         order: { resultVersion: 'DESC' },
       });
+      // Paid W3 path (13/11): the terms live in delivery_fee_terms, not in the zero-fee consent
+      // store, so this read returned no quote and the web panel offered no physical step for
+      // a paid request. Project the latest terms the same way; the zero-fee state wins if both.
+      const terms = !state ? s.termsHead?.state : null;
+      if (terms?.quote) {
+        const termsInvalidated = !s.termsHead.source_current;
+        return {
+          version: terms.version ?? 0,
+          quote: publicQuote({ quote: terms.quote } as never),
+          invalidated: termsInvalidated,
+          customerConsented: !!terms.customerConsented && !termsInvalidated,
+          technicianConsented: !!terms.technicianConsented && !termsInvalidated,
+          actual: terms.actual
+            ? { totalShippingFee: terms.actual.totalShippingFee, quoteVersion: terms.actual.quoteVersion }
+            : null,
+          physical: physical?.snapshot ?? null,
+          financialExecution: 'BLOCKED',
+          financialBlocker: 'FINANCE_LEDGER_SOURCE_REQUIRED',
+        };
+      }
       return {
         version: state?.version ?? 0,
         quote: publicQuote(state),
@@ -489,7 +511,7 @@ export class DeliveryOperationsService {
   ) {
     if (
       (terms && !['QUOTE', 'ACTUAL'].includes(purpose)) ||
-      !uuid.test(warehouseId) ||
+      !entityId.test(warehouseId) ||
       ![
         'QUOTE',
         'ACTUAL',
@@ -781,7 +803,7 @@ export class DeliveryOperationsService {
     ]);
     this.identity(body);
     if (
-      !uuid.test(body.warehouseId) ||
+      !entityId.test(body.warehouseId) ||
       !uuid.test(body.evidenceId) ||
       typeof body.courierReference !== 'string' ||
       !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(body.courierReference) ||
