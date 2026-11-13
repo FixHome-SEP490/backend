@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-13 11:11 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/voucher-per-customer
+> Cập nhật lần cuối: 2026-11-13 15:19 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/stop-replace-close-rebook
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -537,6 +537,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-13 15:19 (UTC+7) | ToanAltF4 | fix/stop-replace-close-rebook | GET /service-orders/:id/part-requests có w3DeliveryStage (trang thợ/khách biết phiếu W3 đã giao)
+- 2026-11-13 15:16 (UTC+7) | ToanAltF4 | fix/stop-replace-close-rebook | BUG 148: SM kết thúc đơn để khách đặt lại được cả khi báo giá đã duyệt (đơn về 0đ, không hoá đơn); vẫn chặn khi có hoá đơn/thanh toán/voucher/linh kiện
 - 2026-11-13 11:11 (UTC+7) | ToanAltF4 | fix/voucher-per-customer | BUG 62: voucher_campaigns.per_customer_limit (1-100, mặc định 1), khách lưu lại mã sau khi đã dùng tới hết số lần; bỏ unique index một-lần (kiểm trong service dưới khoá chiến dịch). Preview W3 có tiến trình cho đường 0đ
 - 2026-11-13 01:26 (UTC+7) | ToanAltF4 | fix/private-note-deploy | Deploy DEV: thêm bước technician-private-note-dev-release cho migration 1794480000000 (TECH 42)
 - 2026-11-13 00:34 (UTC+7) | ToanAltF4 | feat/admin-price-variants-1211 | ADMIN 47 API biến thể giá dịch vụ (GET/PATCH /admin/services/:id/price-variants, audit). TECH 42 ghi chú riêng của thợ: cột technician_assignments.private_note (migration 1794480000000), GET/PUT /service-orders/:id/my-note
@@ -575,5 +577,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-06 17:00 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-governance-20261106 | Sửa P2 release gate bỏ lọt sequence ACL; PG RED 12/GREEN 28, typecheck/lint/build PASS; không mở W3 tiền.
 - 2026-11-06 16:49 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-governance-20261106 | C prequote/config version 0011 và simulation owner 1–5; full unit 4031, full E2E 237, final focused 124/PG gate 16/W3 E2E 77 PASS; mọi money execution BLOCKED.
 - 2026-11-06 13:28 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-positive-20261106 | Chốt conditional terms/0010 và review ACL; focused 287, PostgreSQL gate 14, E2E 70 PASS, tiền BLOCKED; không push/deploy.
-- 2026-11-06 12:41 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-aggregate-20261106 | Hợp nhất Admin lifecycle và Finance aggregate vào PR #200, bảo toàn policy 0009 cùng hai mục 20–21, kiểm lại tài liệu tích hợp.
-- 2026-11-06 10:44 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-aggregate-20261106 | Thêm kiểm ngân sách phần thợ tổng hợp theo toàn bộ DELIVERY source immutable, per-shipment rounding và guard không thiếu sibling; Finance vẫn BLOCKED, 47 focused/3973 full PASS, chưa chi tiền hay áp DB.

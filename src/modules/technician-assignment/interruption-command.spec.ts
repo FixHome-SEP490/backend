@@ -87,10 +87,16 @@ describe('manager interruption transaction', () => {
     expect(h.supportCase.status).toBe(SupportCaseStatus.OPEN);
   });
 
-  it('blocks an approved quote before closing a group child', async () => {
+  it('closes for a new booking after the customer approved the quote, at 0 đ (BUG 148, PO 13/11/2026)', async () => {
     const h = setup({ approvedQuote: true });
-    await expect((h.service as any).resolveInterruption('case-1', command, actor)).rejects.toThrow(/báo giá/);
-    expect(h.manager.update).not.toHaveBeenCalled();
+    await (h.service as any).resolveInterruption('case-1', command, actor);
+    expect(h.manager.update).toHaveBeenCalledWith(expect.anything(), expect.anything(),
+      expect.objectContaining({ status: 'cancelled', laborTotal: 0, partsTotal: 0, grandTotal: 0 }));
+  });
+
+  it('still blocks closing when an invoice exists', async () => {
+    const h = setup({ approvedQuote: true, invoice: true });
+    await expect((h.service as any).resolveInterruption('case-1', command, actor)).rejects.toThrow();
   });
 
   it('blocks a sent quote from being stranded on a closed child', async () => {

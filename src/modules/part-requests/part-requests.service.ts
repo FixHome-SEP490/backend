@@ -1283,6 +1283,9 @@ export class PartRequestsService {
         relations: ['items'],
         order: { createdAt: 'DESC' },
       });
+      // The order pages (technician, customer) need the W3 stage too: a delivered W3 request stays
+      // 'requested' in storage, and completion reads it as received from its events (13/11).
+      await this.attachW3Delivery(requests);
       return requests.map(request => this.visible(request, actor));
     });
   }
