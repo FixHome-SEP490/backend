@@ -323,6 +323,10 @@ export function registerDev1Cases(context: () => Context) {
       const manager = await context().register();
       await db.query('UPDATE users SET role = $1 WHERE id = $2', ['service_manager', manager.user.id]);
       const third = await accept(f, await f.create());
+      // R-2 (retest 14/11): staff need a 10-character reason, as the SM web asks.
+      const short = await post(`/service-orders/${third.order.id}/cancel`, manager, { reason: '  abc  ' });
+      expect(short.status, JSON.stringify(short.body)).toBe(422);
+      expect(JSON.stringify(short.body)).toContain('10 ký tự');
       await post(`/service-orders/${third.order.id}/cancel`, manager, { reason: 'Khách nhờ huỷ hộ' }).expect(200);
       expect(await points(f.owner.user.id)).toBe(90);
       // The review list shows what each cancellation cost; violations are no longer confirmed by hand (PO 09/10/2026).

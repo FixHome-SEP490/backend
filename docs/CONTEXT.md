@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-13 18:21 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/w3-paid-read
+> Cập nhật lần cuối: 2026-11-15 02:19 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/bugs-153-156
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -537,6 +537,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-15 02:19 (UTC+7) | ToanAltF4 | fix/bugs-153-156 | BUG 153/154/156 + R-2
 - 2026-11-13 18:21 (UTC+7) | ToanAltF4 | fix/w3-paid-read | W3 có phí: GET /part-requests/:id/delivery chiếu điều khoản có phí (quote, đồng ý, phí thực tế) để khối Giao linh kiện trên web thao tác được
 - 2026-11-13 15:19 (UTC+7) | ToanAltF4 | fix/stop-replace-close-rebook | GET /service-orders/:id/part-requests có w3DeliveryStage (trang thợ/khách biết phiếu W3 đã giao)
 - 2026-11-13 15:16 (UTC+7) | ToanAltF4 | fix/stop-replace-close-rebook | BUG 148: SM kết thúc đơn để khách đặt lại được cả khi báo giá đã duyệt (đơn về 0đ, không hoá đơn); vẫn chặn khi có hoá đơn/thanh toán/voucher/linh kiện
@@ -576,4 +577,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-06 18:14 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-readiness-20261106 | Sửa P2 race D bằng transaction locks theo 0011; PG delivery 44/gate 37/context 9 và quality checks PASS; Finance BLOCKED, Lead giữ release.
 - 2026-11-06 18:01 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-readiness-20261106 | Thêm D preparation/diagnostics 0012 và ma trận sáu signoff; unit 4044/E2E 244/PG gate 37 PASS, không writer API hoặc execution tiền.
 - 2026-11-06 17:00 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-governance-20261106 | Sửa P2 release gate bỏ lọt sequence ACL; PG RED 12/GREEN 28, typecheck/lint/build PASS; không mở W3 tiền.
-- 2026-11-06 16:49 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-governance-20261106 | C prequote/config version 0011 và simulation owner 1–5; full unit 4031, full E2E 237, final focused 124/PG gate 16/W3 E2E 77 PASS; mọi money execution BLOCKED.
