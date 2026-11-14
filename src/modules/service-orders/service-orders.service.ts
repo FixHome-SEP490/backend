@@ -935,6 +935,8 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
 
   async cancel(orderId: string, body: { reason: string }, actor: { id: string; role: string }): Promise<ServiceOrder> {
     if (!body.reason?.trim()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Cancellation reason required');
+    // R-2 (retest 14/11): the SM web asks for 10 to 2,000 characters; the API must hold the same floor for staff.
+    if ([Role.SERVICE_MANAGER, Role.ADMIN].includes(actor.role as Role) && body.reason.trim().length < 10) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Lý do hủy đơn cần ít nhất 10 ký tự.');
     const reference = await authorizeOrder(this.dataSource.manager, orderId, actor);
     return this.dataSource.transaction(async manager => {
       const source = await manager.findOneByOrFail(Booking, { id: reference.bookingId });

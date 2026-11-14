@@ -671,6 +671,12 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
         .set('Authorization', bearer(admin))
         .expect(200);
       expect(literal.body.meta.total).toBe(0);
+      // BUG DETECTOR 153: a NUL byte used to reach Postgres and fail with 500.
+      const nul = await http()
+        .get(`/api/v1/admin/users?search=${encodeURIComponent('\u0000kiểm thử dấu')}&limit=10`)
+        .set('Authorization', bearer(admin))
+        .expect(200);
+      expect(nul.body.data.map((u: { id: string }) => u.id)).toContain(technician.user.id);
     } finally {
       await http()
         .patch('/api/v1/users/me')

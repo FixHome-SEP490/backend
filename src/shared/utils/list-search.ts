@@ -11,7 +11,9 @@ export function andWhereTextMatches<T extends ObjectLiteral>(
   columns: string[],
   search: string | undefined,
 ): void {
-  const folded = foldVietnamese(search?.trim() ?? '');
+  // BUG DETECTOR 153: Postgres rejects NUL bytes in text parameters, so drop control characters first.
+  // eslint-disable-next-line no-control-regex
+  const folded = foldVietnamese((search ?? '').replace(/[\u0000-\u001F\u007F]/g, '').trim());
   if (!folded || !columns.length) return;
   const clauses = columns.map((column) => `translate(lower(COALESCE(${column}, '')), :vnFrom, :vnTo) LIKE :folded ESCAPE '\\'`);
   const escaped = folded.replace(/[\\%_]/g, (ch) => '\\' + ch);

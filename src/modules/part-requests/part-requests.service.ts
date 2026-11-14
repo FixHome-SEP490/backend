@@ -1196,6 +1196,15 @@ export class PartRequestsService {
         if (['handed_over','received'].includes(allocation.status)) throw new BusinessException(ErrorCodes.CONFLICT, 'Linh kiện đã xuất vật lý; không thể tự đảo tồn kho bằng hủy yêu cầu.');
       }
 
+      // BUG DETECTOR 156: W3 delivery keeps the request REQUESTED while the parcel moves, so check its events.
+      // Once the warehouse hands the parts to the courier the DB trigger rejects the cancel; answer 409 instead of 500.
+      const [w3] = request ? await manager.query(
+        `SELECT EXISTS(SELECT 1 FROM warehouse_delivery_events e WHERE e.part_request_id = c.part_request_id
+           AND e.kind IN ('ISSUE_TO_COURIER','COURIER_DISPATCH','TECHNICIAN_RECEIPT')) AS moved
+         FROM warehouse_delivery_cohorts c WHERE c.part_request_id = $1`, [requestId]) : [];
+      if (w3 && (w3.moved || request.receivedAt)) throw new BusinessException(ErrorCodes.CONFLICT,
+        'Linh kiện đã được giao cho đơn vị vận chuyển hoặc kỹ thuật viên đã nhận; không thể hủy yêu cầu này.');
+
       if (!request) {
         throw new BusinessException(
           ErrorCodes.NOT_FOUND,
@@ -1225,7 +1234,7 @@ export class PartRequestsService {
       ) {
         throw new BusinessException(
           ErrorCodes.ORDER_INVALID_TRANSITION,
-          `Cannot cancel request in ${request.status} status`,
+          'Không thể hủy yêu cầu linh kiện ở trạng thái hiện tại.',
         );
       }
 
@@ -1243,6 +1252,14 @@ export class PartRequestsService {
           throw new BusinessException(ErrorCodes.CONFLICT,
             'Không thể hủy yêu cầu linh kiện đang cấp cho báo giá đã duyệt. Vui lòng tiếp tục nhận linh kiện; nếu cần hủy đơn sửa chữa, hãy liên hệ quản lý dịch vụ.');
         }
+      }
+
+      // BUG DETECTOR 154: an approved additional cost already charges the customer for these parts.
+      // Cancelling the request would leave the charge in the order total, so block it like an approved quotation.
+      if (request.requestType === PartRequestType.ADDITIONAL && request.additionalCostId) {
+        const approvedCost = await manager.findOne(AdditionalCostRequest, { where: { id: request.additionalCostId, status: AdditionalCostStatus.APPROVED } });
+        if (approvedCost) throw new BusinessException(ErrorCodes.CONFLICT,
+          'Không thể hủy yêu cầu linh kiện của chi phí phát sinh khách đã duyệt. Vui lòng tiếp tục nhận linh kiện; nếu cần điều chỉnh, hãy liên hệ quản lý dịch vụ.');
       }
 
       const previous = request.status;
