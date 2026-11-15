@@ -46,3 +46,17 @@ describe('list search (PO 12/10/2026: tables page on the server, so search must 
     expect((await validate(plainToInstance(BookingListQueryDto, { overdue: 'maybe' }))).map((e) => e.property)).toContain('overdue');
   });
 });
+
+describe('list search control characters (BUG DETECTOR 153)', () => {
+  it('drops NUL and other control characters before they reach Postgres', () => {
+    const qb = { andWhere: vi.fn() };
+    andWhereTextMatches(qb as never, ['o.code'], '\u0000x\u001F\u007Fy');
+    expect(qb.andWhere.mock.calls[0][1].folded).toBe('%xy%');
+  });
+
+  it('adds nothing when only control characters were typed', () => {
+    const qb = { andWhere: vi.fn() };
+    andWhereTextMatches(qb as never, ['o.code'], '\u0000\u0001');
+    expect(qb.andWhere).not.toHaveBeenCalled();
+  });
+});
