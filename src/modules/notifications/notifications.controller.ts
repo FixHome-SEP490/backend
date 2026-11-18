@@ -19,13 +19,20 @@ import { Role } from '../../shared/enums';
 import { PaginationMeta } from '../../shared/dto/api-response.dto';
 import { NotificationsService } from './notifications.service';
 import { CreateNotificationDto } from './dto/create-notification.dto';
+import { BroadcastNotificationDto } from './dto/broadcast-notification.dto';
+import { CurrentUser } from '../../common/decorators';
+import { User } from '../users/entities/user.entity';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 @ApiTags('Notifications')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
 @Controller('notifications')
 export class NotificationsController {
-  constructor(private readonly notificationsService: NotificationsService) {}
+  constructor(
+    private readonly notificationsService: NotificationsService,
+    private readonly auditLogService: AuditLogService,
+  ) {}
 
   @Get()
   @ApiOperation({ summary: 'Get user notifications' })
@@ -67,6 +74,23 @@ export class NotificationsController {
     @Body() body: CreateNotificationDto,
   ) {
     return this.notificationsService.createNotification(body);
+  }
+
+  @Post('broadcast')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Admin: send one notification to every active user of an audience' })
+  async broadcast(@Body() body: BroadcastNotificationDto, @CurrentUser() user: User) {
+    const audience = body.audience ?? 'all';
+    const result = await this.notificationsService.broadcast({ title: body.title, message: body.message, audience });
+    await this.auditLogService.log({
+      actorUserId: user.id,
+      actorRole: user.role,
+      action: 'NOTIFICATION_BROADCAST',
+      resourceType: 'NOTIFICATION',
+      after: { audience, title: body.title, recipients: result.recipients },
+    });
+    return result;
   }
 
   @Patch(':id/read')
