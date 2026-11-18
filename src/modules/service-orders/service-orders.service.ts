@@ -70,7 +70,7 @@ import {
   SupportCaseType,
   AccountStatus,
 } from '../../shared/enums';
-import { orderStageSql, type RepairStage } from '../../shared/utils/customer-activity-stage';
+import { ACTIVE_RANK_ALIAS, orderActiveRankSql, orderStageSql, type RepairStage } from '../../shared/utils/customer-activity-stage';
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { FinanceService, FinanceActor } from '../finance/finance.service';
@@ -482,7 +482,10 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
 
     filterOrderList(qb, options);
 
-    qb.orderBy('o.createdAt', 'DESC')
+    // A customer sees the orders being worked on first, then done or cancelled; newest first in each.
+    if (role === Role.CUSTOMER) qb.addSelect(orderActiveRankSql('o'), ACTIVE_RANK_ALIAS).orderBy(ACTIVE_RANK_ALIAS, 'ASC').addOrderBy('o.createdAt', 'DESC');
+    else qb.orderBy('o.createdAt', 'DESC');
+    qb.addOrderBy('o.id', 'DESC')
       .skip((page - 1) * limit)
       .take(limit);
 

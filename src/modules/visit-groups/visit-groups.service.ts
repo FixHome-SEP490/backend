@@ -1,9 +1,9 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, In, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Not, Repository } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
-import { BookingStatus, Role, SupportCaseType } from '../../shared/enums';
+import { BookingStatus, Role, SupportCaseType, ServiceOrderStatus } from '../../shared/enums';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { BookingsService } from '../bookings/bookings.service';
 import { InvitationsService } from '../bookings/invitations.service';
@@ -21,6 +21,7 @@ import { InvitationStatus } from '../../shared/enums';
 import { VisitGroup } from './entities/visit-group.entity';
 import { VisitGroupItem } from './entities/visit-group-item.entity';
 import { CreateVisitGroupDto, VISIT_GROUP_DEVICE_LIMIT, VisitGroupConsultationDto } from './visit-group.dto';
+import { ACTIVE_RANK_ALIAS, visitActiveRankSql } from '../../shared/utils/customer-activity-stage';
 import { deriveVisitGroupStatus, visitGroupStatusSql, type VisitGroupReadItemStatus, type VisitGroupReadStatus, type VisitGroupTechnicianTab } from './visit-group-read';
 
 type Customer = { id: string; role: string };
@@ -226,7 +227,9 @@ export class VisitGroupsService {
       )`, { groupQuery: `%${options.q.trim()}%` });
     }
 
-    qb.orderBy('vg.createdAt', 'DESC').addOrderBy('vg.id', 'DESC').skip((page - 1) * pageSize).take(pageSize);
+    // Visits still waiting or being worked on first, then finished ones; newest first in each.
+    qb.addSelect(visitActiveRankSql(visitGroupStatusSql('vg')), ACTIVE_RANK_ALIAS)
+      .orderBy(ACTIVE_RANK_ALIAS, 'ASC').addOrderBy('vg.createdAt', 'DESC').addOrderBy('vg.id', 'DESC').skip((page - 1) * pageSize).take(pageSize);
     const [groups, total] = await qb.getManyAndCount();
     return this.presentReadPage(groups, total, page, pageSize);
   }
@@ -414,9 +417,14 @@ export class VisitGroupsService {
     return this.invitations.extendPendingInvitationGroup(await this.leadBookingId(groupId, customer), customer);
   }
 
+  /**
+   * Whether a technician still holds a device of the visit. A cancelled order does not count:
+   * once the technician dropped it the visit is waiting again and is cancelled like one that
+   * was never accepted (BUG 178, a closed visit could not be cancelled at all).
+   */
   private async hasOrders(groupId: string): Promise<boolean> {
     const rows: Array<{ n: number }> = await this.dataSource.query(
-      'SELECT COUNT(*)::int AS n FROM service_orders o JOIN bookings b ON b.id = o.booking_id WHERE b.visit_group_id = $1',
+      "SELECT COUNT(*)::int AS n FROM service_orders o JOIN bookings b ON b.id = o.booking_id WHERE b.visit_group_id = $1 AND o.status <> 'cancelled'",
       [groupId],
     );
     return (rows[0]?.n ?? 0) > 0;
@@ -450,7 +458,7 @@ export class VisitGroupsService {
       if (group.status === 'cancelled') return;
       const children = await manager.find(Booking, { where: { visitGroupId: groupId }, order: { id: 'ASC' }, lock: { mode: 'pessimistic_write' } });
       const ids = children.map((child) => child.id);
-      if (ids.length && await manager.count(ServiceOrder, { where: { bookingId: In(ids) } })) {
+      if (ids.length && await manager.count(ServiceOrder, { where: { bookingId: In(ids), status: Not(ServiceOrderStatus.CANCELLED) } })) {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Thợ đã nhận lượt sửa này, vui lòng huỷ từ đơn sửa chữa.');
       }
       if (children.some((child) => ![BookingStatus.SUBMITTED, BookingStatus.MATCHING, BookingStatus.CLOSED, BookingStatus.CANCELLED].includes(child.status))) {

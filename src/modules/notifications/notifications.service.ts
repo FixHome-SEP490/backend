@@ -106,4 +106,34 @@ export class NotificationsService {
     );
     return { recipients: rows.length };
   }
+
+  /**
+   * Broadcasts sent so far, newest first. One broadcast is one INSERT, so its rows share the
+   * type, title and the statement's created_at; that timestamp (as text, full precision) is the
+   * broadcast's key, no extra column or table needed. One grouped query.
+   */
+  async listBroadcasts(limit = 20): Promise<Array<{ key: string; title: string; message: string; sentAt: string; recipients: number; read: number }>> {
+    const rows: Array<{ key: string; title: string; message: string; sent_at: Date; recipients: number; read: number }> = await this.notificationRepo.query(
+      `SELECT created_at::text AS key, title, message, created_at AS sent_at,
+              COUNT(*)::int AS recipients, COUNT(*) FILTER (WHERE is_read)::int AS read
+         FROM notifications
+        WHERE type = 'SYSTEM_BROADCAST'
+        GROUP BY created_at, title, message
+        ORDER BY created_at DESC
+        LIMIT $1`,
+      [limit],
+    );
+    return rows.map((r) => ({ key: r.key, title: r.title, message: r.message, sentAt: new Date(r.sent_at).toISOString(), recipients: r.recipients, read: r.read }));
+  }
+
+  /** Recall one broadcast: its notices disappear for everyone, read or not. One DELETE. */
+  async recallBroadcast(key: string): Promise<{ recalled: number; title: string | null }> {
+    const rows: Array<{ title: string }> = await this.notificationRepo.query(
+      `DELETE FROM notifications
+        WHERE type = 'SYSTEM_BROADCAST' AND created_at::text = $1
+       RETURNING title`,
+      [key],
+    );
+    return { recalled: rows.length, title: rows[0]?.title ?? null };
+  }
 }
