@@ -59,3 +59,40 @@ describe('BUG 176 broadcast notification', () => {
     expect(errors).toEqual([]);
   });
 });
+
+describe('BUG 176 recall a broadcast', () => {
+  const KEY = '2026-11-19 01:10:22.123456+00';
+
+  it('lists broadcasts grouped by their single insert, with read counts', async () => {
+    const query = vi.fn().mockResolvedValue([{ key: KEY, title: 'Bảo trì', message: 'm', sent_at: new Date('2026-11-19T01:10:22Z'), recipients: 7, read: 2 }]);
+    const service = new NotificationsService({ query } as never);
+    const rows = await service.listBroadcasts();
+    expect(query.mock.calls[0][0]).toMatch(/type = 'SYSTEM_BROADCAST'[\s\S]*GROUP BY created_at, title, message/);
+    expect(rows).toEqual([{ key: KEY, title: 'Bảo trì', message: 'm', sentAt: '2026-11-19T01:10:22.000Z', recipients: 7, read: 2 }]);
+  });
+
+  it('deletes only that broadcast, in one query', async () => {
+    const query = vi.fn().mockResolvedValue([{ title: 'Bảo trì' }, { title: 'Bảo trì' }]);
+    const service = new NotificationsService({ query } as never);
+    await expect(service.recallBroadcast(KEY)).resolves.toEqual({ recalled: 2, title: 'Bảo trì' });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0][0]).toMatch(/DELETE FROM notifications[\s\S]*type = 'SYSTEM_BROADCAST' AND created_at::text = \$1/);
+    expect(query.mock.calls[0][1]).toEqual([KEY]);
+  });
+
+  it('is admin only, audits the recall and refuses a bad or unknown key', async () => {
+    expect(Reflect.getMetadata(ROLES_KEY, NotificationsController.prototype.recallBroadcast)).toEqual([Role.ADMIN]);
+    expect(Reflect.getMetadata(ROLES_KEY, NotificationsController.prototype.listBroadcasts)).toEqual([Role.ADMIN]);
+    const recallBroadcast = vi.fn().mockResolvedValueOnce({ recalled: 7, title: 'Bảo trì' }).mockResolvedValueOnce({ recalled: 0, title: null });
+    const log = vi.fn().mockResolvedValue(undefined);
+    const controller = new NotificationsController({ recallBroadcast } as never, { log } as never);
+    const admin = { id: 'admin-1', role: Role.ADMIN } as never;
+    await expect(controller.recallBroadcast(KEY, admin)).resolves.toEqual({ recalled: 7, title: 'Bảo trì' });
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ action: 'NOTIFICATION_BROADCAST_RECALLED' }));
+    await expect(controller.recallBroadcast(KEY, admin)).rejects.toThrow('đã được thu hồi');
+    for (const bad of ["'; DROP TABLE notifications;--", 'abc', '💥', '2026-11-19']) {
+      await expect(controller.recallBroadcast(bad, admin)).rejects.toThrow();
+    }
+    expect(recallBroadcast).toHaveBeenCalledTimes(2);
+  });
+});

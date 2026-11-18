@@ -14,13 +14,18 @@ export function replacementOrderSql(order = 'o'): string {
 const hasReplacementOrder = (booking: string) =>
   `EXISTS (SELECT 1 FROM service_orders ro WHERE ro.booking_id = ${booking}.id AND ${replacementOrderSql('ro')})`;
 
+// A booking that reached an order is that repair order from then on: when the order is cancelled the
+// booking turns cancelled (or closed) too, and it is listed once, as the cancelled repair order.
+const hasOrder = (booking: string) =>
+  `EXISTS (SELECT 1 FROM service_orders bo WHERE bo.booking_id = ${booking}.id)`;
+
 /** Bookings that are requests. A matched booking is a repair order, so it is in no request stage. */
 export function bookingStageSql(stage: RequestStage, booking = 'b'): string {
   switch (stage) {
     case 'cancelled':
-      return `${booking}.status = 'cancelled'`;
+      return `(${booking}.status = 'cancelled' AND NOT ${hasOrder(booking)})`;
     case 'no_technician':
-      return `(${booking}.status <> 'cancelled' AND (${booking}.status = 'closed' OR ${hasReplacementOrder(booking)}))`;
+      return `(${booking}.status <> 'cancelled' AND ((${booking}.status = 'closed' AND NOT ${hasOrder(booking)}) OR ${hasReplacementOrder(booking)}))`;
     case 'sent':
       return `(${booking}.status IN ('submitted', 'matching') AND NOT ${hasReplacementOrder(booking)})`;
   }
@@ -41,3 +46,14 @@ export interface CustomerActivityCounts {
   repair: { all: number; in_progress: number; completed: number; cancelled: number };
   request: { all: number; no_technician: number; sent: number; cancelled: number };
 }
+
+// Customer lists put what is still going on first (PO 19/11/2026): 0 for a request still
+// waiting for a technician or an order being worked on, 1 for done or cancelled. Each
+// group stays newest first; the callers add created_at DESC and id DESC after it.
+export const ACTIVE_RANK_ALIAS = 'active_rank';
+export const orderActiveRankSql = (order = 'o') =>
+  `CASE WHEN ${order}.status IN ('accepted', 'en_route', 'under_repair') THEN 0 ELSE 1 END`;
+export const bookingActiveRankSql = (booking = 'b') =>
+  `CASE WHEN ${booking}.status IN ('submitted', 'matching', 'closed') THEN 0 ELSE 1 END`;
+export const visitActiveRankSql = (statusSql: string) =>
+  `CASE WHEN (${statusSql}) IN ('submitted', 'matching', 'no_technician', 'accepted', 'en_route', 'under_repair') THEN 0 ELSE 1 END`;

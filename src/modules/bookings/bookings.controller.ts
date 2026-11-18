@@ -76,6 +76,7 @@ export class BookingsController {
       search: query.search,
       stage: query.stage,
       excludeVisitGroups: query.excludeVisitGroups,
+      withoutOrder: query.withoutOrder,
     });
     return { data: result.data.map(toBookingResponse), meta: { total: result.total } };
   }
