@@ -85,5 +85,25 @@ export class NotificationsService {
     );
     return this.notificationRepo.save(entities);
   }
-}
 
+  /**
+   * BUG 176: one INSERT ... SELECT writes the notice for every active account of the audience,
+   * so a broadcast costs a single query however many users there are. Admins are left out.
+   */
+  async broadcast(params: {
+    title: string;
+    message: string;
+    audience: 'all' | 'customer' | 'technician' | 'service_manager';
+  }): Promise<{ recipients: number }> {
+    const roles = params.audience === 'all' ? ['customer', 'technician', 'service_manager'] : [params.audience];
+    const rows: Array<{ id: string }> = await this.notificationRepo.query(
+      `INSERT INTO notifications (user_id, title, message, type, is_read)
+       SELECT u.id, $1, $2, 'SYSTEM_BROADCAST', false
+         FROM users u
+        WHERE u.status = 'active' AND u.is_active = true AND u.role::text = ANY($3::text[])
+       RETURNING id`,
+      [params.title, params.message, roles],
+    );
+    return { recipients: rows.length };
+  }
+}
