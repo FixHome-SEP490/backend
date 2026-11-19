@@ -45,7 +45,7 @@ function child(sequence: number, overrides: Record<string, unknown> = {}) {
 function harness(groups: unknown[] = [parent], total = groups.length, rows: unknown[] = []) {
   const calls: Array<{ method: string; args: unknown[] }> = [];
   const qb: Record<string, any> = {};
-  for (const method of ['where', 'andWhere', 'orderBy', 'addOrderBy', 'skip', 'take']) {
+  for (const method of ['where', 'andWhere', 'addSelect', 'orderBy', 'addOrderBy', 'skip', 'take']) {
     qb[method] = vi.fn((...args: unknown[]) => {
       calls.push({ method, args });
       return qb;
@@ -170,6 +170,25 @@ describe('VisitGroupsService parent paging', () => {
 
     expect(h.qb.where).toHaveBeenCalledWith('vg.customerId = :customerId', { customerId: 'customer-a' });
     expect(h.dataSource.query).not.toHaveBeenCalled();
+  });
+
+  it('lists a customer\'s waiting or running visits first, newest first in each group (PO 19/11)', async () => {
+    const h = harness([], 0);
+
+    await h.service.myPage('customer-a', { page: 1, pageSize: 10 });
+
+    const rank = h.qb.addSelect.mock.calls[0] as unknown as [string, string];
+    expect(rank[1]).toBe('active_rank');
+    expect(rank[0]).toContain("IN ('submitted', 'matching', 'no_technician', 'accepted', 'en_route', 'under_repair') THEN 0 ELSE 1 END");
+    expect(h.qb.orderBy).toHaveBeenCalledWith('active_rank', 'ASC');
+    expect(h.qb.addOrderBy.mock.calls).toEqual([['vg.createdAt', 'DESC'], ['vg.id', 'DESC']]);
+  });
+
+  it('keeps the technician visit list newest first without the customer ranking', async () => {
+    const h = harness([], 0);
+    await h.service.assignedPage('tech-a', {});
+    expect(h.qb.addSelect).not.toHaveBeenCalled();
+    expect(h.qb.orderBy).toHaveBeenCalledWith('vg.createdAt', 'DESC');
   });
 
   it('filters by derived status and binds search text before counting and paging parents', async () => {

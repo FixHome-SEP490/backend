@@ -85,5 +85,57 @@ export class NotificationsService {
     );
     return this.notificationRepo.save(entities);
   }
-}
 
+  /**
+   * BUG 176: one INSERT ... SELECT writes the notice for every active account of the audience,
+   * so a broadcast costs a single query however many users there are. Admins are left out.
+   */
+  async broadcast(params: {
+    title: string;
+    message: string;
+    audience: 'all' | 'customer' | 'technician' | 'service_manager';
+  }): Promise<{ recipients: number }> {
+    const roles = params.audience === 'all' ? ['customer', 'technician', 'service_manager'] : [params.audience];
+    const rows: Array<{ id: string }> = await this.notificationRepo.query(
+      `INSERT INTO notifications (user_id, title, message, type, is_read)
+       SELECT u.id, $1, $2, 'SYSTEM_BROADCAST', false
+         FROM users u
+        WHERE u.status = 'active' AND u.is_active = true AND u.role::text = ANY($3::text[])
+       RETURNING id`,
+      [params.title, params.message, roles],
+    );
+    return { recipients: rows.length };
+  }
+
+  /**
+   * Broadcasts sent so far, newest first. One broadcast is one INSERT, so its rows share the
+   * type, title and the statement's created_at; that timestamp (as text, full precision) is the
+   * broadcast's key, no extra column or table needed. One grouped query.
+   */
+  async listBroadcasts(limit = 20): Promise<Array<{ key: string; title: string; message: string; sentAt: string; recipients: number; read: number }>> {
+    const rows: Array<{ key: string; title: string; message: string; sent_at: Date; recipients: number; read: number }> = await this.notificationRepo.query(
+      `SELECT created_at::text AS key, title, message, created_at AS sent_at,
+              COUNT(*)::int AS recipients, COUNT(*) FILTER (WHERE is_read)::int AS read
+         FROM notifications
+        WHERE type = 'SYSTEM_BROADCAST'
+        GROUP BY created_at, title, message
+        ORDER BY created_at DESC
+        LIMIT $1`,
+      [limit],
+    );
+    return rows.map((r) => ({ key: r.key, title: r.title, message: r.message, sentAt: new Date(r.sent_at).toISOString(), recipients: r.recipients, read: r.read }));
+  }
+
+  /** Recall one broadcast: its notices disappear for everyone, read or not. One DELETE. */
+  async recallBroadcast(key: string): Promise<{ recalled: number; title: string | null }> {
+    const result: unknown = await this.notificationRepo.query(
+      `DELETE FROM notifications
+        WHERE type = 'SYSTEM_BROADCAST' AND created_at::text = $1
+       RETURNING title`,
+      [key],
+    );
+    // On PostgreSQL TypeORM answers a DELETE ... RETURNING with [rows, affectedCount].
+    const rows = (Array.isArray(result) && Array.isArray(result[0]) ? result[0] : result) as Array<{ title: string }>;
+    return { recalled: Array.isArray(rows) ? rows.length : 0, title: Array.isArray(rows) ? rows[0]?.title ?? null : null };
+  }
+}

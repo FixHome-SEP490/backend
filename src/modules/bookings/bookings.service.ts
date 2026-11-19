@@ -21,6 +21,8 @@ import { Address } from '../users/entities/address.entity';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import {
+  ACTIVE_RANK_ALIAS,
+  bookingActiveRankSql,
   bookingStageSql,
   orderStageSql,
   type CustomerActivityCounts,
@@ -111,6 +113,7 @@ type BookingListOptions = {
   sort?: 'created' | 'appointment';
   stage?: RequestStage;
   excludeVisitGroups?: boolean;
+  withoutOrder?: boolean;
 };
 
 /**
@@ -125,7 +128,8 @@ function filterBookingList(qb: SelectQueryBuilder<Booking>, options: BookingList
   if (options.overdue === true) qb.andWhere('b.preferred_start_at < now()');
   if (options.overdue === false) qb.andWhere('(b.preferred_start_at IS NULL OR b.preferred_start_at >= now())');
   if (options.sort === 'appointment') qb.orderBy('b.preferredStartAt', 'ASC', 'NULLS LAST').addOrderBy('b.createdAt', 'DESC');
-  else qb.orderBy('b.createdAt', 'DESC');
+  // The id breaks ties (rows made in one request share created_at) so no row repeats or drops between pages.
+  else qb.orderBy('b.createdAt', 'DESC').addOrderBy('b.id', 'DESC');
 }
 
 @Injectable()
@@ -459,6 +463,16 @@ export class BookingsService {
     filterBookingList(qb, options);
     if (options.excludeVisitGroups) {
       qb.andWhere('NOT EXISTS (SELECT 1 FROM visit_group_items vgi WHERE vgi.booking_id = b.id)');
+    }
+    // A cancelled order turns its booking cancelled (or closed) too; that booking is the
+    // cancelled repair order, so the request list leaves it out instead of showing it twice.
+    if (options.withoutOrder) {
+      qb.andWhere('NOT EXISTS (SELECT 1 FROM service_orders wo WHERE wo.booking_id = b.id)');
+    }
+    if (options.sort !== 'appointment') {
+      // Waiting requests first, then the rest; newest first inside each group.
+      qb.addSelect(bookingActiveRankSql('b'), ACTIVE_RANK_ALIAS)
+        .orderBy(ACTIVE_RANK_ALIAS, 'ASC').addOrderBy('b.createdAt', 'DESC').addOrderBy('b.id', 'DESC');
     }
     qb.skip((page - 1) * limit).take(limit);
 

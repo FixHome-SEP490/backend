@@ -37,7 +37,7 @@ describe('NotificationsController pagination envelope', () => {
       total: 45,
     });
     const service = { getMyNotifications } as unknown as NotificationsService;
-    const controller = new NotificationsController(service);
+    const controller = new NotificationsController(service, {} as never);
 
     const controllerResult = await controller.getMyNotifications(
       { user: { id: 'customer-1' } },

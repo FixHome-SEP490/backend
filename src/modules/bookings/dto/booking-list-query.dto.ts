@@ -50,6 +50,12 @@ export class MyBookingListQueryDto extends BookingListQueryDto {
   @Transform(({ value }) => (value === 'true' ? true : value === 'false' ? false : value))
   @IsBoolean()
   excludeVisitGroups?: boolean;
+
+  @ApiPropertyOptional({ description: 'true: only requests that never reached a repair order; a booking whose order was cancelled is listed as that cancelled order instead', default: false })
+  @IsOptional()
+  @Transform(({ value }) => (value === 'true' ? true : value === 'false' ? false : value))
+  @IsBoolean()
+  withoutOrder?: boolean;
 }
 
 /** M-4: the Activity tab counts take the same multi-device opt-in as the list, so numbers match. */

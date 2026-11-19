@@ -39,8 +39,12 @@ export function explainEmptyCandidates(facts: CandidateAvailabilityFacts): Candi
   if (facts.skilledProfiles > 0 && facts.eligibleForLocation === 0 &&
       facts.coverageRejected > 0 &&
       facts.coverageRejected + facts.originUnknown === facts.skilledProfiles) return 'OUTSIDE_COVERAGE';
+  // Time is the only blocker the customer can change. When some located technicians are refused only
+  // for the time (outside working hours, busy, time off) and the others for their own reasons (wallet,
+  // paused, unpaid due), another session can still find someone, so say so (bug 170: an urgent booking
+  // at 23h met technicians whose shifts end at 22:00 plus a few with a low wallet and got no reason).
   if (facts.eligibleForLocation > 0 &&
       facts.eligibilityReasons.length === facts.eligibleForLocation &&
-      facts.eligibilityReasons.every((reason) => TIME_REASONS.has(reason))) return 'TIME_UNAVAILABLE';
+      facts.eligibilityReasons.some((reason) => TIME_REASONS.has(reason))) return 'TIME_UNAVAILABLE';
   return 'UNAVAILABLE';
 }

@@ -27,7 +27,7 @@ function harness(active: boolean) {
   const repo = { find: vi.fn(async () => []), findOneBy: vi.fn(async () => order),
     createQueryBuilder: vi.fn(() => ({
       innerJoin: vi.fn().mockReturnThis(), where: vi.fn().mockReturnThis(), andWhere: vi.fn().mockReturnThis(),
-      orderBy: vi.fn().mockReturnThis(), skip: vi.fn().mockReturnThis(), take: vi.fn().mockReturnThis(),
+      orderBy: vi.fn().mockReturnThis(), addOrderBy: vi.fn().mockReturnThis(), skip: vi.fn().mockReturnThis(), take: vi.fn().mockReturnThis(),
       getManyAndCount: vi.fn(async () => [[order], 1]),
       select: vi.fn().mockReturnThis(), getRawMany: vi.fn(async () => []),
     })),

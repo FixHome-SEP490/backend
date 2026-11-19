@@ -3,6 +3,8 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
+  NotFoundException,
   Param,
   Query,
   Body,
@@ -19,13 +21,20 @@ import { Role } from '../../shared/enums';
 import { PaginationMeta } from '../../shared/dto/api-response.dto';
 import { NotificationsService } from './notifications.service';
 import { CreateNotificationDto } from './dto/create-notification.dto';
+import { BroadcastNotificationDto } from './dto/broadcast-notification.dto';
+import { CurrentUser } from '../../common/decorators';
+import { User } from '../users/entities/user.entity';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 @ApiTags('Notifications')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
 @Controller('notifications')
 export class NotificationsController {
-  constructor(private readonly notificationsService: NotificationsService) {}
+  constructor(
+    private readonly notificationsService: NotificationsService,
+    private readonly auditLogService: AuditLogService,
+  ) {}
 
   @Get()
   @ApiOperation({ summary: 'Get user notifications' })
@@ -67,6 +76,51 @@ export class NotificationsController {
     @Body() body: CreateNotificationDto,
   ) {
     return this.notificationsService.createNotification(body);
+  }
+
+  @Post('broadcast')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Admin: send one notification to every active user of an audience' })
+  async broadcast(@Body() body: BroadcastNotificationDto, @CurrentUser() user: User) {
+    const audience = body.audience ?? 'all';
+    const result = await this.notificationsService.broadcast({ title: body.title, message: body.message, audience });
+    await this.auditLogService.log({
+      actorUserId: user.id,
+      actorRole: user.role,
+      action: 'NOTIFICATION_BROADCAST',
+      resourceType: 'NOTIFICATION',
+      after: { audience, title: body.title, recipients: result.recipients },
+    });
+    return result;
+  }
+
+  @Get('broadcasts')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Admin: broadcasts sent, newest first, with how many were read' })
+  async listBroadcasts() {
+    return this.notificationsService.listBroadcasts();
+  }
+
+  @Delete('broadcasts/:key')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Admin: recall one broadcast for every recipient' })
+  async recallBroadcast(@Param('key') key: string, @CurrentUser() user: User) {
+    if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d{1,6})?[+-]\d{2}(:\d{2})?$/.test(key)) {
+      throw new NotFoundException('Không tìm thấy thông báo này.');
+    }
+    const result = await this.notificationsService.recallBroadcast(key);
+    if (!result.recalled) throw new NotFoundException('Thông báo này đã được thu hồi hoặc không tồn tại.');
+    await this.auditLogService.log({
+      actorUserId: user.id,
+      actorRole: user.role,
+      action: 'NOTIFICATION_BROADCAST_RECALLED',
+      resourceType: 'NOTIFICATION',
+      after: { sentAt: key, title: result.title, recalled: result.recalled },
+    });
+    return result;
   }
 
   @Patch(':id/read')

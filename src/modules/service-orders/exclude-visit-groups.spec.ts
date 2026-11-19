@@ -9,7 +9,7 @@ import { MyOrderListQueryDto } from './dto/order-list-query.dto';
 function harness() {
   const calls: Array<{ method: string; args: unknown[] }> = [];
   const qb: Record<string, any> = {};
-  for (const method of ['where', 'andWhere', 'orWhere', 'leftJoin', 'leftJoinAndSelect', 'innerJoin', 'orderBy', 'addOrderBy', 'skip', 'take']) {
+  for (const method of ['where', 'andWhere', 'orWhere', 'leftJoin', 'leftJoinAndSelect', 'innerJoin', 'addSelect', 'orderBy', 'addOrderBy', 'skip', 'take']) {
     qb[method] = vi.fn((...args: unknown[]) => {
       calls.push({ method, args });
       return qb;
@@ -36,6 +36,19 @@ describe('service order list group exclusion', () => {
     expect(h.calls.findIndex(({ method }) => method === 'andWhere')).toBeLessThan(h.calls.findIndex(({ method }) => method === 'skip'));
     expect(h.qb.skip).toHaveBeenCalledWith(0);
     expect(h.qb.take).toHaveBeenCalledWith(20);
+  });
+
+  it('a customer sees orders being worked on first, newest first in each group; a technician keeps newest first', async () => {
+    const c = harness();
+    await c.service.findMyOrders('customer-1', Role.CUSTOMER, { page: 1, limit: 10 } as never);
+    expect(c.qb.addSelect).toHaveBeenCalledWith("CASE WHEN o.status IN ('accepted', 'en_route', 'under_repair') THEN 0 ELSE 1 END", 'active_rank');
+    expect(c.qb.orderBy).toHaveBeenCalledWith('active_rank', 'ASC');
+    expect(c.qb.addOrderBy.mock.calls).toEqual([['o.createdAt', 'DESC'], ['o.id', 'DESC']]);
+
+    const t = harness();
+    await t.service.findMyOrders('tech-1', Role.TECHNICIAN, { page: 1, limit: 10 } as never);
+    expect(t.qb.addSelect).not.toHaveBeenCalled();
+    expect(t.qb.orderBy).toHaveBeenCalledWith('o.createdAt', 'DESC');
   });
 
   it('filters grouped orders from repair history before its page and count when opted in', async () => {

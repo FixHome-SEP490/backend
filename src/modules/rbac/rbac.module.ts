@@ -8,6 +8,8 @@ import {
   UserScope,
 } from './entities';
 import { RbacService } from './rbac.service';
+import { AdminRbacService } from './admin-rbac.service';
+import { AdminRbacController } from './admin-rbac.controller';
 
 /**
  * D-18: Global RBAC module.
@@ -20,7 +22,8 @@ import { RbacService } from './rbac.service';
   imports: [
     TypeOrmModule.forFeature([RoleEntity, Permission, RolePermission, UserScope]),
   ],
-  providers: [RbacService],
+  controllers: [AdminRbacController],
+  providers: [RbacService, AdminRbacService],
   exports: [RbacService],
 })
 export class RbacModule {}

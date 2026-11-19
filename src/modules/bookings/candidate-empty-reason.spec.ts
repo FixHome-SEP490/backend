@@ -33,10 +33,16 @@ describe('BUG #41 — conservative empty candidate diagnostics', () => {
       eligibilityReasons: ['Outside working schedule', 'Session already booked'],
     }))).toBe('TIME_UNAVAILABLE'));
 
-  it('does not mislabel money, verification or mixed failures as time', () =>
+  it('names the time when some profiles failed only for time and the rest for their own reasons (bug 170)', () =>
+    expect(explainEmptyCandidates(scenario({
+      coverageRejected: 0, eligibleForLocation: 3,
+      eligibilityReasons: ['Outside working schedule', 'Technician is on another job', 'Minimum wallet balance is required to accept new jobs'],
+    }))).toBe('TIME_UNAVAILABLE'));
+
+  it('does not mislabel money or verification failures as time', () =>
     expect(explainEmptyCandidates(scenario({
       coverageRejected: 0, eligibleForLocation: 2,
-      eligibilityReasons: ['Outside working schedule', 'Minimum wallet balance is required to accept new jobs'],
+      eligibilityReasons: ['Minimum wallet balance is required to accept new jobs', 'Active unpaid PlatformDue'],
     }))).toBe('UNAVAILABLE'));
 
   it('does not disclose any reason when there is at least one eligible candidate', () =>
