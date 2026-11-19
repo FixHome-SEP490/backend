@@ -39,4 +39,26 @@ describe('#33 matching sweep', () => {
     expect(String(query.mock.calls[1][0])).toContain('auto_accept_invitations');
     expect(query.mock.calls[1][1]).toEqual([BookingStatus.MATCHING, InvitationStatus.PENDING]);
   });
+
+  it("closes a request no technician was ever sent once its window is over, and tells the customer", async () => {
+    const query = vi.fn(async (_sql: string, _params: unknown[]): Promise<Array<{ id: string }>> => [])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: "b-1" }, { id: "b-2" }]);
+    const log = vi.fn();
+    const service = Object.assign(Object.create(InvitationsService.prototype), {
+      dataSource: { query },
+      logger: { warn: vi.fn(), log },
+    }) as InvitationsService;
+
+    await service.sweepMatching();
+
+    expect(query).toHaveBeenCalledTimes(3);
+    const [sql, params] = query.mock.calls[2];
+    expect(sql).toContain("COALESCE(b.preferred_end_at, b.created_at + interval '1 day') < now()");
+    expect(sql).toContain("INSERT INTO notifications");
+    expect(sql).toContain("BOOKING_CLOSED");
+    expect(params).toEqual([BookingStatus.SUBMITTED, BookingStatus.CLOSED, InvitationStatus.PENDING, InvitationStatus.STANDBY]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("closed 2"));
+  });
 });
