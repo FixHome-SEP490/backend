@@ -128,12 +128,14 @@ export class NotificationsService {
 
   /** Recall one broadcast: its notices disappear for everyone, read or not. One DELETE. */
   async recallBroadcast(key: string): Promise<{ recalled: number; title: string | null }> {
-    const rows: Array<{ title: string }> = await this.notificationRepo.query(
+    const result: unknown = await this.notificationRepo.query(
       `DELETE FROM notifications
         WHERE type = 'SYSTEM_BROADCAST' AND created_at::text = $1
        RETURNING title`,
       [key],
     );
-    return { recalled: rows.length, title: rows[0]?.title ?? null };
+    // On PostgreSQL TypeORM answers a DELETE ... RETURNING with [rows, affectedCount].
+    const rows = (Array.isArray(result) && Array.isArray(result[0]) ? result[0] : result) as Array<{ title: string }>;
+    return { recalled: Array.isArray(rows) ? rows.length : 0, title: Array.isArray(rows) ? rows[0]?.title ?? null : null };
   }
 }

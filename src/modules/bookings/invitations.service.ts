@@ -89,6 +89,36 @@ export class InvitationsService implements OnModuleInit, OnModuleDestroy {
       [BookingStatus.MATCHING, InvitationStatus.PENDING],
     );
     for (const { bookingId } of waiting) await this.autoAcceptPending(bookingId);
+    await this.closeUnsentPastWindow();
+  }
+
+  /**
+   * A request no technician was ever sent (no one was found, the customer left) used to hang in
+   * "Chờ kỹ thuật viên" until the customer cancelled it by hand. Once its time window is over
+   * (or a day has passed when it has none) it is closed and the customer told, in one statement.
+   */
+  async closeUnsentPastWindow(): Promise<number> {
+    const rows: Array<{ id: string }> = await this.dataSource.query(
+      `WITH closed AS (
+         UPDATE bookings b SET status = $2, updated_at = now()
+          WHERE b.status = $1
+            AND COALESCE(b.preferred_end_at, b.created_at + interval '1 day') < now()
+            AND NOT EXISTS (SELECT 1 FROM booking_invitations i WHERE i.booking_id = b.id AND i.status IN ($3, $4))
+          RETURNING b.id, b.customer_id, b.service_name_snapshot, b.visit_group_id
+       ), lead AS (
+         SELECT DISTINCT ON (COALESCE(visit_group_id, id)) * FROM closed ORDER BY COALESCE(visit_group_id, id), id
+       ), told AS (
+         INSERT INTO notifications (user_id, title, message, type, is_read, reference_id, reference_type)
+         SELECT customer_id, 'Yêu cầu sửa chữa đã tự đóng',
+                'Đã qua khung giờ hẹn mà chưa có kỹ thuật viên nhận' || COALESCE(' yêu cầu ' || service_name_snapshot, '') || '. Bạn có thể đặt lại với khung giờ khác.',
+                'BOOKING_CLOSED', false, id, 'BOOKING'
+           FROM lead
+       )
+       SELECT id FROM closed`,
+      [BookingStatus.SUBMITTED, BookingStatus.CLOSED, InvitationStatus.PENDING, InvitationStatus.STANDBY],
+    );
+    if (rows.length) this.logger.log(`closed ${rows.length} unsent request(s) past their window`);
+    return rows.length;
   }
 
   /**

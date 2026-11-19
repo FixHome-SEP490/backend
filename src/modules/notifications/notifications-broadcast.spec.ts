@@ -71,6 +71,15 @@ describe('BUG 176 recall a broadcast', () => {
     expect(rows).toEqual([{ key: KEY, title: 'Bảo trì', message: 'm', sentAt: '2026-11-19T01:10:22.000Z', recipients: 7, read: 2 }]);
   });
 
+  it('reads the count from the [rows, affected] answer PostgreSQL gives a DELETE', async () => {
+    const rows = Array.from({ length: 7 }, () => ({ title: 'Kiểm tra' }));
+    const query = vi.fn().mockResolvedValue([rows, 7]);
+    const service = new NotificationsService({ query } as never);
+    await expect(service.recallBroadcast(KEY)).resolves.toEqual({ recalled: 7, title: 'Kiểm tra' });
+    query.mockResolvedValue([[], 0]);
+    await expect(service.recallBroadcast(KEY)).resolves.toEqual({ recalled: 0, title: null });
+  });
+
   it('deletes only that broadcast, in one query', async () => {
     const query = vi.fn().mockResolvedValue([{ title: 'Bảo trì' }, { title: 'Bảo trì' }]);
     const service = new NotificationsService({ query } as never);
