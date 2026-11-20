@@ -5,6 +5,7 @@ import { ServiceOrdersService } from './service-orders.service';
 import { ServiceOrder } from './entities/service-order.entity';
 import { TechnicianAssignment } from './entities/technician-assignment.entity';
 import { ArrivalCheckIn } from './entities/arrival-check-in.entity';
+import { CheckinFaceReview } from './entities/checkin-face-review.entity';
 import { RepairEvidence } from './entities/repair-evidence.entity';
 import { Quotation } from '../quotations/entities/quotation.entity';
 import { Booking } from '../bookings/entities/booking.entity';
@@ -21,8 +22,9 @@ function setup() {
   const arrival = { result: CheckInResult.VALID, checkedInAt: new Date('2026-10-01T02:00:00Z') };
   const evidence = [{ type: EvidenceType.CHECKIN_FACE, uploaderId: technician.id }] as RepairEvidence[];
   let approvedQuotation = false;
+  let faceReview: { status: string } | null = null;
   const manager = {
-    findOne: vi.fn(async (entity): Promise<any> => entity === ServiceOrder ? order : null),
+    findOne: vi.fn(async (entity): Promise<any> => entity === ServiceOrder ? order : entity === CheckinFaceReview ? faceReview : null),
     findOneBy: vi.fn(async (entity, where) => {
       if (entity === TechnicianAssignment) return assignment.isActive && (!where.technicianId || where.technicianId === assignment.technicianId) ? assignment : null;
       if (entity === ArrivalCheckIn) return arrival.result === where.result ? arrival : null;
@@ -51,7 +53,7 @@ function setup() {
     auditLogService: { logWithManager: vi.fn() },
     notifyCustomerForOrder: vi.fn(),
   }) as ServiceOrdersService;
-  return { service, manager, storage, order, booking, arrival, assignment, evidence, approveQuotation: () => { approvedQuotation = true; } };
+  return { service, manager, storage, order, booking, arrival, assignment, evidence, approveQuotation: () => { approvedQuotation = true; }, setFaceReview: (status: string | null) => { faceReview = status ? { status } : null; } };
 }
 
 describe('onsite ADDITIONAL evidence', () => {
@@ -167,6 +169,13 @@ describe('BEFORE evidence sequencing', () => {
     const f = setup();
     f.evidence[0].uploaderId = 'previous-tech';
     await expect(f.service.uploadEvidence('order', { type: EvidenceType.BEFORE, deferAutoStart: true }, technician, photo)).rejects.toThrow('check-in');
+    expect(f.storage.upload).not.toHaveBeenCalled();
+  });
+
+  it.each(['pending', 'rejected'])('refuses BEFORE while the check-in face is %s', async status => {
+    const f = setup();
+    f.setFaceReview(status);
+    await expect(f.service.uploadEvidence('order', { type: EvidenceType.BEFORE, deferAutoStart: true }, technician, photo)).rejects.toThrow(/Khuôn mặt check-in/);
     expect(f.storage.upload).not.toHaveBeenCalled();
   });
 

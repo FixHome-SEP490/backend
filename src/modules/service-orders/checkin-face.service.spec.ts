@@ -5,7 +5,7 @@ const ORDER = 'order-1';
 const USER = 'user-1';
 const buf = Buffer.from('x');
 
-function make(opts: { enabled?: boolean; analyze?: any[]; compare?: any[]; doc?: any } = {}) {
+function make(opts: { enabled?: boolean; analyze?: any[]; compare?: any[]; doc?: any; reviewOn?: boolean; retakes?: number } = {}) {
   const analyze = vi.fn();
   for (const a of opts.analyze ?? []) analyze.mockResolvedValueOnce(a);
   const compare = vi.fn();
@@ -13,9 +13,10 @@ function make(opts: { enabled?: boolean; analyze?: any[]; compare?: any[]; doc?:
   const faceMatch = { enabled: opts.enabled ?? true, threshold: 80, analyze, compare } as any;
   const qb: any = { innerJoin: () => qb, where: () => qb, andWhere: () => qb, orderBy: () => qb, getOne: async () => opts.doc ?? null };
   const kyc = { download: vi.fn().mockResolvedValue(buf) } as any;
-  const config = { get: (k: string) => ({ JWT_ACCESS_SECRET: 's3cret', FACE_CHECKIN_ENFORCE: 'true' } as any)[k] } as any;
-  const service = new CheckinFaceService(config, faceMatch, kyc, { createQueryBuilder: () => qb } as any);
-  return { service, analyze, compare, kyc };
+  const config = { get: (k: string) => ({ JWT_ACCESS_SECRET: 's3cret', FACE_CHECKIN_ENFORCE: 'true', ...(opts.reviewOn ? { FACE_CHECKIN_REVIEW_ENABLED: 'true' } : {}) } as any)[k] } as any;
+  const reviews = { retakeCount: vi.fn().mockResolvedValue(opts.retakes ?? 0), recordRetake: vi.fn(), notifyFlagged: vi.fn() };
+  const service = new CheckinFaceService(config, faceMatch, kyc, { createQueryBuilder: () => qb } as any, reviews as any);
+  return { service, analyze, compare, kyc, reviews };
 }
 const face = (yaw: number, pitch = 0, count = 1) => ({ outcome: 'faces', count, yaw, pitch });
 /** A token the service itself issued, forced to a given challenge. */
@@ -66,7 +67,7 @@ describe('CheckinFaceService', () => {
         compare: [{ outcome: 'scored', similarity: 97 }, { outcome: 'scored', similarity: 96.5 }],
         doc: { storageObjectPath: 'kyc/u/face.jpg' },
       });
-      const note = await verify(m, challenge);
+      const { note } = await verify(m, challenge);
       expect(note).toContain('Liveness đạt');
       expect(note).toContain('96.5%');
     }
@@ -75,7 +76,7 @@ describe('CheckinFaceService', () => {
   it('passes looking up or down', async () => {
     for (const [challenge, pitch] of [['look_up', 25], ['look_down', -22]] as const) {
       const m = make({ analyze: [face(0, 3), face(1, pitch)], compare: [{ outcome: 'scored', similarity: 95 }] });
-      await expect(verify(m, challenge)).resolves.toContain('Liveness đạt');
+      await expect(verify(m, challenge)).resolves.toMatchObject({ note: expect.stringContaining('Liveness đạt') });
     }
   });
 
@@ -104,18 +105,65 @@ describe('CheckinFaceService', () => {
       compare: [{ outcome: 'scored', similarity: 95 }, { outcome: 'scored', similarity: 55 }],
       doc: { storageObjectPath: 'kyc/u/face.jpg' },
     });
-    const note = await verify(m, 'turn_left');
+    const { note, review } = await verify(m, 'turn_left');
+    expect(review).toBeUndefined(); // the review rule is off: only a note for admin
     expect(note).toContain('CẦN KIỂM TRA');
     expect(note).toContain('55%');
   });
 
   it('fails open when Rekognition is unreachable', async () => {
     const m = make({ analyze: [{ outcome: 'skipped' }, { outcome: 'skipped' }] });
-    await expect(verify(m, 'turn_left')).resolves.toContain('Chưa kiểm tra được liveness');
+    await expect(verify(m, 'turn_left')).resolves.toMatchObject({ note: expect.stringContaining('Chưa kiểm tra được liveness') });
   });
 
   it('refuses the old single-photo upload only when enforced and enabled', () => {
     expect(make({}).service.enforced).toBe(true);
     expect(make({ enabled: false }).service.enforced).toBe(false);
+  });
+});
+
+describe('CheckinFaceService review rule', () => {
+  const weak = (similarity: number, retakes = 0) => make({
+    reviewOn: true,
+    retakes,
+    analyze: [face(0), face(30)],
+    compare: [{ outcome: 'scored', similarity: 95 }, { outcome: 'scored', similarity }],
+    doc: { storageObjectPath: 'kyc/u/face.jpg' },
+  });
+
+  it('records a pass and asks for nothing at or above the threshold', async () => {
+    const m = weak(85);
+    await expect(verify(m, 'turn_left')).resolves.toMatchObject({ review: { similarity: 85, pending: false } });
+    expect(m.reviews.recordRetake).not.toHaveBeenCalled();
+  });
+
+  it('asks for a retake once when the match is weak but not clearly another person', async () => {
+    const m = weak(70);
+    await expect(verify(m, 'turn_left')).rejects.toThrow(/chụp lại/);
+    expect(m.reviews.recordRetake).toHaveBeenCalledWith(ORDER, USER, 70);
+    expect(m.reviews.notifyFlagged).not.toHaveBeenCalled();
+  });
+
+  it('tells the managers at once when the match is under the alert score', async () => {
+    const m = weak(50);
+    await expect(verify(m, 'turn_left')).rejects.toThrow(/chụp lại/);
+    expect(m.reviews.notifyFlagged).toHaveBeenCalledWith(ORDER, USER, 50);
+  });
+
+  it('holds the face for a manager when it is still weak after the retake', async () => {
+    const m = weak(72, 1);
+    await expect(verify(m, 'turn_left')).resolves.toMatchObject({ review: { similarity: 72, pending: true } });
+    expect(m.reviews.recordRetake).not.toHaveBeenCalled();
+  });
+
+  it('still passes when the registered face cannot be compared, so a service outage locks nobody out', async () => {
+    const m = make({ reviewOn: true, analyze: [face(0), face(30)], compare: [{ outcome: 'scored', similarity: 95 }] });
+    await expect(verify(m, 'turn_left')).resolves.toMatchObject({ review: { similarity: null, pending: false } });
+  });
+
+  it('closes the old single-photo path once the review rule is on', () => {
+    const { service } = make({ reviewOn: true });
+    (service as any).config = { get: (k: string) => ({ FACE_CHECKIN_REVIEW_ENABLED: 'true' } as any)[k] };
+    expect(service.enforced).toBe(true);
   });
 });

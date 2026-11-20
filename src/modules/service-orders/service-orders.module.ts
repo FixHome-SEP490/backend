@@ -4,6 +4,9 @@ import { MediaModule } from '../media/media.module';
 import { FaceMatchModule } from '../face-match/face-match.module';
 import { TechnicianVerificationsModule } from '../technician-verifications/technician-verifications.module';
 import { CheckinFaceService } from './checkin-face.service';
+import { CheckinFaceReviewService } from './checkin-face-review.service';
+import { CheckinFaceReviewsController } from './checkin-face-reviews.controller';
+import { CheckinFaceReview } from './entities/checkin-face-review.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ServiceOrdersController } from './service-orders.controller';
@@ -68,6 +71,7 @@ import { TechnicianPrivateNoteService } from './technician-private-note.service'
       OrderStatusHistory,
       ArrivalCheckIn,
       RepairEvidence,
+      CheckinFaceReview,
       Cancellation,
       CancellationStrike,
       Invoice,
@@ -90,10 +94,12 @@ import { TechnicianPrivateNoteService } from './technician-private-note.service'
     WarrantyClaimsController,
     WarrantyClaimsTechnicianController,
     WarrantyClaimsManagerController,
+    CheckinFaceReviewsController,
   ],
   providers: [
     TechnicianPrivateNoteService,
     CheckinFaceService,
+    CheckinFaceReviewService,
     ServiceOrdersService,
     WarrantyClaimsService,
     WarrantyClaimsTechnicianService,

@@ -18,6 +18,8 @@ import { ServiceOrder } from './entities/service-order.entity';
 import { TechnicianAssignment } from './entities/technician-assignment.entity';
 import { OrderStatusHistory } from './entities/order-status-history.entity';
 import { ArrivalCheckIn } from './entities/arrival-check-in.entity';
+import { CheckinFaceReview } from './entities/checkin-face-review.entity';
+import { assertCheckinFaceCleared, latestCheckinFaceReview, recordCheckinFaceOutcome, type CheckinFaceOutcome, type CheckinFaceReviewView } from './checkin-face-clearance';
 import { RepairEvidence } from './entities/repair-evidence.entity';
 import { Cancellation } from './entities/cancellation.entity';
 import { CancellationStrike } from './entities/cancellation-strike.entity';
@@ -621,6 +623,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       booking, stop, finance, assignment, technician, customer, quotation, history, bookingMedia, departEarlyMinutes,
       customerConfirmed: !!await manager.findOneBy(CustomerServiceConfirmation, { serviceOrderId: order.id }),
       arrivalVerified: !!await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: order.id, technicianId: assignment?.technicianId, result: CheckInResult.VALID }),
+      checkinFaceReview: assignment ? await latestCheckinFaceReview(manager, order.id, assignment.technicianId) : null,
       beforeEvidenceCount: await manager.count(RepairEvidence, { where: { serviceOrderId: order.id, type: EvidenceType.BEFORE } }),
       afterEvidenceCount: await manager.count(RepairEvidence, { where: { serviceOrderId: order.id, type: EvidenceType.AFTER } }),
     });
@@ -682,6 +685,12 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     const confirmed = new Set(confirmations.map(c => c.serviceOrderId));
     const checkInsBy = group(checkIns, c => c.serviceOrderId);
     const evidenceCount = new Map(evidence.map(row => [`${row.orderId}:${row.type}`, Number(row.n)]));
+    // Newest outcome first, so the first row met for an order and technician is the current one.
+    const faceReviewBy = new Map<string, CheckinFaceReviewView>();
+    for (const row of await manager.find(CheckinFaceReview, { where: { serviceOrderId: In(orderIds), status: In(['pending', 'approved', 'rejected']) }, order: { createdAt: 'DESC' } })) {
+      const key = `${row.serviceOrderId}:${row.technicianId}`;
+      if (!faceReviewBy.has(key)) faceReviewBy.set(key, { status: row.status as 'pending' | 'approved' | 'rejected', note: row.reviewNote ?? null });
+    }
     const departEarlyMinutes = bookings.some(b => b.preferredStartAt) ? await this.configService.getInt('order.depart_early_minutes', 60) : 0;
 
     return Promise.all(orders.map(async order => {
@@ -706,6 +715,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         departEarlyMinutes,
         customerConfirmed: confirmed.has(order.id),
         arrivalVerified: assignment ? orderCheckIns.some(c => c.technicianId === assignment.technicianId) : orderCheckIns.length > 0,
+        checkinFaceReview: assignment ? faceReviewBy.get(`${order.id}:${assignment.technicianId}`) ?? null : null,
         beforeEvidenceCount: evidenceCount.get(`${order.id}:${EvidenceType.BEFORE}`) ?? 0,
         afterEvidenceCount: evidenceCount.get(`${order.id}:${EvidenceType.AFTER}`) ?? 0,
       });
@@ -1468,7 +1478,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
   }
 
 
-  async uploadEvidence(orderId: string, body: { type: EvidenceType; note?: string; capturedAt?: string; deferAutoStart?: boolean }, actor: { id: string; role: string }, file?: EvidenceFile): Promise<RepairEvidence> {
+  async uploadEvidence(orderId: string, body: { type: EvidenceType; note?: string; capturedAt?: string; deferAutoStart?: boolean }, actor: { id: string; role: string }, file?: EvidenceFile, faceReview?: CheckinFaceOutcome): Promise<RepairEvidence> {
     this.evidenceStorage.validate(file);
     if (body.deferAutoStart === true && body.type !== EvidenceType.BEFORE) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'deferAutoStart is only supported for BEFORE evidence');
     if (body.capturedAt && new Date(body.capturedAt) > new Date()) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Evidence timestamp cannot be in the future');
@@ -1492,6 +1502,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       if (body.type === EvidenceType.BEFORE && !await manager.findOneBy(RepairEvidence, { serviceOrderId: orderId, uploaderId: actor.id, type: EvidenceType.CHECKIN_FACE })) {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Chụp ảnh khuôn mặt check-in trước khi chụp ảnh máy');
       }
+      if (body.type === EvidenceType.BEFORE) await assertCheckinFaceCleared(manager, orderId, actor.id);
       const count = await manager.count(RepairEvidence, { where: { serviceOrderId: orderId, type: body.type } });
       if (count >= max) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Evidence limit exceeded');
     };
@@ -1510,9 +1521,13 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
         // The check-in face is shown once for a visit; each device still gets its own photos.
         if (body.type === EvidenceType.CHECKIN_FACE) {
           const order = await manager.findOneByOrFail(ServiceOrder, { id: orderId });
+          const targets = [{ orderId, evidenceId: row.id }];
           for (const sibling of await this.visitSiblingOrders(manager, order, actor.id, ServiceOrderStatus.EN_ROUTE)) {
-            await manager.save(RepairEvidence, manager.create(RepairEvidence, { ...evidence, serviceOrderId: sibling.id }));
+            const copy = await manager.save(RepairEvidence, manager.create(RepairEvidence, { ...evidence, serviceOrderId: sibling.id }));
+            targets.push({ orderId: sibling.id, evidenceId: copy.id });
           }
+          // One outcome per order of the visit, written with the evidence so the face never exists without it.
+          if (faceReview) await recordCheckinFaceOutcome(manager, actor.id, faceReview, targets);
         }
         return row;
       });
@@ -1952,6 +1967,7 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     return this.dataSource.transaction(async manager => {
       const order = await authorizeOrder(manager, orderId, actor, 'technician', true);
       if (nextStatus === ServiceOrderStatus.UNDER_REPAIR) {
+        await assertCheckinFaceCleared(manager, orderId, actor.id);
         const booking = await manager.findOneByOrFail(Booking, { id: order.bookingId });
         if (!await manager.findOneBy(ArrivalCheckIn, { serviceOrderId: orderId, technicianId: actor.id, result: CheckInResult.VALID })) throw new BusinessException(ErrorCodes.CHECKIN_OUT_OF_GEOFENCE, 'Valid arrival required');
         const required = await this.configService.getInt('evidence.before.min_count', 1);
@@ -2267,6 +2283,8 @@ interface OrderViewParts {
   departEarlyMinutes: number;
   customerConfirmed: boolean;
   arrivalVerified: boolean;
+  /** The technician's check-in face outcome, when the review rule recorded one; null for older orders. */
+  checkinFaceReview: CheckinFaceReviewView;
   beforeEvidenceCount: number;
   afterEvidenceCount: number;
 }
@@ -2322,6 +2340,7 @@ function orderView(order: ServiceOrder, parts: OrderViewParts): ServiceOrder {
       : null,
     quotation: parts.quotation, customerConfirmed: parts.customerConfirmed,
     arrivalVerified: parts.arrivalVerified,
+    checkinFaceReview: parts.checkinFaceReview,
     beforeEvidenceCount: parts.beforeEvidenceCount,
     afterEvidenceCount: parts.afterEvidenceCount,
     timeline: orderTimeline(order, parts.history),
