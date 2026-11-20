@@ -1,10 +1,14 @@
 import {
   ForbiddenException,
   Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, LessThan, Repository } from 'typeorm';
+import { startBackgroundJob } from '../../common/background-job';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { Role } from '../../shared/enums';
 import { PrivateBookingPhotoUpload } from './entities/private-booking-photo-upload.entity';
@@ -14,6 +18,9 @@ import {
 } from './private-booking-photo-storage.service';
 
 const UPLOAD_TTL_MS = 2 * 60 * 60 * 1000;
+/** An expired upload can no longer be claimed; wait a day anyway before deleting it. */
+const SWEEP_GRACE_MS = 24 * 60 * 60 * 1000;
+const SWEEP_BATCH = 50;
 
 export type PrivateBookingPhotoUploadResponse = {
   uploadId: string;
@@ -22,12 +29,44 @@ export type PrivateBookingPhotoUploadResponse = {
 };
 
 @Injectable()
-export class PrivateBookingPhotoUploadService {
+export class PrivateBookingPhotoUploadService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(PrivateBookingPhotoUploadService.name);
+  private sweepTimer: NodeJS.Timeout | null = null;
+
   constructor(
     @InjectRepository(PrivateBookingPhotoUpload)
     private readonly uploadRepository: Repository<PrivateBookingPhotoUpload>,
     private readonly privateStorage: PrivateBookingPhotoStorage,
   ) {}
+
+  onModuleInit(): void {
+    this.sweepTimer = startBackgroundJob('booking upload sweep', this.logger, async () => { await this.sweepExpiredUploads(); });
+  }
+
+  onModuleDestroy(): void {
+    if (this.sweepTimer) clearInterval(this.sweepTimer);
+  }
+
+  /** Deletes the Cloudinary object and the row of uploads that expired without being attached to a Booking. */
+  async sweepExpiredUploads(now = new Date()): Promise<number> {
+    const stale = await this.uploadRepository.find({
+      where: { claimedBookingId: IsNull(), expiresAt: LessThan(new Date(now.getTime() - SWEEP_GRACE_MS)) },
+      order: { expiresAt: 'ASC' },
+      take: SWEEP_BATCH,
+    });
+    let removed = 0;
+    for (const upload of stale) {
+      try {
+        await this.privateStorage.delete(upload.objectRef, upload.ownerUserId);
+        await this.uploadRepository.delete({ id: upload.id, claimedBookingId: IsNull() });
+        removed += 1;
+      } catch (error) {
+        // Row stays, so the next run retries it.
+        this.logger.warn(`Could not remove expired booking upload ${upload.id}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return removed;
+  }
 
   async upload(
     role: Role,

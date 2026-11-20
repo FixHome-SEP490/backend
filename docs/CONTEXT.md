@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-20 17:29 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
+> Cập nhật lần cuối: 2026-11-20 20:43 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -358,6 +358,7 @@ W3 physical: GET `/part-requests/:id/delivery-physical/preview` chỉ CUSTOMER s
 - Chat (PO 18/10/2026): `POST /conversations/:id/attachments`, `GET /messages/:id/attachment`, `ConversationView.closedReason`, mã lỗi `CONVERSATION_CLOSED` (409). Video booking: `POST /media/booking-video-upload`, `photoUploadIds` tối đa 7 (5 ảnh, 2 video), 422 `VIDEO_TOO_LONG` khi dài hơn 60 giây. Xem video: `GET .../stream` trả link xem 15 phút (mục 3). Xem trước lời mời có thêm `description`, `aiSummary`, `media`, `pricingMode`, `fixedUnitPrice`, `distanceBand`.
 - Đăng nhập Google cho mobile: `GET /auth/google/start?redirect=...` rồi `POST /auth/google/exchange` với mã dùng một lần; redirect phải nằm trong `GOOGLE_ALLOWED_APP_REDIRECTS`.
 - Kiểm tra trùng khi đăng ký: `GET /auth/availability?email=&phoneNumber=` (công khai, giới hạn 30 lượt/phút) trả `{ emailTaken, emailPending, phoneTaken }`; `emailPending` là email chưa xác thực OTP, vẫn đăng ký lại được. Đăng ký lại tài khoản chưa xác thực nay cập nhật `role` và từ chối SĐT của tài khoản khác (409).
+- Dọn ảnh mồ côi (mỗi phút, `startBackgroundJob`): `PrivateBookingPhotoUploadService.sweepExpiredUploads` xóa object Cloudinary rồi dòng `booking_media_uploads` của upload đã hết hạn quá 1 ngày mà chưa gắn Booking (tối đa 50 dòng mỗi lượt, lỗi Cloudinary thì giữ dòng để thử lại); `KycOrphanSweepService` xóa object `kyc/*` trong bucket `SUPABASE_KYC_BUCKET` cũ hơn 24 giờ không có dòng `verification_documents` hay `customer_verification_documents` trỏ tới (đọc `storage.objects` qua kết nối DB, xóa qua Storage API, tối đa 100 object mỗi lượt). Quyền đọc `storage.objects` của user DB backend và chạy thật trên DEV CHƯA KIỂM CHỨNG.
 - Ảnh tải lên qua `POST /media/upload` (multipart); `avatarUrl` gửi lên phải là URL http(s) đã host.
 - Khách rút ví (PO 14/10/2026): KYC khách ở `/customer/verification`, duyệt ở `/admin/customer-verifications`, tài khoản và lệnh rút ở `/customer/wallet/*`; chi tiết ở mục 3. Thông báo mới: `CUSTOMER_KYC_APPROVED`, `CUSTOMER_KYC_REJECTED`; rút của khách dùng chung `WALLET_WITHDRAWAL_PAID`, `WALLET_WITHDRAWAL_FAILED`.
 
@@ -538,6 +539,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-20 20:43 (UTC+7) | Hgnv11 | dev | Thêm tác vụ nền dọn ảnh Cloudinary của upload booking hết hạn và file KYC mồ côi trên Supabase Storage
 - 2026-11-20 17:29 (UTC+7) | Hgnv11 | dev | `GET /auth/availability` kiểm tra trùng email/SĐT lúc đăng ký; đăng ký lại tài khoản chưa xác thực cập nhật vai trò và chặn SĐT trùng
 - 2026-11-15 02:19 (UTC+7) | ToanAltF4 | fix/bugs-153-156 | BUG 153/154/156 + R-2
 - 2026-11-13 18:21 (UTC+7) | ToanAltF4 | fix/w3-paid-read | W3 có phí: GET /part-requests/:id/delivery chiếu điều khoản có phí (quote, đồng ý, phí thực tế) để khối Giao linh kiện trên web thao tác được
@@ -577,4 +579,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-07 00:24 (UTC+7) | foxonworld | foxonworld/fixhome-w3-admin-shipping-zero-cap-20261106 | Sửa P2 PR204 bằng public W3_SHIPPING_CAP_EXCEEDED/409, giữ details private và global filter; thêm real-filter/HTTP regression, tiền BLOCKED.
 - 2026-11-07 00:13 (UTC+7) | foxonworld | foxonworld/fixhome-w3-admin-shipping-zero-cap-20261106 | Thêm Admin W3 shipping cap 0013 mặc định 0, strict audit/locks và chặn quote mới; giữ historical consent, zero physical/W1/W2 và money BLOCKED; contract mục 25.
 - 2026-11-06 18:14 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-readiness-20261106 | Sửa P2 race D bằng transaction locks theo 0011; PG delivery 44/gate 37/context 9 và quality checks PASS; Finance BLOCKED, Lead giữ release.
-- 2026-11-06 18:01 (UTC+7) | foxonworld | foxonworld/fixhome-w3-finance-readiness-20261106 | Thêm D preparation/diagnostics 0012 và ma trận sáu signoff; unit 4044/E2E 244/PG gate 37 PASS, không writer API hoặc execution tiền.
