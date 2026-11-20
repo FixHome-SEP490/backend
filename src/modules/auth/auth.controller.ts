@@ -33,6 +33,8 @@ import {
   GoogleIdTokenDto,
   GoogleHandoffDto,
   GoogleAuthorizeQueryDto,
+  AvailabilityQueryDto,
+  AvailabilityResponseDto,
 } from './dto';
 import { GoogleIdentityService } from './google-identity.service';
 import { GoogleRedirectService } from './google-redirect.service';
@@ -50,6 +52,18 @@ export class AuthController {
     private readonly googleIdentity: GoogleIdentityService,
     private readonly googleRedirect: GoogleRedirectService,
   ) {}
+
+  @Get('availability')
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
+  @ApiOperation({
+    summary: 'Check whether an email / phone can still be used to register',
+  })
+  async availability(
+    @Query() query: AvailabilityQueryDto,
+  ): Promise<AvailabilityResponseDto> {
+    return this.authService.checkAvailability(query);
+  }
 
   @Post('register')
   @UseGuards(ThrottlerGuard)

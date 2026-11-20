@@ -185,6 +185,65 @@ describe('AuthService', () => {
     });
   });
 
+  describe('re-register while pending verification', () => {
+    const pending = () => ({
+      ...mockUser,
+      status: AccountStatus.PENDING_VERIFICATION,
+      isEmailVerified: false,
+    });
+
+    it('rejects a phone number owned by another account', async () => {
+      userRepository.findOne
+        .mockResolvedValueOnce(pending())
+        .mockResolvedValueOnce({ id: 'someone-else' });
+      await expect(
+        authService.register({
+          email: 'customer@fixhome.vn',
+          password: 'Password123!',
+          fullName: 'Nguyen Van A',
+          phoneNumber: '0901234567',
+        }),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('updates the role when the user re-registers with another role', async () => {
+      const user = { ...pending(), role: Role.TECHNICIAN };
+      otpRepository.delete = vi.fn();
+      userRepository.findOne.mockResolvedValueOnce(user);
+      await authService.register({
+        email: 'customer@fixhome.vn',
+        password: 'Password123!',
+        fullName: 'Nguyen Van A',
+        role: Role.CUSTOMER,
+      });
+      expect(user.role).toBe(Role.CUSTOMER);
+    });
+  });
+
+  describe('checkAvailability', () => {
+    it('flags verified email taken, pending email re-usable, other-owned phone taken', async () => {
+      userRepository.findOne
+        .mockResolvedValueOnce({ ...mockUser, status: AccountStatus.ACTIVE });
+      expect(
+        await authService.checkAvailability({ email: 'a@b.vn' }),
+      ).toEqual({ emailTaken: true, emailPending: false, phoneTaken: false });
+
+      userRepository.findOne
+        .mockResolvedValueOnce({
+          ...mockUser,
+          status: AccountStatus.PENDING_VERIFICATION,
+          isEmailVerified: false,
+        })
+        .mockResolvedValueOnce({ id: 'someone-else' });
+      expect(
+        await authService.checkAvailability({
+          email: 'a@b.vn',
+          phoneNumber: '0901234567',
+        }),
+      ).toEqual({ emailTaken: false, emailPending: true, phoneTaken: true });
+    });
+  });
+
   describe('verifyRegisterOtp', () => {
     it('activates account and returns JWT tokens on correct OTP', async () => {
       const pendingUser = {
