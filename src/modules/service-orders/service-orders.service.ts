@@ -1775,6 +1775,16 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
     if (!cancellation) {
       throw new BusinessException(ErrorCodes.NOT_FOUND, 'Cancellation not found');
     }
+    // BRX-034: Priority Boost chỉ dành cho lần khách huỷ sau khi thợ đã check-in (đơn đang UNDER_REPAIR),
+    // và chỉ cấp một lần; thợ tự huỷ hay quản lý huỷ thì không có Boost.
+    if (body.grantPriorityBoost) {
+      if (!isPriorityBoostEligible(cancellation)) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Chỉ cấp Boost khi khách huỷ sau khi thợ đã đến và check-in.');
+      }
+      if (cancellation.reviewedByUserId) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Lượt huỷ này đã được xử lý.');
+      }
+    }
 
     cancellation.reviewedByUserId = actor.id;
 
@@ -2345,4 +2355,9 @@ function orderView(order: ServiceOrder, parts: OrderViewParts): ServiceOrder {
     afterEvidenceCount: parts.afterEvidenceCount,
     timeline: orderTimeline(order, parts.history),
   });
+}
+
+/** BRX-034: Priority Boost chỉ khi khách huỷ sau khi thợ đã đến và check-in (đơn đã sang UNDER_REPAIR). */
+export function isPriorityBoostEligible(cancellation: Pick<Cancellation, 'actor' | 'stateAtCancel'>): boolean {
+  return cancellation.actor === CancelActor.CUSTOMER && cancellation.stateAtCancel === ServiceOrderStatus.UNDER_REPAIR;
 }

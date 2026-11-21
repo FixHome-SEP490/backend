@@ -75,6 +75,22 @@ describe('#28 violations come from reputation points, not a manual confirmation'
     await s.service.reviewCancellation('cancel-1', { waiveStrike: true, waiveReason: 'Khách huỷ vì thợ đến trễ' }, manager);
     expect(strike).toMatchObject({ status: StrikeStatus.WAIVED, waivedByUserId: 'sm-1', waiveReason: 'Khách huỷ vì thợ đến trễ' });
   });
+
+  it('grants Priority Boost only once, for a customer who cancels after the technician checked in (BRX-034)', async () => {
+    for (const [actor, state] of [[CancelActor.TECHNICIAN, 'accepted'], [CancelActor.SERVICE_MANAGER, 'under_repair'], [CancelActor.CUSTOMER, 'en_route']] as const) {
+      const s = setup(actor, 0);
+      Object.assign(s.cancellation, { stateAtCancel: state });
+      await expect(s.service.reviewCancellation('cancel-1', { grantPriorityBoost: true }, manager)).rejects.toThrow('Chỉ cấp Boost');
+    }
+    const s = setup(CancelActor.CUSTOMER, 0);
+    Object.assign(s.cancellation, { stateAtCancel: 'under_repair' });
+    const update = vi.fn(async () => ({}));
+    Object.assign(s.service, { assignmentRepo: { findOne: vi.fn(async () => ({ technicianId: 'tech-1' })) }, techProfileRepo: { update } });
+    await s.service.reviewCancellation('cancel-1', { grantPriorityBoost: true }, manager);
+    expect(update).toHaveBeenCalledWith({ userId: 'tech-1' }, expect.objectContaining({ priorityBoostUntil: expect.any(Date) }));
+    await expect(s.service.reviewCancellation('cancel-1', { grantPriorityBoost: true }, manager)).rejects.toThrow('đã được xử lý');
+    expect(update).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('Honest ratings and the Vietnam month', () => {

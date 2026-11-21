@@ -14,8 +14,10 @@ import {
   Min,
   MinLength,
   ValidateIf,
+  Matches,
 } from 'class-validator';
 import { Trim } from '../../../shared/validation/input.transforms';
+import { IsAddressText, NoUnsafeText } from '../../../shared/validation/text.validators';
 import { ServicePricingMode } from '../../../shared/enums';
 
 export class CreateServiceDto {
@@ -36,6 +38,7 @@ export class CreateServiceDto {
   @Trim()
   @MinLength(1)
   @MaxLength(200)
+  @IsAddressText({ message: 'Tên chỉ gồm chữ, số và dấu thường gặp, không emoji hay thẻ HTML.' })
   name: string;
 
   @ApiProperty({
@@ -47,6 +50,7 @@ export class CreateServiceDto {
   @Trim()
   @MinLength(1)
   @MaxLength(200)
+  @Matches(/^[A-Z0-9_-]{2,50}$/, { message: 'Mã chỉ gồm chữ in hoa không dấu, số, gạch dưới hoặc gạch nối (2 đến 50 ký tự).' })
   code: string;
 
   @ApiPropertyOptional({
@@ -56,6 +60,8 @@ export class CreateServiceDto {
   @IsOptional()
   @IsString()
   @Trim()
+  @Matches(/^[a-z0-9]+(-[a-z0-9]+)*$/, { message: 'Đường dẫn chỉ gồm chữ thường không dấu, số và gạch nối.' })
+  @MaxLength(100)
   slug?: string;
 
   @ApiPropertyOptional({
@@ -63,6 +69,8 @@ export class CreateServiceDto {
   })
   @ValidateIf((_dto, value) => value !== undefined)
   @IsString()
+  @MaxLength(2000)
+  @NoUnsafeText()
   description?: string;
 
   @ApiPropertyOptional({

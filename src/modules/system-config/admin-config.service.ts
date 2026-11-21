@@ -48,7 +48,7 @@ export interface ConfigKeyMeta {
  * Enumerates the allowed range so Admin cannot submit arbitrary JSON.
  */
 interface KeyValidationRule {
-  type: 'int' | 'bigint' | 'string' | 'enum' | 'boolean';
+  type: 'int' | 'bigint' | 'string' | 'enum' | 'boolean' | 'phone';
   /** Allowed enum values (for type=enum). */
   enumValues?: string[];
   /** Inclusive min (for int/bigint). */
@@ -99,7 +99,8 @@ const KEY_VALIDATION: Record<string, KeyValidationRule> = {
   'warranty.faulty_return_days':        { type: 'int', min: 1, max: 60 },
   'warranty.faulty_return_reminder_hours': { type: 'int', min: 1, max: 240 },
   'reputation.warranty_violation_points': { type: 'int', min: 1, max: 100 },
-  'office.support_phone':               { type: 'string', maxLength: 32 },
+  'office.support_phone':               { type: 'phone' },
+  'support.hotline':                    { type: 'phone' },
   'office.max_missed_visits':           { type: 'int', min: 1, max: 5 },
   'office.visit_days_ahead':            { type: 'int', min: 1, max: 30 },
   'office.min_notice_hours':            { type: 'int', min: 0, max: 72 },
@@ -352,6 +353,7 @@ export class AdminConfigService {
 
     // Per-key typed validation
     this.validateValue(key, value, current.valueType);
+    this.validateWarrantyPair(key, value, all);
 
     const before = { key, value: current.value };
 
@@ -448,6 +450,21 @@ export class AdminConfigService {
     this.validateByType(key, value, rule.type, rule);
   }
 
+  /** Bảo hành mặc định không được vượt bảo hành tối đa (và ngược lại). */
+  private validateWarrantyPair(key: string, value: string, all: Array<{ key: string; value: string }>): void {
+    if (key !== 'warranty.default_days' && key !== 'warranty.max_days') return;
+    const other = (k: string) => Number(all.find((c) => c.key === k)?.value);
+    const defaultDays = key === 'warranty.default_days' ? Number(value) : other('warranty.default_days');
+    const maxDays = key === 'warranty.max_days' ? Number(value) : other('warranty.max_days');
+    if (Number.isFinite(defaultDays) && Number.isFinite(maxDays) && defaultDays > maxDays) {
+      throw new BadRequestException(
+        key === 'warranty.default_days'
+          ? `Thời hạn bảo hành mặc định không được vượt thời hạn tối đa (${maxDays} ngày).`
+          : `Thời hạn bảo hành tối đa không được nhỏ hơn thời hạn mặc định (${defaultDays} ngày).`,
+      );
+    }
+  }
+
   private validateByType(
     key: string,
     value: string,
@@ -507,6 +524,14 @@ export class AdminConfigService {
           throw new BadRequestException(
             `Config "${key}": value must be one of [${rule?.enumValues?.join(', ') ?? ''}], got "${value}"`,
           );
+        }
+        break;
+      }
+      case 'phone': {
+        // Để trống = không hiện số; có giá trị thì phải là số điện thoại hoặc tổng đài (VD 0901234567, +84901234567, 19001234).
+        const compact = value.trim().replace(/[\s.]/g, '');
+        if (compact !== '' && !/^(\+84|0)\d{9,10}$|^1[89]00\d{4,6}$/.test(compact)) {
+          throw new BadRequestException('Số điện thoại không hợp lệ. Ví dụ: 0901234567, +84901234567 hoặc 19001234.');
         }
         break;
       }
