@@ -1,6 +1,6 @@
 // src/database/seeds/seed-users.ts
 // Seeds demo accounts per P12.3:
-// 1 Admin, 2 SM, 12 Technicians (with profiles, areas, schedules), 8 Customers (1 suspended)
+// 1 Admin, 2 SM, 12 Technicians (with profiles, areas, schedules), 18 Customers (1 suspended)
 import { DataSource, QueryRunner } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { Role, AccountStatus, VerificationStatus } from '../../shared/enums';
@@ -139,10 +139,10 @@ export async function seedUsers(dataSource: DataSource): Promise<void> {
     }
   }
 
-  // 4. Customers (8 accounts, 1 suspended)
+  // 4. Customers (18 accounts, 1 suspended)
   const suspendUntil = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days from now
 
-  for (let i = 1; i <= 8; i++) {
+  for (let i = 1; i <= 18; i++) {
     const email = i === 8 ? 'customer.suspended@fixhome.vn' : `customer${i}@fixhome.vn`;
     const name = i === 8 ? 'Khach Hang Bi Khoa' : `Khach Hang ${i}`;
     const status = i === 8 ? AccountStatus.SUSPENDED : AccountStatus.ACTIVE;
@@ -169,5 +169,5 @@ export async function seedUsers(dataSource: DataSource): Promise<void> {
   }
 
   await queryRunner.release();
-  console.log('✅ Seeded: 1 Admin, 2 SMs, 12 Technicians (with profiles & schedules), 8 Customers (1 suspended)');
+  console.log('✅ Seeded: 1 Admin, 2 SMs, 12 Technicians (with profiles & schedules), 18 Customers (1 suspended)');
 }

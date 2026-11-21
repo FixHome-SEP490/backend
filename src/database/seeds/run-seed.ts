@@ -67,8 +67,8 @@ async function runSeed(): Promise<void> {
     console.log('     sm.hn@fixhome.vn  (Hanoi Scope)');
     console.log('  🔧 TECHNICIANS (12 accounts):');
     console.log('     tech1@fixhome.vn ... tech12@fixhome.vn');
-    console.log('  👤 CUSTOMERS (8 accounts):');
-    console.log('     customer1@fixhome.vn ... customer7@fixhome.vn (Active)');
+    console.log('  👤 CUSTOMERS (18 accounts):');
+    console.log('     customer1@fixhome.vn ... customer7@fixhome.vn, customer9@fixhome.vn ... customer18@fixhome.vn (Active)');
     console.log('     customer.suspended@fixhome.vn (Suspended for demo)');
     console.log('═══════════════════════════════════════════════════════════════\n');
   } catch (error) {
