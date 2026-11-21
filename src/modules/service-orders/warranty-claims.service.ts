@@ -23,7 +23,7 @@ import { WarrantyClaim } from './entities/warranty-claim.entity';
 import { WarrantyCoverage } from './entities/warranty-coverage.entity';
 import { WarrantyVisit } from './entities/warranty-visit.entity';
 import { authorizeOrder, type OrderActor } from './order-access';
-import { toClaimView } from './warranty-claim.mapper';
+import { toCustomerClaimView } from './warranty-claim.mapper';
 import { presentCoverages } from './warranty-coverage-status';
 import { Booking } from '../bookings/entities/booking.entity';
 import { ServiceOrder } from './entities/service-order.entity';
@@ -133,8 +133,8 @@ export class WarrantyClaimsService {
       relations: ['technician'],
       order: { submittedAt: 'DESC' },
     });
-    const times = await this.scheduledTimes(claims.map((claim) => claim.id));
-    return claims.map((claim) => toClaimView(claim, times.get(claim.id) ?? null));
+    const visits = await this.latestVisits(claims.map((claim) => claim.id));
+    return claims.map((claim) => toCustomerClaimView(claim, visits.get(claim.id)));
   }
 
   /**
@@ -155,11 +155,11 @@ export class WarrantyClaimsService {
       manager.find(WarrantyCoverage, { where: { serviceOrderId: In(ids) }, order: { expiresAt: 'ASC' } }),
       this.claimRepo.find({ where: { serviceOrderId: In(ids) }, relations: ['technician'], order: { submittedAt: 'DESC' } }),
     ]);
-    const [views, times] = await Promise.all([presentCoverages(manager, coverages), this.scheduledTimes(claims.map(claim => claim.id))]);
+    const [views, visits] = await Promise.all([presentCoverages(manager, coverages), this.latestVisits(claims.map(claim => claim.id))]);
     return ids.map(orderId => ({
       orderId,
       coverages: views.filter(view => view.serviceOrderId === orderId),
-      claims: claims.filter(claim => claim.serviceOrderId === orderId).map(claim => toClaimView(claim, times.get(claim.id) ?? null)),
+      claims: claims.filter(claim => claim.serviceOrderId === orderId).map(claim => toCustomerClaimView(claim, visits.get(claim.id))),
     }));
   }
 
@@ -220,17 +220,17 @@ export class WarrantyClaimsService {
 
   private async viewById(id: string): Promise<WarrantyClaimViewDto> {
     const claim = await this.claimRepo.findOneOrFail({ where: { id }, relations: ['technician'] });
-    const times = await this.scheduledTimes([id]);
-    return toClaimView(claim, times.get(id) ?? null);
+    const visits = await this.latestVisits([id]);
+    return toCustomerClaimView(claim, visits.get(id));
   }
 
-  /** The newest scheduled inspection time per claim, for the customer's view. */
-  private async scheduledTimes(claimIds: string[]): Promise<Map<string, Date | null>> {
+  /** The newest visit per claim, for the customer's view (inspection time and, once decided, the result). */
+  private async latestVisits(claimIds: string[]): Promise<Map<string, WarrantyVisit>> {
     if (!claimIds.length) return new Map();
     const visits = await this.claimRepo.manager.find(WarrantyVisit, {
       where: { warrantyClaimId: In(claimIds) },
       order: { createdAt: 'ASC' },
     });
-    return new Map(visits.map((visit) => [visit.warrantyClaimId, visit.scheduledAt ?? null]));
+    return new Map(visits.map((visit) => [visit.warrantyClaimId, visit]));
   }
 }
