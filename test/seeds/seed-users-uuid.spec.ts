@@ -68,7 +68,7 @@ describe('seedUsers demo UUIDs', () => {
     ];
     const allIds = [...firstUserIds, ...firstProfileIds];
 
-    expect(firstUserIds).toHaveLength(23);
+    expect(firstUserIds).toHaveLength(33);
     expect(firstProfileIds).toHaveLength(12);
     expect(allIds).toEqual(secondIds);
     expect(new Set(allIds).size).toBe(allIds.length);
