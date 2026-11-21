@@ -194,6 +194,15 @@ export function registerDev1Cases(context: () => Context) {
       expect(read.timeOffs).toHaveLength(2);
     });
 
+    it('answers a too-long day-off reason with 400, never 500, and keeps the 255-character limit of the column', async () => {
+      const f = await fixture();
+      const startAt = new Date(Date.now() + 20 * 86400000).toISOString(), endAt = new Date(Date.now() + 21 * 86400000).toISOString();
+      const tooLong = await post('/technicians/me/time-off', f.tech, { startAt, endAt, reason: 'a'.repeat(256) });
+      expect(tooLong.status, JSON.stringify(tooLong.body)).toBe(400);
+      const atLimit = await post('/technicians/me/time-off', f.tech, { startAt, endAt, reason: 'a'.repeat(255) });
+      expect(atLimit.status, JSON.stringify(atLimit.body)).toBe(201);
+    });
+
     it('lists conversations with only the counterpart fields the thread list shows (PO 14/10/2026)', async () => {
       const f = await fixture();
       const b = await f.create();

@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-22 01:21 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
+> Cập nhật lần cuối: 2026-11-22 01:46 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/console-forms-2211
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -542,6 +542,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-22 01:46 (UTC+7) | ToanAltF4 | fix/console-forms-2211 | QA 22/11 console + form ngoài luồng đơn: sửa lỗi kiểm thật trên fixhome.sbs
 - 2026-11-22 01:21 (UTC+7) | Hgnv11 | dev | View bảo hành của khách thêm inspection, outcomeCode, refundAmount sau khi SM duyệt
 - 2026-11-22 00:47 (UTC+7) | Hgnv11 | dev | Thợ báo hoàn tất bảo hành (`complete`) bị `CONFLICT` khi linh kiện thay thế chưa nhận hoặc còn dòng chưa khai dùng; trả lại cả dòng vẫn được, nộp linh kiện hỏng không chặn
 - 2026-11-21 23:36 (UTC+7) | ToanAltF4 | fix/part-delivery-notify-lock-2111 | Sửa BUG 243-245: SM chuẩn bị xong / đang giao phiếu linh kiện giao tận nơi bị treo 2 phút do thông báo cho thợ chờ khóa users của chính giao dịch; thông báo ghi sau commit, thêm e2e
@@ -581,4 +582,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-07 03:28 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Task5 backend release qualification: DEV gate nhận 0014/0015 theo thứ tự, proof bridge/invoice/ACL/replay và negative dirty ledger; PostgreSQL 16 cô lập 42 PASS, không apply DEV.
 - 2026-11-07 03:17 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Task4 manual bank PENDING và Admin exact unique receipt confirm, idempotent/replay/strict audit; focused 11 và finance 579 PASS, chưa PG/HTTP/rollout.
 - 2026-11-07 02:29 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Task3 slice invoice W3 và DB provenance, USED sau receipt, narrow collection/settlement; endpoint/UAT và rollout chưa kiểm chứng.
-- 2026-11-07 02:12 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Ghi Task2 positive terms sang physical/stock bằng migration 0014, PostgreSQL 54 PASS; giữ tiền và DEV gate đóng, Task3 chưa triển khai.

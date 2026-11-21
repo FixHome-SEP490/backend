@@ -4,7 +4,6 @@ import {
   IsBoolean,
   IsInt,
   IsNotEmpty,
-  IsNumber,
   IsString,
   Max,
   MaxLength,
@@ -24,9 +23,9 @@ export class UpdateSkillPricingDto {
       'Listed labor price reference. Rejected for FIXED_PRICE services; non-binding for INSPECTION_REQUIRED. Null clears a stale value.',
   })
   @ValidateIf((_dto, value) => value !== undefined && value !== null)
-  @IsNumber({ maxDecimalPlaces: 2 })
+  @IsInt({ message: 'Giá công phải là số nguyên (đồng).' })
   @Min(0)
-  @Max(9999999999.99)
+  @Max(9999999999)
   listedLaborPrice?: number | null;
 
   @ApiPropertyOptional({

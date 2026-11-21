@@ -31,6 +31,10 @@ describe('AdminConfigService', () => {
     makeConfig('matching.max_shortlist', '5', 'int'),
     makeConfig('matching.invitation_ttl_minutes', '30', 'int'),
     makeConfig('geofence.radius_meters', '300', 'int'),
+    makeConfig('warranty.default_days', '30', 'int'),
+    makeConfig('warranty.max_days', '365', 'int'),
+    makeConfig('office.support_phone', '', 'string'),
+    makeConfig('support.hotline', '', 'string'),
   ];
 
   beforeEach(() => {
@@ -147,6 +151,24 @@ describe('AdminConfigService', () => {
   });
 
   describe('update', () => {
+    it('accepts a phone number or an empty value for the support phones, nothing else', async () => {
+      for (const key of ['office.support_phone', 'support.hotline']) {
+        for (const ok of ['0901234567', '+84901234567', '1900 1234', '']) {
+          expect((await adminConfigService.update(key, ok, 'user-uuid', 'admin')).value).toBe(ok);
+        }
+        for (const bad of ['abc', '<b>1</b>', '0123', '😀', '19001234567890123456']) {
+          await expect(adminConfigService.update(key, bad, 'user-uuid', 'admin')).rejects.toThrow('Số điện thoại không hợp lệ');
+        }
+      }
+    });
+
+    it('keeps the default warranty within the maximum warranty', async () => {
+      await expect(adminConfigService.update('warranty.default_days', '400', 'user-uuid', 'admin')).rejects.toThrow('không được vượt');
+      await expect(adminConfigService.update('warranty.max_days', '20', 'user-uuid', 'admin')).rejects.toThrow('không được nhỏ hơn');
+      expect((await adminConfigService.update('warranty.default_days', '365', 'user-uuid', 'admin')).value).toBe('365');
+      expect((await adminConfigService.update('warranty.max_days', '30', 'user-uuid', 'admin')).value).toBe('30');
+    });
+
     it('keeps zero commission separate from the W3 shipping safety cap', async () => {
       expect((await adminConfigService.update('commission.rate_bps', '0', 'user-uuid', 'admin')).value).toBe('0');
       expect(mockConfigService.set).toHaveBeenCalledWith('commission.rate_bps', '0', 'user-uuid');
