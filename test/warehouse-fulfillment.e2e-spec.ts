@@ -454,4 +454,22 @@ describe.skipIf(process.env.CI !== 'true')('W2 real PostgreSQL / JWT / custody a
     expect(await f.balance()).toMatchObject([{ on_hand: 0, reserved: 0 }]);
     expect((await repo('WarehouseAllocation').findOneByOrFail({ partRequestId: f.req.id })).status).toBe('handed_over');
   });
+
+  // BUG DETECTOR 243-245: with custody tracking on, READY and DELIVERING of a delivery request held the
+  // technician's users row and waited on their own notification insert until statement_timeout.
+  it('hands a delivery request over without waiting on its own technician lock', async () => {
+    const f = await fixture([1]);
+    const first = await repo('Booking').findOneByOrFail({ id: f.order.bookingId });
+    const booking = await save('Booking', { customerId: first.customerId, serviceId: first.serviceId, description: 'W2 synthetic ship request', status: 'matched' });
+    const order = await save('ServiceOrder', { bookingId: booking.id, code: `W2-${randomUUID()}`, status: 'accepted' });
+    await save('TechnicianAssignment', { serviceOrderId: order.id, technicianId: f.tech.id, isActive: true });
+    const ship = await save('PartRequest', { serviceOrderId: order.id, technicianId: f.tech.id, status: 'requested', requestType: 'pre_repair', fulfillmentMethod: 'delivery' });
+    for (const [step, status, type] of [['ready', 'ready', 'PART_REQUEST_READY'], ['delivering', 'delivering', 'PART_REQUEST_DELIVERING']]) {
+      const started = Date.now();
+      const res = await call('patch', `/part-requests/${ship.id}/${step}`, f.sm, {}).expect(200);
+      expect(Date.now() - started).toBeLessThan(4000);
+      expect(res.body.data.status).toBe(status);
+      expect(await repo('Notification').countBy({ userId: f.tech.id, type, referenceId: ship.id })).toBe(1);
+    }
+  });
 });

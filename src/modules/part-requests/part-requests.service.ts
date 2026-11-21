@@ -130,6 +130,15 @@ export class PartRequestsService {
     });
   }
 
+  private async notifyAfterCommit(notice: Parameters<NotificationsService['createNotification']>[0] | null): Promise<void> {
+    if (!notice) return;
+    try {
+      await this.notificationsService.createNotification(notice);
+    } catch (err) {
+      this.logger.warn(`Failed to notify technician: ${(err as Error).message}`);
+    }
+  }
+
   // Always lock the order before its request, matching cancellation and invoicing.
   // Do not lock a LEFT JOIN of items: PostgreSQL forbids locking its nullable side.
   private async lockRequest(manager: EntityManager, id: string, actor: { id: string; role: string }) {
@@ -748,7 +757,8 @@ export class PartRequestsService {
     dto?: MarkReadyDto,
   ): Promise<PartRequest> {
     if (actor.role !== Role.SERVICE_MANAGER) throw new ForbiddenException('Service Manager role required');
-    return this.dataSource.transaction(async (manager: EntityManager) => {
+    let notice: Parameters<NotificationsService['createNotification']>[0] | null = null;
+    const result = await this.dataSource.transaction(async (manager: EntityManager) => {
       const { request } = await this.lockRequest(manager, requestId, actor);
 
       if (request.requestType !== PartRequestType.WARRANTY && await this.warehouseFulfillment?.allocation(manager, requestId)) throw new BusinessException(ErrorCodes.CONFLICT, 'Vui lòng chuẩn bị mã nhận tại luồng kho được phân công.');
@@ -803,9 +813,11 @@ export class PartRequestsService {
         },
       });
 
-      // Notify technician
-      try {
-        await this.notificationsService.createNotification({
+      // BUG DETECTOR 243-245: the notice is written after commit. lockRequest holds the technician's
+      // users row FOR UPDATE; inserting a notification for that user on another connection inside this
+      // transaction waits on our own lock until statement_timeout (2 minutes on DEV), so READY and
+      // DELIVERING for a delivery request hung and the manager could not hand the parts over.
+      notice = {
           userId: request.technicianId,
           title: 'Linh kiện đã sẵn sàng!',
           message:
@@ -815,13 +827,12 @@ export class PartRequestsService {
           type: 'PART_REQUEST_READY',
           referenceId: requestId,
           referenceType: 'part_request',
-        });
-      } catch (err) {
-        this.logger.warn(`Failed to notify technician: ${err.message}`);
-      }
+        };
 
       return saved;
     });
+    await this.notifyAfterCommit(notice);
+    return result;
   }
 
   /**
@@ -833,7 +844,8 @@ export class PartRequestsService {
     dto?: MarkDeliveringDto,
   ): Promise<PartRequest> {
     if (actor.role !== Role.SERVICE_MANAGER) throw new ForbiddenException('Service Manager role required');
-    return this.dataSource.transaction(async (manager: EntityManager) => {
+    let notice: Parameters<NotificationsService['createNotification']>[0] | null = null;
+    const result = await this.dataSource.transaction(async (manager: EntityManager) => {
       const { request } = await this.lockRequest(manager, requestId, actor);
 
       if (!request) {
@@ -885,9 +897,11 @@ export class PartRequestsService {
         },
       });
 
-      // Notify technician
-      try {
-        await this.notificationsService.createNotification({
+      // BUG DETECTOR 243-245: the notice is written after commit. lockRequest holds the technician's
+      // users row FOR UPDATE; inserting a notification for that user on another connection inside this
+      // transaction waits on our own lock until statement_timeout (2 minutes on DEV), so READY and
+      // DELIVERING for a delivery request hung and the manager could not hand the parts over.
+      notice = {
           userId: request.technicianId,
           title: 'Linh kiện đang được giao',
           message:
@@ -895,13 +909,12 @@ export class PartRequestsService {
           type: 'PART_REQUEST_DELIVERING',
           referenceId: requestId,
           referenceType: 'part_request',
-        });
-      } catch (err) {
-        this.logger.warn(`Failed to notify technician: ${err.message}`);
-      }
+        };
 
       return saved;
     });
+    await this.notifyAfterCommit(notice);
+    return result;
   }
 
   async regenerateQr(requestId: string, actor: { id: string; role: string }): Promise<PartRequest> {
