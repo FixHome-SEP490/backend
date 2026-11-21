@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-22 00:40 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
+> Cập nhật lần cuối: 2026-11-22 00:47 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -542,7 +542,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
-- 2026-11-22 00:40 (UTC+7) | Hgnv11 | dev | Thợ báo hoàn tất bảo hành (`complete`) bị `CONFLICT` khi linh kiện thay thế chưa nhận hoặc còn dòng chưa khai dùng; trả lại cả dòng vẫn được, nộp linh kiện hỏng không chặn
+- 2026-11-22 00:47 (UTC+7) | Hgnv11 | dev | Thợ báo hoàn tất bảo hành (`complete`) bị `CONFLICT` khi linh kiện thay thế chưa nhận hoặc còn dòng chưa khai dùng; trả lại cả dòng vẫn được, nộp linh kiện hỏng không chặn
+- 2026-11-21 23:36 (UTC+7) | ToanAltF4 | fix/part-delivery-notify-lock-2111 | Sửa BUG 243-245: SM chuẩn bị xong / đang giao phiếu linh kiện giao tận nơi bị treo 2 phút do thông báo cho thợ chờ khóa users của chính giao dịch; thông báo ghi sau commit, thêm e2e
 - 2026-11-21 15:10 (UTC+7) | Hgnv11 | dev | Service manager xử lý lịch hẹn lên trụ sở (mở /admin/technician-office-visits cho cả service_manager, audit đúng vai trò) và nhận OFFICE_VISIT_BOOKED khi thợ đặt/đổi lịch; tác vụ nền tự ghi nhận vắng khi quá office.auto_missed_grace_minutes (mặc định 120) và nhắc lịch OFFICE_VISIT_REMINDER trước 24 giờ; admin mở lại hồ sơ bị từ chối bằng PATCH /admin/technician-profile-reviews/:id/reopen
 - 2026-11-20 23:16 (UTC+7) | Hgnv11 | dev | Duyệt khuôn mặt check-in: chụp lại 1 lần rồi chờ quản lý dịch vụ duyệt khi lệch ảnh đăng ký (cờ FACE_CHECKIN_REVIEW_ENABLED, bảng checkin_face_reviews, endpoint service-manager/checkin-face-reviews)
 - 2026-11-20 20:43 (UTC+7) | Hgnv11 | dev | Thêm tác vụ nền dọn ảnh Cloudinary của upload booking hết hạn và file KYC mồ côi trên Supabase Storage
@@ -581,4 +582,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-07 02:29 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Task3 slice invoice W3 và DB provenance, USED sau receipt, narrow collection/settlement; endpoint/UAT và rollout chưa kiểm chứng.
 - 2026-11-07 02:12 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Ghi Task2 positive terms sang physical/stock bằng migration 0014, PostgreSQL 54 PASS; giữ tiền và DEV gate đóng, Task3 chưa triển khai.
 - 2026-11-07 01:52 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Ghi audit Task1 W3 payment, golden arithmetic, CHECK PostgreSQL và blocker physical/invoice/completion; chưa mở money cutover.
-- 2026-11-07 00:36 (UTC+7) | foxonworld | foxonworld/fixhome-w3-admin-shipping-zero-cap-20261106 | Merge W3 admin zero-cap and warranty partial-quantity changes; retain 40 newest context entries.
