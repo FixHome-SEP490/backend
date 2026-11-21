@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { ROLES_KEY } from '../../common/decorators/roles.decorator';
 import { ErrorCodes } from '../../shared/constants/error-codes';
 import {
+  PartRequestStatus,
+  PartUsageStatus,
   Role,
   WarrantyClaimStatus,
   WarrantyCustomerPrompt,
@@ -42,7 +44,7 @@ const makeVisit = (overrides: Record<string, unknown> = {}) => ({
 const LINE_1 = '11111111-1111-4111-8111-111111111111';
 const LINE_2 = '22222222-2222-4222-8222-222222222222';
 
-const makeService = (options: { claim?: unknown; visits?: unknown[]; profile?: unknown; coverage?: unknown; booking?: unknown; partLines?: unknown[] } = {}) => {
+const makeService = (options: { claim?: unknown; visits?: unknown[]; profile?: unknown; coverage?: unknown; booking?: unknown; partLines?: unknown[]; partRequest?: unknown; partItems?: unknown[] } = {}) => {
   const claimTx = { update: vi.fn().mockResolvedValue({ affected: 1 }) };
   const visitTx = {
     update: vi.fn().mockResolvedValue({ affected: 1 }),
@@ -74,11 +76,13 @@ const makeService = (options: { claim?: unknown; visits?: unknown[]; profile?: u
             return { lat: 10.78, lng: 106.69 };
           case 'Invoice':
             return { id: 'inv-1' };
+          case 'PartRequest':
+            return options.partRequest ?? null;
           default:
             return null;
         }
       }),
-      find: vi.fn(async (entity: { name: string }) => (entity.name === 'InvoiceItem' ? options.partLines ?? [{ id: LINE_1 }, { id: LINE_2 }] : [])),
+      find: vi.fn(async (entity: { name: string }) => (entity.name === 'InvoiceItem' ? options.partLines ?? [{ id: LINE_1 }, { id: LINE_2 }] : entity.name === 'PartRequestItem' ? options.partItems ?? [] : [])),
     },
   };
   const visitRepo = {
@@ -398,6 +402,34 @@ describe('technician warranty commands', () => {
       expect.objectContaining({ status: WarrantyVisitStatus.COMPLETED, completedAt: expect.any(Date) }),
     );
     expect(notifier.toUser).toHaveBeenCalledWith('customer-1', expect.any(String), expect.any(String), 'WARRANTY_CUSTOMER_RESPONSE_NEEDED', 'order-1');
+  });
+
+  it.each([
+    ['the replacement part is not received yet', { status: PartRequestStatus.READY }, [{ usageStatus: PartUsageStatus.PENDING }]],
+    ['a received part is not declared fitted or returned', { status: PartRequestStatus.RECEIVED }, [{ usageStatus: PartUsageStatus.USED }, { usageStatus: PartUsageStatus.PENDING }]],
+  ])('refuses to complete while %s', async (_name, partRequest, partItems) => {
+    const { service, claimTx } = makeService({
+      claim: makeClaim({ status: WarrantyClaimStatus.IN_PROGRESS }),
+      visits: [makeVisit({ status: WarrantyVisitStatus.INSPECTED })],
+      partRequest: { id: 'pr-1', ...partRequest },
+      partItems,
+    });
+
+    await expect(service.complete('claim-1', { notes: 'Đã thay mới van và kiểm tra rò rỉ' }, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+    expect(claimTx.update).not.toHaveBeenCalled();
+  });
+
+  it('completes once every replacement part is used or returned; the faulty part may still be handed in later', async () => {
+    const { service, claimTx } = makeService({
+      claim: makeClaim({ status: WarrantyClaimStatus.IN_PROGRESS }),
+      visits: [makeVisit({ status: WarrantyVisitStatus.INSPECTED })],
+      partRequest: { id: 'pr-1', status: PartRequestStatus.RECEIVED, faultyReturnedAt: null },
+      partItems: [{ usageStatus: PartUsageStatus.USED }, { usageStatus: PartUsageStatus.RETURNED }],
+    });
+
+    await service.complete('claim-1', { notes: 'Đã thay mới van và kiểm tra rò rỉ' }, TECH);
+
+    expect(claimTx.update).toHaveBeenCalled();
   });
 
   it('lists only the claims assigned to the caller, optionally by status', async () => {
