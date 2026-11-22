@@ -169,6 +169,12 @@ describe.skipIf(!port)('P1 isolated PostgreSQL / real JWT / transaction entrypoi
     const accepted = await repo(db, 'PartCustodyEntry').findOneByOrFail({ kind: 'accept_return', custodyId: responses[0].body.data.id });
     expect(accepted).toMatchObject({ actorUserId: f.manager.id, actorRole: 'service_manager', quantity: 1 });
     expect(accepted.occurredAt).toBeInstanceOf(Date);
+    // "Đã hoàn tất" counter: the settled item leaves the open list but is counted in meta.
+    const mine = await f.get('/part-returns/mine', f.tech);
+    expect(mine.status, JSON.stringify(mine.body)).toBe(200);
+    expect(mine.body.data.some((r: { partRequestItemId: string }) => r.partRequestItemId === f.item.id)).toBe(false);
+    expect(mine.body.meta).toEqual({ completedQty: 3 });
+    expect((await f.get('/part-returns/mine', f.other)).body.meta).toEqual({ completedQty: 0 });
     expect((await repo(db, 'PartRequestItem').findOneByOrFail({ id: f.item.id })).quantity).toBe(3);
     await expect(db.query('UPDATE part_custody_entries SET quantity = 2 WHERE id = $1', [accepted.id])).rejects.toThrow('append-only');
     const assertRuntime = load('modules/part-requests/part-custody.policy', 'assertCustodyRuntimeConfiguration');

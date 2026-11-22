@@ -770,6 +770,8 @@ export function registerDev1Cases(context: () => Context) {
         await evidence(one.id, f.tech, 'after').expect(201);
         await post(`/service-orders/${one.id}/request-completion`, f.tech).expect(200);
         const invoice = unwrap((await get(`/service-orders/${one.id}/invoice`, f.owner).expect(200)).body);
+        // No voucher on this visit: the bill reads no discount and the full amount to pay.
+        expect(invoice).toMatchObject({ voucherDiscount: 0, amountDue: Number(invoice.grandTotal) });
 
         // One device is still being worked on: nothing can be paid yet, and never one invoice alone.
         const waiting = unwrap((await get(`/visit-groups/${group.id}/checkout`, f.owner).expect(200)).body);

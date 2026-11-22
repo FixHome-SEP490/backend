@@ -31,6 +31,7 @@ import {
   WarrantyNotCoveredReason,
 } from '../../../shared/enums';
 import { IsCanonicalUuid } from '../../../shared/validation/uuid.validators';
+import { HasLetterOrDigit, NoUnsafeText } from '../../../shared/validation/text.validators';
 
 export const WARRANTY_CLAIM_MIN_TEXT_LENGTH = 10;
 export const WARRANTY_CLAIM_MAX_TEXT_LENGTH = 2000;
@@ -54,6 +55,8 @@ export class CreateWarrantyClaimDto {
   @Transform(trim)
   @MinLength(WARRANTY_CLAIM_MIN_TEXT_LENGTH)
   @MaxLength(WARRANTY_CLAIM_MAX_TEXT_LENGTH)
+  @NoUnsafeText({ message: 'Mô tả không được chứa ký tự điều khiển hay ký tự vô hình.' })
+  @HasLetterOrDigit({ message: 'Mô tả cần có chữ hoặc số, không chỉ emoji hay ký hiệu.' })
   description: string;
 
   @ApiPropertyOptional({ type: [String], maxItems: WARRANTY_CLAIM_MAX_EVIDENCE_REFS })

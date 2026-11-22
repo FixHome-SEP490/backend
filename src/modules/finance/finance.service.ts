@@ -829,7 +829,26 @@ export class FinanceService {
       where: { serviceOrderId: orderId },
       relations: ['items'],
     });
-    return invoice ? toInvoiceResponse(invoice) : null;
+    if (!invoice) return null;
+    return toInvoiceResponse(invoice, await this.committedVoucherDiscount(invoice.id));
+  }
+
+  /** One aggregate over the voucher ledger. Frozen money rows are only read, never changed. */
+  private async committedVoucherDiscount(invoiceId: string): Promise<number> {
+    let rows: Array<{ total: string | number | null }> | undefined;
+    try {
+      rows = await this.dataSource.query(
+        `SELECT COALESCE(SUM(amount_vnd), 0) AS total FROM voucher_funding_entries
+          WHERE invoice_id = $1 AND kind = 'SUBSIDY_COMMITTED'`,
+        [invoiceId],
+      );
+    } catch {
+      // A database without the voucher ledger (voucher feature not installed) has no discount;
+      // reading the bill must never fail because of it.
+      return 0;
+    }
+    const total = Number(rows?.[0]?.total ?? 0);
+    return Number.isSafeInteger(total) && total > 0 ? total : 0;
   }
 
   async initiateInvoicePayment(

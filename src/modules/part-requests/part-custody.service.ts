@@ -163,6 +163,21 @@ export class PartCustodyService {
   }
 
   /**
+   * Parts the technician has fully settled (nothing left to return), for the "Đã hoàn tất"
+   * counter. One aggregate query; the pending list only carries open custody rows.
+   */
+  async completedQty(actor: PartCustodyActor): Promise<number> {
+    if (actor.role !== Role.TECHNICIAN) throw new ForbiddenException();
+    const rows = await this.dataSource.manager.query(
+      `SELECT COALESCE(SUM((state->>'issuedQty')::int), 0)::int AS total FROM part_custodies
+        WHERE technician_id = $1 AND (state->>'outstandingQty')::int = 0`,
+      [actor.id],
+    ) as Array<{ total: number | string }>;
+    const total = Number(rows?.[0]?.total ?? 0);
+    return Number.isSafeInteger(total) && total > 0 ? total : 0;
+  }
+
+  /**
    * SM-only, read-only review of FixHome parts received before custody
    * enrollment. The item join is exact and the anti-join is the same primary
    * key used by the custody ledger. Legacy records have no physical return
