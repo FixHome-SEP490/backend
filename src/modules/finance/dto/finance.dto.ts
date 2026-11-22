@@ -249,6 +249,14 @@ export class InvoiceResponseDto {
 
   @ApiProperty({ type: InvoiceItemResponseDto, isArray: true })
   items: InvoiceItemResponseDto[];
+
+  /** Voucher subsidy committed for this invoice, read from the voucher ledger (0 when none). */
+  @ApiPropertyOptional()
+  voucherDiscount?: number;
+
+  /** What the customer actually pays: grandTotal minus voucherDiscount. */
+  @ApiPropertyOptional()
+  amountDue?: number;
 }
 
 export class PaymentResponseDto {
@@ -412,7 +420,7 @@ export const toInvoiceItemResponse = (item: InvoiceItem): InvoiceItemResponseDto
   warrantyDaysSnapshot: Number(item.warrantyDaysSnapshot),
 });
 
-export const toInvoiceResponse = (invoice: Invoice): InvoiceResponseDto => ({
+export const toInvoiceResponse = (invoice: Invoice, voucherDiscount = 0): InvoiceResponseDto => ({
   id: invoice.id,
   serviceOrderId: invoice.serviceOrderId,
   laborTotal: Number(invoice.laborTotal),
@@ -456,6 +464,8 @@ export const toInvoiceResponse = (invoice: Invoice): InvoiceResponseDto => ({
   issuedAt: invoice.issuedAt,
   paidAt: invoice.paidAt ?? null,
   items: (invoice.items ?? []).map(toInvoiceItemResponse),
+  voucherDiscount,
+  amountDue: Math.max(0, Number(invoice.grandTotal) - voucherDiscount),
 });
 
 export const toPaymentResponse = (payment: Payment): PaymentResponseDto => ({

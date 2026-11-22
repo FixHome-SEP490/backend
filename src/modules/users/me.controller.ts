@@ -34,7 +34,7 @@ export class MeController {
   })
   async getMyProfile(@CurrentUser('id') userId: string): Promise<UserProfileDto> {
     const user = await this.usersService.getProfile(userId);
-    const permissions = await this.rbacService.getPermissionsForRole(user.role);
+    const permissions = await this.rbacService.getPermissionsForUser(user.role, user.id);
     return UserProfileDto.fromUser(user, permissions);
   }
 
@@ -56,7 +56,7 @@ export class MeController {
     @Body() dto: UpdateProfileDto,
   ): Promise<UserProfileDto> {
     const user = await this.usersService.updateProfile(userId, dto);
-    const permissions = await this.rbacService.getPermissionsForRole(user.role);
+    const permissions = await this.rbacService.getPermissionsForUser(user.role, user.id);
     return UserProfileDto.fromUser(user, permissions);
   }
 }

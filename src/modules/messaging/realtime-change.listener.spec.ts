@@ -36,7 +36,8 @@ function setup(rows: Record<string, unknown[]> = {}) {
   const emitToUsers = vi.fn();
   const emitToEveryone = vi.fn();
   const emitConversationTouched = vi.fn();
-  const gateway = { server: {}, emitToUsers, emitToEveryone, emitConversationTouched } as any;
+  const emitToStaff = vi.fn();
+  const gateway = { server: {}, emitToUsers, emitToEveryone, emitConversationTouched, emitToStaff } as any;
   const query = vi.fn(async (sql: string, _params?: unknown[]) => {
     const key = Object.keys(rows).find((fragment) => sql.includes(fragment));
     return key ? rows[key] : [];
@@ -51,7 +52,7 @@ function setup(rows: Record<string, unknown[]> = {}) {
     clients.push(client);
     return client;
   });
-  return { listener, gateway, query, clients, configs, emitToUsers, emitToEveryone, emitConversationTouched };
+  return { listener, gateway, query, clients, configs, emitToUsers, emitToEveryone, emitConversationTouched, emitToStaff };
 }
 
 const ORDER_ROW = { id: ORDER, status: 'en_route', booking_id: BOOKING, customer_id: CUSTOMER, technician_ids: [TECH] };
@@ -144,6 +145,14 @@ describe('RealtimeChangeListener', () => {
     expect(emitToUsers.mock.calls[0][2]).toMatchObject({ kinds: ['evidence'] });
     expect(emitConversationTouched).not.toHaveBeenCalled();
     expect(query.mock.calls.some(([sql]) => String(sql).includes('FROM conversations'))).toBe(false);
+  });
+
+  it('tells console staff about a part change with the same payload (SM part counters follow without reload)', async () => {
+    const { listener, emitToUsers, emitToStaff } = setup({ 'FROM service_orders so': [ORDER_ROW] });
+    await listener.publish(groupChanges([{ t: 'part_requests', op: 'update', id: 'p1', so: ORDER }]));
+    expect(emitToStaff).toHaveBeenCalledTimes(1);
+    expect(emitToStaff).toHaveBeenCalledWith(CHAT_EVENTS.ORDER_UPDATED, emitToUsers.mock.calls[0][2]);
+    expect(emitToStaff.mock.calls[0][1]).toMatchObject({ serviceOrderId: ORDER, kinds: ['part'] });
   });
 
   it('also tells a technician taken off the order', async () => {

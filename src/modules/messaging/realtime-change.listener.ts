@@ -419,13 +419,10 @@ export class RealtimeChangeListener implements OnApplicationBootstrap, OnModuleD
     for (const row of rows) {
       const kinds = [...(batch.orders.get(row.id) ?? [])].sort();
       const recipients = [...new Set([row.customer_id, ...(row.technician_ids ?? []), ...(batch.orderTechnicians.get(row.id) ?? [])])];
-      this.gateway.emitToUsers(recipients, CHAT_EVENTS.ORDER_UPDATED, {
-        serviceOrderId: row.id,
-        bookingId: row.booking_id,
-        status: row.status,
-        kinds,
-        at,
-      });
+      const payload = { serviceOrderId: row.id, bookingId: row.booking_id, status: row.status, kinds, at };
+      this.gateway.emitToUsers(recipients, CHAT_EVENTS.ORDER_UPDATED, payload);
+      // Console screens (orders, part requests, returns, warranty, cash) follow too, same payload, no extra query.
+      this.gateway.emitToStaff(CHAT_EVENTS.ORDER_UPDATED, payload);
       // Whether the chat is open follows the order's status and its warranty claims.
       if (kinds.some((kind) => kind === 'status' || kind === 'order' || kind === 'warranty' || kind === 'assignment')) chatAffected.push(row.id);
     }

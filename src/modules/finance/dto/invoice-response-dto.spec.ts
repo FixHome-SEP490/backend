@@ -168,3 +168,19 @@ describe('toInvoiceResponse — W3 shipping snapshot exposure', () => {
     expect(invoice).toEqual(original);
   });
 });
+
+describe('toInvoiceResponse — voucher discount on the bill', () => {
+  it('shows gross, voucher discount and what the customer actually paid (445.000 - 22.250 = 422.750)', () => {
+    const invoice = makeInvoice({ grandTotal: 445_000, paymentStatus: PaymentStatus.PAID } as any);
+    const dto = toInvoiceResponse(invoice, 22_250);
+    expect(dto.grandTotal).toBe(445_000);
+    expect(dto.voucherDiscount).toBe(22_250);
+    expect(dto.amountDue).toBe(422_750);
+    expect(invoice.grandTotal).toBe(445_000);
+  });
+  it('defaults to no discount', () => {
+    const dto = toInvoiceResponse(makeInvoice());
+    expect(dto.voucherDiscount).toBe(0);
+    expect(dto.amountDue).toBe(221_000);
+  });
+});
