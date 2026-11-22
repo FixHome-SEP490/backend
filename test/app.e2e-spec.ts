@@ -557,6 +557,57 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
       .set('Authorization', bearer(admin))
       .expect(200);
   });
+  it('lets the admin turn a permission off for one service manager account only (BUG 261)', async () => {
+    const sm = async (): Promise<Session> => {
+      const user = await db.getRepository('User').save({
+        email: `${randomUUID()}@example.test`,
+        passwordHash: 'CI_ONLY_NON_LOGIN_CREDENTIAL',
+        fullName: 'BUG 261 manager',
+        role: 'service_manager',
+        status: 'active',
+        isActive: true,
+      });
+      return {
+        user: { id: user.id, email: user.email },
+        accessToken: jwt.sign({ sub: user.id, role: 'service_manager' }, { secret: accessSecret, expiresIn: '15m' }),
+        refreshToken: '',
+      };
+    };
+    const [narrowed, other] = [await sm(), await sm()];
+    const as = (s: Session) => ({
+      get: (p: string) => http().get(`/api/v1${p}`).set('Authorization', bearer(s)),
+      put: (p: string, body: object) => http().put(`/api/v1${p}`).set('Authorization', bearer(s)).send(body),
+      del: (p: string) => http().delete(`/api/v1${p}`).set('Authorization', bearer(s)),
+    });
+    const base = `/admin/rbac/service-manager/accounts/${narrowed.user.id}/permissions`;
+    for (const s of [narrowed, other]) await as(s).get('/dashboard/operations').expect(200);
+    // Only the admin configures, only toggleable codes, only service manager accounts.
+    await as(other).put(`${base}/dashboard:read_operational`, { granted: false }).expect(403);
+    await as(admin).put(`${base}/config:update`, { granted: true }).expect(422);
+    await as(admin).put(`/admin/rbac/service-manager/accounts/${customer.user.id}/permissions/dashboard:read_operational`, { granted: false }).expect(404);
+    await as(admin).put(`${base}/dashboard:read_operational`, { granted: 'no' }).expect(400);
+
+    const off = (await as(admin).put(`${base}/dashboard:read_operational`, { granted: false }).expect(200)).body.data;
+    expect(off.user.customized).toBe(true);
+    expect(off.permissions.find((p: any) => p.code === 'dashboard:read_operational')).toMatchObject({ granted: false, roleGranted: true, overridden: true });
+    // The guard applies it at once: this account gets 403, the other service manager keeps 200.
+    await as(narrowed).get('/dashboard/operations').expect(403);
+    await as(other).get('/dashboard/operations').expect(200);
+    const me = (await as(narrowed).get('/me').expect(200)).body.data;
+    expect(me.permissions).not.toContain('dashboard:read_operational');
+    expect(me.permissions).toContain('support:read_all');
+    const accounts = (await as(admin).get('/admin/rbac/service-manager/accounts').expect(200)).body.data;
+    expect(accounts.find((a: any) => a.id === narrowed.user.id)?.customized).toBe(true);
+    expect(accounts.find((a: any) => a.id === other.user.id)?.customized).toBe(false);
+    const [audit] = await db.query(
+      `SELECT action FROM audit_logs WHERE resource_id = $1 ORDER BY created_at DESC LIMIT 1`, [narrowed.user.id]);
+    expect(audit.action).toBe('RBAC_ACCOUNT_PERMISSION_REVOKED');
+
+    // Back to the role default.
+    const reset = (await as(admin).del(base).expect(200)).body.data;
+    expect(reset.user.customized).toBe(false);
+    await as(narrowed).get('/dashboard/operations').expect(200);
+  });
   it('filters the audit log and strikes by a seeded account id whose version nibble is 0', async () => {
     // Shared database seed accounts look like a0000000-0000-0000-0000-000000000001 (bug 31).
     const legacyId = `a0000000-0000-0000-0000-${randomUUID().replace(/-/g, '').slice(0, 12)}`;

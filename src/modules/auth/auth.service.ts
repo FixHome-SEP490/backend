@@ -59,9 +59,9 @@ export class AuthService {
     @Optional() private readonly rbacService?: RbacService,
   ) {}
 
-  private async getPermissions(role: string): Promise<string[]> {
+  private async getPermissions(role: string, userId?: string): Promise<string[]> {
     if (!this.rbacService) return [];
-    return this.rbacService.getPermissionsForRole(role);
+    return this.rbacService.getPermissionsForUser(role, userId);
   }
 
   private async generateAndSendOtp(
@@ -365,7 +365,7 @@ export class AuthService {
         manager,
         'Registration Verify Session',
       );
-      const permissions = await this.getPermissions(user.role);
+      const permissions = await this.getPermissions(user.role, user.id);
       return { ...tokens, user: UserProfileDto.fromUser(user, permissions) };
     });
   }
@@ -440,7 +440,7 @@ export class AuthService {
     return this.userRepository.manager.transaction(async (manager) => {
       const current = await this.lockActiveUser(manager, user.id);
       const tokens = await this.issueTokens(current, manager, dto.deviceInfo);
-      const permissions = await this.getPermissions(current.role);
+      const permissions = await this.getPermissions(current.role, current.id);
       return { ...tokens, user: UserProfileDto.fromUser(current, permissions) };
     });
   }
@@ -537,7 +537,7 @@ export class AuthService {
     return this.userRepository.manager.transaction(async (manager) => {
       const user = await this.lockActiveUser(manager, userId);
       const tokens = await this.issueTokens(user, manager, deviceInfo);
-      const permissions = await this.getPermissions(user.role);
+      const permissions = await this.getPermissions(user.role, user.id);
       return { ...tokens, user: UserProfileDto.fromUser(user, permissions) };
     });
   }
@@ -766,7 +766,7 @@ export class AuthService {
   async getMe(userId: string): Promise<UserProfileDto> {
     const user = await this.userRepository.findOne({ where: { id: userId } });
     if (!user) throw new UnauthorizedException('User does not exist');
-    const permissions = await this.getPermissions(user.role);
+    const permissions = await this.getPermissions(user.role, user.id);
     return UserProfileDto.fromUser(user, permissions);
   }
 

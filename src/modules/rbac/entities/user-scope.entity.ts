@@ -26,4 +26,12 @@ export class UserScope {
     nullable: true,
   })
   scopeProvinceCodes: string[] | null;
+
+  /**
+   * BUG DETECTOR 261: per-account service manager permissions that override the role.
+   * { 'order:cancel': false } turns one toggleable permission off for this account only;
+   * a code not listed follows the role. null means the account follows the role entirely.
+   */
+  @Column({ name: 'permission_overrides', type: 'jsonb', nullable: true })
+  permissionOverrides: Record<string, boolean> | null;
 }
