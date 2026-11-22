@@ -59,6 +59,9 @@ const DEFAULT_ICE_URLS = 'stun:stun.l.google.com:19302';
 
 const conversationRoom = (conversationId: string) => `conversation:${conversationId}`;
 const userRoom = (userId: string) => `user:${userId}`;
+/** Service managers and admins: their console screens follow order changes without reloading. */
+export const STAFF_ROOM = 'staff';
+const isStaff = (role: Role | string) => role === Role.SERVICE_MANAGER || role === Role.ADMIN;
 
 /** Which side of a call is allowed to send a given signal. */
 type SignalSender = 'caller' | 'callee' | 'either';
@@ -109,6 +112,7 @@ export class MessagingGateway
 
     client.data.user = actor;
     await client.join(userRoom(actor.id));
+    if (isStaff(actor.role)) await client.join(STAFF_ROOM);
 
     const conversationIds =
       await this.messagingService.listConversationIdsForUser(actor.id);
@@ -601,6 +605,11 @@ export class MessagingGateway
   emitToUsers(userIds: Iterable<string>, event: RealtimeEvent, payload: object): void {
     const rooms = [...new Set(userIds)].filter(Boolean).map(userRoom);
     if (rooms.length) this.server?.to(rooms).emit(event, payload);
+  }
+
+  /** Every connected service manager and admin. Payloads carry ids and states only; screens read the rest with their own rights. */
+  emitToStaff(event: RealtimeEvent, payload: object): void {
+    this.server?.to(STAFF_ROOM).emit(event, payload);
   }
 
   /** Every connected user: after the listener lost changes while reconnecting, screens read again once. */

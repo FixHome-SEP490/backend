@@ -48,7 +48,8 @@ export class PartReturnsController {
   @Get('part-returns/mine')
   @Roles(Role.TECHNICIAN)
   async mine(@Req() req: { user: PartCustodyActor }) {
-    return { data: await this.custody.pending(req.user) };
+    const data = await this.custody.pending(req.user);
+    return { data, meta: { completedQty: await this.custody.completedQty(req.user) } };
   }
 
   @Post('part-returns/legacy-manual-review/:itemId')

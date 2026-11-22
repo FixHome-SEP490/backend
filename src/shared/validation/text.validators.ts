@@ -127,3 +127,27 @@ export function IsAddressText(
     validationOptions,
   );
 }
+
+/**
+ * Văn bản tự do (mô tả, ghi chú) phải có ít nhất một chữ cái hoặc chữ số, cùng
+ * luật HAS_LETTER_OR_DIGIT của địa chỉ. Một chuỗi toàn emoji hay ký hiệu không
+ * nói được gì cho người đọc. Emoji đi kèm chữ thì vẫn nhận.
+ */
+const TEXT_HAS_LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
+
+export function HasLetterOrDigit(validationOptions?: ValidationOptions): PropertyDecorator {
+  return ValidateBy(
+    {
+      name: 'hasLetterOrDigit',
+      validator: {
+        validate: (value: unknown): boolean =>
+          typeof value !== 'string' || TEXT_HAS_LETTER_OR_DIGIT.test(value),
+        defaultMessage: buildMessage(
+          (eachPrefix) => `${eachPrefix}$property must contain letters or digits`,
+          validationOptions,
+        ),
+      },
+    },
+    validationOptions,
+  );
+}
