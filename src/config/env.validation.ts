@@ -44,6 +44,17 @@ export class EnvironmentVariables {
   @IsIn(['true', 'false'])
   FACE_CHECKIN_ENFORCE: string = 'false';
 
+  // `true`: a check-in face below FACE_MATCH_THRESHOLD must be retaken once, then waits for a service manager; implies the enforce rule above.
+  @IsIn(['true', 'false'])
+  FACE_CHECKIN_REVIEW_ENABLED: string = 'false';
+
+  // Under this score the managers are told at once (the technician may still retake).
+  @IsInt()
+  @Min(0)
+  @Max(100)
+  @IsOptional()
+  FACE_CHECKIN_ALERT_BELOW: number = 60;
+
   @IsString()
   @IsOptional()
   AWS_REGION?: string;

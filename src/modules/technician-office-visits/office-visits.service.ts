@@ -3,17 +3,23 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
+  OnModuleDestroy,
+  OnModuleInit,
   Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
-import { OnboardingStatus, Role, VerificationStatus } from '../../shared/enums';
+import { In, LessThan, MoreThan, Repository } from 'typeorm';
+import { startBackgroundJob } from '../../common/background-job';
+import { AccountStatus, OnboardingStatus, Role, VerificationStatus } from '../../shared/enums';
 import { VN_OFFSET_MS } from '../../shared/utils/vn-time';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import { Notification } from '../notifications/entities/notification.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
+import { User } from '../users/entities/user.entity';
 import {
   BookOfficeVisitDto,
   CreateVisitOfficeDto,
@@ -32,7 +38,10 @@ const minutes = (time: string | null | undefined): number | null => {
 };
 
 @Injectable()
-export class OfficeVisitsService {
+export class OfficeVisitsService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(OfficeVisitsService.name);
+  private timer: NodeJS.Timeout | null = null;
+
   constructor(
     @InjectRepository(VisitOffice) private readonly offices: Repository<VisitOffice>,
     @InjectRepository(OfficeVisit) private readonly visits: Repository<OfficeVisit>,
@@ -41,6 +50,14 @@ export class OfficeVisitsService {
     private readonly audit: AuditLogService,
     @Optional() private readonly notifications?: NotificationsService,
   ) {}
+
+  onModuleInit(): void {
+    this.timer = startBackgroundJob('office visit sweep', this.logger, async () => { await this.sweep(); });
+  }
+
+  onModuleDestroy(): void {
+    if (this.timer) clearInterval(this.timer);
+  }
 
   // ── Cấu hình ───────────────────────────────────────────────────────────
 
@@ -188,7 +205,29 @@ export class OfficeVisitsService {
       const saved = await visits.save(visits.create({ technicianId: userId, officeId: office.id, scheduledAt: at, status: OfficeVisitStatus.SCHEDULED }));
       return { ...saved, office };
     });
+    void this.notifyManagersOfBooking(userId, result as OfficeVisit).catch((error: unknown) =>
+      this.logger.warn(`office visit booking notice failed: ${error instanceof Error ? error.message : String(error)}`));
     return this.view(result as OfficeVisit);
+  }
+
+  /** Quản lý dịch vụ đang hoạt động nhận thông báo khi có lịch hẹn mới hoặc đổi lịch. */
+  private async notifyManagersOfBooking(technicianId: string, visit: OfficeVisit): Promise<void> {
+    const manager = this.visits.manager;
+    const [technician, recipients] = await Promise.all([
+      manager.findOne(User, { where: { id: technicianId }, select: { id: true, fullName: true } }),
+      manager.find(User, { where: { role: Role.SERVICE_MANAGER, isActive: true, status: AccountStatus.ACTIVE }, select: { id: true } }),
+    ]);
+    if (!recipients.length) return;
+    const when = visit.scheduledAt.toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false });
+    await manager.insert(Notification, recipients.map((r) => ({
+      userId: r.id,
+      title: 'Có lịch hẹn lên trụ sở',
+      message: `${technician?.fullName ?? 'Kỹ thuật viên'} hẹn gặp tại ${visit.office.name} lúc ${when}.`,
+      type: 'OFFICE_VISIT_BOOKED',
+      referenceId: visit.id,
+      referenceType: 'technician_office_visit',
+      isRead: false,
+    })));
   }
 
   // ── Admin: lịch hẹn ────────────────────────────────────────────────────
@@ -224,11 +263,11 @@ export class OfficeVisitsService {
     return visit;
   }
 
-  async markAttended(id: string, adminId: string, dto: MarkOfficeVisitDto = {}) {
+  async markAttended(id: string, adminId: string, dto: MarkOfficeVisitDto = {}, actorRole: Role = Role.ADMIN) {
     const visit = await this.scheduledVisitOrFail(id);
     await this.visits.update(id, { status: OfficeVisitStatus.ATTENDED, attendedAt: new Date(), attendedById: adminId, note: dto.note ?? null });
     await this.audit.log({
-      actorUserId: adminId, actorRole: Role.ADMIN, action: 'OFFICE_VISIT_ATTENDED', resourceType: 'technician_office_visit', resourceId: id,
+      actorUserId: adminId, actorRole, action: 'OFFICE_VISIT_ATTENDED', resourceType: 'technician_office_visit', resourceId: id,
       before: { status: visit.status }, after: { status: OfficeVisitStatus.ATTENDED },
     });
     void this.notifications?.createNotification({
@@ -243,14 +282,14 @@ export class OfficeVisitsService {
   }
 
   /** Vắng: lần đầu cho đặt lại, đủ `office.max_missed_visits` lần thì khóa đặt lịch và báo số hỗ trợ. */
-  async markMissed(id: string, adminId: string, dto: MarkOfficeVisitDto = {}) {
+  async markMissed(id: string, adminId: string | null, dto: MarkOfficeVisitDto = {}, actorRole: Role | null = Role.ADMIN) {
     const visit = await this.scheduledVisitOrFail(id);
     await this.visits.update(id, { status: OfficeVisitStatus.MISSED, note: dto.note ?? null });
     const cfg = await this.settings();
     const missed = await this.missedCount(visit.technicianId);
     const blocked = missed >= cfg.maxMissed;
     await this.audit.log({
-      actorUserId: adminId, actorRole: Role.ADMIN, action: 'OFFICE_VISIT_MISSED', resourceType: 'technician_office_visit', resourceId: id,
+      actorUserId: adminId, actorRole, action: 'OFFICE_VISIT_MISSED', resourceType: 'technician_office_visit', resourceId: id,
       before: { status: visit.status }, after: { status: OfficeVisitStatus.MISSED, missed, blocked },
     });
     void this.notifications?.createNotification({
@@ -267,13 +306,13 @@ export class OfficeVisitsService {
   }
 
   /** Sau khi đã hỗ trợ thợ bị khóa: các lượt vắng không còn tính, thợ đặt lại được. */
-  async resetMissed(technicianId: string, adminId: string) {
+  async resetMissed(technicianId: string, adminId: string, actorRole: Role = Role.ADMIN) {
     const result = await this.visits.update(
       { technicianId, status: OfficeVisitStatus.MISSED },
-      { status: OfficeVisitStatus.CANCELLED, note: 'Admin cho phép đặt lại' },
+      { status: OfficeVisitStatus.CANCELLED, note: 'Quản lý cho phép đặt lại' },
     );
     await this.audit.log({
-      actorUserId: adminId, actorRole: Role.ADMIN, action: 'OFFICE_VISIT_RESET', resourceType: 'technician_profile', resourceId: technicianId,
+      actorUserId: adminId, actorRole, action: 'OFFICE_VISIT_RESET', resourceType: 'technician_profile', resourceId: technicianId,
       before: { cleared: result.affected ?? 0 }, after: {},
     });
     void this.notifications?.createNotification({
@@ -285,5 +324,58 @@ export class OfficeVisitsService {
       referenceId: technicianId,
     });
     return { cleared: result.affected ?? 0 };
+  }
+
+  // ── Tác vụ nền ─────────────────────────────────────────────────────────
+
+  /** Một bước hỏng không làm dừng bước còn lại. */
+  async sweep(now = new Date()): Promise<void> {
+    for (const [name, step] of [['auto-missed', () => this.sweepMissed(now)], ['reminders', () => this.sweepReminders(now)]] as const) {
+      await step().catch((error: unknown) => this.logger.warn(`office visit ${name} failed: ${error instanceof Error ? error.message : String(error)}`));
+    }
+  }
+
+  /** Lịch quá giờ hẹn `office.auto_missed_grace_minutes` (mặc định 120) mà chưa ai xử lý thì tính là vắng. */
+  async sweepMissed(now = new Date()): Promise<number> {
+    const grace = await this.config.getInt('office.auto_missed_grace_minutes', 120);
+    const overdue = await this.visits.find({
+      where: { status: OfficeVisitStatus.SCHEDULED, scheduledAt: LessThan(new Date(now.getTime() - grace * 60_000)) },
+      take: 100,
+    });
+    let done = 0;
+    for (const visit of overdue) {
+      // Lượt vừa được xử lý tay sẽ ném Conflict, bỏ qua.
+      await this.markMissed(visit.id, null, { note: 'Tự ghi nhận: quá giờ hẹn mà chưa được xử lý' }, null)
+        .then(() => { done += 1; })
+        .catch(() => undefined);
+    }
+    return done;
+  }
+
+  /** Nhắc thợ một lần khi lịch hẹn còn trong 24 giờ tới. */
+  async sweepReminders(now = new Date()): Promise<number> {
+    const upcoming = await this.visits.find({
+      where: { status: OfficeVisitStatus.SCHEDULED, scheduledAt: MoreThan(now) },
+      relations: ['office'],
+      order: { scheduledAt: 'ASC' },
+      take: 200,
+    });
+    const due = upcoming.filter((v) => v.scheduledAt.getTime() - now.getTime() <= 24 * 3_600_000);
+    if (!due.length) return 0;
+    const notices = this.visits.manager.getRepository(Notification);
+    const sent = await notices.find({ where: { type: 'OFFICE_VISIT_REMINDER', referenceId: In(due.map((v) => v.id)) }, select: { referenceId: true } });
+    const already = new Set(sent.map((n) => n.referenceId));
+    const fresh = due.filter((v) => !already.has(v.id));
+    if (!fresh.length) return 0;
+    await notices.insert(fresh.map((v) => ({
+      userId: v.technicianId,
+      title: 'Nhắc lịch lên trụ sở',
+      message: `Bạn có lịch gặp tại ${v.office.name} lúc ${v.scheduledAt.toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false })}. Nhớ mang bản công chứng bằng cấp.`,
+      type: 'OFFICE_VISIT_REMINDER',
+      referenceId: v.id,
+      referenceType: 'technician_office_visit',
+      isRead: false,
+    })));
+    return fresh.length;
   }
 }

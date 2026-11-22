@@ -88,6 +88,33 @@ export class WarrantyClaimTechnicianDto {
   fullName: string;
 }
 
+/** What the customer may read of the inspection once the manager has decided; no internal codes, part lines or quantities. */
+export class WarrantyInspectionResultDto {
+  @ApiProperty({ enum: WarrantyInspectionResult, description: 'The conclusion the service manager approved' })
+  result: string;
+
+  @ApiPropertyOptional({ nullable: true, description: 'Why the claim is not covered, when it is not' })
+  reasonCode: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  findings: string | null;
+
+  @ApiPropertyOptional({ type: [String], nullable: true })
+  evidenceRefs: string[] | null;
+
+  @ApiPropertyOptional({ nullable: true, description: 'What the technician did to fix it' })
+  reServiceNotes: string | null;
+
+  @ApiPropertyOptional({ type: [String], nullable: true })
+  reServiceEvidenceRefs: string[] | null;
+
+  @ApiPropertyOptional({ format: 'date-time', nullable: true })
+  checkedInAt: Date | null;
+
+  @ApiPropertyOptional({ format: 'date-time', nullable: true })
+  completedAt: Date | null;
+}
+
 export class WarrantyClaimViewDto {
   @ApiProperty({ format: 'uuid' })
   id: string;
@@ -130,6 +157,15 @@ export class WarrantyClaimViewDto {
 
   @ApiPropertyOptional({ format: 'date-time', nullable: true, description: 'Customer-facing views only: when the technician comes to inspect' })
   inspectionScheduledAt?: Date | null;
+
+  @ApiPropertyOptional({ type: WarrantyInspectionResultDto, nullable: true, description: 'Customer-facing views only: the approved inspection result, present once the manager has decided' })
+  inspection?: WarrantyInspectionResultDto | null;
+
+  @ApiPropertyOptional({ enum: ['fixed', 'unfixed', 'rejected'], nullable: true })
+  outcomeCode?: 'fixed' | 'unfixed' | 'rejected' | null;
+
+  @ApiPropertyOptional({ nullable: true, description: 'Whole VND refunded to the customer wallet when the item could not be fixed' })
+  refundAmount?: number | null;
 }
 
 export class AcceptWarrantyClaimDto {

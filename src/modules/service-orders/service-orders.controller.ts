@@ -51,6 +51,7 @@ import { ServiceOrdersService } from './service-orders.service';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants';
 import { CheckinFaceService } from './checkin-face.service';
+import { CheckinFaceReviewService } from './checkin-face-review.service';
 import { RiskLimit } from '../../common/rate-limit/risk-rate-limit';
 import {
   } from '../../shared/enums';
@@ -71,6 +72,7 @@ export class ServiceOrdersController {
     private readonly serviceOrdersService: ServiceOrdersService,
     @Optional() private readonly checkinFace?: CheckinFaceService,
     @Optional() private readonly privateNotes?: TechnicianPrivateNoteService,
+    @Optional() private readonly checkinFaceReviews?: CheckinFaceReviewService,
   ) {}
 
   // ── 1. Order Queries ──
@@ -267,7 +269,7 @@ export class ServiceOrdersController {
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth()
   @ApiConsumes('multipart/form-data')
-  @ApiOperation({ summary: 'Technician: check-in face with liveness (plain photo + challenge photo)', description: 'Multipart: `file` (plain photo), `challengeFile` (photo doing the challenge), `challengeToken` from the challenge call. A failed challenge answers 400 with a retryable message. A weak match with the registered face is stored as a note for admin and does not block.' })
+  @ApiOperation({ summary: 'Technician: check-in face with liveness (plain photo + challenge photo)', description: 'Multipart: `file` (plain photo), `challengeFile` (photo doing the challenge), `challengeToken` from the challenge call. A failed challenge answers 400 with a retryable message. With FACE_CHECKIN_REVIEW_ENABLED, a face below the match threshold is first refused once for a retake (400), then saved and held for a service manager (`reviewStatus: "pending"`). Otherwise a weak match is stored as a note and does not block.' })
   async uploadCheckinFace(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: { challengeToken?: string; capturedAt?: string },
@@ -276,20 +278,24 @@ export class ServiceOrdersController {
   ) {
     const plain = files?.file?.[0];
     if (!plain) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Thiếu ảnh khuôn mặt.');
-    const note = await this.checkinFace?.verify({
+    const result = (await this.checkinFace?.verify({
       orderId: id,
       userId: req.user.id,
       token: body.challengeToken,
       plain: plain.buffer,
       challengePhoto: files?.challengeFile?.[0]?.buffer,
-    });
+    })) ?? {};
     const evidence = await this.serviceOrdersService.uploadEvidence(
       id,
-      { type: EvidenceType.CHECKIN_FACE, note, capturedAt: body.capturedAt },
+      { type: EvidenceType.CHECKIN_FACE, note: result.note, capturedAt: body.capturedAt },
       req.user,
       plain,
+      result.review,
     );
-    return { data: evidence };
+    if (result.review?.pending) {
+      await this.checkinFaceReviews?.notifyReviewRequired(id, req.user.id, result.review.similarity);
+    }
+    return { data: { ...evidence, reviewStatus: result.review?.pending ? 'pending' : null } };
   }
 
   @Get('service-orders/:id/evidence')

@@ -1,3 +1,4 @@
+import { WarrantyClaimStatus } from '../../shared/enums';
 import { WarrantyClaimViewDto, WarrantyVisitViewDto } from './dto/warranty-claim.dto';
 import { WarrantyClaim } from './entities/warranty-claim.entity';
 import { WarrantyVisit } from './entities/warranty-visit.entity';
@@ -21,6 +22,33 @@ export function toClaimView(claim: WarrantyClaim, inspectionScheduledAt?: Date |
       ? { id: claim.technician.id, fullName: claim.technician.fullName }
       : null,
     ...(inspectionScheduledAt !== undefined ? { inspectionScheduledAt } : {}),
+  };
+}
+
+// Claim states after the service manager approved or closed it: only then does the customer read the inspection.
+const DECIDED = new Set<string>([
+  WarrantyClaimStatus.IN_PROGRESS, WarrantyClaimStatus.AWAITING_CUSTOMER, WarrantyClaimStatus.DISPUTED,
+  WarrantyClaimStatus.RESOLVED, WarrantyClaimStatus.REJECTED,
+]);
+
+/** The customer's view: the claim plus, once decided, the approved result with the technician's findings and the outcome. */
+export function toCustomerClaimView(claim: WarrantyClaim, visit?: WarrantyVisit | null): WarrantyClaimViewDto {
+  const view = toClaimView(claim, visit ? visit.scheduledAt ?? null : null);
+  if (!visit || !claim.finalResult || !DECIDED.has(claim.status)) return view;
+  return {
+    ...view,
+    inspection: {
+      result: claim.finalResult,
+      reasonCode: claim.finalReasonCode ?? null,
+      findings: visit.findings ?? null,
+      evidenceRefs: visit.evidenceRefs ?? null,
+      reServiceNotes: visit.reServiceNotes ?? null,
+      reServiceEvidenceRefs: visit.reServiceEvidenceRefs ?? null,
+      checkedInAt: visit.checkedInAt ?? null,
+      completedAt: visit.completedAt ?? null,
+    },
+    outcomeCode: claim.outcomeCode ?? null,
+    refundAmount: claim.refundAmount ?? null,
   };
 }
 

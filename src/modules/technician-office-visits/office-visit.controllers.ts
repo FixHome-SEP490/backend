@@ -16,7 +16,7 @@ import {
 import { OfficeVisitsService } from './office-visits.service';
 import { ProfileReviewService } from './profile-review.service';
 
-type Req = { user: { id: string } };
+type Req = { user: { id: string; role: Role } };
 
 @ApiTags('Technician Office Visit')
 @Controller('technicians/me/office-visit')
@@ -70,34 +70,34 @@ export class AdminVisitOfficesController {
 @ApiTags('Admin Office Visits')
 @Controller('admin/technician-office-visits')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN)
+@Roles(Role.ADMIN, Role.SERVICE_MANAGER)
 @ApiBearerAuth()
 export class AdminOfficeVisitsController {
   constructor(private readonly visits: OfficeVisitsService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Admin: appointments by office, date and status' })
+  @ApiOperation({ summary: 'Admin/SM: appointments by office, date and status' })
   list(@Query() query: QueryOfficeVisitsDto) {
     return this.visits.listVisits(query);
   }
 
   @Patch(':id/attended')
-  @ApiOperation({ summary: 'Admin: the technician came to the office' })
+  @ApiOperation({ summary: 'Admin/SM: the technician came to the office' })
   attended(@Param('id', ParseUUIDPipe) id: string, @Req() req: Req, @Body() dto: MarkOfficeVisitDto) {
-    return this.visits.markAttended(id, req.user.id, dto);
+    return this.visits.markAttended(id, req.user.id, dto, req.user.role);
   }
 
   @Patch(':id/missed')
-  @ApiOperation({ summary: 'Admin: the technician did not come' })
+  @ApiOperation({ summary: 'Admin/SM: the technician did not come' })
   missed(@Param('id', ParseUUIDPipe) id: string, @Req() req: Req, @Body() dto: MarkOfficeVisitDto) {
-    return this.visits.markMissed(id, req.user.id, dto);
+    return this.visits.markMissed(id, req.user.id, dto, req.user.role);
   }
 
   @Post('technicians/:technicianId/reset')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Admin: allow a blocked technician to book again' })
+  @ApiOperation({ summary: 'Admin/SM: allow a blocked technician to book again' })
   reset(@Param('technicianId', ParseUUIDPipe) technicianId: string, @Req() req: Req) {
-    return this.visits.resetMissed(technicianId, req.user.id);
+    return this.visits.resetMissed(technicianId, req.user.id, req.user.role);
   }
 }
 
@@ -125,6 +125,12 @@ export class AdminProfileReviewsController {
   @ApiOperation({ summary: 'Admin: final profile approval after the office visit (confirms skill levels)' })
   approve(@Param('technicianId', ParseUUIDPipe) technicianId: string, @Req() req: Req, @Body() dto: ApproveProfileDto) {
     return this.reviews.approve(technicianId, req.user.id, dto);
+  }
+
+  @Patch(':technicianId/reopen')
+  @ApiOperation({ summary: 'Admin: reopen a rejected profile so the technician books another office visit' })
+  reopen(@Param('technicianId', ParseUUIDPipe) technicianId: string, @Req() req: Req) {
+    return this.reviews.reopen(technicianId, req.user.id);
   }
 
   @Patch(':technicianId/reject')

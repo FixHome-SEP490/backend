@@ -85,8 +85,8 @@ describe('Technician service DTO validation boundaries', () => {
     expect(await validate(assign({}))).toEqual([]);
   });
 
-  it('rejects negative, too-large, and too-many-decimals prices', async () => {
-    for (const listedLaborPrice of [-1, 10000000000, 10.123, '100' as unknown as number, NaN, Infinity]) {
+  it('rejects negative, too-large and fractional prices (VND is whole đồng)', async () => {
+    for (const listedLaborPrice of [-1, 10000000000, 10.123, 1.5, 150000.5, '100' as unknown as number, NaN, Infinity]) {
       const errors = await validate(assign({ listedLaborPrice }));
       expect(errors.map((error) => error.property)).toContain('listedLaborPrice');
     }
@@ -251,9 +251,9 @@ describe('Technician service pricing-mode and existence rules', () => {
     const result = await service.setSkillPricing(
       'user-1',
       inspectionService.id,
-      assign({ listedLaborPrice: 150000.5, typicalWarrantyDays: 90 }),
+      assign({ listedLaborPrice: 150000, typicalWarrantyDays: 90 }),
     );
-    expect(result.listedLaborPrice).toBe(150000.5);
+    expect(result.listedLaborPrice).toBe(150000);
     expect(result.typicalWarrantyDays).toBe(90);
   });
 

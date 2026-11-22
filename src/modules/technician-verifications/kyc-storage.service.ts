@@ -246,6 +246,25 @@ export class KycStorageService {
     );
   }
 
+  /** Deletes objects from the private bucket. Missing objects are not an error; any other failure throws so the caller retries. */
+  async remove(storageObjectPaths: string[]): Promise<void> {
+    if (storageObjectPaths.length === 0) return;
+    const baseUrl = this.config.get<string>('SUPABASE_URL')?.trim();
+    const serviceRoleKey = this.config.get<string>('SUPABASE_SERVICE_ROLE_KEY')?.trim();
+    if (!baseUrl || !serviceRoleKey) {
+      throw new ServiceUnavailableException('Private KYC storage is not configured');
+    }
+    try {
+      await axios.delete(`${new URL(baseUrl).origin}${SUPABASE_STORAGE_API_PREFIX}/object/${encodeURIComponent(this.getBucket())}`, {
+        headers: { Authorization: `Bearer ${serviceRoleKey}`, apikey: serviceRoleKey },
+        data: { prefixes: storageObjectPaths },
+        timeout: 15000,
+      });
+    } catch {
+      throw new ServiceUnavailableException('Private KYC storage could not delete objects');
+    }
+  }
+
   /** Bytes of an object the technician uploaded, read through a short-lived signed URL. Not logged, not cached. */
   async download(storageObjectPath: string, ownerId: string): Promise<Buffer> {
     const { signedUrl } = await this.createSignedAccess(storageObjectPath, ownerId);

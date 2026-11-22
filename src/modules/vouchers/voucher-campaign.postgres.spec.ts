@@ -203,6 +203,17 @@ describe.skipIf(process.env.VOUCHER_CAMPAIGN_ISOLATED_PG !== '1')('campaign life
     expect((await db.query("SELECT count(*)::int AS n FROM public.voucher_audit WHERE resource_id=$1 AND action IN ('EDIT_CAMPAIGN','CAMPAIGN_LIFECYCLE')", [draft.id]))[0].n).toBe(1);
   });
 
+  it('says the code is taken when a new or edited campaign reuses another campaign code, and refuses emoji names', async () => {
+    const first = await service.createCampaign(admin, terms());
+    const taken = 'Mã ưu đãi này đã được chiến dịch khác sử dụng';
+    await expect(service.createCampaign(admin, { ...terms(), code: first.code })).rejects.toThrow(taken);
+    const second = await service.createCampaign(admin, terms());
+    await expect(service.updateCampaign(admin, second.id, { ...terms(), code: first.code, ...command(1) })).rejects.toThrow(taken);
+    // Đổi các điều khoản khác mà giữ mã của chính nó thì vẫn được.
+    await expect(service.updateCampaign(admin, second.id, { ...terms(), code: second.code, name: 'Giảm 10% cho khách mới', ...command(1) })).resolves.toMatchObject({ version: 2 });
+    for (const name of ['😀😀', '<b>QA</b>']) await expect(service.createCampaign(admin, { ...terms(), name })).rejects.toMatchObject({ status: 400 });
+  });
+
   it('replays a published command after JSONB round-trip without another audit, rejecting payload reuse', async () => {
     const draft = await service.createCampaign(admin, terms());
     const cmd = { status: 'PUBLISHED' as const, ...command(1) };

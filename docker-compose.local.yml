@@ -1,0 +1,74 @@
+# Chạy toàn bộ backend FixHome trên máy local chỉ bằng một lệnh, KHÔNG cần .env
+# và KHÔNG cần Supabase của nhóm:
+#
+#   docker compose -f docker-compose.local.yml up -d --build
+#
+# Lệnh này dựng PostgreSQL rỗng, tạo bảng (migration), nạp dữ liệu mẫu rồi mới
+# bật backend. Lần đầu mất vài phút; từ lần sau dữ liệu giữ trong volume `pgdata`.
+#
+#   docker compose -f docker-compose.local.yml logs -f backend   xem log
+#   docker compose -f docker-compose.local.yml down              tắt (giữ dữ liệu)
+#   docker compose -f docker-compose.local.yml down -v           tắt và xóa dữ liệu
+#
+# Các khóa dưới đây chỉ dành cho demo local. Cloudinary, Supabase Storage, VNPay,
+# MapTiler, Google và AI Service không được cấu hình nên các tính năng đó không
+# chạy; đăng ký, đăng nhập, đặt lịch và luồng cơ bản vẫn dùng được.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: fixhome-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: fixhome
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      # 5433 ở máy thật để không đụng PostgreSQL có sẵn (nếu có) ở cổng 5432.
+      - '5433:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d fixhome']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    container_name: fixhome-backend-local
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DATABASE_HOST: db
+      DATABASE_PORT: 5432
+      DATABASE_NAME: fixhome
+      DATABASE_USER: postgres
+      DATABASE_PASSWORD: postgres
+      DATABASE_SSL: 'false'
+      JWT_ACCESS_SECRET: local-demo-access-secret-change-me-0123456789
+      JWT_REFRESH_SECRET: local-demo-refresh-secret-change-me-0123456789
+      CORS_ORIGIN: http://localhost:5173
+      FRONTEND_URL: http://localhost:5173
+    # seed:demo chạy migration trước rồi mới nạp dữ liệu, và chạy lại nhiều lần vẫn an toàn.
+    command: sh -c "npm run seed:demo && npm run start:dev"
+    ports:
+      - '3000:3000'
+    volumes:
+      - ./src:/app/src
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://127.0.0.1:3000/health']
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+
+volumes:
+  pgdata:

@@ -175,6 +175,15 @@ export class PrivateBookingPhotoStorage {
     return ownerId.toLowerCase();
   }
 
+  /** Removes a stored photo or video. Throws when Cloudinary is unreachable so the caller keeps its row and retries. */
+  async delete(reference: string, ownerId: string): Promise<void> {
+    const base = splitPlan(String(reference ?? '')).reference;
+    const publicId = this.getOwnedPublicId(base, ownerId);
+    const resourceType = base.startsWith(VIDEO_REF_PREFIX) ? 'video' : 'image';
+    // "not found" counts as done: the asset is already gone.
+    await this.getCloudinary().uploader.destroy(publicId, { resource_type: resourceType, type: 'authenticated', invalidate: true });
+  }
+
   private getOwnedPublicId(reference: string, expectedOwnerId: string): string {
     const ownerId = this.normalizeOwnerId(expectedOwnerId);
 

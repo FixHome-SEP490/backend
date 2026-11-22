@@ -22,7 +22,10 @@ import { VoucherDiscount, VoucherKind } from '../voucher.types';
 
 export class VoucherCampaignTermsDto {
   @ApiProperty() @Matches(/^[A-Z0-9_-]{3,40}$/) code: string;
-  @ApiProperty() @IsString() @MinLength(1) @MaxLength(120) name: string;
+  /** Tên hiện cho khách: chữ, số và dấu thường gặp; không emoji hay thẻ HTML (QA 22/11/2026). */
+  @ApiProperty() @IsString() @MinLength(1) @MaxLength(120)
+  @Matches(/^[\p{L}\p{M}\p{N}][\p{L}\p{M}\p{N} ,./'’()#&:;%!+_-]*$/u, { message: 'Tên chiến dịch chỉ gồm chữ, số và dấu thường gặp, không emoji hay thẻ HTML.' })
+  name: string;
   @ApiProperty({ enum: VoucherKind }) @IsEnum(VoucherKind) kind: VoucherKind;
   @ApiPropertyOptional({ default: false, description: 'Tự cấp bù cho sự cố sửa chữa đã xác minh; chỉ PERSONAL' })
   @ValidateIf((_, value) => value !== undefined)

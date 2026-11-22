@@ -97,7 +97,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
       await http()
         .post('/api/v1/admin/service-categories')
         .set('Authorization', bearer(admin))
-        .send({ name: 'Audit Category', code: randomUUID() })
+        .send({ name: 'Audit Category', code: randomUUID().toUpperCase() })
         .expect(201)
     ).body.data;
   const createService = async (
@@ -110,7 +110,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
         .set('Authorization', bearer(admin))
         .send({
           name: 'Audit Service',
-          code: randomUUID(),
+          code: randomUUID().toUpperCase(),
           categoryId,
           minPrice: 100,
           maxPrice: 200,
@@ -763,6 +763,18 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
       .set('Authorization', bearer(admin))
       .send({ name: 'Duplicate', code: service.code, categoryId: category.id })
       .expect(409);
+    // QA 22/11/2026: a category named "😀😀" went straight onto the customer catalog.
+    for (const body of [{ name: '😀😀' }, { name: '<b>QA</b>' }, { code: 'qa thường' }, { slug: 'có dấu cách' }])
+      await http()
+        .post('/api/v1/admin/categories')
+        .set('Authorization', bearer(admin))
+        .send({ name: 'Danh mục thử', code: randomUUID().toUpperCase(), ...body })
+        .expect(400);
+    await http()
+      .post('/api/v1/admin/services')
+      .set('Authorization', bearer(admin))
+      .send({ name: '😀 Sửa', code: randomUUID().toUpperCase(), categoryId: category.id })
+      .expect(400);
     for (const body of [
       { minPrice: 300 },
       { basePrice: -1 },
@@ -1052,8 +1064,8 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
   it('allows Admin catalog operations with soft deletion only and denies Service Manager mutation', async () => {
     const manager = await register();
     await db.query('UPDATE users SET role = $1 WHERE id = $2', ['service_manager', manager.user.id]);
-    await http().post('/api/v1/admin/categories').set('Authorization', bearer(manager)).send({ name: 'Manager Category', code: randomUUID() }).expect(403);
-    const category = (await http().post('/api/v1/admin/categories').set('Authorization', bearer(admin)).send({ name: 'Admin Category', code: randomUUID() }).expect(201)).body.data;
+    await http().post('/api/v1/admin/categories').set('Authorization', bearer(manager)).send({ name: 'Manager Category', code: randomUUID().toUpperCase() }).expect(403);
+    const category = (await http().post('/api/v1/admin/categories').set('Authorization', bearer(admin)).send({ name: 'Admin Category', code: randomUUID().toUpperCase() }).expect(201)).body.data;
     const service = await createService(category.id);
     await http().delete(`/api/v1/admin/services/${service.id}`).set('Authorization', bearer(manager)).expect(403);
     await http().delete(`/api/v1/admin/services/${service.id}`).set('Authorization', bearer(admin)).expect(200);

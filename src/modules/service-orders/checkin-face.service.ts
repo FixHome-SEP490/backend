@@ -1,5 +1,5 @@
 // src/modules/service-orders/checkin-face.service.ts
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHmac, randomInt, timingSafeEqual } from 'crypto';
@@ -10,6 +10,11 @@ import { FaceMatchService } from '../face-match/face-match.service';
 import { KycStorageService } from '../technician-verifications/kyc-storage.service';
 import { VerificationDocument } from '../technician-verifications/entities/verification-document.entity';
 import { DocumentType } from '../../shared/enums';
+import { CheckinFaceOutcome } from './checkin-face-clearance';
+import { CheckinFaceReviewService } from './checkin-face-review.service';
+
+/** `review` is set only under the review rule: what to record next to the evidence. */
+export type CheckinFaceResult = { note?: string; review?: CheckinFaceOutcome };
 
 export type FaceChallenge = 'turn_left' | 'turn_right' | 'look_up' | 'look_down';
 const CHALLENGES: FaceChallenge[] = ['turn_left', 'turn_right', 'look_up', 'look_down'];
@@ -37,6 +42,7 @@ export class CheckinFaceService {
     private readonly faceMatch: FaceMatchService,
     private readonly kyc: KycStorageService,
     @InjectRepository(VerificationDocument) private readonly documents: Repository<VerificationDocument>,
+    @Optional() private readonly reviews?: CheckinFaceReviewService,
   ) {}
 
   /** Replaceable in tests. */
@@ -47,9 +53,12 @@ export class CheckinFaceService {
     return this.faceMatch.enabled;
   }
 
-  /** The old single-photo upload is refused only once the app that sends challenges is out (env FACE_CHECKIN_ENFORCE). */
+  /**
+   * The old single-photo upload is refused only once the app that sends challenges is out (env FACE_CHECKIN_ENFORCE).
+   * The review rule needs the face match, so it closes the old path too.
+   */
   get enforced(): boolean {
-    return this.enabled && this.config.get<string>('FACE_CHECKIN_ENFORCE') === 'true';
+    return this.enabled && (this.config.get<string>('FACE_CHECKIN_ENFORCE') === 'true' || this.reviewEnabled);
   }
 
   issueChallenge(orderId: string, userId: string): { challenge: FaceChallenge | null; token?: string; expiresAt?: string } {
@@ -59,15 +68,31 @@ export class CheckinFaceService {
     return { challenge, token: this.sign(orderId, userId, challenge, exp), expiresAt: new Date(exp).toISOString() };
   }
 
-  /** Returns the note to store on the evidence; throws a retryable validation error when the challenge fails. */
-  async verify(input: { orderId: string; userId: string; token?: string; plain: Buffer; challengePhoto?: Buffer }): Promise<string | undefined> {
-    if (!this.enabled) return undefined;
+  /** Replaces the old rule that a weak match never blocks (env FACE_CHECKIN_REVIEW_ENABLED, PO 20/11/2026). */
+  get reviewEnabled(): boolean {
+    return this.enabled && this.config.get<string>('FACE_CHECKIN_REVIEW_ENABLED') === 'true';
+  }
+
+  /** Scores under this ask the managers at once, even though the technician may still retake. */
+  private get alertBelow(): number {
+    const value = Number(this.config.get<string>('FACE_CHECKIN_ALERT_BELOW') ?? 60);
+    return Number.isFinite(value) ? value : 60;
+  }
+
+  /**
+   * Returns the note to store on the evidence and, when the review rule is on, what to record for it;
+   * throws a retryable validation error when the challenge fails or the face must be retaken.
+   */
+  async verify(input: { orderId: string; userId: string; token?: string; plain: Buffer; challengePhoto?: Buffer }): Promise<CheckinFaceResult> {
+    if (!this.enabled) return {};
     if (!this.secret()) throw this.fail('Chưa cấu hình khóa ký phiên xác minh khuôn mặt.');
     const challenge = this.readToken(input.orderId, input.userId, input.token);
     if (!challenge || !input.challengePhoto) throw this.fail('Phiên xác minh khuôn mặt đã hết hạn hoặc thiếu ảnh thứ hai. Vui lòng chụp lại.');
 
     const [plain, moved] = await Promise.all([this.faceMatch.analyze(input.plain), this.faceMatch.analyze(input.challengePhoto)]);
-    if (plain.outcome === 'skipped' || moved.outcome === 'skipped') return 'Chưa kiểm tra được liveness (dịch vụ nhận diện tạm không khả dụng).';
+    if (plain.outcome === 'skipped' || moved.outcome === 'skipped') {
+      return this.passed('Chưa kiểm tra được liveness (dịch vụ nhận diện tạm không khả dụng).', null);
+    }
     if (plain.outcome === 'no_face' || moved.outcome === 'no_face') throw this.fail('Không thấy khuôn mặt trong ảnh. Vui lòng chụp lại rõ mặt, đủ sáng.');
     if (plain.count > 1 || moved.count > 1) throw this.fail('Trong ảnh có nhiều hơn một khuôn mặt. Vui lòng chụp lại chỉ một mình bạn.');
 
@@ -88,10 +113,28 @@ export class CheckinFaceService {
       throw this.fail('Hai ảnh không giống cùng một người. Vui lòng chụp lại.');
     }
 
-    return this.matchRegistered(input.userId, input.plain);
+    const match = await this.matchRegistered(input.userId, input.plain);
+    if (!this.reviewEnabled || match.similarity === null || match.similarity >= this.faceMatch.threshold) {
+      return this.passed(match.note, match.similarity);
+    }
+
+    // Below the threshold: one retake, then the face waits for a service manager. Retake is free, but a clearly
+    // different face tells the managers right away.
+    const alert = match.similarity < this.alertBelow;
+    if (this.reviews && (await this.reviews.retakeCount(input.orderId, input.userId)) < 1) {
+      await this.reviews.recordRetake(input.orderId, input.userId, match.similarity);
+      if (alert) await this.reviews.notifyFlagged(input.orderId, input.userId, match.similarity);
+      throw this.fail('Khuôn mặt chưa khớp ảnh đăng ký. Vui lòng chụp lại ở nơi đủ sáng, nhìn thẳng vào camera, bỏ khẩu trang và kính.');
+    }
+    return { note: match.note, review: { similarity: match.similarity, pending: true } };
   }
 
-  private async matchRegistered(userId: string, plain: Buffer): Promise<string> {
+  /** A pass leaves a row only under the review rule, so a face rejected earlier is cleared by the new photo. */
+  private passed(note: string, similarity: number | null): CheckinFaceResult {
+    return this.reviewEnabled ? { note, review: { similarity, pending: false } } : { note };
+  }
+
+  private async matchRegistered(userId: string, plain: Buffer): Promise<{ note: string; similarity: number | null }> {
     const doc = await this.documents
       .createQueryBuilder('d')
       .innerJoin('d.verification', 'v')
@@ -100,18 +143,21 @@ export class CheckinFaceService {
       .andWhere('d.storage_object_path IS NOT NULL')
       .orderBy('d.created_at', 'DESC')
       .getOne();
-    if (!doc?.storageObjectPath) return 'Liveness đạt. Chưa có ảnh đăng ký để đối chiếu.';
+    if (!doc?.storageObjectPath) return { note: 'Liveness đạt. Chưa có ảnh đăng ký để đối chiếu.', similarity: null };
     let registered: Buffer;
     try {
       registered = await this.kyc.download(doc.storageObjectPath, userId);
     } catch {
-      return 'Liveness đạt. Chưa đọc được ảnh đăng ký để đối chiếu.';
+      return { note: 'Liveness đạt. Chưa đọc được ảnh đăng ký để đối chiếu.', similarity: null };
     }
     const result = await this.faceMatch.compare(plain, registered);
-    if (result.outcome !== 'scored') return 'Liveness đạt. Chưa đối chiếu được với ảnh đăng ký.';
-    return result.similarity >= this.faceMatch.threshold
-      ? `Liveness đạt. Khớp ảnh đăng ký ${result.similarity}%.`
-      : `CẦN KIỂM TRA: khuôn mặt chỉ khớp ảnh đăng ký ${result.similarity}% (ngưỡng ${this.faceMatch.threshold}%).`;
+    if (result.outcome !== 'scored') return { note: 'Liveness đạt. Chưa đối chiếu được với ảnh đăng ký.', similarity: null };
+    return {
+      similarity: result.similarity,
+      note: result.similarity >= this.faceMatch.threshold
+        ? `Liveness đạt. Khớp ảnh đăng ký ${result.similarity}%.`
+        : `CẦN KIỂM TRA: khuôn mặt chỉ khớp ảnh đăng ký ${result.similarity}% (ngưỡng ${this.faceMatch.threshold}%).`,
+    };
   }
 
   private fail(message: string): BusinessException {

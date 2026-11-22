@@ -1,6 +1,6 @@
 // src/modules/system-config/dto/update-config.dto.ts
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString, MaxLength } from 'class-validator';
+import { IsString, MaxLength } from 'class-validator';
 
 export class UpdateConfigDto {
   /**
@@ -12,7 +12,6 @@ export class UpdateConfigDto {
     description: 'New value for the config key (validated server-side per key type)',
     example: '500',
   })
-  @IsNotEmpty()
   @IsString()
   @MaxLength(512)
   value: string;

@@ -68,6 +68,12 @@ export class TechnicianOnboardingService {
         'Onboarding is already completed and approved.',
       );
     }
+    // Waiting for review: editing would push the profile back to IN_PROGRESS and out of the review queue.
+    if (profile.onboardingStatus === OnboardingStatus.SUBMITTED) {
+      throw new BadRequestException(
+        'Hồ sơ đang chờ xét duyệt, không thể chỉnh sửa lúc này.',
+      );
+    }
   }
 
   // ── GET Status ─────────────────────────────────────────────────────────
@@ -257,6 +263,17 @@ export class TechnicianOnboardingService {
     const profile = await this.getProfileOrFail(userId);
     this.assertOnboardingAllowed(profile);
 
+    // Once identity papers are submitted (pending or confirmed) the personal info must keep matching them.
+    const latestKyc = await this.verificationRepo.findOne({
+      where: { technicianId: userId },
+      order: { submittedAt: 'DESC' },
+    });
+    if (latestKyc && latestKyc.status !== VerificationStatus.REJECTED) {
+      throw new BadRequestException(
+        'Giấy tờ xác minh đã được nộp, thông tin cá nhân không thể thay đổi.',
+      );
+    }
+
     // Validate age >= 18
     const dob = new Date(dto.dateOfBirth);
     // Birth date is a calendar date; "today" is today in Vietnam, not on the server.
@@ -273,14 +290,33 @@ export class TechnicianOnboardingService {
       throw new BadRequestException('Số CCCD này đã được sử dụng bởi tài khoản khác.');
     }
 
+    if (dto.phoneNumber) {
+      const existingPhone = await this.userRepo.findOne({
+        where: { phoneNumber: dto.phoneNumber },
+      });
+      if (existingPhone && existingPhone.id !== userId) {
+        throw new BadRequestException('Số điện thoại này đã được sử dụng bởi tài khoản khác.');
+      }
+    }
+
     // Update user fields
-    await this.userRepo.update(userId, {
-      fullName: dto.fullName.trim(),
-      dateOfBirth: dob,
-      gender: dto.gender,
-      citizenIdNumber: dto.citizenIdNumber,
-      ...(dto.phoneNumber ? { phoneNumber: dto.phoneNumber } : {}),
-    });
+    try {
+      await this.userRepo.update(userId, {
+        fullName: dto.fullName.trim(),
+        dateOfBirth: dob,
+        gender: dto.gender,
+        citizenIdNumber: dto.citizenIdNumber,
+        ...(dto.phoneNumber ? { phoneNumber: dto.phoneNumber } : {}),
+      });
+    } catch (err) {
+      // Two requests racing past the checks above hit the unique index.
+      if ((err as { code?: string })?.code === '23505') {
+        throw new BadRequestException(
+          'Số CCCD hoặc số điện thoại đã được sử dụng bởi tài khoản khác.',
+        );
+      }
+      throw err;
+    }
 
     // Advance onboarding step
     if (profile.onboardingStep < 2) {

@@ -64,10 +64,10 @@ export class CreateTimeOffDto {
   @IsDateString()
   endAt: string;
 
-  @ApiPropertyOptional({ maxLength: 500 })
+  @ApiPropertyOptional({ maxLength: 255 })
   @IsOptional()
   @IsString()
-  @MaxLength(500)
+  @MaxLength(255, { message: 'Lý do nghỉ tối đa 255 ký tự.' })
   @NoUnsafeText()
   reason?: string;
 }

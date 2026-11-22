@@ -5,6 +5,8 @@ import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants/error-codes';
 import {
   CostItemType,
+  PartRequestStatus,
+  PartUsageStatus,
   WarrantyClaimStatus,
   WarrantyCustomerPrompt,
   WarrantyDeclineReason,
@@ -12,6 +14,8 @@ import {
   WarrantyStatus,
   WarrantyVisitStatus,
 } from '../../shared/enums';
+import { PartRequest } from '../part-requests/entities/part-request.entity';
+import { PartRequestItem } from '../part-requests/entities/part-request-item.entity';
 import { Address } from '../users/entities/address.entity';
 import { Booking } from '../bookings/entities/booking.entity';
 import { distanceToBooking, servesArea, technicianOrigin } from '../bookings/technician-location';
@@ -296,6 +300,15 @@ export class WarrantyClaimsTechnicianService {
   async complete(claimId: string, dto: CompleteWarrantyReServiceDto, technician: OrderActor): Promise<StaffWarrantyClaimDto> {
     const claim = await this.ownClaim(claimId, technician.id, WarrantyClaimStatus.IN_PROGRESS);
     const visit = await this.latestVisit(claim.id, technician.id, [WarrantyVisitStatus.INSPECTED]);
+
+    // The replacement part has to be received and declared fitted (or returned) first; the faulty part can be handed in afterwards.
+    const request = await this.claimRepo.manager.findOneBy(PartRequest, { warrantyClaimId: claim.id });
+    if (request && request.status !== PartRequestStatus.CANCELLED) {
+      const items = await this.claimRepo.manager.find(PartRequestItem, { where: { partRequestId: request.id } });
+      if (![PartRequestStatus.RECEIVED, PartRequestStatus.COMPLETED].includes(request.status) || items.some((i) => i.usageStatus === PartUsageStatus.PENDING)) {
+        throw conflict('Cần nhận linh kiện thay thế và khai đã lắp hoặc trả lại trước khi báo hoàn tất.');
+      }
+    }
 
     await this.claimRepo.manager.transaction(async (manager) => {
       const updated = await manager.getRepository(WarrantyClaim).update(

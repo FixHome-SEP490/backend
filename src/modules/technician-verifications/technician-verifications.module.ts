@@ -8,6 +8,7 @@ import { TechnicianVerification } from './entities/technician-verification.entit
 import { VerificationDocument } from './entities/verification-document.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { KycStorageService } from './kyc-storage.service';
+import { KycOrphanSweepService } from './kyc-orphan-sweep.service';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { FaceMatchModule } from '../face-match/face-match.module';
 import { Wallet } from '../wallet/entities/wallet.entity';
@@ -27,7 +28,7 @@ import { Wallet } from '../wallet/entities/wallet.entity';
     TechnicianVerificationsController,
     AdminTechnicianVerificationsController,
   ],
-  providers: [TechnicianVerificationsService, KycStorageService],
+  providers: [TechnicianVerificationsService, KycStorageService, KycOrphanSweepService],
   exports: [TechnicianVerificationsService, KycStorageService, TypeOrmModule],
 })
 export class TechnicianVerificationsModule {}

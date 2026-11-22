@@ -200,4 +200,28 @@ export class ProfileReviewService {
     });
     return { technicianId, onboardingStatus: OnboardingStatus.REJECTED };
   }
+
+  /** Hồ sơ bị từ chối được mở lại: lượt gặp cũ không còn tính, thợ đặt lịch gặp lại (về giai đoạn `visit_required`). */
+  async reopen(technicianId: string, adminId: string) {
+    const profile = await this.profiles.findOne({ where: { userId: technicianId } });
+    if (!profile) throw new NotFoundException('Technician profile not found');
+    if (profile.onboardingStatus !== OnboardingStatus.REJECTED || !profile.profileReviewRejectionReason) {
+      throw new ConflictException('Chỉ mở lại được hồ sơ đã bị từ chối ở bước duyệt hồ sơ.');
+    }
+    await this.visits.update({ technicianId, status: OfficeVisitStatus.ATTENDED }, { status: OfficeVisitStatus.CANCELLED, note: 'Mở lại hồ sơ để gặp lại' });
+    await this.profiles.update(profile.id, { onboardingStatus: OnboardingStatus.SUBMITTED, profileReviewRejectionReason: null });
+    await this.audit.log({
+      actorUserId: adminId, actorRole: Role.ADMIN, action: 'TECHNICIAN_PROFILE_REOPENED', resourceType: 'technician_profile', resourceId: technicianId,
+      before: { onboardingStatus: profile.onboardingStatus, reason: profile.profileReviewRejectionReason }, after: { onboardingStatus: OnboardingStatus.SUBMITTED },
+    });
+    void this.notifications?.createNotification({
+      userId: technicianId,
+      title: 'Hồ sơ được mở lại - Đặt lịch gặp lại',
+      message: 'FixHome đã mở lại hồ sơ của bạn. Vui lòng chọn trụ sở và giờ hẹn để gặp lại, nhớ mang bản công chứng bằng cấp.',
+      type: 'OFFICE_VISIT_RESET',
+      referenceType: 'technician_profile',
+      referenceId: technicianId,
+    });
+    return { technicianId, onboardingStatus: OnboardingStatus.SUBMITTED };
+  }
 }

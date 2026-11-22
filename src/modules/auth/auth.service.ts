@@ -125,6 +125,35 @@ export class AuthService {
     return { resendAvailableAt };
   }
 
+  /** Mirrors the conflict rules of {@link register}, without writing anything. */
+  async checkAvailability(q: {
+    email?: string;
+    phoneNumber?: string;
+  }): Promise<{
+    emailTaken: boolean;
+    emailPending: boolean;
+    phoneTaken: boolean;
+  }> {
+    const email = q.email?.toLowerCase().trim();
+    const phone = q.phoneNumber ? normalizePhone(q.phoneNumber) : null;
+    const byEmail = email
+      ? await this.userRepository.findOne({ where: { email } })
+      : null;
+    const byPhone = phone
+      ? await this.userRepository.findOne({ where: { phoneNumber: phone } })
+      : null;
+    // A pending, unverified account may be registered again.
+    const emailPending =
+      !!byEmail &&
+      byEmail.status === AccountStatus.PENDING_VERIFICATION &&
+      !byEmail.isEmailVerified;
+    return {
+      emailTaken: !!byEmail && !emailPending,
+      emailPending,
+      phoneTaken: !!byPhone && byPhone.id !== byEmail?.id,
+    };
+  }
+
   async register(dto: RegisterDto): Promise<RegisterResponseDto> {
     const role = dto.role ?? Role.CUSTOMER;
     if (role !== Role.CUSTOMER && role !== Role.TECHNICIAN)
@@ -149,11 +178,36 @@ export class AuthService {
         throw new ConflictException('Email is already registered');
       }
       // Still pending verification: update info and resend OTP
+      if (phoneNumber) {
+        const phoneOwner = await this.userRepository.findOne({
+          where: { phoneNumber },
+        });
+        if (phoneOwner && phoneOwner.id !== existingUser.id)
+          throw new ConflictException('Phone number is already registered');
+      }
       const passwordHash = await bcrypt.hash(dto.password, 12);
       existingUser.fullName = dto.fullName.trim();
       existingUser.phoneNumber = phoneNumber ?? existingUser.phoneNumber;
       existingUser.passwordHash = passwordHash;
-      await this.userRepository.save(existingUser);
+      const roleChanged = existingUser.role !== role;
+      existingUser.role = role;
+      await this.userRepository.manager.transaction(async (manager) => {
+        await manager.getRepository(User).save(existingUser);
+        if (!roleChanged) return;
+        // Keep the technician profile in step with the (re-chosen) role.
+        const { TechnicianProfile } = await import(
+          '../technicians/entities/technician-profile.entity'
+        );
+        const profiles = manager.getRepository(TechnicianProfile);
+        if (role === Role.TECHNICIAN) {
+          if (!(await profiles.findOne({ where: { userId: existingUser.id } })))
+            await profiles.save(
+              profiles.create({ userId: existingUser.id, isAvailable: false }),
+            );
+        } else {
+          await profiles.delete({ userId: existingUser.id });
+        }
+      });
       await this.generateAndSendOtp(
         email,
         OtpPurpose.REGISTER,

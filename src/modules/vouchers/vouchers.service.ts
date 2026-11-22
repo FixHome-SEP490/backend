@@ -83,6 +83,7 @@ export class VouchersService implements OnModuleInit, OnModuleDestroy {
           return this.lockCampaign(manager, receipt.resourceId);
         }
       }
+      await this.assertCodeFree(manager, input.code);
       const campaign = await manager.save(
         VoucherCampaign,
         manager.create(VoucherCampaign, {
@@ -161,6 +162,7 @@ export class VouchersService implements OnModuleInit, OnModuleDestroy {
       if (await this.campaignReplay(manager, campaign.id, commandId, fingerprint, actor.id)) return campaign;
       if (campaign.version !== version) this.campaignConflict();
       await this.assertDraft(manager, campaign);
+      await this.assertCodeFree(manager, input.code, campaign.id);
       const before = { ...this.campaignTermsFromEntity(campaign), version: campaign.version };
       Object.assign(campaign, this.campaignTerms(input));
       campaign.version++;
@@ -869,6 +871,11 @@ export class VouchersService implements OnModuleInit, OnModuleDestroy {
   private uuid(id: string): void {
     if (!isUUID(id, '4'))
       throw new BadRequestException('Mã tham chiếu không hợp lệ.');
+  }
+  /** Mã trùng trước đây rơi vào lỗi chung "kiểm tra trạng thái thanh toán", admin không biết sửa gì. */
+  private async assertCodeFree(manager: EntityManager, code: string, exceptId?: string): Promise<void> {
+    const other = await manager.findOne(VoucherCampaign, { where: { code }, select: { id: true } });
+    if (other && other.id !== exceptId) throw new ConflictException('Mã ưu đãi này đã được chiến dịch khác sử dụng. Vui lòng chọn mã khác.');
   }
   private unavailable(): never {
     throw new NotFoundException('Không tìm thấy ưu đãi phù hợp.');
