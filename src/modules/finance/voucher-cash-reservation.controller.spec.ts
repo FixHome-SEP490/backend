@@ -49,7 +49,7 @@ describe.each([
     const response = await request(s.http).get(`/finance/funded/${path}/${id}/cash/reservation`).expect(200);
     expect(response.body).toEqual({ success: true, statusCode: 200, message: 'Success', data: s.result });
     expect(s.lookup).toHaveBeenCalledExactlyOnceWith(scopeKind, id, s.actor);
-    expect(s.permissions).toHaveBeenCalledWith(Role.TECHNICIAN, 'order:read_related');
+    expect(s.permissions).toHaveBeenCalledWith(Role.TECHNICIAN, 'order:read_related', s.actor.id);
     expect(response.headers['cache-control']).toBe('no-store');
   });
 

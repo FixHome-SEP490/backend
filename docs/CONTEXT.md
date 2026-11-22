@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-22 11:39 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/final-2211
+> Cập nhật lần cuối: 2026-11-22 12:40 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: feat/sm-per-account-permissions
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -542,6 +542,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 
 ## 9. Nhật ký cập nhật context
 
+- 2026-11-22 12:40 (UTC+7) | ToanAltF4 | feat/sm-per-account-permissions | BUG 261: admin phân quyền theo từng tài khoản SM (user_scopes.permission_overrides, cache RbacService, API admin/rbac/service-manager/accounts, bước release DEV)
 - 2026-11-22 11:39 (UTC+7) | ToanAltF4 | fix/final-2211 | GET invoice trả voucherDiscount (tổng SUBSIDY_COMMITTED của hoá đơn, chỉ đọc) và amountDue; mô tả bảo hành HasLetterOrDigit + NoUnsafeText; part-returns/mine trả meta.completedQty (1 query đếm); SM/admin vào phòng staff, order:updated gửi thêm cho staff
 - 2026-11-22 01:46 (UTC+7) | ToanAltF4 | fix/console-forms-2211 | QA 22/11 console + form ngoài luồng đơn: sửa lỗi kiểm thật trên fixhome.sbs
 - 2026-11-22 01:21 (UTC+7) | Hgnv11 | dev | View bảo hành của khách thêm inspection, outcomeCode, refundAmount sau khi SM duyệt
@@ -581,4 +582,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-07 09:59 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Cập nhật Task3/0015: invoice actual từng shipment, PAID completion, cancellation guard và C snapshot; P2 cancellation kiểm đúng lỗi/rollback với audit thật, focused PostgreSQL 5 PASS, chưa release.
 - 2026-11-07 03:42 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Expose frozen W3 70/30 shipping snapshot trên InvoiceResponseDto (read-only, backward-compat); 8 unit PASS, lint/typecheck/build PASS, không schema/migration.
 - 2026-11-07 03:28 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Task5 backend release qualification: DEV gate nhận 0014/0015 theo thứ tự, proof bridge/invoice/ACL/replay và negative dirty ledger; PostgreSQL 16 cô lập 42 PASS, không apply DEV.
-- 2026-11-07 03:17 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Task4 manual bank PENDING và Admin exact unique receipt confirm, idempotent/replay/strict audit; focused 11 và finance 579 PASS, chưa PG/HTTP/rollout.

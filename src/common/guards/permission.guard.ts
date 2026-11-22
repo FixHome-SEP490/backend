@@ -46,7 +46,7 @@ export class PermissionGuard implements CanActivate {
 
     // Check if the user's role has ANY of the required permissions
     for (const permission of requiredPermissions) {
-      const has = await this.rbacService.hasPermission(user.role, permission);
+      const has = await this.rbacService.hasPermission(user.role, permission, user.id);
       if (has) {
         return true;
       }
