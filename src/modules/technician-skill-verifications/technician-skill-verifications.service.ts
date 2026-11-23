@@ -11,7 +11,13 @@ import { TechnicianSkillVerification } from '../technicians/entities/technician-
 import { TechnicianSkill } from '../technicians/entities/technician-skill.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { VerificationDocument } from '../technician-verifications/entities/verification-document.entity';
-import { DocumentType, Role, VerificationStatus } from '../../shared/enums';
+import {
+  DocumentType,
+  SKILL_EVIDENCE_GROUP_BY_TYPE,
+  SkillEvidenceReviewStatus,
+  Role,
+  VerificationStatus,
+} from '../../shared/enums';
 import { PaginationMeta } from '../../shared/dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { KycStorageService, KycSignedAccess, KycSignedUpload } from '../technician-verifications/kyc-storage.service';
@@ -20,6 +26,7 @@ import {
   QuerySkillVerificationsDto,
   RejectSkillVerificationDto,
   SkillVerificationResponseDto,
+  SubmitSkillEvidenceDto,
 } from './dto';
 import {
   toSkillVerificationResponse,
@@ -28,6 +35,42 @@ import {
 
 export const SKILL_EVIDENCE_NOT_UPLOADED =
   'Không tìm thấy tệp chứng chỉ đã tải lên. Vui lòng tải lại tệp rồi gửi.';
+
+const isCalendarDate = (value: string): boolean => {
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+};
+
+/**
+ * Metadata columns for a technician's evidence. The trust group comes from the type, never from the client.
+ * Details without a type are refused so a row never carries half a description; no type and no details
+ * (a client that sends only the file) stores nothing extra.
+ */
+export function skillEvidenceMetadata(dto: SubmitSkillEvidenceDto) {
+  const { evidenceType, issuer, referenceNumber, issuedAt, expiresAt, claimedYears } = dto;
+  if (!evidenceType) {
+    if (issuer || referenceNumber || issuedAt || expiresAt || claimedYears !== undefined) {
+      throw new BadRequestException('evidenceType is required when evidence details are given');
+    }
+    return {};
+  }
+  if ((issuedAt && !isCalendarDate(issuedAt)) || (expiresAt && !isCalendarDate(expiresAt))) {
+    throw new BadRequestException('issuedAt and expiresAt must be real calendar dates');
+  }
+  if (issuedAt && expiresAt && expiresAt < issuedAt) {
+    throw new BadRequestException('expiresAt must not be before issuedAt');
+  }
+  return {
+    evidenceType,
+    evidenceGroup: SKILL_EVIDENCE_GROUP_BY_TYPE[evidenceType],
+    issuer: issuer || null,
+    referenceNumber: referenceNumber || null,
+    issuedAt: issuedAt ?? null,
+    expiresAt: expiresAt ?? null,
+    claimedYears: claimedYears ?? null,
+    reviewStatus: SkillEvidenceReviewStatus.PENDING,
+  };
+}
 
 const VERIFICATION_RELATIONS = [
   'technicianSkill',
@@ -65,8 +108,9 @@ export class TechnicianSkillVerificationsService {
   async attachEvidence(
     technicianUserId: string,
     serviceId: string,
-    dto: AttachSkillEvidenceDto,
+    dto: SubmitSkillEvidenceDto,
   ): Promise<SkillVerificationResponseDto> {
+    const metadata = skillEvidenceMetadata(dto);
     this.storageService.validateObjectPath(dto.storageObjectPath, technicianUserId);
 
     const profile = await this.profileRepo.findOne({ where: { userId: technicianUserId } });
@@ -100,6 +144,7 @@ export class TechnicianSkillVerificationsService {
         fileSize: dto.fileSize,
         mimeType: dto.mimeType,
         issuedById: null,
+        ...metadata,
       }),
     );
 

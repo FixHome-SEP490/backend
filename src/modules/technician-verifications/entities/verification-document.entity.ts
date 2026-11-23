@@ -1,7 +1,7 @@
 // src/modules/technician-verifications/entities/verification-document.entity.ts
 import { Entity, Column, Index, ManyToOne, JoinColumn } from 'typeorm';
 import { BaseEntity } from '../../../database/base.entity';
-import { DocumentType } from '../../../shared/enums';
+import { DocumentType, SkillEvidenceGroup, SkillEvidenceReviewStatus, SkillEvidenceType } from '../../../shared/enums';
 import { TechnicianVerification } from './technician-verification.entity';
 import { User } from '../../users/entities/user.entity';
 import { TechnicianSkillVerification } from '../../technicians/entities/technician-skill-verification.entity';
@@ -69,4 +69,34 @@ export class VerificationDocument extends BaseEntity {
 
   @Column({ name: 'mime_type', type: 'varchar' })
   mimeType: string;
+
+  // Skill evidence metadata (PO 23/11/2026). NULL on identity KYC rows, on rows that predate it and on the
+  // certificate FixHome issues at approval; the DB CHECKs only allow it on rows owned by a skill verification.
+  @Column({ name: 'evidence_type', type: 'varchar', length: 40, nullable: true })
+  evidenceType: SkillEvidenceType | null;
+
+  @Column({ name: 'evidence_group', type: 'varchar', length: 20, nullable: true })
+  evidenceGroup: SkillEvidenceGroup | null;
+
+  @Column({ type: 'varchar', length: 200, nullable: true })
+  issuer: string | null;
+
+  @Column({ name: 'reference_number', type: 'varchar', length: 100, nullable: true })
+  referenceNumber: string | null;
+
+  /** Calendar dates (`YYYY-MM-DD`), not instants. */
+  @Column({ name: 'issued_at', type: 'date', nullable: true })
+  issuedAt: string | null;
+
+  @Column({ name: 'expires_at', type: 'date', nullable: true })
+  expiresAt: string | null;
+
+  @Column({ name: 'claimed_years', type: 'int', nullable: true })
+  claimedYears: number | null;
+
+  @Column({ name: 'review_status', type: 'varchar', length: 20, nullable: true })
+  reviewStatus: SkillEvidenceReviewStatus | null;
+
+  @Column({ name: 'review_note', type: 'text', nullable: true })
+  reviewNote: string | null;
 }

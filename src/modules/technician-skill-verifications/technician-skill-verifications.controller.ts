@@ -12,7 +12,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { TechnicianSkillVerificationsService } from './technician-skill-verifications.service';
-import { AttachSkillEvidenceDto } from './dto';
+import { SubmitSkillEvidenceDto } from './dto';
 import { KycSignedAccessResponseDto, KycSignedUploadResponseDto, RequestKycUploadUrlDto } from '../technician-verifications/dto';
 import { JwtAuthGuard, RolesGuard } from '../../common/guards';
 import { CurrentUser, Roles } from '../../common/decorators';
@@ -53,7 +53,7 @@ export class TechnicianSkillVerificationsController {
   async attachDocument(
     @CurrentUser('id') technicianId: string,
     @Param('serviceId', ParseUUIDPipe) serviceId: string,
-    @Body() dto: AttachSkillEvidenceDto,
+    @Body() dto: SubmitSkillEvidenceDto,
   ) {
     return this.service.attachEvidence(technicianId, serviceId, dto);
   }

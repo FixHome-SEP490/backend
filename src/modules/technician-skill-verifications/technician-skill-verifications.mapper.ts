@@ -17,6 +17,15 @@ function toDocumentResponse(
     fileSize: document.fileSize,
     mimeType: document.mimeType,
     issuedById: document.issuedById,
+    evidenceType: document.evidenceType ?? null,
+    evidenceGroup: document.evidenceGroup ?? null,
+    issuer: document.issuer ?? null,
+    referenceNumber: document.referenceNumber ?? null,
+    issuedAt: document.issuedAt ?? null,
+    expiresAt: document.expiresAt ?? null,
+    claimedYears: document.claimedYears ?? null,
+    reviewStatus: document.reviewStatus ?? null,
+    reviewNote: document.reviewNote ?? null,
     createdAt: document.createdAt,
   };
 }

@@ -9,8 +9,16 @@ import {
 import {
   SKILL_EVIDENCE_NOT_UPLOADED,
   TechnicianSkillVerificationsService,
+  skillEvidenceMetadata,
 } from './technician-skill-verifications.service';
-import { VerificationStatus } from '../../shared/enums';
+import {
+  SKILL_EVIDENCE_GROUP_BY_TYPE,
+  SKILL_EVIDENCE_TYPES,
+  SkillEvidenceGroup,
+  SkillEvidenceReviewStatus,
+  SkillEvidenceType,
+  VerificationStatus,
+} from '../../shared/enums';
 
 const TECH_USER = 'tech-user-1';
 const SERVICE_ID = 'service-1';
@@ -117,6 +125,39 @@ describe('TechnicianSkillVerificationsService evidence must be really uploaded',
     );
   });
 
+  it('stores the evidence metadata with the group derived from the type', async () => {
+    const path = `kyc/${TECH_USER}/with-meta.jpg`;
+    uploaded.add(path);
+    await service.attachEvidence(TECH_USER, SERVICE_ID, {
+      ...evidence(path),
+      evidenceType: SkillEvidenceType.NATIONAL_SKILL_CERTIFICATE,
+      issuer: 'Trường Cao đẳng nghề',
+      issuedAt: '2021-06-15',
+      expiresAt: '2027-06-15',
+      claimedYears: 5,
+    });
+    expect(documentRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        evidenceType: SkillEvidenceType.NATIONAL_SKILL_CERTIFICATE,
+        evidenceGroup: SkillEvidenceGroup.OFFICIAL,
+        issuer: 'Trường Cao đẳng nghề',
+        issuedAt: '2021-06-15',
+        claimedYears: 5,
+        reviewStatus: SkillEvidenceReviewStatus.PENDING,
+      }),
+    );
+  });
+
+  it('refuses bad metadata before asking storage or saving', async () => {
+    const path = `kyc/${TECH_USER}/bad-meta.jpg`;
+    uploaded.add(path);
+    await expect(
+      service.attachEvidence(TECH_USER, SERVICE_ID, { ...evidence(path), issuer: 'Ai đó' }),
+    ).rejects.toThrow(BadRequestException);
+    expect(storage.objectExists).not.toHaveBeenCalled();
+    expect(documentRepo.save).not.toHaveBeenCalled();
+  });
+
   it('refuses to approve with an issued certificate that was never uploaded', async () => {
     const ghost = `kyc/${TECH_USER}/certificate.jpg`;
     await expect(service.approve(VERIFICATION_ID, 'admin-1', evidence(ghost))).rejects.toThrow(
@@ -124,5 +165,40 @@ describe('TechnicianSkillVerificationsService evidence must be really uploaded',
     );
     expect(storage.objectExists).toHaveBeenCalledWith(ghost, TECH_USER);
     expect(verificationRepo.manager.transaction).not.toHaveBeenCalled();
+  });
+});
+
+describe('skillEvidenceMetadata', () => {
+  const base = { storageObjectPath: 'p', fileName: 'a.jpg', fileSize: 1, mimeType: 'image/jpeg' };
+
+  it('stores nothing extra when the client sends only the file', () => {
+    expect(skillEvidenceMetadata(base)).toEqual({});
+  });
+
+  it('refuses details without an evidence type', () => {
+    expect(() => skillEvidenceMetadata({ ...base, claimedYears: 0 })).toThrow(BadRequestException);
+    expect(() => skillEvidenceMetadata({ ...base, referenceNumber: 'X1' })).toThrow(BadRequestException);
+  });
+
+  it('maps every evidence type to a trust group', () => {
+    expect(Object.keys(SKILL_EVIDENCE_GROUP_BY_TYPE).sort()).toEqual([...SKILL_EVIDENCE_TYPES].sort());
+    expect(skillEvidenceMetadata({ ...base, evidenceType: SkillEvidenceType.EMPLOYER_CONFIRMATION }).evidenceGroup).toBe(
+      SkillEvidenceGroup.VERIFIABLE,
+    );
+    expect(skillEvidenceMetadata({ ...base, evidenceType: SkillEvidenceType.WORK_PHOTOS }).evidenceGroup).toBe(
+      SkillEvidenceGroup.SELF_DECLARED,
+    );
+  });
+
+  it('refuses an expiry before the issue date and dates that do not exist', () => {
+    const type = SkillEvidenceType.VOCATIONAL_DIPLOMA;
+    expect(() =>
+      skillEvidenceMetadata({ ...base, evidenceType: type, issuedAt: '2024-05-02', expiresAt: '2024-05-01' }),
+    ).toThrow(BadRequestException);
+    expect(() => skillEvidenceMetadata({ ...base, evidenceType: type, issuedAt: '2021-02-31' })).toThrow(
+      BadRequestException,
+    );
+    expect(skillEvidenceMetadata({ ...base, evidenceType: type, issuedAt: '2024-05-01', expiresAt: '2024-05-01' }))
+      .toMatchObject({ reviewStatus: SkillEvidenceReviewStatus.PENDING });
   });
 });
