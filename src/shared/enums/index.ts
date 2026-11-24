@@ -8,6 +8,7 @@ export * from './additional-cost-status.enum';
 export * from './quotation-status.enum';
 export * from './evidence-type.enum';
 export * from './skill-level.enum';
+export * from './skill-evidence.enum';
 export * from './check-in-result.enum';
 export * from './cancel-actor.enum';
 export * from './strike-status.enum';

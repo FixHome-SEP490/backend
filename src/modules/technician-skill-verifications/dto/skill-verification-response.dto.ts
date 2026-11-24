@@ -1,5 +1,11 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { DocumentType, VerificationStatus } from '../../../shared/enums';
+import {
+  DocumentType,
+  SkillEvidenceGroup,
+  SkillEvidenceReviewStatus,
+  SkillEvidenceType,
+  VerificationStatus,
+} from '../../../shared/enums';
 import { VerificationUserSummaryDto } from '../../technician-verifications/dto';
 
 export class SkillVerificationDocumentResponseDto {
@@ -24,6 +30,33 @@ export class SkillVerificationDocumentResponseDto {
     description: 'NULL = technician-submitted evidence; set = FixHome-issued certificate',
   })
   issuedById: string | null;
+
+  @ApiPropertyOptional({ enum: SkillEvidenceType, nullable: true })
+  evidenceType: SkillEvidenceType | null;
+
+  @ApiPropertyOptional({ enum: SkillEvidenceGroup, nullable: true })
+  evidenceGroup: SkillEvidenceGroup | null;
+
+  @ApiPropertyOptional({ type: String, nullable: true })
+  issuer: string | null;
+
+  @ApiPropertyOptional({ type: String, nullable: true })
+  referenceNumber: string | null;
+
+  @ApiPropertyOptional({ type: String, nullable: true, example: '2021-06-15' })
+  issuedAt: string | null;
+
+  @ApiPropertyOptional({ type: String, nullable: true, example: '2027-06-15' })
+  expiresAt: string | null;
+
+  @ApiPropertyOptional({ type: Number, nullable: true })
+  claimedYears: number | null;
+
+  @ApiPropertyOptional({ enum: SkillEvidenceReviewStatus, nullable: true })
+  reviewStatus: SkillEvidenceReviewStatus | null;
+
+  @ApiPropertyOptional({ type: String, nullable: true })
+  reviewNote: string | null;
 
   @ApiProperty({ type: String, format: 'date-time' })
   createdAt: Date;
