@@ -232,7 +232,8 @@ export class TechnicianSkillVerificationsService {
    * The papers the technician has sent, one entry per stored file with the categories it covers: a paper attached to a
    * whole category is saved as one document row per skill, so the rows are folded by file. FixHome-issued certificates
    * are not the technician's papers and are left out. `serviceId` is any one skill the paper sits on, for the
-   * per-service document access route.
+   * per-service document access route. `editable` is false once the paper was used to approve a skill (or while the
+   * profile waits for review): edit and delete are refused then, so the app hides them.
    */
   async listMyEvidence(technicianUserId: string) {
     const profile = await this.profileRepo.findOne({ where: { userId: technicianUserId } });
@@ -243,8 +244,9 @@ export class TechnicianSkillVerificationsService {
     });
     const byFile = new Map<
       string,
-      { document: VerificationDocument; serviceId: string; categories: Map<string, string> }
+      { document: VerificationDocument; serviceId: string; categories: Map<string, string>; editable: boolean }
     >();
+    const inReview = profile.onboardingStatus === OnboardingStatus.SUBMITTED;
     for (const request of requests) {
       const service = request.technicianSkill.service;
       for (const document of request.documents ?? []) {
@@ -254,14 +256,23 @@ export class TechnicianSkillVerificationsService {
           document,
           serviceId: request.technicianSkill.serviceId,
           categories: new Map<string, string>(),
+          editable: false,
         };
+        // Same rule as `editableEvidenceRows`: a paper is locked once every skill it sits on has been reviewed.
+        if (
+          !inReview &&
+          request.status === VerificationStatus.PENDING &&
+          request.technicianSkill.verificationStatus !== VerificationStatus.VERIFIED
+        ) {
+          entry.editable = true;
+        }
         entry.categories.set(service.categoryId, service.category?.name ?? 'Khác');
         byFile.set(key, entry);
       }
     }
     return [...byFile.values()]
       .sort((a, b) => a.document.createdAt.getTime() - b.document.createdAt.getTime())
-      .map(({ document: d, serviceId, categories }) => ({
+      .map(({ document: d, serviceId, categories, editable }) => ({
         documentId: d.id,
         serviceId,
         fileName: d.fileName,
@@ -274,6 +285,7 @@ export class TechnicianSkillVerificationsService {
         expiresAt: d.expiresAt ?? null,
         claimedYears: d.claimedYears ?? null,
         reviewStatus: d.reviewStatus ?? null,
+        editable,
         categories: [...categories].map(([id, name]) => ({ id, name })),
       }));
   }

@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-25 21:33 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
+> Cập nhật lần cuối: 2026-11-25 22:39 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -548,6 +548,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
+- 2026-11-25 22:39 (UTC+7) | Hgnv11 | dev | GET /technicians/me/skill-evidence trả thêm editable (false khi giấy tờ đã dùng để duyệt kỹ năng hoặc hồ sơ đang chờ xét duyệt), để app khóa Sửa/Xóa; không đổi migration
 - 2026-11-25 21:33 (UTC+7) | Hgnv11 | dev | Thêm OTP qua SMS (Twilio Verify): chọn kênh khi đăng ký, xác thực email/SĐT trong profile, cột users.is_phone_verified; CHƯA KIỂM CHỨNG với Twilio và DB thật
 - 2026-11-25 20:48 (UTC+7) | Hgnv11 | dev | Duyệt hồ sơ bắt buộc ghi lý do cho kỹ năng không xác nhận, lưu vào phiếu kỹ năng; thợ nhận thông báo SKILL_NOT_CONFIRMED; CHƯA KIỂM CHỨNG với DB thật
 - 2026-11-25 19:58 (UTC+7) | Hgnv11 | dev | Thợ sửa/xóa giấy tờ đã nộp (PATCH, DELETE skill-evidence); SM nhận thông báo TECHNICIAN_PROFILE_SUBMITTED khi thợ gửi hồ sơ; thông báo duyệt hồ sơ nêu kỹ năng chưa xác nhận; CHƯA KIỂM CHỨNG với DB thật
@@ -588,4 +589,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-09 02:43 (UTC+7) | Hgnv11 | dev | Tách duyệt danh tính khỏi duyệt hồ sơ: xác nhận danh tính chỉ mời thợ lên trụ sở (nhiều trụ sở cấu hình được, chọn gần nhất, vắng 2 lần thì khóa và báo số hỗ trợ), duyệt hồ sơ cuối xác nhận cấp độ kỹ năng rồi mới APPROVED; cấp độ tự khai khi đăng ký; migration `TechnicianOfficeVisits` kèm script dev-release trong CD
 - 2026-11-08 23:13 (UTC+7) | Hgnv11 | dev | So khớp khuôn mặt CCCD với ảnh chân dung khi thợ nộp KYC bằng Amazon Rekognition (cờ `FACE_MATCH_ENABLED`, thêm dependency, migration lưu điểm); chưa làm check-in và liveness
 - 2026-11-08 23:02 (UTC+7) | Hgnv11 | dev | Gộp origin/dev vào dev: giữ cả ghi chú bảo hành tự duyệt lỗi do công không cần linh kiện và các thay đổi W3/kho; bỏ bớt nhật ký cũ để giữ tối đa 40 dòng
-- 2026-11-07 12:38 (UTC+7) | foxonworld | foxonworld/fixhome-w123-auditfix-backend-20261107 | Mở DEV gate cho 0016 với exact function proof/ACL/replay và prefix 0015 thật; siết ACL 0016 chưa release, gate PostgreSQL/unit 66 PASS, CI thêm zero-fee regression, Lead giữ release.
