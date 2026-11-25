@@ -152,6 +152,26 @@ export class MailService {
     await this.sendMail(to, subject, html);
   }
 
+  async sendVerifyEmailOtp(
+    to: string,
+    otp: string,
+    recipientName?: string,
+  ): Promise<void> {
+    const name = recipientName ? recipientName.trim() : 'Quý khách';
+    const html = `
+      <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 540px; margin: 0 auto; padding: 24px; color: #333;">
+        <h2 style="color: #1e3a8a; margin: 0 0 16px;">FixHome</h2>
+        <p>Xin chào <strong>${name}</strong>,</p>
+        <p>Nhập mã OTP dưới đây để xác thực email của tài khoản FixHome:</p>
+        <p style="text-align: center; margin: 24px 0;">
+          <span style="display: inline-block; font-size: 32px; font-weight: 800; letter-spacing: 8px; color: #1e3a8a; background: #eff6ff; padding: 12px 24px; border-radius: 8px; border: 2px dashed #3b82f6;">${otp}</span>
+        </p>
+        <p style="font-size: 13px; color: #64748b;">Mã có hiệu lực trong <strong>5 phút</strong>. Không chia sẻ mã này cho bất kỳ ai.</p>
+      </div>
+    `;
+    await this.sendMail(to, `[FixHome] Mã xác thực email: ${otp}`, html);
+  }
+
   private async sendMail(to: string, subject: string, html: string): Promise<void> {
     if (!this.transporter) {
       // No pretend sends (PO 07/10/2026): the user would wait for an OTP that never comes.

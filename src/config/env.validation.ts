@@ -237,6 +237,19 @@ export class EnvironmentVariables {
   @IsOptional()
   MAIL_FROM?: string;
 
+  // SMS OTP (Twilio Verify)
+  @IsString()
+  @IsOptional()
+  TWILIO_ACCOUNT_SID?: string;
+
+  @IsString()
+  @IsOptional()
+  TWILIO_AUTH_TOKEN?: string;
+
+  @IsString()
+  @IsOptional()
+  TWILIO_VERIFY_SID?: string;
+
   // VNPay (Optional — required only when payment.mode business config is LIVE)
   @IsString()
   @IsOptional()

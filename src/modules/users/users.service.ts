@@ -58,6 +58,7 @@ export class UsersService {
         );
       }
       user.phoneNumber = normalizePhone(dto.phoneNumber);
+      user.isPhoneVerified = false;
     }
 
     if (dto.fullName) {
@@ -75,6 +76,7 @@ export class UsersService {
     await this.userRepository.update(userId, {
       fullName: user.fullName,
       phoneNumber: user.phoneNumber,
+      isPhoneVerified: user.isPhoneVerified,
       avatarUrl: user.avatarUrl,
     });
     return this.getProfile(userId);

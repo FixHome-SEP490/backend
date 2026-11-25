@@ -27,6 +27,7 @@ describe('UsersService', () => {
     status: AccountStatus.ACTIVE,
     isActive: true,
     isEmailVerified: true,
+    isPhoneVerified: false,
     createdAt: new Date(),
     updatedAt: new Date(),
     refreshTokens: [],

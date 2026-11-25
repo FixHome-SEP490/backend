@@ -11,7 +11,7 @@ import { createHash } from 'crypto';
 import { AuthService } from './auth.service';
 import { User } from '../users/entities/user.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
-import { Role, AccountStatus, OtpPurpose, AuthProvider } from '../../shared/enums';
+import { Role, AccountStatus, OtpPurpose, OtpChannel, AuthProvider } from '../../shared/enums';
 
 describe('AuthService', () => {
   let authService: AuthService;
@@ -22,6 +22,7 @@ describe('AuthService', () => {
   let jwtService: any;
   let configService: any;
   let mailService: any;
+  let smsService: any;
 
   const mockUser: User = {
     id: 'user-uuid-1',
@@ -34,6 +35,7 @@ describe('AuthService', () => {
     status: AccountStatus.ACTIVE,
     isActive: true,
     isEmailVerified: true,
+    isPhoneVerified: false,
     createdAt: new Date(),
     updatedAt: new Date(),
     refreshTokens: [],
@@ -89,6 +91,12 @@ describe('AuthService', () => {
     mailService = {
       sendRegisterOtp: vi.fn().mockResolvedValue(undefined),
       sendPasswordResetOtp: vi.fn().mockResolvedValue(undefined),
+      sendVerifyEmailOtp: vi.fn().mockResolvedValue(undefined),
+    };
+
+    smsService = {
+      sendOtp: vi.fn().mockResolvedValue(undefined),
+      checkOtp: vi.fn().mockResolvedValue(true),
     };
 
     jwtService = {
@@ -132,6 +140,8 @@ describe('AuthService', () => {
       jwtService,
       configService,
       mailService,
+      undefined,
+      smsService,
     );
   });
 
@@ -467,6 +477,111 @@ describe('AuthService', () => {
       otpRepository.findOne.mockResolvedValue({ id: 'otp-uuid', email: mockUser.email, codeHash, purpose: OtpPurpose.REGISTER, expiresAt: new Date(Date.now() + 300000), attempts: 4, maxAttempts: 5, isUsed: false });
       otpAttemptUpdate = { affected: 0, raw: [] };
       await expect(authService.verifyRegisterOtp({ email: mockUser.email, otp: '123456' } as never)).rejects.toThrow('khóa');
+    });
+  });
+
+  describe('SMS OTP', () => {
+    const pendingUser = () => ({
+      ...mockUser,
+      status: AccountStatus.PENDING_VERIFICATION,
+      isEmailVerified: false,
+    });
+
+    it('registers with the SMS channel: texts the phone, sends no email', async () => {
+      userRepository.findOne.mockResolvedValue(null);
+
+      const result = await authService.register({
+        email: 'sms@fixhome.vn',
+        password: 'SecurePassword123!',
+        fullName: 'Nguyen Van A',
+        phoneNumber: '0394060729',
+        verifyChannel: OtpChannel.SMS,
+      } as never);
+
+      expect(result.channel).toBe(OtpChannel.SMS);
+      expect(smsService.sendOtp).toHaveBeenCalledWith('0394060729');
+      expect(mailService.sendRegisterOtp).not.toHaveBeenCalled();
+    });
+
+    it('refuses the SMS channel without a phone number', async () => {
+      userRepository.findOne.mockResolvedValue(null);
+      await expect(
+        authService.register({
+          email: 'sms@fixhome.vn',
+          password: 'SecurePassword123!',
+          fullName: 'Nguyen Van A',
+          verifyChannel: OtpChannel.SMS,
+        } as never),
+      ).rejects.toThrow(BadRequestException);
+      expect(smsService.sendOtp).not.toHaveBeenCalled();
+    });
+
+    it('activates the account on a correct SMS code and marks only the phone verified', async () => {
+      userRepository.findOne.mockResolvedValue(pendingUser());
+
+      const result = await authService.verifyRegisterOtp({
+        email: mockUser.email,
+        otp: '123456',
+        channel: OtpChannel.SMS,
+      });
+
+      expect(smsService.checkOtp).toHaveBeenCalledWith('0912345678', '123456');
+      expect(result.user.status).toBe(AccountStatus.ACTIVE);
+      expect(result.user.isPhoneVerified).toBe(true);
+      expect(result.user.isEmailVerified).toBe(false);
+    });
+
+    it('rejects a wrong SMS code and leaves the account pending', async () => {
+      userRepository.findOne.mockResolvedValue(pendingUser());
+      smsService.checkOtp.mockResolvedValue(false);
+
+      await expect(
+        authService.verifyRegisterOtp({
+          email: mockUser.email,
+          otp: '000000',
+          channel: OtpChannel.SMS,
+        }),
+      ).rejects.toThrow(BadRequestException);
+      expect(userRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('verifies the phone from the profile', async () => {
+      userRepository.findOne.mockResolvedValue({ ...mockUser, isPhoneVerified: false });
+      userRepository.update = vi.fn().mockResolvedValue({ affected: 1 });
+
+      const result = await authService.confirmPhoneVerification(mockUser.id, { otp: '123456' });
+
+      expect(result.isPhoneVerified).toBe(true);
+      expect(userRepository.update).toHaveBeenCalledWith(mockUser.id, { isPhoneVerified: true });
+    });
+
+    it('verifies the email from the profile with its own OTP purpose', async () => {
+      userRepository.findOne.mockResolvedValue({ ...mockUser, isEmailVerified: false });
+      userRepository.update = vi.fn().mockResolvedValue({ affected: 1 });
+      const codeHash = createHash('sha256').update('123456').digest('hex');
+      otpRepository.findOne.mockResolvedValue({
+        id: 'otp-uuid',
+        email: mockUser.email,
+        codeHash,
+        purpose: OtpPurpose.VERIFY_EMAIL,
+        expiresAt: new Date(Date.now() + 300000),
+        attempts: 0,
+        maxAttempts: 5,
+        isUsed: false,
+      });
+
+      const result = await authService.confirmEmailVerification(mockUser.id, { otp: '123456' });
+
+      expect(otpRepository.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ purpose: OtpPurpose.VERIFY_EMAIL }) }),
+      );
+      expect(result.isEmailVerified).toBe(true);
+      expect(userRepository.update).toHaveBeenCalledWith(mockUser.id, { isEmailVerified: true });
+    });
+
+    it('refuses to verify an already verified phone', async () => {
+      userRepository.findOne.mockResolvedValue({ ...mockUser, isPhoneVerified: true });
+      await expect(authService.sendPhoneVerification(mockUser.id)).rejects.toThrow('đã được xác thực');
     });
   });
 });

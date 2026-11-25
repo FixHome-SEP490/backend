@@ -18,7 +18,7 @@ import {
   IsPersonName,
   NoUnsafeText,
 } from '../../../shared/validation/text.validators';
-import { Role } from '../../../shared/enums';
+import { Role, OtpChannel } from '../../../shared/enums';
 
 export class RegisterDto {
   @ApiProperty({
@@ -68,6 +68,15 @@ export class RegisterDto {
     message: 'phoneNumber must be a valid Vietnamese phone number',
   })
   phoneNumber?: string;
+
+  @ApiPropertyOptional({
+    enum: OtpChannel,
+    default: OtpChannel.EMAIL,
+    description: 'Kênh nhận OTP xác thực: EMAIL hoặc SMS (SMS bắt buộc có phoneNumber)',
+  })
+  @IsOptional()
+  @IsEnum(OtpChannel, { message: 'verifyChannel must be EMAIL or SMS' })
+  verifyChannel?: OtpChannel;
 
   /**
    * CUSTOMER và TECHNICIAN đều có thể tự đăng ký. Tài khoản TECHNICIAN sau khi
