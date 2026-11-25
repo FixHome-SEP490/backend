@@ -1,5 +1,5 @@
 // src/modules/technician-skill-verifications/technician-skill-evidence.controller.ts
-import { Body, Controller, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { TechnicianSkillVerificationsService } from './technician-skill-verifications.service';
 import { SubmitCategoryEvidenceDto } from './dto';
@@ -17,6 +17,12 @@ import { Role } from '../../shared/enums';
 @ApiBearerAuth()
 export class TechnicianSkillEvidenceController {
   constructor(private readonly service: TechnicianSkillVerificationsService) {}
+
+  @Get()
+  @ApiOperation({ summary: 'Technician: Papers already sent, one entry per file with the service categories it covers' })
+  async listMine(@CurrentUser('id') technicianId: string) {
+    return this.service.listMyEvidence(technicianId);
+  }
 
   @Post('upload-url')
   @HttpCode(HttpStatus.CREATED)

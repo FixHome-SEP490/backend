@@ -226,6 +226,56 @@ export class TechnicianSkillVerificationsService {
     return verification ? toSkillVerificationResponse(verification) : null;
   }
 
+  /**
+   * The papers the technician has sent, one entry per stored file with the categories it covers: a paper attached to a
+   * whole category is saved as one document row per skill, so the rows are folded by file. FixHome-issued certificates
+   * are not the technician's papers and are left out. `serviceId` is any one skill the paper sits on, for the
+   * per-service document access route.
+   */
+  async listMyEvidence(technicianUserId: string) {
+    const profile = await this.profileRepo.findOne({ where: { userId: technicianUserId } });
+    if (!profile) return [];
+    const requests = await this.verificationRepo.find({
+      where: { technicianSkill: { technicianId: profile.id, isActive: true } },
+      relations: ['technicianSkill', 'technicianSkill.service', 'technicianSkill.service.category', 'documents'],
+    });
+    const byFile = new Map<
+      string,
+      { document: VerificationDocument; serviceId: string; categories: Map<string, string> }
+    >();
+    for (const request of requests) {
+      const service = request.technicianSkill.service;
+      for (const document of request.documents ?? []) {
+        if (document.issuedById) continue;
+        const key = document.storageObjectPath ?? document.id;
+        const entry = byFile.get(key) ?? {
+          document,
+          serviceId: request.technicianSkill.serviceId,
+          categories: new Map<string, string>(),
+        };
+        entry.categories.set(service.categoryId, service.category?.name ?? 'Khác');
+        byFile.set(key, entry);
+      }
+    }
+    return [...byFile.values()]
+      .sort((a, b) => a.document.createdAt.getTime() - b.document.createdAt.getTime())
+      .map(({ document: d, serviceId, categories }) => ({
+        documentId: d.id,
+        serviceId,
+        fileName: d.fileName,
+        mimeType: d.mimeType,
+        evidenceType: d.evidenceType ?? null,
+        evidenceGroup: d.evidenceGroup ?? null,
+        issuer: d.issuer ?? null,
+        referenceNumber: d.referenceNumber ?? null,
+        issuedAt: d.issuedAt ?? null,
+        expiresAt: d.expiresAt ?? null,
+        claimedYears: d.claimedYears ?? null,
+        reviewStatus: d.reviewStatus ?? null,
+        categories: [...categories].map(([id, name]) => ({ id, name })),
+      }));
+  }
+
   // ---- Admin-facing ----
 
   async findAll(

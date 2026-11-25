@@ -215,3 +215,37 @@ describe('TechnicianSkillVerificationsService.findAll lists only skills added af
     expect(qb.andWhere).toHaveBeenCalledWith('profile.verificationStatus = :approved', { approved: VerificationStatus.VERIFIED });
   });
 });
+
+describe('TechnicianSkillVerificationsService.listMyEvidence', () => {
+  const doc = (id: string, path: string, at: number, extra: object = {}) => ({
+    id, storageObjectPath: path, fileName: `${id}.jpg`, mimeType: 'image/jpeg', issuedById: null, createdAt: new Date(at), evidenceType: 'social_insurance', issuer: 'BHXH', ...extra,
+  });
+  const request = (serviceId: string, categoryId: string, categoryName: string, documents: object[]) => ({
+    technicianSkill: { serviceId, service: { categoryId, category: { name: categoryName } } }, documents,
+  });
+  const build = (requests: object[]) =>
+    new TechnicianSkillVerificationsService(
+      { find: vi.fn().mockResolvedValue(requests) } as any,
+      {} as any,
+      { findOne: vi.fn().mockResolvedValue({ id: 'p1' }) } as any,
+      {} as any, {} as any, {} as any,
+    );
+
+  it('folds the rows of one stored paper into one entry that names the categories it covers, oldest first', async () => {
+    const service = build([
+      request('s-ac', 'c-ac', 'Điều hòa', [doc('d1', 'kyc/a.jpg', 2000)]),
+      request('s-fr', 'c-fr', 'Tủ lạnh', [doc('d2', 'kyc/a.jpg', 2000), doc('d3', 'kyc/b.jpg', 1000)]),
+    ]);
+    const list = await service.listMyEvidence('u1');
+    expect(list.map((e) => e.documentId)).toEqual(['d3', 'd1']);
+    expect(list[1]).toMatchObject({ serviceId: 's-ac', evidenceType: 'social_insurance', issuer: 'BHXH', categories: [{ id: 'c-ac', name: 'Điều hòa' }, { id: 'c-fr', name: 'Tủ lạnh' }] });
+    expect(JSON.stringify(list)).not.toContain('kyc/');
+  });
+
+  it('leaves out the certificate FixHome issued, and answers an empty list without a profile', async () => {
+    const issued = build([request('s-ac', 'c-ac', 'Điều hòa', [doc('d1', 'kyc/a.jpg', 1, { issuedById: 'admin-1' })])]);
+    await expect(issued.listMyEvidence('u1')).resolves.toEqual([]);
+    const noProfile = new TechnicianSkillVerificationsService({} as any, {} as any, { findOne: vi.fn().mockResolvedValue(null) } as any, {} as any, {} as any, {} as any);
+    await expect(noProfile.listMyEvidence('u1')).resolves.toEqual([]);
+  });
+});
