@@ -32,6 +32,11 @@ function build(over: { profile?: Record<string, unknown>; kyc?: Record<string, u
       getMany: vi.fn().mockResolvedValue([{ id: 'svc-1' }, { id: 'svc-2' }]),
     })),
   };
+  const skillVerificationRepo = {
+    findOne: vi.fn().mockResolvedValue(null),
+    create: vi.fn((v) => v),
+    save: vi.fn(async (v) => ({ id: 'req-new', ...v })),
+  };
   const service = new TechnicianOnboardingService(
     profileRepo as never,
     skillRepo as never,
@@ -41,8 +46,9 @@ function build(over: { profile?: Record<string, unknown>; kyc?: Record<string, u
     { findOne: vi.fn().mockResolvedValue(over.kyc === undefined ? null : over.kyc) } as never,
     { find: vi.fn().mockResolvedValue(over.visits ?? []) } as never,
     { getInt: vi.fn().mockResolvedValue(2), getString: vi.fn().mockResolvedValue('') } as never,
+    skillVerificationRepo as never,
   );
-  return { service, profile, profileRepo, skillRepo };
+  return { service, profile, profileRepo, skillRepo, skillVerificationRepo };
 }
 
 describe('technician onboarding review stages', () => {
@@ -111,5 +117,26 @@ describe('technician onboarding declared skill levels', () => {
     expect(confirmed.level).toBe('ADVANCED');
     expect(waiting.level).toBe('EXPERT');
     expect(waiting.declaredLevel).toBe('EXPERT');
+  });
+});
+
+describe('technician onboarding skill verification requests', () => {
+  const dto = { serviceIds: ['svc-1', 'svc-2'], yearsExperience: 3 };
+
+  it('opens a pending request for every skill waiting for review, and none for a confirmed one', async () => {
+    const waiting = { id: 's1', serviceId: 'svc-1', isActive: true, verificationStatus: VerificationStatus.PENDING };
+    const confirmed = { id: 's2', serviceId: 'svc-2', isActive: true, verificationStatus: VerificationStatus.VERIFIED };
+    const { service, skillVerificationRepo } = build({ profile: { onboardingStatus: OnboardingStatus.IN_PROGRESS }, skills: [waiting, confirmed] });
+    await service.saveSkills(userId, dto as never);
+    expect(skillVerificationRepo.save).toHaveBeenCalledTimes(1);
+    expect(skillVerificationRepo.save).toHaveBeenCalledWith(expect.objectContaining({ technicianSkillId: 's1', status: VerificationStatus.PENDING }));
+  });
+
+  it('does not open a second request when one is already pending', async () => {
+    const waiting = { id: 's1', serviceId: 'svc-1', isActive: true, verificationStatus: VerificationStatus.PENDING };
+    const { service, skillVerificationRepo } = build({ profile: { onboardingStatus: OnboardingStatus.IN_PROGRESS }, skills: [waiting] });
+    skillVerificationRepo.findOne.mockResolvedValue({ id: 'req-1', technicianSkillId: 's1', status: VerificationStatus.PENDING });
+    await service.saveSkills(userId, dto as never);
+    expect(skillVerificationRepo.save).not.toHaveBeenCalled();
   });
 });

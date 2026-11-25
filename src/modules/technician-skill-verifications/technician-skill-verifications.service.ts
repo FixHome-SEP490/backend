@@ -6,11 +6,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { TechnicianSkillVerification } from '../technicians/entities/technician-skill-verification.entity';
 import { TechnicianSkill } from '../technicians/entities/technician-skill.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { VerificationDocument } from '../technician-verifications/entities/verification-document.entity';
+import { ensurePendingSkillVerification } from '../technicians/skill-verification-request';
 import {
   DocumentType,
   SKILL_EVIDENCE_GROUP_BY_TYPE,
@@ -26,6 +27,7 @@ import {
   QuerySkillVerificationsDto,
   RejectSkillVerificationDto,
   SkillVerificationResponseDto,
+  SubmitCategoryEvidenceDto,
   SubmitSkillEvidenceDto,
 } from './dto';
 import {
@@ -103,6 +105,57 @@ export class TechnicianSkillVerificationsService {
     mimeType: string,
   ): Promise<KycSignedUpload> {
     return this.storageService.createSignedUploadUrl(technicianUserId, mimeType);
+  }
+
+  /**
+   * One paper for every skill the technician has in the chosen categories (PO 24/11/2026): one document row per skill,
+   * all pointing at the same stored file, so the reviewer still sees the evidence per skill. Confirmed and inactive
+   * skills are skipped. The requests are opened before the insert, outside any transaction, because a unique
+   * violation inside one would abort it; the insert itself is a single atomic save.
+   */
+  async attachEvidenceToCategories(
+    technicianUserId: string,
+    dto: SubmitCategoryEvidenceDto,
+  ): Promise<{ attachedSkills: number; serviceIds: string[] }> {
+    const metadata = skillEvidenceMetadata(dto);
+    this.storageService.validateObjectPath(dto.storageObjectPath, technicianUserId);
+
+    const profile = await this.profileRepo.findOne({ where: { userId: technicianUserId } });
+    if (!profile) throw new NotFoundException('Technician profile not found');
+
+    const skills = await this.skillRepo.find({
+      where: { technicianId: profile.id, isActive: true, service: { categoryId: In(dto.categoryIds) } },
+    });
+    const waiting = skills.filter((skill) => skill.verificationStatus !== VerificationStatus.VERIFIED);
+    if (waiting.length === 0) {
+      throw new NotFoundException('Bạn chưa có kỹ năng nào chờ xác minh thuộc các nhóm đã chọn.');
+    }
+    await this.assertUploaded(dto.storageObjectPath, technicianUserId);
+
+    const targets: { serviceId: string; request: TechnicianSkillVerification }[] = [];
+    for (const skill of waiting) {
+      const request = await ensurePendingSkillVerification(this.verificationRepo, skill);
+      if (request) targets.push({ serviceId: skill.serviceId, request });
+    }
+    if (targets.length === 0) {
+      throw new ConflictException('Các kỹ năng này chưa có yêu cầu xác minh để đính giấy tờ.');
+    }
+
+    await this.documentRepo.save(
+      targets.map(({ request }) =>
+        this.documentRepo.create({
+          skillVerificationId: request.id,
+          documentType: DocumentType.CERTIFICATE,
+          storageObjectPath: dto.storageObjectPath,
+          fileName: dto.fileName,
+          fileSize: dto.fileSize,
+          mimeType: dto.mimeType,
+          issuedById: null,
+          ...metadata,
+        }),
+      ),
+    );
+    return { attachedSkills: targets.length, serviceIds: targets.map((target) => target.serviceId) };
   }
 
   async attachEvidence(
