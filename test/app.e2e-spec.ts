@@ -1005,7 +1005,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
       'SELECT * FROM technician_verifications WHERE id = $1',
       [id],
     );
-    expect(stored.reviewed_by).toBe(admin.user.id);
+    expect(stored.reviewed_by).toBe(reviewer.user.id);
     expect(stored.reviewed_at).toBeTruthy();
     await review(id, 'approve').expect(409);
     await review(id, 'reject').expect(409);
