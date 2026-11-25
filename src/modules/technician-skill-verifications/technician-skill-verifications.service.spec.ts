@@ -221,14 +221,15 @@ describe('TechnicianSkillVerificationsService.listMyEvidence', () => {
   const doc = (id: string, path: string, at: number, extra: object = {}) => ({
     id, storageObjectPath: path, fileName: `${id}.jpg`, mimeType: 'image/jpeg', issuedById: null, createdAt: new Date(at), evidenceType: 'social_insurance', issuer: 'BHXH', ...extra,
   });
-  const request = (serviceId: string, categoryId: string, categoryName: string, documents: object[]) => ({
-    technicianSkill: { serviceId, service: { categoryId, category: { name: categoryName } } }, documents,
+  const request = (serviceId: string, categoryId: string, categoryName: string, documents: object[], over: { status?: string; skillStatus?: string } = {}) => ({
+    status: over.status ?? 'pending',
+    technicianSkill: { serviceId, verificationStatus: over.skillStatus ?? 'pending', service: { categoryId, category: { name: categoryName } } }, documents,
   });
-  const build = (requests: object[]) =>
+  const build = (requests: object[], onboardingStatus = 'approved') =>
     new TechnicianSkillVerificationsService(
       { find: vi.fn().mockResolvedValue(requests) } as any,
       {} as any,
-      { findOne: vi.fn().mockResolvedValue({ id: 'p1' }) } as any,
+      { findOne: vi.fn().mockResolvedValue({ id: 'p1', onboardingStatus }) } as any,
       {} as any, {} as any, {} as any,
     );
 
@@ -241,6 +242,18 @@ describe('TechnicianSkillVerificationsService.listMyEvidence', () => {
     expect(list.map((e) => e.documentId)).toEqual(['d3', 'd1']);
     expect(list[1]).toMatchObject({ serviceId: 's-ac', evidenceType: 'social_insurance', issuer: 'BHXH', categories: [{ id: 'c-ac', name: 'Điều hòa' }, { id: 'c-fr', name: 'Tủ lạnh' }] });
     expect(JSON.stringify(list)).not.toContain('kyc/');
+  });
+
+  it('marks a paper locked once its skills were reviewed, or while the profile waits for review', async () => {
+    const reviewed = build([request('s-ac', 'c-ac', 'Điều hòa', [doc('d1', 'kyc/a.jpg', 1)], { status: 'verified', skillStatus: 'verified' })]);
+    expect((await reviewed.listMyEvidence('u1'))[0].editable).toBe(false);
+    const mixed = build([
+      request('s-ac', 'c-ac', 'Điều hòa', [doc('d1', 'kyc/a.jpg', 1)], { status: 'verified', skillStatus: 'verified' }),
+      request('s-fr', 'c-fr', 'Tủ lạnh', [doc('d2', 'kyc/a.jpg', 1)]),
+    ]);
+    expect((await mixed.listMyEvidence('u1'))[0].editable).toBe(true);
+    const inReview = build([request('s-ac', 'c-ac', 'Điều hòa', [doc('d1', 'kyc/a.jpg', 1)])], 'submitted');
+    expect((await inReview.listMyEvidence('u1'))[0].editable).toBe(false);
   });
 
   it('leaves out the certificate FixHome issued, and answers an empty list without a profile', async () => {
