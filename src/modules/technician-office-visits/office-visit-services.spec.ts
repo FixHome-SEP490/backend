@@ -140,7 +140,7 @@ function reviewHarness(opts: { attended: boolean; profile?: Record<string, unkno
 }
 
 describe('ProfileReviewService.approve', () => {
-  const decisions = { skills: [{ skillId: 's1', level: 'ADVANCED', approved: true }, { skillId: 's2', level: 'BEGINNER', approved: false }] };
+  const decisions = { skills: [{ skillId: 's1', level: 'ADVANCED', approved: true }, { skillId: 's2', level: 'BEGINNER', approved: false, reason: 'Bằng chưa rõ cấp độ' }] };
 
   it('approves only after the office visit, confirming the level per skill and creating the wallet', async () => {
     const { service, profile, skills, skillReviews, wallets, notifications } = reviewHarness({ attended: true });
@@ -154,13 +154,22 @@ describe('ProfileReviewService.approve', () => {
     expect(notifications.createNotification).toHaveBeenCalledWith(expect.objectContaining({ type: 'WALLET_TOPUP_REQUIRED' }));
   });
 
-  it('tells the technician which skills were not confirmed, and says nothing extra when all were', async () => {
+  it('records why a skill was not confirmed and tells the technician in a notice of its own', async () => {
     const partial = reviewHarness({ attended: true });
     await partial.service.approve(technicianId, 'admin-1', decisions);
-    expect(partial.notifications.createNotification).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('Kỹ năng chưa được xác nhận: Sửa tủ lạnh.') }));
+    expect(partial.skillReviews.save).toHaveBeenCalledWith(expect.objectContaining({ technicianSkillId: 's2', status: VerificationStatus.REJECTED, rejectionReason: 'Bằng chưa rõ cấp độ' }));
+    expect(partial.skillReviews.save).toHaveBeenCalledWith(expect.objectContaining({ technicianSkillId: 's1', status: VerificationStatus.VERIFIED, rejectionReason: null }));
+    expect(partial.notifications.createNotification).toHaveBeenCalledWith(expect.objectContaining({ type: 'SKILL_NOT_CONFIRMED', message: 'Sửa tủ lạnh: Bằng chưa rõ cấp độ', referenceType: 'technician_profile' }));
     const all = reviewHarness({ attended: true });
     await all.service.approve(technicianId, 'admin-1', { skills: decisions.skills.map((d) => ({ ...d, approved: true })) });
-    expect(all.notifications.createNotification).toHaveBeenCalledWith(expect.objectContaining({ message: expect.not.stringContaining('chưa được xác nhận') }));
+    expect(all.notifications.createNotification).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'SKILL_NOT_CONFIRMED' }));
+  });
+
+  it('needs a reason for every skill left unconfirmed, and saves nothing without it', async () => {
+    const { service, profile, skillReviews } = reviewHarness({ attended: true });
+    await expect(service.approve(technicianId, 'admin-1', { skills: [{ skillId: 's1', level: 'ADVANCED', approved: true }, { skillId: 's2', level: 'BEGINNER', approved: false, reason: 'ngắn' }] })).rejects.toThrow(/lý do/);
+    expect(skillReviews.save).not.toHaveBeenCalled();
+    expect(profile.verificationStatus).toBe(VerificationStatus.PENDING);
   });
 
   it('refuses to approve before the technician has met the office', async () => {
