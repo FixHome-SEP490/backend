@@ -358,7 +358,7 @@ export class TechnicianVerificationsService {
 
       await this.auditLogService.logWithManagerStrict(manager, {
         actorUserId: reviewerId,
-        actorRole: Role.ADMIN,
+        actorRole: Role.SERVICE_MANAGER,
         action:
           status === VerificationStatus.VERIFIED
             ? 'KYC_VERIFICATION_APPROVED'
@@ -426,7 +426,7 @@ export class TechnicianVerificationsService {
       throw new NotFoundException('Verification document not found');
     }
 
-    const isAdmin = actor.role === Role.ADMIN;
+    const isAdmin = actor.role === Role.ADMIN || actor.role === Role.SERVICE_MANAGER;
     const isOwner =
       actor.role === Role.TECHNICIAN &&
       document.verification.technicianId === actor.id;

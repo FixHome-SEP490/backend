@@ -18,13 +18,11 @@ import { JwtAuthGuard, RolesGuard } from '../../common/guards';
 import { CurrentUser, Roles } from '../../common/decorators';
 import { Role } from '../../shared/enums';
 
-// Admin-only by design: FixHome staff issue the certificate in person, no
-// regional Service Manager scoping for this review (unlike identity KYC's
-// technician:verify permission, which SMs also hold).
+// Service Manager decides (certificate, approve, reject); Admin only reads.
 @ApiTags('Admin / Technician Skill Verifications')
 @Controller('admin/technician-skill-verifications')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN)
+@Roles(Role.ADMIN, Role.SERVICE_MANAGER)
 @ApiBearerAuth()
 export class AdminTechnicianSkillVerificationsController {
   constructor(private readonly service: TechnicianSkillVerificationsService) {}
@@ -50,6 +48,7 @@ export class AdminTechnicianSkillVerificationsController {
     return this.service.getSignedDocumentAccess(documentId, user);
   }
 
+  @Roles(Role.SERVICE_MANAGER)
   @Post(':id/certificate-upload-url')
   @ApiOperation({
     summary: "Admin: Request a signed URL to upload the certificate FixHome issues on approval",
@@ -61,6 +60,7 @@ export class AdminTechnicianSkillVerificationsController {
     return this.service.createCertificateUploadUrl(id, dto.mimeType);
   }
 
+  @Roles(Role.SERVICE_MANAGER)
   @Patch(':id/approve')
   @ApiOperation({
     summary: 'Admin: Approve a skill verification, attaching the certificate FixHome issued',
@@ -73,6 +73,7 @@ export class AdminTechnicianSkillVerificationsController {
     return this.service.approve(id, reviewerId, dto);
   }
 
+  @Roles(Role.SERVICE_MANAGER)
   @Patch(':id/reject')
   @ApiOperation({ summary: 'Admin: Reject a skill verification request' })
   async reject(

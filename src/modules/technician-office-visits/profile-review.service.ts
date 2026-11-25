@@ -159,7 +159,7 @@ export class ProfileReviewService {
 
       await this.audit.logWithManagerStrict(manager, {
         actorUserId: adminId,
-        actorRole: Role.ADMIN,
+        actorRole: Role.SERVICE_MANAGER,
         action: 'TECHNICIAN_PROFILE_APPROVED',
         resourceType: 'technician_profile',
         resourceId: technicianId,
@@ -187,7 +187,7 @@ export class ProfileReviewService {
     if (profile.verificationStatus === VerificationStatus.VERIFIED) throw new ConflictException('Hồ sơ đã được duyệt.');
     await this.profiles.update(profile.id, { onboardingStatus: OnboardingStatus.REJECTED, profileReviewRejectionReason: dto.reason });
     await this.audit.log({
-      actorUserId: adminId, actorRole: Role.ADMIN, action: 'TECHNICIAN_PROFILE_REJECTED', resourceType: 'technician_profile', resourceId: technicianId,
+      actorUserId: adminId, actorRole: Role.SERVICE_MANAGER, action: 'TECHNICIAN_PROFILE_REJECTED', resourceType: 'technician_profile', resourceId: technicianId,
       before: { onboardingStatus: profile.onboardingStatus }, after: { onboardingStatus: OnboardingStatus.REJECTED, reason: dto.reason },
     });
     void this.notifications?.createNotification({
@@ -211,7 +211,7 @@ export class ProfileReviewService {
     await this.visits.update({ technicianId, status: OfficeVisitStatus.ATTENDED }, { status: OfficeVisitStatus.CANCELLED, note: 'Mở lại hồ sơ để gặp lại' });
     await this.profiles.update(profile.id, { onboardingStatus: OnboardingStatus.SUBMITTED, profileReviewRejectionReason: null });
     await this.audit.log({
-      actorUserId: adminId, actorRole: Role.ADMIN, action: 'TECHNICIAN_PROFILE_REOPENED', resourceType: 'technician_profile', resourceId: technicianId,
+      actorUserId: adminId, actorRole: Role.SERVICE_MANAGER, action: 'TECHNICIAN_PROFILE_REOPENED', resourceType: 'technician_profile', resourceId: technicianId,
       before: { onboardingStatus: profile.onboardingStatus, reason: profile.profileReviewRejectionReason }, after: { onboardingStatus: OnboardingStatus.SUBMITTED },
     });
     void this.notifications?.createNotification({

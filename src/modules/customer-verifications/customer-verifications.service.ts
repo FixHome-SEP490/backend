@@ -440,7 +440,7 @@ export class CustomerVerificationsService {
 
       await this.auditLog.logWithManagerStrict(manager, {
         actorUserId: reviewerId,
-        actorRole: Role.ADMIN,
+        actorRole: Role.SERVICE_MANAGER,
         action: status === VerificationStatus.VERIFIED ? 'CUSTOMER_KYC_APPROVED' : 'CUSTOMER_KYC_REJECTED',
         resourceType: 'customer_verification',
         resourceId: id,

@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-24 23:05 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: feat/skill-evidence-by-category
+> Cập nhật lần cuối: 2026-11-25 16:01 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -424,7 +424,7 @@ W3 physical: GET `/part-requests/:id/delivery-physical/preview` chỉ CUSTOMER s
 - Giữ nguyên các cổng thanh toán VNPay và payOS (PO 07/10/2026). Chính sách P1 do owner xác nhận 18/10/2026: khi đơn tiền mặt còn nghĩa vụ trả linh kiện FixHome, kỹ thuật viên không nhận việc mới và không rút bất kỳ khoản ví nào; đơn đã nhận vẫn tiếp tục, hạn chế gỡ khi quản lý dịch vụ xác nhận đã giải quyết mọi nghĩa vụ. Với đơn online, giữ 100% tiền công ròng của đơn bị ảnh hưởng (tiền công đã duyệt sau hoa hồng, gồm phát sinh tiền công đã duyệt) tới khi xác nhận trả vật lý. Khách vẫn hoàn tất và thanh toán độc lập với custody; không tự lấy tiền ví để bù thiếu/hỏng. P0 tiền công thay linh kiện mới và các ngoại lệ chưa được phê duyệt không nằm trong phạm vi. Owner khóa phạm vi tối giản 19/10/2026: CASH chặn ngay từ khai tiền mặt của kỹ thuật viên, không đợi khách xác nhận; chỉ cohort QR bàn giao sau activation, manager nhận số dương thực tế, không module tranh chấp/phạt/hoàn tiền mới. Code Phase B được gate OFF; xem mục 8.
 - Quyết định không làm hoàn tiền (PO 07/10/2026) có ngoại lệ voucher T2.1 theo F3 ở trên; không mở refund ngoài phạm vi đó, trừ bảo hành không khắc phục được trong hạn (PO 04/11/2026): hoàn vào ví khách và trừ ví thợ đã làm đơn gốc, do SM xác nhận. Cuộc trò chuyện khoá khi đơn hoàn tất và mở lại trong lúc có yêu cầu bảo hành đang xử lý (PO 18/10/2026, thay quyết định 07/10/2026); đơn bị huỷ thì không đổi.
 - Linh kiện vượt báo giá đi qua chi phí phát sinh để khách duyệt; báo giá chỉ là ước tính (PO 07/10/2026).
-- Duyệt KYC và quản lý danh mục chỉ admin làm; quản lý dịch vụ xử lý ngoại lệ (BRX-041, BRX-045).
+- Duyệt onboarding thợ (danh tính, hồ sơ, kỹ năng, buổi hẹn trụ sở) và KYC khách do quản lý dịch vụ quyết định; admin chỉ xem (đổi BRX-041 theo PO 25/11/2026). Danh mục dịch vụ và trụ sở nhận hồ sơ vẫn do admin (BRX-045).
 - Huỷ đơn tự trừ điểm uy tín (thay BRX-032/033 theo PO 08-09/10/2026), không còn vi phạm do quản lý xác nhận (xem dưới).
 - PlatformDue chỉ có ở đơn tiền mặt và bằng hoa hồng + linh kiện FixHome + phí giao (BRX-030, BRX-057); khi quyết toán được trừ thẳng vào ví kỹ thuật viên.
 - BRX-063 (PO 07/10/2026): đến giờ hẹn (đầu khung giờ khách chọn, hoặc lúc nhận đơn nếu muộn hơn) mà kỹ thuật viên chưa bấm "Đang đến" thì báo cho kỹ thuật viên và khách; 10 phút sau vẫn chưa xuất phát thì tự huỷ đơn và booking. Hai mốc là cấu hình `order.departure_grace_minutes` (15 từ 20/10/2026, trước là 0 nên đơn vừa nhận đã bị cảnh báo ngay) và `order.departure_cancel_minutes` (10).
@@ -542,6 +542,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
+- 2026-11-25 16:01 (UTC+7) | Hgnv11 | dev | Chuyển quyết định onboarding thợ và KYC khách sang quản lý dịch vụ: GET cho admin và SM, approve/reject/reopen/chứng chỉ kỹ năng/đánh dấu buổi hẹn chỉ SM; nhật ký audit ghi vai trò SERVICE_MANAGER; trụ sở nhận hồ sơ vẫn chỉ admin; CHƯA KIỂM CHỨNG với web và DB thật
 - 2026-11-24 23:05 (UTC+7) | Hgnv11 | feat/skill-evidence-by-category | Giấy tờ theo nhóm dịch vụ: POST /technicians/me/skill-evidence (+ /upload-url) gắn một giấy tờ vào mọi kỹ năng của thợ trong các nhóm chọn; saveSkills mở phiếu xác minh pending; không migration mới
 
 - 2026-11-23 22:25 (UTC+7) | Hgnv11 | feat/skill-evidence-metadata | Bằng chứng kỹ năng có metadata: `POST /technicians/me/services/:serviceId/verification/documents` nhận thêm `evidenceType, issuer, referenceNumber, issuedAt, expiresAt, claimedYears` (tuỳ chọn), response tài liệu trả thêm các trường này; migration 1794825600000 đã chạy trên Supabase dùng chung
@@ -582,4 +583,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-07 10:55 (UTC+7) | foxonworld | foxonworld/w3-remove-manual-bank-20261107 | OWNER CANCELLED Manual Bank vì VNPay đủ chức năng thanh toán online; xóa API customer/Admin + service/test, giữ VNPay, Ví FixHome, cash-first/legacy và W3 70/30; DEV gỡ bỏ chờ PR/CI/deploy, không thêm payment rail khác.
 - 2026-11-07 10:36 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | PR #205: tách DB replay pre-cutover khỏi HTTP đủ 0014/0015, pin fixture legacy trước 0004 và kiểm provenance/CHECK hiện tại; giữ production migration và release gate.
 - 2026-11-07 10:08 (UTC+7) | Hgnv11 | dev | Bảo hành: `accept` bắt buộc `scheduledAt` tương lai, thêm `POST /warranty-claims/:id/reschedule`, khách thấy `inspectionScheduledAt`, lỗi do công không linh kiện được tự duyệt (`autoApproved`, thông báo `WARRANTY_AUTO_APPROVED`)
-- 2026-11-07 09:59 (UTC+7) | foxonworld | foxonworld/fixhome-w3-live-payment-integration-20261107 | Cập nhật Task3/0015: invoice actual từng shipment, PAID completion, cancellation guard và C snapshot; P2 cancellation kiểm đúng lỗi/rollback với audit thật, focused PostgreSQL 5 PASS, chưa release.

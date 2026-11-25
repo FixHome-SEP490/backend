@@ -286,7 +286,7 @@ describe('CustomerVerificationsService', () => {
       citizenIdNumber: '079123456789', fullAddress: validBody().address,
     });
     expect(view.status).toBe('verified');
-    expect(audit.logWithManagerStrict).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'CUSTOMER_KYC_APPROVED', actorRole: Role.ADMIN }));
+    expect(audit.logWithManagerStrict).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'CUSTOMER_KYC_APPROVED', actorRole: Role.SERVICE_MANAGER }));
     expect(notifications.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: CUSTOMER_ID, type: 'CUSTOMER_KYC_APPROVED' }));
     await expect(service.approve('ver-1', ADMIN_ID)).rejects.toThrow(ConflictException);
     expect(await service.requireVerifiedName(CUSTOMER_ID, 'withdraw')).toBe('Nguyễn Văn An');
@@ -317,7 +317,7 @@ describe('CustomerVerificationsService', () => {
   });
 });
 
-describe('Customer KYC review is admin only (BRX-041)', () => {
+describe('Customer KYC review: service manager decides, admin only reads', () => {
   const guard = new RolesGuard(new Reflector());
   const contextFor = (role: Role, handler: keyof AdminCustomerVerificationsController) =>
     ({
@@ -326,9 +326,16 @@ describe('Customer KYC review is admin only (BRX-041)', () => {
       switchToHttp: () => ({ getRequest: () => ({ user: { id: 'u', role } }) }),
     }) as unknown as ExecutionContext;
 
-  it.each(['list', 'detail', 'documentAccess', 'approve', 'reject'] as const)('%s: admin passes, service manager and others do not', (handler) => {
-    expect(guard.canActivate(contextFor(Role.ADMIN, handler))).toBe(true);
-    for (const role of [Role.SERVICE_MANAGER, Role.CUSTOMER, Role.TECHNICIAN]) {
+  it.each(['list', 'detail', 'documentAccess'] as const)('%s: admin and service manager read, others do not', (handler) => {
+    for (const role of [Role.ADMIN, Role.SERVICE_MANAGER]) expect(guard.canActivate(contextFor(role, handler))).toBe(true);
+    for (const role of [Role.CUSTOMER, Role.TECHNICIAN]) {
+      expect(() => guard.canActivate(contextFor(role, handler))).toThrow(ForbiddenException);
+    }
+  });
+
+  it.each(['approve', 'reject'] as const)('%s: only the service manager decides', (handler) => {
+    expect(guard.canActivate(contextFor(Role.SERVICE_MANAGER, handler))).toBe(true);
+    for (const role of [Role.ADMIN, Role.CUSTOMER, Role.TECHNICIAN]) {
       expect(() => guard.canActivate(contextFor(role, handler))).toThrow(ForbiddenException);
     }
   });

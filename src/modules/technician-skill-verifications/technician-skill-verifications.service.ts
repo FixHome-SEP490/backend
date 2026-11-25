@@ -327,7 +327,7 @@ export class TechnicianSkillVerificationsService {
 
       await this.auditLogService.logWithManagerStrict(manager, {
         actorUserId: reviewerId,
-        actorRole: Role.ADMIN,
+        actorRole: Role.SERVICE_MANAGER,
         action: 'SKILL_VERIFICATION_APPROVED',
         resourceType: 'technician_skill_verification',
         resourceId: id,
@@ -375,7 +375,7 @@ export class TechnicianSkillVerificationsService {
 
       await this.auditLogService.logWithManagerStrict(manager, {
         actorUserId: reviewerId,
-        actorRole: Role.ADMIN,
+        actorRole: Role.SERVICE_MANAGER,
         action: 'SKILL_VERIFICATION_REJECTED',
         resourceType: 'technician_skill_verification',
         resourceId: id,
@@ -434,7 +434,7 @@ export class TechnicianSkillVerificationsService {
     }
 
     const technicianUserId = document.skillVerification.technicianSkill.technician.userId;
-    const isAdmin = actor.role === Role.ADMIN;
+    const isAdmin = actor.role === Role.ADMIN || actor.role === Role.SERVICE_MANAGER;
     const isOwner = actor.role === Role.TECHNICIAN && technicianUserId === actor.id;
     if (!isAdmin && !isOwner) {
       throw new ForbiddenException('You do not have permission to access this document');
