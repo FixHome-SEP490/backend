@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   BadRequestException,
   ConflictException,
+  NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import {
@@ -247,5 +248,73 @@ describe('TechnicianSkillVerificationsService.listMyEvidence', () => {
     await expect(issued.listMyEvidence('u1')).resolves.toEqual([]);
     const noProfile = new TechnicianSkillVerificationsService({} as any, {} as any, { findOne: vi.fn().mockResolvedValue(null) } as any, {} as any, {} as any, {} as any);
     await expect(noProfile.listMyEvidence('u1')).resolves.toEqual([]);
+  });
+});
+
+describe('TechnicianSkillVerificationsService.deleteMyEvidence / updateMyEvidence', () => {
+  const row = (id: string, skillId: string, categoryId: string, over: { requestStatus?: VerificationStatus; skillStatus?: VerificationStatus; technicianId?: string } = {}) => ({
+    id, storageObjectPath: 'kyc/u1/a.jpg', fileName: 'a.jpg', fileSize: 10, mimeType: 'image/jpeg', issuedById: null,
+    skillVerification: {
+      id: `rq-${skillId}`, technicianSkillId: skillId, status: over.requestStatus ?? VerificationStatus.PENDING,
+      technicianSkill: { id: skillId, technicianId: over.technicianId ?? 'p1', verificationStatus: over.skillStatus ?? VerificationStatus.PENDING, service: { categoryId } },
+    },
+  });
+
+  function harness(rows: ReturnType<typeof row>[], opts: { onboardingStatus?: string; remaining?: number; skills?: object[] } = {}) {
+    const documentRepo = {
+      findOne: vi.fn().mockResolvedValue(rows[0]),
+      find: vi.fn().mockResolvedValue(rows),
+      remove: vi.fn(async (r) => r),
+      count: vi.fn().mockResolvedValue(opts.remaining ?? 0),
+      update: vi.fn(),
+      save: vi.fn(),
+      create: vi.fn((v) => v),
+    };
+    const storage = { remove: vi.fn() };
+    const verificationRepo = { findOne: vi.fn().mockResolvedValue({ id: 'rq-new' }), find: vi.fn().mockResolvedValue([]) };
+    const skillRepo = { find: vi.fn().mockResolvedValue(opts.skills ?? []) };
+    const profileRepo = { findOne: vi.fn().mockResolvedValue({ id: 'p1', onboardingStatus: opts.onboardingStatus ?? 'in_progress' }) };
+    const service = new TechnicianSkillVerificationsService(verificationRepo as any, skillRepo as any, profileRepo as any, documentRepo as any, {} as any, storage as any);
+    return { service, documentRepo, storage };
+  }
+
+  it('removes the paper from every skill it sits on, and the stored file once nothing points at it', async () => {
+    const { service, documentRepo, storage } = harness([row('d1', 's1', 'c1'), row('d2', 's2', 'c2')]);
+    await expect(service.deleteMyEvidence('u1', 'd1')).resolves.toEqual({ removed: 2 });
+    expect(documentRepo.remove).toHaveBeenCalledWith([expect.objectContaining({ id: 'd1' }), expect.objectContaining({ id: 'd2' })]);
+    expect(storage.remove).toHaveBeenCalledWith(['kyc/u1/a.jpg']);
+  });
+
+  it('keeps the stored file while another row still points at it', async () => {
+    const { service, storage } = harness([row('d1', 's1', 'c1')], { remaining: 1 });
+    await service.deleteMyEvidence('u1', 'd1');
+    expect(storage.remove).not.toHaveBeenCalled();
+  });
+
+  it('refuses a paper whose skills are all confirmed, a paper of someone else, and a technician waiting for the review', async () => {
+    const confirmed = harness([row('d1', 's1', 'c1', { skillStatus: VerificationStatus.VERIFIED })]);
+    await expect(confirmed.service.deleteMyEvidence('u1', 'd1')).rejects.toBeInstanceOf(ConflictException);
+    const foreign = harness([row('d1', 's1', 'c1', { technicianId: 'other' })]);
+    await expect(foreign.service.deleteMyEvidence('u1', 'd1')).rejects.toThrow('Verification document not found');
+    const waiting = harness([row('d1', 's1', 'c1')], { onboardingStatus: 'submitted' });
+    await expect(waiting.service.deleteMyEvidence('u1', 'd1')).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('changes the details of the kept rows, drops the rows of a category taken off, and adds the ones of a category added', async () => {
+    const skills = [
+      { id: 's1', verificationStatus: VerificationStatus.PENDING, isActive: true },
+      { id: 's3', verificationStatus: VerificationStatus.PENDING, isActive: true },
+    ];
+    const { service, documentRepo } = harness([row('d1', 's1', 'c1'), row('d2', 's2', 'c2')], { skills });
+    vi.spyOn(service, 'listMyEvidence').mockResolvedValue([]);
+    await service.updateMyEvidence('u1', 'd1', { categoryIds: ['c1', 'c3'], evidenceType: 'social_insurance', issuer: 'BHXH', claimedYears: 5 } as any);
+    expect(documentRepo.remove).toHaveBeenCalledWith([expect.objectContaining({ id: 'd2' })]);
+    expect(documentRepo.update).toHaveBeenCalledWith(['d1'], expect.objectContaining({ evidenceType: 'social_insurance', issuer: 'BHXH', claimedYears: 5, referenceNumber: null }));
+    expect(documentRepo.save).toHaveBeenCalledWith([expect.objectContaining({ skillVerificationId: 'rq-new', storageObjectPath: 'kyc/u1/a.jpg', issuer: 'BHXH' })]);
+  });
+
+  it('needs at least one skill waiting in the categories left', async () => {
+    const { service } = harness([row('d1', 's1', 'c1')], { skills: [] });
+    await expect(service.updateMyEvidence('u1', 'd1', { categoryIds: ['c9'] } as any)).rejects.toBeInstanceOf(NotFoundException);
   });
 });

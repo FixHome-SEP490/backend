@@ -16,6 +16,7 @@ import {
   DocumentType,
   SKILL_EVIDENCE_GROUP_BY_TYPE,
   SkillEvidenceReviewStatus,
+  OnboardingStatus,
   Role,
   VerificationStatus,
 } from '../../shared/enums';
@@ -29,6 +30,7 @@ import {
   SkillVerificationResponseDto,
   SubmitCategoryEvidenceDto,
   SubmitSkillEvidenceDto,
+  UpdateCategoryEvidenceDto,
 } from './dto';
 import {
   toSkillVerificationResponse,
@@ -48,7 +50,7 @@ const isCalendarDate = (value: string): boolean => {
  * Details without a type are refused so a row never carries half a description; no type and no details
  * (a client that sends only the file) stores nothing extra.
  */
-export function skillEvidenceMetadata(dto: SubmitSkillEvidenceDto) {
+export function skillEvidenceMetadata(dto: SubmitSkillEvidenceDto | UpdateCategoryEvidenceDto) {
   const { evidenceType, issuer, referenceNumber, issuedAt, expiresAt, claimedYears } = dto;
   if (!evidenceType) {
     if (issuer || referenceNumber || issuedAt || expiresAt || claimedYears !== undefined) {
@@ -274,6 +276,101 @@ export class TechnicianSkillVerificationsService {
         reviewStatus: d.reviewStatus ?? null,
         categories: [...categories].map(([id, name]) => ({ id, name })),
       }));
+  }
+
+  /**
+   * The rows of one stored paper the technician may still change: the ones whose skill is not confirmed and whose request
+   * is still pending. A technician waiting for the review cannot edit anything (same rule as the registration steps).
+   */
+  private async editableEvidenceRows(technicianUserId: string, documentId: string) {
+    const profile = await this.profileRepo.findOne({ where: { userId: technicianUserId } });
+    if (!profile) throw new NotFoundException('Technician profile not found');
+    if (profile.onboardingStatus === OnboardingStatus.SUBMITTED) {
+      throw new BadRequestException('Hồ sơ đang chờ xét duyệt, không thể chỉnh sửa lúc này.');
+    }
+    const relations = ['skillVerification', 'skillVerification.technicianSkill', 'skillVerification.technicianSkill.service'];
+    const document = await this.documentRepo.findOne({ where: { id: documentId }, relations });
+    if (!document || document.issuedById || document.skillVerification?.technicianSkill?.technicianId !== profile.id) {
+      throw new NotFoundException('Verification document not found');
+    }
+    const rows = document.storageObjectPath
+      ? await this.documentRepo.find({
+          where: { storageObjectPath: document.storageObjectPath, skillVerification: { technicianSkill: { technicianId: profile.id } } },
+          relations,
+        })
+      : [document];
+    const editable = rows.filter(
+      (row) =>
+        row.skillVerification?.status === VerificationStatus.PENDING &&
+        row.skillVerification.technicianSkill.verificationStatus !== VerificationStatus.VERIFIED,
+    );
+    if (editable.length === 0) {
+      throw new ConflictException('Giấy tờ này đã dùng để duyệt kỹ năng, không thể sửa hoặc xóa.');
+    }
+    return { profile, document, editable };
+  }
+
+  /** Removes a paper from every skill it sits on; the stored file goes too once no row points at it. */
+  async deleteMyEvidence(technicianUserId: string, documentId: string): Promise<{ removed: number }> {
+    const { editable, document } = await this.editableEvidenceRows(technicianUserId, documentId);
+    await this.documentRepo.remove(editable);
+    const path = document.storageObjectPath;
+    if (path && (await this.documentRepo.count({ where: { storageObjectPath: path } })) === 0) {
+      try {
+        await this.storageService.remove([path]);
+      } catch {
+        // The rows are gone; a file that could not be removed is left for the storage clean-up.
+      }
+    }
+    return { removed: editable.length };
+  }
+
+  /** Changes the details and the categories of a paper already sent, then returns the technician's papers. */
+  async updateMyEvidence(technicianUserId: string, documentId: string, dto: UpdateCategoryEvidenceDto) {
+    const { profile, document, editable } = await this.editableEvidenceRows(technicianUserId, documentId);
+    const empty = {
+      evidenceType: null, evidenceGroup: null, issuer: null, referenceNumber: null,
+      issuedAt: null, expiresAt: null, claimedYears: null, reviewStatus: null,
+    };
+    const patch = { ...empty, ...skillEvidenceMetadata(dto) } as Partial<VerificationDocument>;
+
+    const skills = await this.skillRepo.find({
+      where: { technicianId: profile.id, isActive: true, service: { categoryId: In(dto.categoryIds) } },
+    });
+    const targets = skills.filter((skill) => skill.verificationStatus !== VerificationStatus.VERIFIED);
+    if (targets.length === 0) {
+      throw new NotFoundException('Bạn chưa có kỹ năng nào chờ xác minh thuộc các nhóm đã chọn.');
+    }
+    const targetIds = new Set(targets.map((skill) => skill.id));
+    const keep = editable.filter((row) => targetIds.has(row.skillVerification.technicianSkillId));
+    const drop = editable.filter((row) => !targetIds.has(row.skillVerification.technicianSkillId));
+    const covered = new Set(keep.map((row) => row.skillVerification.technicianSkillId));
+
+    const additions: { request: TechnicianSkillVerification }[] = [];
+    for (const skill of targets.filter((s) => !covered.has(s.id))) {
+      const request = await ensurePendingSkillVerification(this.verificationRepo, skill);
+      if (request) additions.push({ request });
+    }
+
+    if (drop.length > 0) await this.documentRepo.remove(drop);
+    if (keep.length > 0) await this.documentRepo.update(keep.map((row) => row.id), patch);
+    if (additions.length > 0) {
+      await this.documentRepo.save(
+        additions.map(({ request }) =>
+          this.documentRepo.create({
+            skillVerificationId: request.id,
+            documentType: DocumentType.CERTIFICATE,
+            storageObjectPath: document.storageObjectPath,
+            fileName: document.fileName,
+            fileSize: document.fileSize,
+            mimeType: document.mimeType,
+            issuedById: null,
+            ...patch,
+          }),
+        ),
+      );
+    }
+    return this.listMyEvidence(technicianUserId);
   }
 
   // ---- Admin-facing ----

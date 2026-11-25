@@ -1,8 +1,8 @@
 // src/modules/technician-skill-verifications/technician-skill-evidence.controller.ts
-import { Body, Controller, Get, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { TechnicianSkillVerificationsService } from './technician-skill-verifications.service';
-import { SubmitCategoryEvidenceDto } from './dto';
+import { SubmitCategoryEvidenceDto, UpdateCategoryEvidenceDto } from './dto';
 import { KycSignedUploadResponseDto, RequestKycUploadUrlDto } from '../technician-verifications/dto';
 import { JwtAuthGuard, RolesGuard } from '../../common/guards';
 import { CurrentUser, Roles } from '../../common/decorators';
@@ -22,6 +22,22 @@ export class TechnicianSkillEvidenceController {
   @ApiOperation({ summary: 'Technician: Papers already sent, one entry per file with the service categories it covers' })
   async listMine(@CurrentUser('id') technicianId: string) {
     return this.service.listMyEvidence(technicianId);
+  }
+
+  @Patch(':documentId')
+  @ApiOperation({ summary: 'Technician: Change the details and the categories of a paper already sent; returns the papers' })
+  async update(
+    @CurrentUser('id') technicianId: string,
+    @Param('documentId', ParseUUIDPipe) documentId: string,
+    @Body() dto: UpdateCategoryEvidenceDto,
+  ) {
+    return this.service.updateMyEvidence(technicianId, documentId, dto);
+  }
+
+  @Delete(':documentId')
+  @ApiOperation({ summary: 'Technician: Remove a paper already sent from every skill it sits on' })
+  async remove(@CurrentUser('id') technicianId: string, @Param('documentId', ParseUUIDPipe) documentId: string) {
+    return this.service.deleteMyEvidence(technicianId, documentId);
   }
 
   @Post('upload-url')
