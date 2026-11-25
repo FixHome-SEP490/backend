@@ -3,6 +3,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   Optional,
 } from '@nestjs/common';
@@ -16,7 +17,9 @@ import { TechnicianServiceArea } from './entities/technician-service-area.entity
 import { User } from '../users/entities/user.entity';
 import { Service } from '../services/entities/service.entity';
 import { TechnicianVerification } from '../technician-verifications/entities/technician-verification.entity';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
+  AccountStatus,
   Gender,
   OnboardingStatus,
   Role,
@@ -55,7 +58,10 @@ export class TechnicianOnboardingService {
     @Optional()
     @InjectRepository(TechnicianSkillVerification)
     private readonly skillVerificationRepo?: Repository<TechnicianSkillVerification>,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
+
+  private readonly logger = new Logger(TechnicianOnboardingService.name);
 
   // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -491,6 +497,28 @@ export class TechnicianOnboardingService {
     profile.onboardingStep = 5;
     await this.profileRepo.save(profile);
 
+    void this.notifyManagersOfSubmission(userId).catch((error: unknown) =>
+      this.logger.warn(`profile submission notice failed: ${error instanceof Error ? error.message : String(error)}`));
+
     return this.getOnboardingStatus(userId);
+  }
+
+  /** Quản lý dịch vụ đang hoạt động nhận thông báo khi thợ gửi hồ sơ, để vào Duyệt danh tính. */
+  private async notifyManagersOfSubmission(technicianId: string): Promise<void> {
+    if (!this.notifications) return;
+    const [technician, managers] = await Promise.all([
+      this.userRepo.findOne({ where: { id: technicianId }, select: { id: true, fullName: true } }),
+      this.userRepo.find({ where: { role: Role.SERVICE_MANAGER, isActive: true, status: AccountStatus.ACTIVE }, select: { id: true } }),
+    ]);
+    await this.notifications.createManyNotifications(
+      managers.map((manager) => ({
+        userId: manager.id,
+        title: 'Có hồ sơ kỹ thuật viên chờ duyệt',
+        message: `${technician?.fullName ?? 'Kỹ thuật viên'} vừa gửi hồ sơ đăng ký, cần xác nhận danh tính.`,
+        type: 'TECHNICIAN_PROFILE_SUBMITTED',
+        referenceId: technicianId,
+        referenceType: 'technician_profile',
+      })),
+    );
   }
 }
