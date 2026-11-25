@@ -202,3 +202,16 @@ describe('skillEvidenceMetadata', () => {
       .toMatchObject({ reviewStatus: SkillEvidenceReviewStatus.PENDING });
   });
 });
+
+describe('TechnicianSkillVerificationsService.findAll lists only skills added after the profile was approved', () => {
+  it('keeps the requests of technicians still in onboarding out of the list', async () => {
+    const qb: any = {};
+    for (const method of ['leftJoinAndSelect', 'andWhere', 'orderBy', 'skip', 'take']) qb[method] = vi.fn(() => qb);
+    qb.getManyAndCount = vi.fn().mockResolvedValue([[], 0]);
+    const service = new TechnicianSkillVerificationsService(
+      { createQueryBuilder: () => qb } as any, {} as any, {} as any, {} as any, {} as any, {} as any,
+    );
+    await service.findAll({ page: 1, limit: 10, skip: 0 } as any);
+    expect(qb.andWhere).toHaveBeenCalledWith('profile.verificationStatus = :approved', { approved: VerificationStatus.VERIFIED });
+  });
+});

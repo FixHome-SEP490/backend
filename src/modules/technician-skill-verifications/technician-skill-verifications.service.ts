@@ -240,6 +240,10 @@ export class TechnicianSkillVerificationsService {
       .leftJoinAndSelect('v.documents', 'documents')
       .leftJoinAndSelect('v.reviewedBy', 'reviewedBy');
 
+    // A technician still going through onboarding is reviewed once, in the profile review; this list keeps the
+    // skills added after the profile was approved.
+    qb.andWhere('profile.verificationStatus = :approved', { approved: VerificationStatus.VERIFIED });
+
     if (query.status) {
       qb.andWhere('v.status = :status', { status: query.status });
     }

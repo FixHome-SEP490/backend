@@ -9,6 +9,7 @@ import { TechnicianProfile } from '../technicians/entities/technician-profile.en
 import { TechnicianSkill } from '../technicians/entities/technician-skill.entity';
 import { TechnicianSkillVerification } from '../technicians/entities/technician-skill-verification.entity';
 import { TechnicianVerification } from '../technician-verifications/entities/technician-verification.entity';
+import { VerificationDocument } from '../technician-verifications/entities/verification-document.entity';
 import { Wallet } from '../wallet/entities/wallet.entity';
 import { ApproveProfileDto, RejectProfileDto } from './dto/office-visit.dto';
 import { OfficeVisit, OfficeVisitStatus } from './entities/office-visit.entity';
@@ -73,10 +74,45 @@ export class ProfileReviewService {
     );
   }
 
+  /**
+   * The papers still waiting on the technician's skills, one entry per stored file: a paper attached to a whole
+   * category is saved as one document row per skill, so the rows are folded by file and list the skills they cover.
+   */
+  private async openEvidence(skills: TechnicianSkill[]) {
+    if (skills.length === 0) return [];
+    const requests = await this.profiles.manager.getRepository(TechnicianSkillVerification).find({
+      where: { technicianSkillId: In(skills.map((s) => s.id)), status: VerificationStatus.PENDING },
+      relations: ['documents'],
+    });
+    const byFile = new Map<string, { verificationId: string; document: VerificationDocument; skillIds: string[] }>();
+    for (const request of requests) {
+      for (const document of request.documents ?? []) {
+        const key = document.storageObjectPath ?? document.id;
+        const entry = byFile.get(key) ?? { verificationId: request.id, document, skillIds: [] };
+        entry.skillIds.push(request.technicianSkillId);
+        byFile.set(key, entry);
+      }
+    }
+    return [...byFile.values()].map(({ verificationId, document: d, skillIds }) => ({
+      verificationId,
+      documentId: d.id,
+      fileName: d.fileName,
+      mimeType: d.mimeType,
+      evidenceType: d.evidenceType ?? null,
+      evidenceGroup: d.evidenceGroup ?? null,
+      issuer: d.issuer ?? null,
+      referenceNumber: d.referenceNumber ?? null,
+      issuedAt: d.issuedAt ?? null,
+      expiresAt: d.expiresAt ?? null,
+      claimedYears: d.claimedYears ?? null,
+      skillIds,
+    }));
+  }
+
   async get(technicianId: string) {
     const profile = await this.profiles.findOne({
       where: { userId: technicianId },
-      relations: ['user', 'skills', 'skills.service', 'serviceAreas'],
+      relations: ['user', 'skills', 'skills.service', 'skills.service.category', 'serviceAreas'],
       relationLoadStrategy: 'query',
     });
     if (!profile) throw new NotFoundException('Technician profile not found');
@@ -104,10 +140,13 @@ export class ProfileReviewService {
       skills: (profile.skills ?? []).map((s) => ({
         id: s.id,
         serviceName: s.service?.name ?? '',
+        categoryId: s.service?.categoryId ?? '',
+        categoryName: s.service?.category?.name ?? 'Khác',
         declaredLevel: s.declaredLevel ?? null,
         level: s.level,
         verificationStatus: s.verificationStatus,
       })),
+      evidence: await this.openEvidence(profile.skills ?? []),
       // Ảnh bản công chứng nộp cùng hồ sơ xác minh (`certificate`); xem qua endpoint truy cập tài liệu của hồ sơ xác minh.
       verificationId: kyc?.id ?? null,
       faceMatchScore: kyc?.faceMatchScore ?? null,
