@@ -163,6 +163,7 @@ export class ProfileReviewService {
 
   async approve(technicianId: string, adminId: string, dto: ApproveProfileDto) {
     if (!dto.skills.some((s) => s.approved)) throw new BadRequestException('Cần xác nhận ít nhất một kỹ năng.');
+    const notConfirmed: string[] = [];
     const result = await this.profiles.manager.transaction(async (manager) => {
       const profile = await manager.getRepository(TechnicianProfile).findOne({ where: { userId: technicianId }, lock: { mode: 'pessimistic_write' } });
       if (!profile) throw new NotFoundException('Technician profile not found');
@@ -171,7 +172,7 @@ export class ProfileReviewService {
       const attended = await manager.getRepository(OfficeVisit).exists({ where: { technicianId, status: OfficeVisitStatus.ATTENDED } });
       if (!attended) throw new BadRequestException('Chỉ duyệt hồ sơ sau khi đã gặp trực tiếp tại trụ sở.');
 
-      const skills = await manager.getRepository(TechnicianSkill).find({ where: { technicianId: profile.id } });
+      const skills = await manager.getRepository(TechnicianSkill).find({ where: { technicianId: profile.id }, relations: ['service'] });
       const byId = new Map(skills.map((s) => [s.id, s]));
       const skillReviews = manager.getRepository(TechnicianSkillVerification);
       const now = new Date();
@@ -179,6 +180,7 @@ export class ProfileReviewService {
         const skill = byId.get(decision.skillId);
         if (!skill) throw new BadRequestException('Có kỹ năng không thuộc hồ sơ của thợ này.');
         const status = decision.approved ? VerificationStatus.VERIFIED : VerificationStatus.REJECTED;
+        if (!decision.approved && skill.service?.name) notConfirmed.push(skill.service.name);
         skill.level = decision.level;
         skill.verificationStatus = status;
         await manager.getRepository(TechnicianSkill).save(skill);
@@ -211,7 +213,8 @@ export class ProfileReviewService {
       userId: technicianId,
       title: 'Hồ sơ đã được duyệt - Nạp tiền ví để nhận việc',
       message:
-        'Chúc mừng bạn đã trở thành Đối tác Kỹ thuật viên FixHome! Số dư ví ban đầu là 0 ₫. Vui lòng nạp tối thiểu 200.000 ₫ vào ví để bắt đầu tiếp nhận các đơn sửa chữa từ khách hàng.',
+        'Chúc mừng bạn đã trở thành Đối tác Kỹ thuật viên FixHome! Số dư ví ban đầu là 0 ₫. Vui lòng nạp tối thiểu 200.000 ₫ vào ví để bắt đầu tiếp nhận các đơn sửa chữa từ khách hàng.' +
+        (notConfirmed.length > 0 ? ` Kỹ năng chưa được xác nhận: ${notConfirmed.join(', ')}.` : ''),
       type: 'WALLET_TOPUP_REQUIRED',
       referenceType: 'wallet',
       referenceId: technicianId,

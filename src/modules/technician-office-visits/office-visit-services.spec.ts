@@ -111,8 +111,8 @@ describe('OfficeVisitsService.markMissed', () => {
 function reviewHarness(opts: { attended: boolean; profile?: Record<string, unknown> }) {
   const profile = { id: 'p1', userId: technicianId, identityVerifiedAt: new Date(), verificationStatus: VerificationStatus.PENDING, onboardingStatus: OnboardingStatus.SUBMITTED, ...opts.profile };
   const skills = [
-    { id: 's1', technicianId: 'p1', level: 'INTERMEDIATE', verificationStatus: VerificationStatus.PENDING },
-    { id: 's2', technicianId: 'p1', level: 'INTERMEDIATE', verificationStatus: VerificationStatus.PENDING },
+    { id: 's1', technicianId: 'p1', level: 'INTERMEDIATE', verificationStatus: VerificationStatus.PENDING, service: { name: 'Sửa điều hòa' } },
+    { id: 's2', technicianId: 'p1', level: 'INTERMEDIATE', verificationStatus: VerificationStatus.PENDING, service: { name: 'Sửa tủ lạnh' } },
   ];
   const skillSave = vi.fn(async (s) => s);
   const skillReviews = { findOne: vi.fn().mockResolvedValue(null), update: vi.fn(), save: vi.fn(), create: vi.fn((v) => v) };
@@ -152,6 +152,15 @@ describe('ProfileReviewService.approve', () => {
     expect(skillReviews.save).toHaveBeenCalledTimes(2);
     expect(wallets.save).toHaveBeenCalled();
     expect(notifications.createNotification).toHaveBeenCalledWith(expect.objectContaining({ type: 'WALLET_TOPUP_REQUIRED' }));
+  });
+
+  it('tells the technician which skills were not confirmed, and says nothing extra when all were', async () => {
+    const partial = reviewHarness({ attended: true });
+    await partial.service.approve(technicianId, 'admin-1', decisions);
+    expect(partial.notifications.createNotification).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('Kỹ năng chưa được xác nhận: Sửa tủ lạnh.') }));
+    const all = reviewHarness({ attended: true });
+    await all.service.approve(technicianId, 'admin-1', { skills: decisions.skills.map((d) => ({ ...d, approved: true })) });
+    expect(all.notifications.createNotification).toHaveBeenCalledWith(expect.objectContaining({ message: expect.not.stringContaining('chưa được xác nhận') }));
   });
 
   it('refuses to approve before the technician has met the office', async () => {
