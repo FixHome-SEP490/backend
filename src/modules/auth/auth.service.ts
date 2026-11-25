@@ -6,6 +6,7 @@ import {
   Injectable,
   NotFoundException,
   Optional,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -21,6 +22,7 @@ import {
   Role,
   AccountStatus,
   OtpPurpose,
+  OtpChannel,
   AuthProvider,
 } from '../../shared/enums';
 import type { GoogleProfile } from './google-identity.service';
@@ -33,6 +35,7 @@ const GOOGLE_HANDOFF_PURPOSE = 'google_handoff';
 import { normalizePhone } from '../../shared/validation/input.transforms';
 import { RbacService } from '../rbac/rbac.service';
 import { MailService } from '../mail/mail.service';
+import { SmsService } from '../sms/sms.service';
 import {
   RegisterDto,
   LoginDto,
@@ -45,6 +48,7 @@ import {
   ResendOtpDto,
   ForgotPasswordDto,
   ResetPasswordDto,
+  ConfirmOtpDto,
 } from './dto';
 
 @Injectable()
@@ -57,6 +61,7 @@ export class AuthService {
     private readonly configService: ConfigService,
     private readonly mailService: MailService,
     @Optional() private readonly rbacService?: RbacService,
+    @Optional() private readonly smsService?: SmsService,
   ) {}
 
   private async getPermissions(role: string, userId?: string): Promise<string[]> {
@@ -120,9 +125,37 @@ export class AuthService {
       await this.mailService.sendRegisterOtp(email, rawOtp, fullName);
     } else if (purpose === OtpPurpose.RESET_PASSWORD) {
       await this.mailService.sendPasswordResetOtp(email, rawOtp, fullName);
+    } else if (purpose === OtpPurpose.VERIFY_EMAIL) {
+      await this.mailService.sendVerifyEmailOtp(email, rawOtp, fullName);
     }
 
     return { resendAvailableAt };
+  }
+
+  private get sms(): SmsService {
+    if (!this.smsService)
+      throw new ServiceUnavailableException('SMS chưa được cấu hình');
+    return this.smsService;
+  }
+
+  /** The registration OTP goes to the chosen channel; SMS codes live at Twilio. */
+  private async sendRegisterOtp(
+    user: { email: string; fullName: string; phoneNumber?: string | null },
+    channel: OtpChannel,
+    manager?: EntityManager,
+  ): Promise<void> {
+    if (channel === OtpChannel.SMS) {
+      if (!user.phoneNumber)
+        throw new BadRequestException('Cần số điện thoại để nhận OTP qua SMS');
+      await this.sms.sendOtp(user.phoneNumber);
+      return;
+    }
+    await this.generateAndSendOtp(
+      user.email,
+      OtpPurpose.REGISTER,
+      user.fullName,
+      manager,
+    );
   }
 
   /** Mirrors the conflict rules of {@link register}, without writing anything. */
@@ -146,7 +179,8 @@ export class AuthService {
     const emailPending =
       !!byEmail &&
       byEmail.status === AccountStatus.PENDING_VERIFICATION &&
-      !byEmail.isEmailVerified;
+      !byEmail.isEmailVerified &&
+      !byEmail.isPhoneVerified;
     return {
       emailTaken: !!byEmail && !emailPending,
       emailPending,
@@ -164,6 +198,13 @@ export class AuthService {
     const phoneNumber = dto.phoneNumber
       ? normalizePhone(dto.phoneNumber)
       : null;
+    const channel = dto.verifyChannel ?? OtpChannel.EMAIL;
+    if (channel === OtpChannel.SMS && !phoneNumber)
+      throw new BadRequestException('Cần số điện thoại để nhận OTP qua SMS');
+    const message =
+      channel === OtpChannel.SMS
+        ? 'Đăng ký tài khoản thành công. Vui lòng kiểm tra tin nhắn SMS để lấy mã OTP xác thực.'
+        : 'Đăng ký tài khoản thành công. Vui lòng kiểm tra email để lấy mã OTP xác thực.';
 
     const existingUser = await this.userRepository.findOne({ where: { email } });
     if (existingUser) {
@@ -173,7 +214,8 @@ export class AuthService {
       // let a banned user unban themselves and a stranger take the account.
       if (
         existingUser.status !== AccountStatus.PENDING_VERIFICATION ||
-        existingUser.isEmailVerified
+        existingUser.isEmailVerified ||
+        existingUser.isPhoneVerified
       ) {
         throw new ConflictException('Email is already registered');
       }
@@ -208,17 +250,8 @@ export class AuthService {
           await profiles.delete({ userId: existingUser.id });
         }
       });
-      await this.generateAndSendOtp(
-        email,
-        OtpPurpose.REGISTER,
-        existingUser.fullName,
-      );
-      return {
-        message:
-          'Đăng ký tài khoản thành công. Vui lòng kiểm tra email để lấy mã OTP xác thực.',
-        email,
-        expiresInMinutes: 5,
-      };
+      await this.sendRegisterOtp(existingUser, channel);
+      return { message, email, expiresInMinutes: 5, channel };
     }
 
     if (
@@ -240,6 +273,7 @@ export class AuthService {
           status: AccountStatus.PENDING_VERIFICATION,
           isActive: true,
           isEmailVerified: false,
+          isPhoneVerified: false,
         }),
       );
 
@@ -257,20 +291,10 @@ export class AuthService {
         );
       }
 
-      await this.generateAndSendOtp(
-        email,
-        OtpPurpose.REGISTER,
-        user.fullName,
-        manager,
-      );
+      await this.sendRegisterOtp(user, channel, manager);
     });
 
-    return {
-      message:
-        'Đăng ký tài khoản thành công. Vui lòng kiểm tra email để lấy mã OTP xác thực.',
-      email,
-      expiresInMinutes: 5,
-    };
+    return { message, email, expiresInMinutes: 5, channel };
   }
 
   /**
@@ -291,27 +315,17 @@ export class AuthService {
     return row?.attempts !== undefined ? Number(row.attempts) : otp.attempts + 1;
   }
 
-  async verifyRegisterOtp(dto: VerifyOtpDto): Promise<AuthResponseDto> {
-    const email = dto.email.toLowerCase().trim();
-    const user = await this.userRepository.findOne({ where: { email } });
-    if (!user) {
-      throw new NotFoundException('Không tìm thấy tài khoản với email này');
-    }
-    if (user.status === AccountStatus.ACTIVE && user.isEmailVerified) {
-      throw new BadRequestException(
-        'Tài khoản này đã được kích hoạt trước đó. Vui lòng đăng nhập.',
-      );
-    }
-    // The register OTP activates an account that has never been active. It
-    // must not lift a suspension or a lock an admin put on.
-    if (user.status !== AccountStatus.PENDING_VERIFICATION) {
-      throw new BadRequestException(
-        'Tài khoản này đang bị tạm khoá. Vui lòng liên hệ FixHome để được hỗ trợ.',
-      );
-    }
-
+  /**
+   * Check an emailed OTP: latest unused code, not expired, attempt spent
+   * atomically, hash equal. Returns the record so the caller can mark it used.
+   */
+  private async assertEmailOtp(
+    email: string,
+    purpose: OtpPurpose,
+    code: string,
+  ): Promise<OtpVerification> {
     const otpRecord = await this.otpRepository.findOne({
-      where: { email, purpose: OtpPurpose.REGISTER, isUsed: false },
+      where: { email, purpose, isUsed: false },
       order: { createdAt: 'DESC' },
     });
 
@@ -319,8 +333,7 @@ export class AuthService {
       throw new BadRequestException('Mã OTP không hợp lệ hoặc đã được sử dụng');
     }
 
-    const now = new Date();
-    if (otpRecord.expiresAt < now) {
+    if (otpRecord.expiresAt < new Date()) {
       throw new BadRequestException(
         'Mã OTP đã hết hạn. Vui lòng yêu cầu gửi lại mã mới.',
       );
@@ -335,9 +348,7 @@ export class AuthService {
       );
     }
 
-    const inputHash = createHash('sha256')
-      .update(dto.otp.trim())
-      .digest('hex');
+    const inputHash = createHash('sha256').update(code.trim()).digest('hex');
     if (inputHash !== otpRecord.codeHash) {
       const remaining = otpRecord.maxAttempts - attemptsUsed;
       if (remaining <= 0) {
@@ -349,14 +360,57 @@ export class AuthService {
         `Mã OTP không chính xác. Bạn còn ${remaining} lần thử.`,
       );
     }
+    return otpRecord;
+  }
+
+  private async assertSmsOtp(phone: string, code: string): Promise<void> {
+    if (!(await this.sms.checkOtp(phone, code)))
+      throw new BadRequestException(
+        'Mã OTP không đúng hoặc đã hết hạn. Vui lòng yêu cầu gửi lại mã mới.',
+      );
+  }
+
+  async verifyRegisterOtp(dto: VerifyOtpDto): Promise<AuthResponseDto> {
+    const email = dto.email.toLowerCase().trim();
+    const user = await this.userRepository.findOne({ where: { email } });
+    if (!user) {
+      throw new NotFoundException('Không tìm thấy tài khoản với email này');
+    }
+    if (
+      user.status === AccountStatus.ACTIVE &&
+      (user.isEmailVerified || user.isPhoneVerified)
+    ) {
+      throw new BadRequestException(
+        'Tài khoản này đã được kích hoạt trước đó. Vui lòng đăng nhập.',
+      );
+    }
+    // The register OTP activates an account that has never been active. It
+    // must not lift a suspension or a lock an admin put on.
+    if (user.status !== AccountStatus.PENDING_VERIFICATION) {
+      throw new BadRequestException(
+        'Tài khoản này đang bị tạm khoá. Vui lòng liên hệ FixHome để được hỗ trợ.',
+      );
+    }
+
+    const channel = dto.channel ?? OtpChannel.EMAIL;
+    let otpRecord: OtpVerification | null = null;
+    if (channel === OtpChannel.SMS) {
+      if (!user.phoneNumber)
+        throw new BadRequestException('Tài khoản này chưa có số điện thoại để nhận OTP');
+      await this.assertSmsOtp(user.phoneNumber, dto.otp);
+    } else {
+      otpRecord = await this.assertEmailOtp(email, OtpPurpose.REGISTER, dto.otp);
+    }
 
     return this.userRepository.manager.transaction(async (manager) => {
-      await manager
-        .getRepository(OtpVerification)
-        .update(otpRecord.id, { isUsed: true });
+      if (otpRecord)
+        await manager
+          .getRepository(OtpVerification)
+          .update(otpRecord.id, { isUsed: true });
 
       user.status = AccountStatus.ACTIVE;
-      user.isEmailVerified = true;
+      if (channel === OtpChannel.SMS) user.isPhoneVerified = true;
+      else user.isEmailVerified = true;
       user.isActive = true;
       await manager.getRepository(User).save(user);
 
@@ -378,10 +432,23 @@ export class AuthService {
     if (!user) {
       throw new NotFoundException('Không tìm thấy tài khoản với email này');
     }
-    if (user.status === AccountStatus.ACTIVE && user.isEmailVerified) {
+    if (
+      user.status === AccountStatus.ACTIVE &&
+      (user.isEmailVerified || user.isPhoneVerified)
+    ) {
       throw new BadRequestException(
         'Tài khoản này đã được kích hoạt. Vui lòng đăng nhập.',
       );
+    }
+
+    if (dto.channel === OtpChannel.SMS) {
+      if (!user.phoneNumber)
+        throw new BadRequestException('Tài khoản này chưa có số điện thoại để nhận OTP');
+      await this.sms.sendOtp(user.phoneNumber);
+      return {
+        message: 'Mã OTP mới đã được gửi qua SMS.',
+        resendAvailableAt: new Date(Date.now() + 60 * 1000),
+      };
     }
 
     const { resendAvailableAt } = await this.generateAndSendOtp(
@@ -394,6 +461,62 @@ export class AuthService {
       message: 'Mã OTP mới đã được gửi đến email của bạn.',
       resendAvailableAt,
     };
+  }
+
+  // ----- Verify email / phone from the profile (user already signed in)
+
+  private async getVerifiable(userId: string): Promise<User> {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('Không tìm thấy tài khoản');
+    return user;
+  }
+
+  async sendEmailVerification(userId: string): Promise<{ resendAvailableAt: Date }> {
+    const user = await this.getVerifiable(userId);
+    if (user.isEmailVerified)
+      throw new BadRequestException('Email này đã được xác thực');
+    return this.generateAndSendOtp(
+      user.email,
+      OtpPurpose.VERIFY_EMAIL,
+      user.fullName,
+    );
+  }
+
+  async confirmEmailVerification(
+    userId: string,
+    dto: ConfirmOtpDto,
+  ): Promise<{ isEmailVerified: boolean; isPhoneVerified: boolean }> {
+    const user = await this.getVerifiable(userId);
+    if (user.isEmailVerified)
+      throw new BadRequestException('Email này đã được xác thực');
+    const otp = await this.assertEmailOtp(user.email, OtpPurpose.VERIFY_EMAIL, dto.otp);
+    await this.otpRepository.update(otp.id, { isUsed: true });
+    await this.userRepository.update(userId, { isEmailVerified: true });
+    return { isEmailVerified: true, isPhoneVerified: user.isPhoneVerified };
+  }
+
+  async sendPhoneVerification(userId: string): Promise<{ resendAvailableAt: Date }> {
+    const user = await this.getVerifiable(userId);
+    if (!user.phoneNumber)
+      throw new BadRequestException('Bạn chưa có số điện thoại. Hãy cập nhật số điện thoại trước.');
+    if (user.isPhoneVerified)
+      throw new BadRequestException('Số điện thoại này đã được xác thực');
+    await this.sms.sendOtp(user.phoneNumber);
+    return { resendAvailableAt: new Date(Date.now() + 60 * 1000) };
+  }
+
+  async confirmPhoneVerification(
+    userId: string,
+    dto: ConfirmOtpDto,
+  ): Promise<{ isEmailVerified: boolean; isPhoneVerified: boolean }> {
+    const user = await this.getVerifiable(userId);
+    if (!user.phoneNumber)
+      throw new BadRequestException('Bạn chưa có số điện thoại. Hãy cập nhật số điện thoại trước.');
+    if (user.isPhoneVerified)
+      throw new BadRequestException('Số điện thoại này đã được xác thực');
+    await this.assertSmsOtp(user.phoneNumber, dto.otp);
+    await this.userRepository.update(userId, { isPhoneVerified: true });
+    return { isEmailVerified: user.isEmailVerified, isPhoneVerified: true };
   }
 
   async login(dto: LoginDto): Promise<AuthResponseDto> {

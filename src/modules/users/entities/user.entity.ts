@@ -50,6 +50,9 @@ export class User extends BaseEntity {
   @Column({ name: 'is_email_verified', type: 'boolean', default: false })
   isEmailVerified: boolean;
 
+  @Column({ name: 'is_phone_verified', type: 'boolean', default: false })
+  isPhoneVerified: boolean;
+
   @Column({ name: 'avatar_url', type: 'varchar', nullable: true })
   avatarUrl?: string | null;
 

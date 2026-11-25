@@ -1,6 +1,6 @@
 // src/modules/auth/dto/auth-response.dto.ts
 import { ApiProperty } from '@nestjs/swagger';
-import { Role, AccountStatus } from '../../../shared/enums';
+import { Role, AccountStatus, OtpChannel } from '../../../shared/enums';
 import type { User } from '../../users/entities/user.entity';
 
 export class UserProfileDto {
@@ -34,6 +34,9 @@ export class UserProfileDto {
   @ApiProperty({ example: false })
   isEmailVerified: boolean;
 
+  @ApiProperty({ example: false })
+  isPhoneVerified: boolean;
+
   @ApiProperty({ nullable: true, example: null })
   avatarUrl?: string | null;
 
@@ -59,6 +62,7 @@ export class UserProfileDto {
       status: user.status,
       isActive: user.isActive,
       isEmailVerified: user.isEmailVerified ?? false,
+      isPhoneVerified: user.isPhoneVerified ?? false,
       avatarUrl: user.avatarUrl ?? null,
       bookingSuspendedUntil: user.bookingSuspendedUntil ?? null,
       reputationPoints: user.reputationPoints ?? 100,
@@ -112,5 +116,8 @@ export class RegisterResponseDto {
 
   @ApiProperty({ example: 5, description: 'Thời gian hết hạn của OTP (phút)' })
   expiresInMinutes: number;
+
+  @ApiProperty({ enum: OtpChannel, example: OtpChannel.EMAIL, description: 'Kênh đã gửi OTP' })
+  channel: OtpChannel;
 }
 
