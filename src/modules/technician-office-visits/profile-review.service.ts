@@ -15,6 +15,8 @@ import { ApproveProfileDto, RejectProfileDto } from './dto/office-visit.dto';
 import { OfficeVisit, OfficeVisitStatus } from './entities/office-visit.entity';
 import { deriveReviewStage } from './office-visit-rules';
 
+const MIN_REASON = 5;
+
 /**
  * Duyệt hồ sơ cuối (Admin): sau khi danh tính đã được xác nhận và thợ đã gặp trực tiếp, admin kiểm bản công chứng,
  * xác nhận cấp độ từng kỹ năng rồi chuyển hồ sơ sang APPROVED (PO 09/11/2026).
@@ -163,7 +165,10 @@ export class ProfileReviewService {
 
   async approve(technicianId: string, adminId: string, dto: ApproveProfileDto) {
     if (!dto.skills.some((s) => s.approved)) throw new BadRequestException('Cần xác nhận ít nhất một kỹ năng.');
-    const notConfirmed: string[] = [];
+    if (dto.skills.some((s) => !s.approved && (s.reason?.trim().length ?? 0) < MIN_REASON)) {
+      throw new BadRequestException(`Cần ghi lý do (ít nhất ${MIN_REASON} ký tự) cho mỗi kỹ năng chưa xác nhận.`);
+    }
+    const notConfirmed: { name: string; reason: string }[] = [];
     const result = await this.profiles.manager.transaction(async (manager) => {
       const profile = await manager.getRepository(TechnicianProfile).findOne({ where: { userId: technicianId }, lock: { mode: 'pessimistic_write' } });
       if (!profile) throw new NotFoundException('Technician profile not found');
@@ -180,14 +185,15 @@ export class ProfileReviewService {
         const skill = byId.get(decision.skillId);
         if (!skill) throw new BadRequestException('Có kỹ năng không thuộc hồ sơ của thợ này.');
         const status = decision.approved ? VerificationStatus.VERIFIED : VerificationStatus.REJECTED;
-        if (!decision.approved && skill.service?.name) notConfirmed.push(skill.service.name);
+        const rejectionReason = decision.approved ? null : (decision.reason?.trim() ?? null);
+        if (!decision.approved) notConfirmed.push({ name: skill.service?.name ?? 'Dịch vụ', reason: rejectionReason ?? '' });
         skill.level = decision.level;
         skill.verificationStatus = status;
         await manager.getRepository(TechnicianSkill).save(skill);
         // Phiếu duyệt kỹ năng: đóng phiếu đang mở hoặc tạo phiếu đã xử lý, để không vi phạm index một phiếu mở mỗi kỹ năng.
         const open = await skillReviews.findOne({ where: { technicianSkillId: skill.id, status: VerificationStatus.PENDING } });
-        if (open) await skillReviews.update(open.id, { status, reviewedById: adminId, reviewedAt: now });
-        else await skillReviews.save(skillReviews.create({ technicianSkillId: skill.id, status, reviewedById: adminId, reviewedAt: now }));
+        if (open) await skillReviews.update(open.id, { status, reviewedById: adminId, reviewedAt: now, rejectionReason });
+        else await skillReviews.save(skillReviews.create({ technicianSkillId: skill.id, status, reviewedById: adminId, reviewedAt: now, rejectionReason }));
       }
 
       profile.verificationStatus = VerificationStatus.VERIFIED;
@@ -213,12 +219,21 @@ export class ProfileReviewService {
       userId: technicianId,
       title: 'Hồ sơ đã được duyệt - Nạp tiền ví để nhận việc',
       message:
-        'Chúc mừng bạn đã trở thành Đối tác Kỹ thuật viên FixHome! Số dư ví ban đầu là 0 ₫. Vui lòng nạp tối thiểu 200.000 ₫ vào ví để bắt đầu tiếp nhận các đơn sửa chữa từ khách hàng.' +
-        (notConfirmed.length > 0 ? ` Kỹ năng chưa được xác nhận: ${notConfirmed.join(', ')}.` : ''),
+        'Chúc mừng bạn đã trở thành Đối tác Kỹ thuật viên FixHome! Số dư ví ban đầu là 0 ₫. Vui lòng nạp tối thiểu 200.000 ₫ vào ví để bắt đầu tiếp nhận các đơn sửa chữa từ khách hàng.',
       type: 'WALLET_TOPUP_REQUIRED',
       referenceType: 'wallet',
       referenceId: technicianId,
     });
+    if (notConfirmed.length > 0) {
+      void this.notifications?.createNotification({
+        userId: technicianId,
+        title: 'Có kỹ năng chưa được xác nhận',
+        message: notConfirmed.map(({ name, reason }) => `${name}: ${reason}`).join('; '),
+        type: 'SKILL_NOT_CONFIRMED',
+        referenceType: 'technician_profile',
+        referenceId: technicianId,
+      });
+    }
     return result;
   }
 
