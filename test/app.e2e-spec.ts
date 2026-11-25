@@ -36,6 +36,8 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
   let customer: Session;
   let technician: Session;
   let admin: Session;
+  // Service manager: decides the technician onboarding review; the admin only reads it.
+  let reviewer: Session;
   let jwt: JwtService;
   const documentFor = (technicianId: string) => uploadedKyc({
     documentType: 'citizen_id_front',
@@ -128,7 +130,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
           facePhotoFor(session.user.id),
         ],
       });
-  const review = (id: string, action: string, session = admin) =>
+  const review = (id: string, action: string, session = reviewer) =>
     http()
       .patch(`/api/v1/admin/technician-verifications/${id}/${action}`)
       .set('Authorization', bearer(session))
@@ -267,6 +269,12 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
       admin.user.id,
     ]);
     admin = await freshLogin(admin);
+    reviewer = await register();
+    await db.query('UPDATE users SET role = $1 WHERE id = $2', [
+      'service_manager',
+      reviewer.user.id,
+    ]);
+    reviewer = await freshLogin(reviewer);
   }, 60000);
 
   beforeEach(() => {
@@ -539,7 +547,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
       .set('Authorization', bearer(customer))
       .expect(200);
   });
-  it('RBAC blocks Customer/Technician/Manager at admin user and verification APIs', async () => {
+  it('RBAC blocks Customer/Technician/Manager at the admin user API and everyone but the service manager at verification decisions', async () => {
     const manager = await register();
     await db.query('UPDATE users SET role = $1 WHERE id = $2', [
       'service_manager',
@@ -550,8 +558,9 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
         .get('/api/v1/admin/users')
         .set('Authorization', bearer(actor))
         .expect(403);
-      await review(randomUUID(), 'approve', actor).expect(403);
     }
+    for (const actor of [customer, technician, admin])
+      await review(randomUUID(), 'approve', actor).expect(403);
     await http()
       .get('/api/v1/admin/users')
       .set('Authorization', bearer(admin))
@@ -971,11 +980,11 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     // The certificate FixHome issues on approval follows the same rule.
     const certificate = (
       await http().post(`/api/v1/admin/technician-skill-verifications/${pending.id}/certificate-upload-url`)
-        .set('Authorization', bearer(admin)).send({ mimeType: 'image/png' }).expect(201)
+        .set('Authorization', bearer(reviewer)).send({ mimeType: 'image/png' }).expect(201)
     ).body.data.storageObjectPath as string;
     const approve = () =>
       http().patch(`/api/v1/admin/technician-skill-verifications/${pending.id}/approve`)
-        .set('Authorization', bearer(admin)).send(evidence(certificate));
+        .set('Authorization', bearer(reviewer)).send(evidence(certificate));
     await approve().expect(400);
     const [stillPending] = await db.query('SELECT status FROM technician_skill_verifications WHERE id = $1', [pending.id]);
     expect(stillPending.status).toBe('pending');
@@ -1017,7 +1026,7 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     for (const body of [{}, { rejectionReason: '     ' }])
       await http()
         .patch(`/api/v1/admin/technician-verifications/${id}/reject`)
-        .set('Authorization', bearer(admin))
+        .set('Authorization', bearer(reviewer))
         .send(body)
         .expect(400);
     await review(id, 'reject').expect(200);
