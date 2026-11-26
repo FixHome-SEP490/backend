@@ -9,6 +9,7 @@ import { PartReturnDiscrepancyDto, PartReturnDto } from './dto/part-return.dto';
 import { PartCustodyService } from './part-custody.service';
 import { PartCustodyActor } from './part-custody.types';
 import { LegacyManualReviewDto } from './dto/legacy-manual-review.dto';
+import { MyPartReturnsQueryDto } from './dto/my-part-returns-query.dto';
 import { RiskLimit } from '../../common/rate-limit/risk-rate-limit';
 import { parseIdList } from '../../shared/dto/id-list-query';
 
@@ -47,7 +48,9 @@ export class PartReturnsController {
 
   @Get('part-returns/mine')
   @Roles(Role.TECHNICIAN)
-  async mine(@Req() req: { user: PartCustodyActor }) {
+  async mine(@Query() query: MyPartReturnsQueryDto, @Req() req: { user: PartCustodyActor }) {
+    // With `status`: one group of the page, paged, every group's counters in meta (BUG DETECTOR 302).
+    if (query.status) return this.custody.mineByGroup(req.user, query.status, query.page, query.pageSize);
     const data = await this.custody.pending(req.user);
     return { data, meta: { completedQty: await this.custody.completedQty(req.user) } };
   }

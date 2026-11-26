@@ -183,6 +183,68 @@ describe.skipIf(!port)('P1 isolated PostgreSQL / real JWT / transaction entrypoi
     finally { vi.stubEnv('P1_CUSTODY_ENABLED', 'true'); }
   });
 
+  it('BUG DETECTOR 302: /part-returns/mine?status= lists each of the three groups with counters from the server; no status answers as before', async () => {
+    const f = await fixture();
+    const extra = async (quantity: number) => f.save('PartRequestItem', { partRequestId: f.req.id, partCatalogId: f.item.partCatalogId, partSource: 'fixhome', partNameSnapshot: f.item.partNameSnapshot, quantity, unitPriceSnapshot: 100000 });
+    const usedAll = await extra(2), mismatch = await extra(1);
+    expect((await f.receive()).status).toBe(200);
+    const mine = (q = '') => f.get(`/part-returns/mine${q}`, f.tech);
+    const ids = (res: { body: { data: Array<{ partRequestItemId: string }> } }) => res.body.data.map(r => r.partRequestItemId).sort();
+    // Just handed over, usage not recorded: every line needs declaring.
+    let res = await mine('?status=need_declare');
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(ids(res)).toEqual([f.item.id, usedAll.id, mismatch.id].sort());
+    expect(res.body.data.every((r: { usageRecorded: boolean }) => r.usageRecorded === false)).toBe(true);
+    expect(res.body.meta).toMatchObject({ status: 'need_declare', page: 1, pageSize: 20, total: 3, needDeclareQty: 6, awaitingManagerQty: 0, completedQty: 0 });
+    // item: 2 of 3 used (1 left to declare); usedAll: all used (not_required); mismatch: declared, manager finds a mismatch.
+    expect((await f.usage(2)).status).toBe(200);
+    expect((await request(app.getHttpServer()).patch(`/part-requests/${f.req.id}/items/${usedAll.id}/usage`).set('Authorization', `Bearer ${f.tech.token}`)
+      .send({ usageStatus: 'used', usedQty: 2, expectedVersion: 0, idempotencyKey: `usage-${usedAll.id}` })).status).toBe(200);
+    const mismatchPath = `/part-requests/${f.req.id}/items/${mismatch.id}`;
+    expect((await f.post(`${mismatchPath}/declare-return`, f.tech, { quantity: 1, expectedVersion: 0, idempotencyKey: 'declare-302-mismatch' })).status).toBe(200);
+    const reported = await f.post(`${mismatchPath}/return-discrepancy`, f.manager, { declaredQty: 1, observedQty: 0, expectedVersion: 1, idempotencyKey: 'discrepancy-302', reason: 'Synthetic mismatch' });
+    expect(reported.status, JSON.stringify(reported.body)).toBe(200);
+    res = await mine('?status=need_declare');
+    expect(ids(res)).toEqual([f.item.id]);
+    expect(res.body.data[0]).toMatchObject({ returnStatus: 'outstanding', usageRecorded: true, outstandingQty: 1 });
+    res = await mine('?status=completed');
+    expect(ids(res)).toEqual([usedAll.id]);
+    expect(res.body.data[0]).toMatchObject({ returnStatus: 'not_required', outstandingQty: 0 });
+    expect((await mine('?status=awaiting_manager')).body.data).toEqual([]);
+    // Declared, not received yet: waits for the manager.
+    expect((await f.post(`${f.returns}/declare-return`, f.tech, { quantity: 1, expectedVersion: 1, idempotencyKey: 'declare-302-item' })).status).toBe(200);
+    res = await mine('?status=awaiting_manager');
+    expect(ids(res)).toEqual([f.item.id]);
+    expect(res.body.data[0].returnStatus).toBe('declared');
+    // Open groups count the units still held, completed the units issued (like completedQty).
+    expect(res.body.meta).toMatchObject({ needDeclareQty: 0, awaitingManagerQty: 1, completedQty: 2, exceptionQty: 1,
+      groups: { need_declare: { qty: 0, rows: 0, orders: 0 }, awaiting_manager: { qty: 1, rows: 1, orders: 1 }, completed: { qty: 2, rows: 1, orders: 1 }, exception: { qty: 1, rows: 1, orders: 1 }, all: { qty: 4, rows: 3, orders: 1 } } });
+    // The manager receives it: completed holds both settled lines.
+    expect((await f.post(`${f.returns}/accept-return`, f.manager, { quantity: 1, expectedVersion: 2, idempotencyKey: 'accept-302-item' })).status).toBe(200);
+    res = await mine('?status=completed');
+    expect(ids(res)).toEqual([f.item.id, usedAll.id].sort());
+    expect(res.body.data.map((r: { returnStatus: string }) => r.returnStatus).sort()).toEqual(['not_required', 'received']);
+    expect(res.body.meta).toMatchObject({ total: 2, needDeclareQty: 0, awaitingManagerQty: 0, completedQty: 5, exceptionQty: 1 });
+    // "all" lists every line, the mismatch first; it is in no other group.
+    res = await mine('?status=all');
+    expect(ids(res)).toEqual([f.item.id, usedAll.id, mismatch.id].sort());
+    expect(res.body.data[0]).toMatchObject({ partRequestItemId: mismatch.id, returnStatus: 'exception' });
+    for (const g of ['need_declare', 'awaiting_manager', 'completed']) expect(ids(await mine(`?status=${g}`))).not.toContain(mismatch.id);
+    // Paging.
+    res = await mine('?status=completed&page=2&pageSize=1');
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.meta).toMatchObject({ page: 2, pageSize: 1, total: 2 });
+    expect((await mine('?status=completed&page=3&pageSize=1')).body.data).toEqual([]);
+    // Without status: the open lines and meta.completedQty only, as before (older apps).
+    res = await mine();
+    expect(ids(res)).toEqual([mismatch.id]);
+    expect(res.body.meta).toEqual({ completedQty: 5 });
+    // Validation and ownership.
+    for (const bad of ['?status=exception', '?status=x', '?status=completed&pageSize=101', '?status=completed&page=0']) expect((await mine(bad)).status).toBe(400);
+    expect((await f.get('/part-returns/mine?status=completed', f.other)).body).toMatchObject({ data: [], meta: { total: 0, completedQty: 0 } });
+    expect((await f.get('/part-returns/mine?status=completed', f.manager)).status).toBe(403);
+  });
+
   it('blocks actual Accept, auto-Accept, assignment and wallet withdrawal after cash self-declaration without customer confirmation; manager receipt releases the lock', async () => {
     const f = await fixture(); await f.receive(); await f.usage();
     const invoice = await f.invoice();
