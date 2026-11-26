@@ -16,6 +16,7 @@ import {
   TechnicianTimeOff,
 } from './entities';
 import { ServicesModule } from '../services/services.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { User } from '../users/entities/user.entity';
 import { Service } from '../services/entities/service.entity';
 import { TechnicianVerification } from '../technician-verifications/entities/technician-verification.entity';
@@ -28,6 +29,7 @@ import { OfficeVisit } from '../technician-office-visits/entities/office-visit.e
 @Module({
   imports: [
     ServicesModule,
+    NotificationsModule,
     TypeOrmModule.forFeature([
       TechnicianProfile,
       TechnicianSkill,

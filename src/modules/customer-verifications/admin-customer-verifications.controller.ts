@@ -7,11 +7,11 @@ import { KycSignedAccessResponseDto, RejectVerificationDto } from '../technician
 import { QueryCustomerVerificationsDto } from './dto/customer-verification.dto';
 import { CustomerVerificationsService } from './customer-verifications.service';
 
-/** Admin only, as for technician KYC (BRX-041): a Service Manager cannot review. */
+/** Service Manager decides (approve, reject); Admin only reads, as for technician KYC. */
 @ApiTags('Admin / Customer verifications')
 @Controller('admin/customer-verifications')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN)
+@Roles(Role.ADMIN, Role.SERVICE_MANAGER)
 @ApiBearerAuth()
 export class AdminCustomerVerificationsController {
   constructor(private readonly service: CustomerVerificationsService) {}
@@ -41,12 +41,14 @@ export class AdminCustomerVerificationsController {
     return this.service.documentAccess(id, documentId);
   }
 
+  @Roles(Role.SERVICE_MANAGER)
   @Patch(':id/approve')
   @ApiOperation({ summary: 'Admin: duyệt hồ sơ, chốt họ tên đã xác minh và báo khách hàng' })
   approve(@Param('id', ParseUUIDPipe) id: string, @CurrentUser('id') reviewerId: string) {
     return this.service.approve(id, reviewerId);
   }
 
+  @Roles(Role.SERVICE_MANAGER)
   @Patch(':id/reject')
   @ApiOperation({ summary: 'Admin: từ chối hồ sơ kèm lý do (tối thiểu 5 ký tự) và báo khách hàng' })
   reject(

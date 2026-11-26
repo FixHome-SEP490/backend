@@ -108,6 +108,10 @@ export class ReviewSkillDecisionDto {
 
   @ApiProperty({ description: 'false: chưa xác nhận kỹ năng này (không được nhận việc theo kỹ năng đó)' }) @IsBoolean()
   approved: boolean;
+
+  @ApiPropertyOptional({ description: 'Lý do chưa xác nhận (bắt buộc khi approved = false), thợ đọc được' })
+  @IsOptional() @IsString() @Trim() @MaxLength(500)
+  reason?: string;
 }
 
 export class ApproveProfileDto {

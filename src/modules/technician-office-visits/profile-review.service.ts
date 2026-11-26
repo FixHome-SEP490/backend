@@ -9,10 +9,13 @@ import { TechnicianProfile } from '../technicians/entities/technician-profile.en
 import { TechnicianSkill } from '../technicians/entities/technician-skill.entity';
 import { TechnicianSkillVerification } from '../technicians/entities/technician-skill-verification.entity';
 import { TechnicianVerification } from '../technician-verifications/entities/technician-verification.entity';
+import { VerificationDocument } from '../technician-verifications/entities/verification-document.entity';
 import { Wallet } from '../wallet/entities/wallet.entity';
 import { ApproveProfileDto, RejectProfileDto } from './dto/office-visit.dto';
 import { OfficeVisit, OfficeVisitStatus } from './entities/office-visit.entity';
 import { deriveReviewStage } from './office-visit-rules';
+
+const MIN_REASON = 5;
 
 /**
  * Duyệt hồ sơ cuối (Admin): sau khi danh tính đã được xác nhận và thợ đã gặp trực tiếp, admin kiểm bản công chứng,
@@ -73,10 +76,45 @@ export class ProfileReviewService {
     );
   }
 
+  /**
+   * The papers still waiting on the technician's skills, one entry per stored file: a paper attached to a whole
+   * category is saved as one document row per skill, so the rows are folded by file and list the skills they cover.
+   */
+  private async openEvidence(skills: TechnicianSkill[]) {
+    if (skills.length === 0) return [];
+    const requests = await this.profiles.manager.getRepository(TechnicianSkillVerification).find({
+      where: { technicianSkillId: In(skills.map((s) => s.id)), status: VerificationStatus.PENDING },
+      relations: ['documents'],
+    });
+    const byFile = new Map<string, { verificationId: string; document: VerificationDocument; skillIds: string[] }>();
+    for (const request of requests) {
+      for (const document of request.documents ?? []) {
+        const key = document.storageObjectPath ?? document.id;
+        const entry = byFile.get(key) ?? { verificationId: request.id, document, skillIds: [] };
+        entry.skillIds.push(request.technicianSkillId);
+        byFile.set(key, entry);
+      }
+    }
+    return [...byFile.values()].map(({ verificationId, document: d, skillIds }) => ({
+      verificationId,
+      documentId: d.id,
+      fileName: d.fileName,
+      mimeType: d.mimeType,
+      evidenceType: d.evidenceType ?? null,
+      evidenceGroup: d.evidenceGroup ?? null,
+      issuer: d.issuer ?? null,
+      referenceNumber: d.referenceNumber ?? null,
+      issuedAt: d.issuedAt ?? null,
+      expiresAt: d.expiresAt ?? null,
+      claimedYears: d.claimedYears ?? null,
+      skillIds,
+    }));
+  }
+
   async get(technicianId: string) {
     const profile = await this.profiles.findOne({
       where: { userId: technicianId },
-      relations: ['user', 'skills', 'skills.service', 'serviceAreas'],
+      relations: ['user', 'skills', 'skills.service', 'skills.service.category', 'serviceAreas'],
       relationLoadStrategy: 'query',
     });
     if (!profile) throw new NotFoundException('Technician profile not found');
@@ -104,10 +142,13 @@ export class ProfileReviewService {
       skills: (profile.skills ?? []).map((s) => ({
         id: s.id,
         serviceName: s.service?.name ?? '',
+        categoryId: s.service?.categoryId ?? '',
+        categoryName: s.service?.category?.name ?? 'Khác',
         declaredLevel: s.declaredLevel ?? null,
         level: s.level,
         verificationStatus: s.verificationStatus,
       })),
+      evidence: await this.openEvidence(profile.skills ?? []),
       // Ảnh bản công chứng nộp cùng hồ sơ xác minh (`certificate`); xem qua endpoint truy cập tài liệu của hồ sơ xác minh.
       verificationId: kyc?.id ?? null,
       faceMatchScore: kyc?.faceMatchScore ?? null,
@@ -124,6 +165,10 @@ export class ProfileReviewService {
 
   async approve(technicianId: string, adminId: string, dto: ApproveProfileDto) {
     if (!dto.skills.some((s) => s.approved)) throw new BadRequestException('Cần xác nhận ít nhất một kỹ năng.');
+    if (dto.skills.some((s) => !s.approved && (s.reason?.trim().length ?? 0) < MIN_REASON)) {
+      throw new BadRequestException(`Cần ghi lý do (ít nhất ${MIN_REASON} ký tự) cho mỗi kỹ năng chưa xác nhận.`);
+    }
+    const notConfirmed: { name: string; reason: string }[] = [];
     const result = await this.profiles.manager.transaction(async (manager) => {
       const profile = await manager.getRepository(TechnicianProfile).findOne({ where: { userId: technicianId }, lock: { mode: 'pessimistic_write' } });
       if (!profile) throw new NotFoundException('Technician profile not found');
@@ -132,7 +177,7 @@ export class ProfileReviewService {
       const attended = await manager.getRepository(OfficeVisit).exists({ where: { technicianId, status: OfficeVisitStatus.ATTENDED } });
       if (!attended) throw new BadRequestException('Chỉ duyệt hồ sơ sau khi đã gặp trực tiếp tại trụ sở.');
 
-      const skills = await manager.getRepository(TechnicianSkill).find({ where: { technicianId: profile.id } });
+      const skills = await manager.getRepository(TechnicianSkill).find({ where: { technicianId: profile.id }, relations: ['service'] });
       const byId = new Map(skills.map((s) => [s.id, s]));
       const skillReviews = manager.getRepository(TechnicianSkillVerification);
       const now = new Date();
@@ -140,13 +185,15 @@ export class ProfileReviewService {
         const skill = byId.get(decision.skillId);
         if (!skill) throw new BadRequestException('Có kỹ năng không thuộc hồ sơ của thợ này.');
         const status = decision.approved ? VerificationStatus.VERIFIED : VerificationStatus.REJECTED;
+        const rejectionReason = decision.approved ? null : (decision.reason?.trim() ?? null);
+        if (!decision.approved) notConfirmed.push({ name: skill.service?.name ?? 'Dịch vụ', reason: rejectionReason ?? '' });
         skill.level = decision.level;
         skill.verificationStatus = status;
         await manager.getRepository(TechnicianSkill).save(skill);
         // Phiếu duyệt kỹ năng: đóng phiếu đang mở hoặc tạo phiếu đã xử lý, để không vi phạm index một phiếu mở mỗi kỹ năng.
         const open = await skillReviews.findOne({ where: { technicianSkillId: skill.id, status: VerificationStatus.PENDING } });
-        if (open) await skillReviews.update(open.id, { status, reviewedById: adminId, reviewedAt: now });
-        else await skillReviews.save(skillReviews.create({ technicianSkillId: skill.id, status, reviewedById: adminId, reviewedAt: now }));
+        if (open) await skillReviews.update(open.id, { status, reviewedById: adminId, reviewedAt: now, rejectionReason });
+        else await skillReviews.save(skillReviews.create({ technicianSkillId: skill.id, status, reviewedById: adminId, reviewedAt: now, rejectionReason }));
       }
 
       profile.verificationStatus = VerificationStatus.VERIFIED;
@@ -159,7 +206,7 @@ export class ProfileReviewService {
 
       await this.audit.logWithManagerStrict(manager, {
         actorUserId: adminId,
-        actorRole: Role.ADMIN,
+        actorRole: Role.SERVICE_MANAGER,
         action: 'TECHNICIAN_PROFILE_APPROVED',
         resourceType: 'technician_profile',
         resourceId: technicianId,
@@ -177,6 +224,16 @@ export class ProfileReviewService {
       referenceType: 'wallet',
       referenceId: technicianId,
     });
+    if (notConfirmed.length > 0) {
+      void this.notifications?.createNotification({
+        userId: technicianId,
+        title: 'Có kỹ năng chưa được xác nhận',
+        message: notConfirmed.map(({ name, reason }) => `${name}: ${reason}`).join('; '),
+        type: 'SKILL_NOT_CONFIRMED',
+        referenceType: 'technician_profile',
+        referenceId: technicianId,
+      });
+    }
     return result;
   }
 
@@ -187,7 +244,7 @@ export class ProfileReviewService {
     if (profile.verificationStatus === VerificationStatus.VERIFIED) throw new ConflictException('Hồ sơ đã được duyệt.');
     await this.profiles.update(profile.id, { onboardingStatus: OnboardingStatus.REJECTED, profileReviewRejectionReason: dto.reason });
     await this.audit.log({
-      actorUserId: adminId, actorRole: Role.ADMIN, action: 'TECHNICIAN_PROFILE_REJECTED', resourceType: 'technician_profile', resourceId: technicianId,
+      actorUserId: adminId, actorRole: Role.SERVICE_MANAGER, action: 'TECHNICIAN_PROFILE_REJECTED', resourceType: 'technician_profile', resourceId: technicianId,
       before: { onboardingStatus: profile.onboardingStatus }, after: { onboardingStatus: OnboardingStatus.REJECTED, reason: dto.reason },
     });
     void this.notifications?.createNotification({
@@ -211,7 +268,7 @@ export class ProfileReviewService {
     await this.visits.update({ technicianId, status: OfficeVisitStatus.ATTENDED }, { status: OfficeVisitStatus.CANCELLED, note: 'Mở lại hồ sơ để gặp lại' });
     await this.profiles.update(profile.id, { onboardingStatus: OnboardingStatus.SUBMITTED, profileReviewRejectionReason: null });
     await this.audit.log({
-      actorUserId: adminId, actorRole: Role.ADMIN, action: 'TECHNICIAN_PROFILE_REOPENED', resourceType: 'technician_profile', resourceId: technicianId,
+      actorUserId: adminId, actorRole: Role.SERVICE_MANAGER, action: 'TECHNICIAN_PROFILE_REOPENED', resourceType: 'technician_profile', resourceId: technicianId,
       before: { onboardingStatus: profile.onboardingStatus, reason: profile.profileReviewRejectionReason }, after: { onboardingStatus: OnboardingStatus.SUBMITTED },
     });
     void this.notifications?.createNotification({

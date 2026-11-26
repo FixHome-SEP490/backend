@@ -111,8 +111,8 @@ describe('OfficeVisitsService.markMissed', () => {
 function reviewHarness(opts: { attended: boolean; profile?: Record<string, unknown> }) {
   const profile = { id: 'p1', userId: technicianId, identityVerifiedAt: new Date(), verificationStatus: VerificationStatus.PENDING, onboardingStatus: OnboardingStatus.SUBMITTED, ...opts.profile };
   const skills = [
-    { id: 's1', technicianId: 'p1', level: 'INTERMEDIATE', verificationStatus: VerificationStatus.PENDING },
-    { id: 's2', technicianId: 'p1', level: 'INTERMEDIATE', verificationStatus: VerificationStatus.PENDING },
+    { id: 's1', technicianId: 'p1', level: 'INTERMEDIATE', verificationStatus: VerificationStatus.PENDING, service: { name: 'Sửa điều hòa' } },
+    { id: 's2', technicianId: 'p1', level: 'INTERMEDIATE', verificationStatus: VerificationStatus.PENDING, service: { name: 'Sửa tủ lạnh' } },
   ];
   const skillSave = vi.fn(async (s) => s);
   const skillReviews = { findOne: vi.fn().mockResolvedValue(null), update: vi.fn(), save: vi.fn(), create: vi.fn((v) => v) };
@@ -140,7 +140,7 @@ function reviewHarness(opts: { attended: boolean; profile?: Record<string, unkno
 }
 
 describe('ProfileReviewService.approve', () => {
-  const decisions = { skills: [{ skillId: 's1', level: 'ADVANCED', approved: true }, { skillId: 's2', level: 'BEGINNER', approved: false }] };
+  const decisions = { skills: [{ skillId: 's1', level: 'ADVANCED', approved: true }, { skillId: 's2', level: 'BEGINNER', approved: false, reason: 'Bằng chưa rõ cấp độ' }] };
 
   it('approves only after the office visit, confirming the level per skill and creating the wallet', async () => {
     const { service, profile, skills, skillReviews, wallets, notifications } = reviewHarness({ attended: true });
@@ -152,6 +152,24 @@ describe('ProfileReviewService.approve', () => {
     expect(skillReviews.save).toHaveBeenCalledTimes(2);
     expect(wallets.save).toHaveBeenCalled();
     expect(notifications.createNotification).toHaveBeenCalledWith(expect.objectContaining({ type: 'WALLET_TOPUP_REQUIRED' }));
+  });
+
+  it('records why a skill was not confirmed and tells the technician in a notice of its own', async () => {
+    const partial = reviewHarness({ attended: true });
+    await partial.service.approve(technicianId, 'admin-1', decisions);
+    expect(partial.skillReviews.save).toHaveBeenCalledWith(expect.objectContaining({ technicianSkillId: 's2', status: VerificationStatus.REJECTED, rejectionReason: 'Bằng chưa rõ cấp độ' }));
+    expect(partial.skillReviews.save).toHaveBeenCalledWith(expect.objectContaining({ technicianSkillId: 's1', status: VerificationStatus.VERIFIED, rejectionReason: null }));
+    expect(partial.notifications.createNotification).toHaveBeenCalledWith(expect.objectContaining({ type: 'SKILL_NOT_CONFIRMED', message: 'Sửa tủ lạnh: Bằng chưa rõ cấp độ', referenceType: 'technician_profile' }));
+    const all = reviewHarness({ attended: true });
+    await all.service.approve(technicianId, 'admin-1', { skills: decisions.skills.map((d) => ({ ...d, approved: true })) });
+    expect(all.notifications.createNotification).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'SKILL_NOT_CONFIRMED' }));
+  });
+
+  it('needs a reason for every skill left unconfirmed, and saves nothing without it', async () => {
+    const { service, profile, skillReviews } = reviewHarness({ attended: true });
+    await expect(service.approve(technicianId, 'admin-1', { skills: [{ skillId: 's1', level: 'ADVANCED', approved: true }, { skillId: 's2', level: 'BEGINNER', approved: false, reason: 'ngắn' }] })).rejects.toThrow(/lý do/);
+    expect(skillReviews.save).not.toHaveBeenCalled();
+    expect(profile.verificationStatus).toBe(VerificationStatus.PENDING);
   });
 
   it('refuses to approve before the technician has met the office', async () => {

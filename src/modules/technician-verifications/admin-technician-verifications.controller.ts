@@ -35,7 +35,7 @@ import { Role } from '../../shared/enums';
 @ApiTags('Admin / Technician Verifications')
 @Controller('admin/technician-verifications')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN)
+@Roles(Role.ADMIN, Role.SERVICE_MANAGER)
 @ApiBearerAuth()
 export class AdminTechnicianVerificationsController {
   constructor(
@@ -97,6 +97,7 @@ export class AdminTechnicianVerificationsController {
     );
   }
 
+  @Roles(Role.SERVICE_MANAGER)
   @Patch(':id/approve')
   @ApiOperation({ summary: 'Admin: Approve technician verification request' })
   @ApiOkResponse({
@@ -115,6 +116,7 @@ export class AdminTechnicianVerificationsController {
     return this.verificationsService.approveVerification(id, reviewerId);
   }
 
+  @Roles(Role.SERVICE_MANAGER)
   @Patch(':id/reject')
   @ApiOperation({ summary: 'Admin: Reject technician verification request' })
   @ApiOkResponse({

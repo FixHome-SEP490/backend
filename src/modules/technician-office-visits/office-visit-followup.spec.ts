@@ -87,9 +87,9 @@ describe('ProfileReviewService.reopen', () => {
 
 describe('office visit roles', () => {
   const roles = (controller: object) => Reflect.getMetadata(ROLES_KEY, controller);
-  it('lets service managers handle visits but not offices or the final profile review', () => {
+  it('lets service managers handle visits and the profile review, while offices stay with admin', () => {
     expect(roles(AdminOfficeVisitsController)).toEqual([Role.ADMIN, Role.SERVICE_MANAGER]);
     expect(roles(AdminVisitOfficesController)).toEqual([Role.ADMIN]);
-    expect(roles(AdminProfileReviewsController)).toEqual([Role.ADMIN]);
+    expect(roles(AdminProfileReviewsController)).toEqual([Role.ADMIN, Role.SERVICE_MANAGER]);
   });
 });

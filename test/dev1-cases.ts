@@ -1533,7 +1533,7 @@ export function registerDev1Cases(context: () => Context) {
       }
     });
 
-    it('lets a customer withdraw the wallet after an admin-approved CCCD check, paid out at once (PO 14/10/2026)', async () => {
+    it('lets a customer withdraw the wallet after a service-manager-approved CCCD check, paid out at once (PO 14/10/2026)', async () => {
       const { db, app } = context();
       const customer = await context().register();
       const admin = await context().register();
@@ -1611,10 +1611,10 @@ export function registerDev1Cases(context: () => Context) {
         expectStatus(pending, 422);
         expect(JSON.stringify(pending.body)).toContain('chờ duyệt');
 
-        // Only an admin reviews; the customer and a service manager cannot.
+        // Only a service manager decides; the admin only reads, and the customer cannot do either.
         const id = submitted.verification.id;
-        for (const user of [manager, customer]) {
-          denied(await get('/admin/customer-verifications', user));
+        denied(await get('/admin/customer-verifications', customer));
+        for (const user of [admin, customer]) {
           denied(await patch(`/admin/customer-verifications/${id}/approve`, user));
           denied(await patch(`/admin/customer-verifications/${id}/reject`, user, { rejectionReason: 'Không có quyền duyệt' }));
         }
@@ -1624,12 +1624,12 @@ export function registerDev1Cases(context: () => Context) {
         expect(unwrap((await get(`/admin/customer-verifications/${id}`, admin).expect(200)).body)).toMatchObject({
           customer: { id: customer.user.id }, documents: [{ documentType: 'citizen_id_front' }, { documentType: 'citizen_id_back' }],
         });
-        expectStatus(await patch(`/admin/customer-verifications/${id}/reject`, admin, { rejectionReason: 'abc' }), 400);
-        expect(unwrap((await patch(`/admin/customer-verifications/${id}/approve`, admin).expect(200)).body)).toMatchObject({ status: 'verified', verifiedFullName: 'Nguyễn Văn Khách' });
+        expectStatus(await patch(`/admin/customer-verifications/${id}/reject`, manager, { rejectionReason: 'abc' }), 400);
+        expect(unwrap((await patch(`/admin/customer-verifications/${id}/approve`, manager).expect(200)).body)).toMatchObject({ status: 'verified', verifiedFullName: 'Nguyễn Văn Khách' });
         expect(await profileOf()).toMatchObject({ full_name: 'Nguyễn Văn Khách', dob: '1990-05-20', gender: 'male', citizen_id_number: cccd, full_address: kyc.address });
-        denied(await patch(`/admin/customer-verifications/${id}/approve`, admin));
+        denied(await patch(`/admin/customer-verifications/${id}/approve`, manager));
         const [decision] = await db.query("SELECT actor_user_id FROM audit_logs WHERE action = 'CUSTOMER_KYC_APPROVED' AND resource_id = $1", [id]);
-        expect(decision.actor_user_id).toBe(admin.user.id);
+        expect(decision.actor_user_id).toBe(manager.user.id);
 
         // Approved: the name is locked on the profile, the same value is still accepted.
         expectStatus(await patch('/me', customer, { fullName: 'Tên Khác Hẳn' }), 422);

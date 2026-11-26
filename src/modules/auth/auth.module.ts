@@ -14,6 +14,7 @@ import { OtpVerification } from './entities/otp-verification.entity';
 import { User } from '../users/entities/user.entity';
 import { UsersModule } from '../users/users.module';
 import { MailModule } from '../mail/mail.module';
+import { SmsModule } from '../sms/sms.module';
 import { ThrottlerModule } from '@nestjs/throttler';
 
 @Module({
@@ -22,6 +23,7 @@ import { ThrottlerModule } from '@nestjs/throttler';
     TypeOrmModule.forFeature([RefreshToken, User, OtpVerification]),
     UsersModule,
     MailModule,
+    SmsModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       inject: [ConfigService],

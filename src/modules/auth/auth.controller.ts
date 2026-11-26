@@ -27,6 +27,7 @@ import {
   UserProfileDto,
   RegisterResponseDto,
   VerifyOtpDto,
+  ConfirmOtpDto,
   ResendOtpDto,
   ForgotPasswordDto,
   ResetPasswordDto,
@@ -393,5 +394,51 @@ export class AuthController {
   })
   async getMe(@CurrentUser('id') userId: string): Promise<UserProfileDto> {
     return this.authService.getMe(userId);
+  }
+
+  @Post('verify-email/send')
+  @UseGuards(JwtAuthGuard, RolesGuard, ThrottlerGuard)
+  @Throttle({ default: { limit: 3, ttl: 60000 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Send an OTP to the signed-in user email to verify it' })
+  async sendEmailVerification(@CurrentUser('id') userId: string) {
+    return this.authService.sendEmailVerification(userId);
+  }
+
+  @Post('verify-email/confirm')
+  @UseGuards(JwtAuthGuard, RolesGuard, ThrottlerGuard)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Confirm the email OTP and mark the email verified' })
+  async confirmEmailVerification(
+    @CurrentUser('id') userId: string,
+    @Body() dto: ConfirmOtpDto,
+  ) {
+    return this.authService.confirmEmailVerification(userId, dto);
+  }
+
+  @Post('verify-phone/send')
+  @UseGuards(JwtAuthGuard, RolesGuard, ThrottlerGuard)
+  @Throttle({ default: { limit: 3, ttl: 60000 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Send an SMS OTP to the signed-in user phone number to verify it' })
+  async sendPhoneVerification(@CurrentUser('id') userId: string) {
+    return this.authService.sendPhoneVerification(userId);
+  }
+
+  @Post('verify-phone/confirm')
+  @UseGuards(JwtAuthGuard, RolesGuard, ThrottlerGuard)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Confirm the SMS OTP and mark the phone number verified' })
+  async confirmPhoneVerification(
+    @CurrentUser('id') userId: string,
+    @Body() dto: ConfirmOtpDto,
+  ) {
+    return this.authService.confirmPhoneVerification(userId, dto);
   }
 }

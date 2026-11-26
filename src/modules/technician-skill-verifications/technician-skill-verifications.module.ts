@@ -2,6 +2,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { TechnicianSkillVerificationsController } from './technician-skill-verifications.controller';
+import { TechnicianSkillEvidenceController } from './technician-skill-evidence.controller';
 import { AdminTechnicianSkillVerificationsController } from './admin-technician-skill-verifications.controller';
 import { TechnicianSkillVerificationsService } from './technician-skill-verifications.service';
 import { TechnicianSkillVerification } from '../technicians/entities/technician-skill-verification.entity';
@@ -22,6 +23,7 @@ import { TechnicianVerificationsModule } from '../technician-verifications/techn
   ],
   controllers: [
     TechnicianSkillVerificationsController,
+    TechnicianSkillEvidenceController,
     AdminTechnicianSkillVerificationsController,
   ],
   providers: [TechnicianSkillVerificationsService],

@@ -37,6 +37,7 @@ import { PartsCatalogModule } from './modules/parts-catalog/parts-catalog.module
 import { SupportCasesModule } from './modules/support-cases/support-cases.module';
 import { FinanceModule } from './modules/finance/finance.module';
 import { MailModule } from './modules/mail/mail.module';
+import { SmsModule } from './modules/sms/sms.module';
 import { GeoModule } from './modules/geo/geo.module';
 import { PartRequestsModule } from './modules/part-requests/part-requests.module';
 import { WalletModule } from './modules/wallet/wallet.module';
@@ -99,6 +100,7 @@ import { WarehousesModule } from './modules/warehouses/warehouses.module';
     WalletModule,
     VouchersModule,
     MailModule,
+    SmsModule,
     GeoModule,
     WarehousesModule,
   ],

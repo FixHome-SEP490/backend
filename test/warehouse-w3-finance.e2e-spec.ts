@@ -73,12 +73,14 @@ describe.skipIf(process.env.CI !== 'true')(
         db.migrations.length,
         ...db.migrations.filter(
           (m) =>
-            Number(m.name!.slice(-13)) < 1793466000004 && ![
+            // Standalone ALTER on users: the User entity the fixture saves already maps this column.
+            m.name === 'UserPhoneVerified1794912000000' ||
+            (Number(m.name!.slice(-13)) < 1793466000004 && ![
               'VoucherFundingLedger1792994400001',
               'VoucherCampaignLifecycle1793116800000',
               'CashPaymentIntents1793293200000',
               'TechnicianResponsibility1793293200001',
-            ].includes(m.name),
+            ].includes(m.name)),
         ),
       );
       await db.runMigrations();

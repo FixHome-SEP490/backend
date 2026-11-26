@@ -81,18 +81,21 @@ export class AdminOfficeVisitsController {
     return this.visits.listVisits(query);
   }
 
+  @Roles(Role.SERVICE_MANAGER)
   @Patch(':id/attended')
   @ApiOperation({ summary: 'Admin/SM: the technician came to the office' })
   attended(@Param('id', ParseUUIDPipe) id: string, @Req() req: Req, @Body() dto: MarkOfficeVisitDto) {
     return this.visits.markAttended(id, req.user.id, dto, req.user.role);
   }
 
+  @Roles(Role.SERVICE_MANAGER)
   @Patch(':id/missed')
   @ApiOperation({ summary: 'Admin/SM: the technician did not come' })
   missed(@Param('id', ParseUUIDPipe) id: string, @Req() req: Req, @Body() dto: MarkOfficeVisitDto) {
     return this.visits.markMissed(id, req.user.id, dto, req.user.role);
   }
 
+  @Roles(Role.SERVICE_MANAGER)
   @Post('technicians/:technicianId/reset')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Admin/SM: allow a blocked technician to book again' })
@@ -104,7 +107,7 @@ export class AdminOfficeVisitsController {
 @ApiTags('Admin Profile Reviews')
 @Controller('admin/technician-profile-reviews')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN)
+@Roles(Role.ADMIN, Role.SERVICE_MANAGER)
 @ApiBearerAuth()
 export class AdminProfileReviewsController {
   constructor(private readonly reviews: ProfileReviewService) {}
@@ -121,18 +124,21 @@ export class AdminProfileReviewsController {
     return this.reviews.get(technicianId);
   }
 
+  @Roles(Role.SERVICE_MANAGER)
   @Patch(':technicianId/approve')
   @ApiOperation({ summary: 'Admin: final profile approval after the office visit (confirms skill levels)' })
   approve(@Param('technicianId', ParseUUIDPipe) technicianId: string, @Req() req: Req, @Body() dto: ApproveProfileDto) {
     return this.reviews.approve(technicianId, req.user.id, dto);
   }
 
+  @Roles(Role.SERVICE_MANAGER)
   @Patch(':technicianId/reopen')
   @ApiOperation({ summary: 'Admin: reopen a rejected profile so the technician books another office visit' })
   reopen(@Param('technicianId', ParseUUIDPipe) technicianId: string, @Req() req: Req) {
     return this.reviews.reopen(technicianId, req.user.id);
   }
 
+  @Roles(Role.SERVICE_MANAGER)
   @Patch(':technicianId/reject')
   @ApiOperation({ summary: 'Admin: reject the profile with a reason' })
   reject(@Param('technicianId', ParseUUIDPipe) technicianId: string, @Req() req: Req, @Body() dto: RejectProfileDto) {
