@@ -212,25 +212,30 @@ export class WarrantySweepService implements OnModuleInit, OnModuleDestroy {
       where: [
         { ...base, awaitingSince: LessThan(cutoff) },
         { ...base, awaitingSince: IsNull(), updatedAt: LessThan(cutoff) },
+        // A customer who agreed but whom no manager closed for the same window: close it the way their answer implies.
+        { status: WarrantyClaimStatus.AWAITING_CUSTOMER, customerResponse: 'agreed', customerRespondedAt: LessThan(cutoff) },
       ],
       take: BATCH,
     });
     for (const { id } of due) {
       const closed = await this.dataSource.transaction(async (tx) => {
         const claim = await tx.findOne(WarrantyClaim, { where: { id }, lock: { mode: 'pessimistic_write' } });
-        if (!claim || claim.status !== WarrantyClaimStatus.AWAITING_CUSTOMER || claim.customerResponse) return null;
+        if (!claim || claim.status !== WarrantyClaimStatus.AWAITING_CUSTOMER || claim.customerResponse === 'disputed') return null;
         const accepted = claim.awaitingPrompt === WarrantyCustomerPrompt.COMPLETION;
         await tx.update(WarrantyClaim, claim.id, {
           status: accepted ? WarrantyClaimStatus.RESOLVED : WarrantyClaimStatus.REJECTED,
           outcomeCode: accepted ? 'fixed' : 'rejected',
           awaitingPrompt: null, awaitingSince: null, resolvedAt: now,
-          resolutionNotes: claim.resolutionNotes ?? 'Tự đóng do khách hàng không phản hồi đúng hạn.',
+          resolutionNotes: claim.resolutionNotes
+            ?? (claim.customerResponse ? 'Tự đóng sau khi khách hàng đồng ý.' : 'Tự đóng do khách hàng không phản hồi đúng hạn.'),
         });
         await this.partRequests.settleWarrantyRequest(tx, claim.id);
         return { claim, accepted };
       });
       if (closed) {
-        const message = closed.accepted
+        const message = closed.claim.customerResponse
+          ? 'Yêu cầu bảo hành đã được đóng.'
+          : closed.accepted
           ? 'Yêu cầu bảo hành đã tự đóng vì bạn chưa phản hồi. Nếu còn lỗi, vui lòng gửi yêu cầu mới.'
           : 'Yêu cầu bảo hành đã tự đóng vì bạn chưa phản hồi kết luận.';
         await this.notifier.toUser(closed.claim.customerId, 'Yêu cầu bảo hành đã đóng', message, 'WARRANTY_DECISION_MADE', closed.claim.serviceOrderId);

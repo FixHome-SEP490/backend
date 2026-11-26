@@ -163,13 +163,25 @@ describe('customer who stays silent', () => {
 
     expect(tx.update).toHaveBeenCalledWith(expect.anything(), 'claim-1', expect.objectContaining({ resolutionNotes: 'Linh kiện hao mòn tự nhiên.' }));
     const where = (claimRepo.find.mock.calls as any)[0][0].where;
-    expect(where).toHaveLength(2);
+    expect(where).toHaveLength(3);
   });
 
-  it('does not close a claim the customer answered while it waited for the lock', async () => {
+  it('closes a claim the customer agreed to but no manager closed, with a neutral message', async () => {
+    const agreed = { ...waiting(WarrantyCustomerPrompt.COMPLETION), customerResponse: 'agreed' };
+    const { service, tx, notifier } = make({ found: [agreed], locked: agreed });
+
+    await service.sweepCustomerSilent(NOW);
+
+    expect(tx.update).toHaveBeenCalledWith(expect.anything(), 'claim-1', expect.objectContaining({
+      status: WarrantyClaimStatus.RESOLVED, outcomeCode: 'fixed', resolutionNotes: 'Tự đóng sau khi khách hàng đồng ý.',
+    }));
+    expect(notifier.toUser).toHaveBeenCalledWith('customer-1', expect.any(String), 'Yêu cầu bảo hành đã được đóng.', 'WARRANTY_DECISION_MADE', 'order-1');
+  });
+
+  it('does not close a claim the customer disputed while it waited for the lock', async () => {
     const { service, tx, partRequests, notifier } = make({
       found: [waiting(WarrantyCustomerPrompt.COMPLETION)],
-      locked: { ...waiting(WarrantyCustomerPrompt.COMPLETION), customerResponse: 'agreed' },
+      locked: { ...waiting(WarrantyCustomerPrompt.COMPLETION), customerResponse: 'disputed' },
     });
 
     await service.sweepCustomerSilent(NOW);

@@ -388,6 +388,8 @@ describe('manager close: the item could not be fixed', () => {
     const notCovered = makeService({ claim: makeClaim({ status: WarrantyClaimStatus.DISPUTED, finalResult: WarrantyInspectionResult.NOT_COVERED, reviewedByManagerId: 'sm-9' }) });
     await expect(notCovered.service.close('claim-1', { outcome: 'unfixed', note: 'Không thuộc bảo hành nên không hoàn.' }, SM))
       .rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+    await expect(notCovered.service.close('claim-1', { outcome: 'resolved', note: 'Không thuộc bảo hành.' }, SM))
+      .rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
   });
 
   it('commits nothing when the refund fails', async () => {
