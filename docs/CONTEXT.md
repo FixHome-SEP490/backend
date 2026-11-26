@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-26 16:01 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/part-returns-groups-302
+> Cập nhật lần cuối: 2026-11-26 16:39 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/part-returns-groups-302
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -548,7 +548,9 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
-- 2026-11-26 16:01 (UTC+7) | ToanAltF4 | fix/part-returns-groups-302 | BUG 302: GET /part-returns/mine nhận status (need_declare, awaiting_manager, completed, all) có phân trang, meta đủ số đếm ba nhóm từ một query; không có status trả như cũ
+- 2026-11-26 16:39 (UTC+7) | ToanAltF4 | fix/part-returns-groups-302 | BUG 302: GET /part-returns/mine nhận status (need_declare, awaiting_manager, completed, all) có phân trang, meta đủ số đếm ba nhóm từ một query; không có status trả như cũ
+- 2026-11-26 16:11 (UTC+7) | Hgnv11 | dev | PO 26/11: giấy tờ chỉ Xem/Xóa/Thêm mới: bỏ Đổi ảnh ở PATCH skill-evidence (PATCH sửa chi tiết còn cho app cũ, deprecated); thêm DELETE /technicians/me/services/:serviceId/verification/documents/:documentId gỡ giấy tờ khỏi một kỹ năng; hàng chờ SM chỉ hiện kỹ năng thợ đang bật, duyệt/từ chối kỹ năng đã tắt trả 409; không đổi migration
+- 2026-11-26 15:59 (UTC+7) | Hgnv11 | dev | PO 26/11: thêm giấy tờ cho kỹ năng bị từ chối không còn mở lại phiếu: giấy tờ chờ trên phiếu bị từ chối gần nhất, chỉ Gửi lại (resubmit) mới đưa kỹ năng về chờ duyệt và mang giấy tờ theo; không đổi migration
 - 2026-11-26 14:53 (UTC+7) | Hgnv11 | dev | PO 26/11: luồng kỹ năng bị SM từ chối: POST /technicians/me/services/:serviceId/verification/resubmit mở lại phiếu (sao chép giấy tờ, đưa kỹ năng về pending, audit SKILL_RESUBMITTED); POST giấy tờ theo kỹ năng tự mở phiếu cho kỹ năng bị từ chối; PATCH /technicians/me/skill-evidence/:id nhận thêm ảnh mới (storageObjectPath/fileName/fileSize/mimeType, xóa file cũ khi hết dòng trỏ tới); thông báo SKILL_VERIFICATION_APPROVED/REJECTED cho thợ và SKILL_VERIFICATION_RESUBMITTED cho SM; phiếu trả attemptNumber và previousRejectionReason; lý do vẫn theo từng kỹ năng; không đổi migration
 - 2026-11-26 14:11 (UTC+7) | Hgnv11 | dev | PO 25/11: GET /technicians/me/skill-evidence trả thêm status (pending/rejected/approved/in_review, suy từ kỹ năng) và rejectionReason; giấy tờ đã dùng để duyệt bất kỳ kỹ năng nào bị khóa cả sửa, đổi nhóm lẫn xóa (409), giấy tờ của kỹ năng bị từ chối sửa/xóa được và tự gắn sang phiếu mới khi thợ bật lại kỹ năng; thợ không tự đổi level sau khi hồ sơ được duyệt (400); expiresAt đã qua bị từ chối; ghi audit SKILL_EVIDENCE_ATTACHED/UPDATED/DELETED; không đổi migration
 - 2026-11-25 22:39 (UTC+7) | Hgnv11 | dev | GET /technicians/me/skill-evidence trả thêm editable (false khi giấy tờ đã dùng để duyệt kỹ năng hoặc hồ sơ đang chờ xét duyệt), để app khóa Sửa/Xóa; không đổi migration
@@ -587,5 +589,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-12 00:52 (UTC+7) | ToanAltF4 | perf/order-list-batch | Tối ưu tốc độ danh sách đơn: GET /service-orders và /service-orders/my dựng cả trang theo lô (khoảng 15 query thay vì ~18 query mỗi đơn), bản chi tiết và danh sách dùng chung một hàm dựng; danh sách thợ cho khách không đọc trùng địa chỉ/khu vực; GET /part-requests của Admin trả kèm cấp phát kho W2 cho cả trang.
 - 2026-11-11 20:37 (UTC+7) | ToanAltF4 | fix/deploy-visit-group-address-migration | Deploy dev áp migration BUG 59 bằng script visit-group-address-dev-release trước cổng W3 (deploy #215 bị cổng W3 từ chối vì migration chờ chạy lạ)
 - 2026-11-11 19:02 (UTC+7) | ToanAltF4 | fix/bug-detector-1111 | Sửa BUG DETECTOR 59 (xoá địa chỉ đã dùng cho lượt nhiều máy, khoá ngoại SET NULL), 60 (kiểm chữ ký QueryDR), 75 (hàng đợi SM gồm cả phiếu ngoài W2), 77 (phiếu kho không đủ hàng không tính là đã cấp nguồn), 80 (nhật ký kho gồm W2), 81 (hoàn trả theo kho SM), 82 (tìm theo mã PR-), 89 (đếm trạng thái toàn bộ), 90 (phân kho gộp trong hàng đợi)
-- 2026-11-09 12:24 (UTC+7) | Hgnv11 | dev | Thử thách liveness check-in đổi thành quay trái, quay phải, ngẩng lên hoặc cúi xuống (bỏ mỉm cười), đo bằng góc Yaw và Pitch so với ảnh nhìn thẳng
-- 2026-11-09 05:03 (UTC+7) | Hgnv11 | dev | Liveness nhẹ cho ảnh mặt check-in của thợ: thử thách ngẫu nhiên quay đầu hoặc mỉm cười, đối chiếu ảnh đăng ký bằng Rekognition (cờ FACE_CHECKIN_ENFORCE, endpoint challenge và checkin-face)

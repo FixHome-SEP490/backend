@@ -2,6 +2,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -66,6 +67,16 @@ export class TechnicianSkillVerificationsController {
     @Body() dto: SubmitSkillEvidenceDto,
   ) {
     return this.service.attachEvidence(technicianId, serviceId, dto);
+  }
+
+  @Delete('documents/:documentId')
+  @ApiOperation({ summary: 'Technician: Take a paper off this skill only (the other skills keep it)' })
+  async removeDocument(
+    @CurrentUser('id') technicianId: string,
+    @Param('serviceId', ParseUUIDPipe) serviceId: string,
+    @Param('documentId', ParseUUIDPipe) documentId: string,
+  ) {
+    return this.service.deleteMyEvidenceFromSkill(technicianId, serviceId, documentId);
   }
 
   @Get('documents/:documentId/access')
