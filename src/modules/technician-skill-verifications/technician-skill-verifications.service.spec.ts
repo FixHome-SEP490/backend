@@ -53,7 +53,7 @@ describe('TechnicianSkillVerificationsService evidence must be really uploaded',
       findOne: vi.fn().mockResolvedValue(pending),
       manager: { transaction: vi.fn() },
     };
-    skillRepo = { findOne: vi.fn().mockResolvedValue({ id: 'skill-1' }) };
+    skillRepo = { findOne: vi.fn().mockResolvedValue({ id: 'skill-1', isActive: true, verificationStatus: VerificationStatus.PENDING }) };
     profileRepo = { findOne: vi.fn().mockResolvedValue({ id: 'profile-1', userId: TECH_USER }) };
     documentRepo = {
       create: vi.fn((doc) => doc),
@@ -105,8 +105,8 @@ describe('TechnicianSkillVerificationsService evidence must be really uploaded',
     expect(documentRepo.save).not.toHaveBeenCalled();
   });
 
-  it('does not ask storage when the skill has no pending request', async () => {
-    verificationRepo.findOne.mockResolvedValue(null);
+  it('does not ask storage when the skill cannot have a request (switched off)', async () => {
+    skillRepo.findOne.mockResolvedValue({ id: 'skill-1', isActive: false, verificationStatus: VerificationStatus.PENDING });
     const path = `kyc/${TECH_USER}/a.jpg`;
     uploaded.add(path);
     await expect(service.attachEvidence(TECH_USER, SERVICE_ID, evidence(path))).rejects.toThrow(

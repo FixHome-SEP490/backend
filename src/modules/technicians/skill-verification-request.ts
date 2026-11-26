@@ -40,6 +40,13 @@ async function carryOverPapers(verifications: Repository<TechnicianSkillVerifica
   );
 }
 
+/** A rejected skill with an open request is back in review: the app and the reviewer must see the same state. */
+async function backToReview(verifications: Repository<TechnicianSkillVerification>, skill: Pick<TechnicianSkill, 'id' | 'verificationStatus'>) {
+  if (skill.verificationStatus !== VerificationStatus.REJECTED) return;
+  await verifications.manager.getRepository(TechnicianSkill).update(skill.id, { verificationStatus: VerificationStatus.PENDING });
+  skill.verificationStatus = VerificationStatus.PENDING;
+}
+
 /**
  * Makes sure an active, unconfirmed skill has a pending verification request to attach evidence to. A skill that is
  * already confirmed or inactive gets none. The partial unique index `idx_one_open_skill_verification` is the real guard
@@ -55,13 +62,17 @@ export async function ensurePendingSkillVerification(
   const findPending = () =>
     verifications.findOne({ where: { technicianSkillId: skill.id, status: VerificationStatus.PENDING } });
   const existing = await findPending();
-  if (existing) return existing;
+  if (existing) {
+    await backToReview(verifications, skill);
+    return existing;
+  }
 
   try {
     const request = await verifications.save(
       verifications.create({ technicianSkillId: skill.id, status: VerificationStatus.PENDING }),
     );
     if (skill.verificationStatus === VerificationStatus.REJECTED) await carryOverPapers(verifications, skill.id, request.id);
+    await backToReview(verifications, skill);
     return request;
   } catch (error) {
     if (error instanceof QueryFailedError && (error.driverError as { code?: string } | undefined)?.code === UNIQUE_VIOLATION) {

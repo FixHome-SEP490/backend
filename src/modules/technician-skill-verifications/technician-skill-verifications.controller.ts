@@ -35,6 +35,16 @@ export class TechnicianSkillVerificationsController {
     return this.service.getMySkillVerification(technicianId, serviceId);
   }
 
+  @Post('resubmit')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Technician: Ask for a new review of a skill FixHome refused; the papers already sent go with it' })
+  async resubmit(
+    @CurrentUser('id') technicianId: string,
+    @Param('serviceId', ParseUUIDPipe) serviceId: string,
+  ) {
+    return this.service.resubmitSkill(technicianId, serviceId);
+  }
+
   @Post('documents/upload-url')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Technician: Request a signed URL to upload a supporting credential' })
