@@ -301,15 +301,12 @@ export class TechniciansService {
     if (!this.skillVerificationRepo || !skill.isActive) return;
     if (skill.verificationStatus === VerificationStatus.VERIFIED) return;
 
-    const hasOpenVerification = await this.skillVerificationRepo.exists({
-      where: [
-        { technicianSkillId: skill.id, status: VerificationStatus.PENDING },
-        { technicianSkillId: skill.id, status: VerificationStatus.VERIFIED },
-      ],
+    const alreadyConfirmed = await this.skillVerificationRepo.exists({
+      where: { technicianSkillId: skill.id, status: VerificationStatus.VERIFIED },
     });
-    if (hasOpenVerification) return;
+    if (alreadyConfirmed) return;
 
-    // The shared helper also carries a rejected skill's papers over to the new request.
+    // The shared helper reuses an open request, carries a rejected skill's papers over to a new one and puts the skill back in review.
     await ensurePendingSkillVerification(this.skillVerificationRepo, skill);
     if (skill.verificationStatus !== VerificationStatus.PENDING) {
       skill.verificationStatus = VerificationStatus.PENDING;

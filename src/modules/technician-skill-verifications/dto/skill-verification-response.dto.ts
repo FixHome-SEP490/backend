@@ -93,6 +93,12 @@ export class SkillVerificationResponseDto {
   @ApiProperty({ type: [SkillVerificationDocumentResponseDto] })
   documents: SkillVerificationDocumentResponseDto[];
 
+  @ApiPropertyOptional({ type: Number, description: '1 for the first request of the skill, 2 after one earlier request, and so on' })
+  attemptNumber?: number;
+
+  @ApiPropertyOptional({ type: String, nullable: true, description: 'Reason of the latest earlier rejection of this skill' })
+  previousRejectionReason?: string | null;
+
   @ApiPropertyOptional({ type: VerificationUserSummaryDto })
   technician?: VerificationUserSummaryDto;
 

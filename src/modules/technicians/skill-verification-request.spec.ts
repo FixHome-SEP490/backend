@@ -49,7 +49,7 @@ describe('ensurePendingSkillVerification carries a rejected skill\'s papers to t
     fileName: 'a.jpg', fileSize: 10, mimeType: 'image/jpeg', evidenceType: 'social_insurance', issuer: 'BHXH', ...over,
   });
   const build = (opts: { pending?: object | null; rejected?: object | null } = {}) => {
-    const documents = { create: vi.fn((v) => v), save: vi.fn() };
+    const documents = { create: vi.fn((v) => v), save: vi.fn(), update: vi.fn() };
     const verifications = {
       findOne: vi.fn(async ({ where }: { where: { status: VerificationStatus } }) =>
         where.status === VerificationStatus.PENDING ? (opts.pending ?? null) : (opts.rejected ?? null)),
@@ -77,5 +77,38 @@ describe('ensurePendingSkillVerification carries a rejected skill\'s papers to t
     const { verifications, documents } = build({ rejected: { documents: [paper()] } });
     await ensurePendingSkillVerification(verifications as never, skill());
     expect(documents.save).not.toHaveBeenCalled();
+  });
+});
+
+describe('ensurePendingSkillVerification puts a rejected skill back in review', () => {
+  const build = (pending: object | null) => {
+    const skills = { update: vi.fn() };
+    const verifications = {
+      findOne: vi.fn(async ({ where }: { where: { status: VerificationStatus } }) => (where.status === VerificationStatus.PENDING ? pending : null)),
+      create: vi.fn((v) => v),
+      save: vi.fn(async (v) => ({ id: 'rq-new', ...v })),
+      manager: { getRepository: () => skills },
+    };
+    return { verifications, skills };
+  };
+
+  it('sets the skill pending when it opens a new request, and flips the object the caller holds', async () => {
+    const { verifications, skills } = build(null);
+    const rejected = skill({ verificationStatus: VerificationStatus.REJECTED });
+    await ensurePendingSkillVerification(verifications as never, rejected);
+    expect(skills.update).toHaveBeenCalledWith('s1', { verificationStatus: VerificationStatus.PENDING });
+    expect(rejected.verificationStatus).toBe(VerificationStatus.PENDING);
+  });
+
+  it('also repairs a rejected skill that already has an open request', async () => {
+    const { verifications, skills } = build({ id: 'open' });
+    await ensurePendingSkillVerification(verifications as never, skill({ verificationStatus: VerificationStatus.REJECTED }));
+    expect(skills.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a skill that is not rejected alone', async () => {
+    const { verifications, skills } = build(null);
+    await ensurePendingSkillVerification(verifications as never, skill());
+    expect(skills.update).not.toHaveBeenCalled();
   });
 });

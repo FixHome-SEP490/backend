@@ -9,6 +9,8 @@ import { TechnicianSkillVerification } from '../technicians/entities/technician-
 import { TechnicianSkill } from '../technicians/entities/technician-skill.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { VerificationDocument } from '../technician-verifications/entities/verification-document.entity';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { User } from '../users/entities/user.entity';
 import { TechnicianVerificationsModule } from '../technician-verifications/technician-verifications.module';
 
 @Module({
@@ -18,8 +20,10 @@ import { TechnicianVerificationsModule } from '../technician-verifications/techn
       TechnicianSkill,
       TechnicianProfile,
       VerificationDocument,
+      User,
     ]),
     TechnicianVerificationsModule, // for KycStorageService (reused as-is)
+    NotificationsModule,
   ],
   controllers: [
     TechnicianSkillVerificationsController,

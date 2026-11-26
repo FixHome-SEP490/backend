@@ -65,6 +65,7 @@ describe('TechnicianSkillVerificationsService.attachEvidenceToCategories', () =>
     });
     expect(skillRepo.find).toHaveBeenCalledWith({
       where: expect.objectContaining({ technicianId: 'profile-1', isActive: true }),
+      relations: ['service'],
     });
     const rows = documentRepo.save.mock.calls[0][0];
     expect(rows).toHaveLength(2);
