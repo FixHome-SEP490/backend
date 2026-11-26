@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-26 19:48 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
+> Cập nhật lần cuối: 2026-11-26 20:04 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: feat/sms-friendly-name
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -548,6 +548,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
+- 2026-11-26 20:04 (UTC+7) | Hgnv11 | feat/sms-friendly-name | SMS OTP gửi kèm CustomFriendlyName=FixHome để tin hiện tên FixHome thay vì tên service mẫu của Twilio trial; CHƯA KIỂM CHỨNG với Twilio thật, nếu trial bỏ qua tham số thì phải nâng cấp tài khoản để đổi tên service
 - 2026-11-26 19:48 (UTC+7) | Hgnv11 | dev | approve kỹ năng từng phiếu không bắt tệp chứng chỉ FixHome cấp nữa (body rỗng được, nếu gửi thì đủ bốn trường); web đổi hộp thoại duyệt thành xác nhận
 - 2026-11-26 17:21 (UTC+7) | ToanAltF4 | fix/part-returns-groups-302 | BUG 302: GET /part-returns/mine nhận status (need_declare, awaiting_manager, completed, all) có phân trang, meta đủ số đếm ba nhóm từ một query; không có status trả như cũ
 - 2026-11-26 16:56 (UTC+7) | Hgnv11 | dev | technician-skill-verifications: thêm POST technicians/me/services/:serviceId/verification/documents/reuse (gắn giấy tờ đã nộp sang kỹ năng khác, bỏ qua giấy tờ đã có, không nhận giấy tờ của người khác hoặc hết hạn); attachEvidence và attachEvidenceToCategories chặn giấy tờ trùng trên cùng một kỹ năng (cùng file, hoặc cùng loại và cùng số hiệu): 409 khi theo kỹ năng, bỏ qua kỹ năng đã có khi theo nhóm; GET technicians/me/skill-evidence trả thêm serviceIds. Không migration.
@@ -588,4 +589,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-12 14:08 (UTC+7) | ToanAltF4 | fix/f3-unsourced-parts | F3: duyệt báo giá/chi phí phát sinh bị từ chối nguyên tử (PARTS_SOURCE_UNAVAILABLE) khi không kho nào đủ linh kiện FixHome; GET /quotations/:id/parts-sourcing; thợ được huỷ phiếu PRE_REPAIR thiếu kho
 - 2026-11-12 12:21 (UTC+7) | ToanAltF4 | perf/detail-warranty-returns | GET /bookings/:id đọc một lần khi booking không còn ghép thợ; đơn bị dừng sửa đọc bằng chứng một lần, song song; thêm GET /warranties/mine?orderIds= (khách) và GET /part-returns/by-orders?orderIds= (SM) để trang danh sách đọc gộp
 - 2026-11-12 02:31 (UTC+7) | ToanAltF4 | fix/order-timeline-ties | Sửa BUG 93: tiến trình đơn xếp đúng thứ tự khi hai bước cùng thời điểm (thợ rút rồi đơn huỷ trong một giao dịch); bước dẫn tới trạng thái hiện tại xếp cuối, danh sách và chi tiết luôn giống nhau.
-- 2026-11-12 00:52 (UTC+7) | ToanAltF4 | perf/order-list-batch | Tối ưu tốc độ danh sách đơn: GET /service-orders và /service-orders/my dựng cả trang theo lô (khoảng 15 query thay vì ~18 query mỗi đơn), bản chi tiết và danh sách dùng chung một hàm dựng; danh sách thợ cho khách không đọc trùng địa chỉ/khu vực; GET /part-requests của Admin trả kèm cấp phát kho W2 cho cả trang.
