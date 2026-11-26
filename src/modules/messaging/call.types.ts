@@ -82,6 +82,21 @@ export interface CallSession {
   state: CallState;
   /** Epoch milliseconds, used only for logging and for the ringing timeout. */
   createdAt: number;
+  /** Epoch milliseconds when the callee picked up; set once the call is connected. */
+  connectedAt?: number;
+}
+
+/**
+ * The line written into the thread when a call is over, so the history survives
+ * the call itself. Nobody was reached unless the call connected.
+ */
+export function callLogText(reason: CallEndReason | 'offline', connectedMs?: number): string {
+  if (connectedMs !== undefined) {
+    const total = Math.max(0, Math.round(connectedMs / 1000));
+    const mm = String(Math.floor(total / 60)).padStart(2, '0');
+    return `Cuộc gọi thoại · ${mm}:${String(total % 60).padStart(2, '0')}`;
+  }
+  return reason === 'rejected' ? 'Cuộc gọi bị từ chối' : 'Cuộc gọi nhỡ';
 }
 
 /** A caller-supplied payload is never inspected, only forwarded to the peer. */

@@ -26,6 +26,7 @@ import {
   CallInviteRefusal,
   CallSession,
   CallSignalPayload,
+  callLogText,
 } from './call.types';
 import { NotificationsService } from '../notifications/notifications.service';
 import { consumeRiskRateLimit } from '../../common/rate-limit/risk-rate-limit';
@@ -147,6 +148,7 @@ export class MessagingGateway
     this.notifyCallEnded(call, 'disconnected', [
       this.callRegistry.peerOf(call, userId),
     ]);
+    void this.logCall(call, 'disconnected');
   }
 
   private async hasLiveSocket(userId: string): Promise<boolean> {
@@ -308,6 +310,7 @@ export class MessagingGateway
     // them a missed call to find when they come back.
     if (!(await this.isOnline(peerId))) {
       void this.recordMissedCall(peerId, actor.id, conversationId, 'offline');
+      void this.logCall({ conversationId, callerId: actor.id }, 'offline');
       return { ok: false, reason: 'offline' };
     }
 
@@ -321,6 +324,7 @@ export class MessagingGateway
           expired.calleeId,
         ]);
         void this.recordMissedCall(expired.calleeId, expired.callerId, expired.conversationId, 'no_answer');
+        void this.logCall(expired, 'timeout');
       },
     );
     if ('busyUserId' in created) {
@@ -337,6 +341,7 @@ export class MessagingGateway
         reason: 'busy',
       });
       void this.recordMissedCall(peerId, actor.id, conversationId, 'busy');
+      void this.logCall({ conversationId, callerId: actor.id }, 'busy');
       return { ok: false, reason: 'busy' };
     }
 
@@ -480,10 +485,27 @@ export class MessagingGateway
 
     this.callRegistry.remove(call.id);
     this.notifyCallEnded(call, reason, [call.callerId, call.calleeId]);
+    void this.logCall(call, reason);
     if (reason === 'cancelled') {
       void this.recordMissedCall(call.calleeId, call.callerId, call.conversationId, 'cancelled');
     }
     return { ok: true };
+  }
+
+  /** Writes the call's outcome into the thread. Best effort: signalling never waits on it or fails because of it. */
+  private async logCall(
+    call: Pick<CallSession, 'conversationId' | 'callerId' | 'connectedAt'>,
+    reason: CallEndReason | 'offline',
+  ): Promise<void> {
+    try {
+      const content = callLogText(reason, call.connectedAt ? Date.now() - call.connectedAt : undefined);
+      const message = await this.messagingService.recordCallLog(call.conversationId, call.callerId, content);
+      if (!message) return;
+      this.emitMessageCreated(message);
+      this.emitConversationTouched(await this.messagingService.participantIds(call.conversationId), call.conversationId);
+    } catch (error) {
+      this.logger.warn(`Could not log the call in ${call.conversationId}: ${(error as Error)?.message}`);
+    }
   }
 
   /** Online = at least one socket of theirs is connected. Unsure counts as online, so a call is never refused by mistake. */
