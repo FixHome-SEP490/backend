@@ -53,7 +53,7 @@ describe('TechnicianSkillVerificationsService.attachEvidenceToCategories', () =>
       skillRepo,
       { findOne: vi.fn().mockResolvedValue({ id: 'profile-1', userId: TECH_USER }) } as any,
       documentRepo,
-      { logWithManagerStrict: vi.fn() } as any,
+      { logWithManagerStrict: vi.fn(), log: vi.fn() } as any,
       storage,
     );
   });

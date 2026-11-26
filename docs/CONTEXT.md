@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-25 22:39 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
+> Cập nhật lần cuối: 2026-11-26 14:11 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -548,6 +548,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
+- 2026-11-26 14:11 (UTC+7) | Hgnv11 | dev | PO 25/11: GET /technicians/me/skill-evidence trả thêm status (pending/rejected/approved/in_review, suy từ kỹ năng) và rejectionReason; giấy tờ đã dùng để duyệt bất kỳ kỹ năng nào bị khóa cả sửa, đổi nhóm lẫn xóa (409), giấy tờ của kỹ năng bị từ chối sửa/xóa được và tự gắn sang phiếu mới khi thợ bật lại kỹ năng; thợ không tự đổi level sau khi hồ sơ được duyệt (400); expiresAt đã qua bị từ chối; ghi audit SKILL_EVIDENCE_ATTACHED/UPDATED/DELETED; không đổi migration
 - 2026-11-25 22:39 (UTC+7) | Hgnv11 | dev | GET /technicians/me/skill-evidence trả thêm editable (false khi giấy tờ đã dùng để duyệt kỹ năng hoặc hồ sơ đang chờ xét duyệt), để app khóa Sửa/Xóa; không đổi migration
 - 2026-11-25 21:33 (UTC+7) | Hgnv11 | dev | Thêm OTP qua SMS (Twilio Verify): chọn kênh khi đăng ký, xác thực email/SĐT trong profile, cột users.is_phone_verified; CHƯA KIỂM CHỨNG với Twilio và DB thật
 - 2026-11-25 20:48 (UTC+7) | Hgnv11 | dev | Duyệt hồ sơ bắt buộc ghi lý do cho kỹ năng không xác nhận, lưu vào phiếu kỹ năng; thợ nhận thông báo SKILL_NOT_CONFIRMED; CHƯA KIỂM CHỨNG với DB thật
@@ -588,4 +589,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-09 05:03 (UTC+7) | Hgnv11 | dev | Liveness nhẹ cho ảnh mặt check-in của thợ: thử thách ngẫu nhiên quay đầu hoặc mỉm cười, đối chiếu ảnh đăng ký bằng Rekognition (cờ FACE_CHECKIN_ENFORCE, endpoint challenge và checkin-face)
 - 2026-11-09 02:43 (UTC+7) | Hgnv11 | dev | Tách duyệt danh tính khỏi duyệt hồ sơ: xác nhận danh tính chỉ mời thợ lên trụ sở (nhiều trụ sở cấu hình được, chọn gần nhất, vắng 2 lần thì khóa và báo số hỗ trợ), duyệt hồ sơ cuối xác nhận cấp độ kỹ năng rồi mới APPROVED; cấp độ tự khai khi đăng ký; migration `TechnicianOfficeVisits` kèm script dev-release trong CD
 - 2026-11-08 23:13 (UTC+7) | Hgnv11 | dev | So khớp khuôn mặt CCCD với ảnh chân dung khi thợ nộp KYC bằng Amazon Rekognition (cờ `FACE_MATCH_ENABLED`, thêm dependency, migration lưu điểm); chưa làm check-in và liveness
-- 2026-11-08 23:02 (UTC+7) | Hgnv11 | dev | Gộp origin/dev vào dev: giữ cả ghi chú bảo hành tự duyệt lỗi do công không cần linh kiện và các thay đổi W3/kho; bỏ bớt nhật ký cũ để giữ tối đa 40 dòng

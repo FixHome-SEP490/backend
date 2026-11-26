@@ -76,6 +76,17 @@ export function skillEvidenceMetadata(dto: SubmitSkillEvidenceDto | UpdateCatego
   };
 }
 
+/** A paper row counts as approved once its request, or the skill it sits on, was verified. */
+const isApprovedRow = (request: TechnicianSkillVerification) =>
+  request.status === VerificationStatus.VERIFIED ||
+  request.technicianSkill?.verificationStatus === VerificationStatus.VERIFIED;
+
+const assertNotExpired = (expiresAt: string | null | undefined) => {
+  if (expiresAt && expiresAt < new Date().toISOString().slice(0, 10)) {
+    throw new BadRequestException('expiresAt must not be in the past');
+  }
+};
+
 const VERIFICATION_RELATIONS = [
   'technicianSkill',
   'technicianSkill.service',
@@ -120,6 +131,7 @@ export class TechnicianSkillVerificationsService {
     dto: SubmitCategoryEvidenceDto,
   ): Promise<{ attachedSkills: number; serviceIds: string[] }> {
     const metadata = skillEvidenceMetadata(dto);
+    assertNotExpired(dto.expiresAt);
     this.storageService.validateObjectPath(dto.storageObjectPath, technicianUserId);
 
     const profile = await this.profileRepo.findOne({ where: { userId: technicianUserId } });
@@ -157,7 +169,23 @@ export class TechnicianSkillVerificationsService {
         }),
       ),
     );
+    await this.auditEvidence(technicianUserId, 'SKILL_EVIDENCE_ATTACHED', null, {
+      evidenceType: dto.evidenceType ?? null,
+      serviceIds: targets.map((target) => target.serviceId),
+    });
     return { attachedSkills: targets.length, serviceIds: targets.map((target) => target.serviceId) };
+  }
+
+  /** Traces what the technician does to a paper after it was sent, so the reviewer can see changes; the file itself is not logged. */
+  private auditEvidence(technicianUserId: string, action: string, before: Record<string, unknown> | null, after: Record<string, unknown> | null) {
+    return this.auditLogService.log({
+      actorUserId: technicianUserId,
+      actorRole: Role.TECHNICIAN,
+      action,
+      resourceType: 'skill_evidence',
+      before,
+      after,
+    });
   }
 
   async attachEvidence(
@@ -244,9 +272,15 @@ export class TechnicianSkillVerificationsService {
     });
     const byFile = new Map<
       string,
-      { document: VerificationDocument; serviceId: string; categories: Map<string, string>; editable: boolean }
+      {
+        document: VerificationDocument;
+        serviceId: string;
+        categories: Map<string, string>;
+        approved: boolean;
+        pending: boolean;
+        rejectionReason: string | null;
+      }
     >();
-    const inReview = profile.onboardingStatus === OnboardingStatus.SUBMITTED;
     for (const request of requests) {
       const service = request.technicianSkill.service;
       for (const document of request.documents ?? []) {
@@ -256,23 +290,27 @@ export class TechnicianSkillVerificationsService {
           document,
           serviceId: request.technicianSkill.serviceId,
           categories: new Map<string, string>(),
-          editable: false,
+          approved: false,
+          pending: false,
+          rejectionReason: null,
         };
-        // Same rule as `editableEvidenceRows`: a paper is locked once every skill it sits on has been reviewed.
-        if (
-          !inReview &&
-          request.status === VerificationStatus.PENDING &&
-          request.technicianSkill.verificationStatus !== VerificationStatus.VERIFIED
-        ) {
-          entry.editable = true;
-        }
+        if (isApprovedRow(request)) entry.approved = true;
+        else if (request.status === VerificationStatus.PENDING) entry.pending = true;
+        else if (request.status === VerificationStatus.REJECTED) entry.rejectionReason ??= request.rejectionReason ?? null;
         entry.categories.set(service.categoryId, service.category?.name ?? 'Khác');
         byFile.set(key, entry);
       }
     }
+    const inReview = profile.onboardingStatus === OnboardingStatus.SUBMITTED;
     return [...byFile.values()]
       .sort((a, b) => a.document.createdAt.getTime() - b.document.createdAt.getTime())
-      .map(({ document: d, serviceId, categories, editable }) => ({
+      .map(({ document: d, serviceId, categories, approved, pending, rejectionReason }) => {
+        // Same rule as `editableEvidenceRows`: a paper used to approve any skill is locked, whatever else it sits on.
+        const status = inReview ? 'in_review' : approved ? 'approved' : pending ? 'pending' : 'rejected';
+        return {
+        status,
+        rejectionReason: status === 'rejected' ? rejectionReason : null,
+        editable: status === 'pending' || status === 'rejected',
         documentId: d.id,
         serviceId,
         fileName: d.fileName,
@@ -285,14 +323,15 @@ export class TechnicianSkillVerificationsService {
         expiresAt: d.expiresAt ?? null,
         claimedYears: d.claimedYears ?? null,
         reviewStatus: d.reviewStatus ?? null,
-        editable,
         categories: [...categories].map(([id, name]) => ({ id, name })),
-      }));
+        };
+      });
   }
 
   /**
-   * The rows of one stored paper the technician may still change: the ones whose skill is not confirmed and whose request
-   * is still pending. A technician waiting for the review cannot edit anything (same rule as the registration steps).
+   * The rows of one stored paper the technician may still change: the ones still waiting for review or whose skill was
+   * rejected. A paper that already helped approve any skill is refused whole, so it cannot be re-pointed at other groups.
+   * A technician waiting for the review cannot edit anything (same rule as the registration steps).
    */
   private async editableEvidenceRows(technicianUserId: string, documentId: string) {
     const profile = await this.profileRepo.findOne({ where: { userId: technicianUserId } });
@@ -313,10 +352,11 @@ export class TechnicianSkillVerificationsService {
       : [document];
     const editable = rows.filter(
       (row) =>
-        row.skillVerification?.status === VerificationStatus.PENDING &&
+        row.skillVerification &&
+        row.skillVerification.status !== VerificationStatus.VERIFIED &&
         row.skillVerification.technicianSkill.verificationStatus !== VerificationStatus.VERIFIED,
     );
-    if (editable.length === 0) {
+    if (editable.length === 0 || rows.some((row) => row.skillVerification && isApprovedRow(row.skillVerification))) {
       throw new ConflictException('Giấy tờ này đã dùng để duyệt kỹ năng, không thể sửa hoặc xóa.');
     }
     return { profile, document, editable };
@@ -334,11 +374,13 @@ export class TechnicianSkillVerificationsService {
         // The rows are gone; a file that could not be removed is left for the storage clean-up.
       }
     }
+    await this.auditEvidence(technicianUserId, 'SKILL_EVIDENCE_DELETED', { documentId, evidenceType: document.evidenceType }, null);
     return { removed: editable.length };
   }
 
   /** Changes the details and the categories of a paper already sent, then returns the technician's papers. */
   async updateMyEvidence(technicianUserId: string, documentId: string, dto: UpdateCategoryEvidenceDto) {
+    assertNotExpired(dto.expiresAt);
     const { profile, document, editable } = await this.editableEvidenceRows(technicianUserId, documentId);
     const empty = {
       evidenceType: null, evidenceGroup: null, issuer: null, referenceNumber: null,
@@ -382,6 +424,12 @@ export class TechnicianSkillVerificationsService {
         ),
       );
     }
+    await this.auditEvidence(
+      technicianUserId,
+      'SKILL_EVIDENCE_UPDATED',
+      { documentId, evidenceType: document.evidenceType, issuer: document.issuer, claimedYears: document.claimedYears },
+      { evidenceType: dto.evidenceType ?? null, issuer: dto.issuer ?? null, claimedYears: dto.claimedYears ?? null, categoryIds: dto.categoryIds },
+    );
     return this.listMyEvidence(technicianUserId);
   }
 

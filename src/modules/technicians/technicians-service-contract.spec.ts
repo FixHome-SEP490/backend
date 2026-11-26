@@ -219,6 +219,16 @@ describe('Technician service pricing-mode and existence rules', () => {
     );
   });
 
+  it('leaves the level to FixHome once the profile is approved or the skill confirmed', async () => {
+    const approved = makeService(inspectionService, { id: 'skill-1', technicianId: 'profile-1', level: 'INTERMEDIATE', isActive: true });
+    approved.profileRepo.findOne.mockResolvedValue({ id: 'profile-1', onboardingStatus: 'approved' });
+    await expect(approved.service.setSkillPricing('user-1', inspectionService.id, assign({ level: 'SENIOR' }))).rejects.toThrow('Cấp độ do FixHome xác định');
+    await expect(approved.service.setSkillPricing('user-1', inspectionService.id, assign({ level: 'INTERMEDIATE' }))).resolves.toBeDefined();
+    const confirmed = makeService(inspectionService, { id: 'skill-1', technicianId: 'profile-1', level: 'INTERMEDIATE', isActive: true, verificationStatus: 'verified' });
+    await expect(confirmed.service.setSkillPricing('user-1', inspectionService.id, assign({ level: 'SENIOR' }))).rejects.toThrow('Cấp độ do FixHome xác định');
+    expect(approved.skillRepo.save).toHaveBeenCalledTimes(1);
+  });
+
   it('suppresses stale FIXED_PRICE listedLaborPrice on untouched projection', async () => {
     const { service } = makeService(fixedPriceService);
     const projected = (

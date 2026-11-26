@@ -221,8 +221,8 @@ describe('TechnicianSkillVerificationsService.listMyEvidence', () => {
   const doc = (id: string, path: string, at: number, extra: object = {}) => ({
     id, storageObjectPath: path, fileName: `${id}.jpg`, mimeType: 'image/jpeg', issuedById: null, createdAt: new Date(at), evidenceType: 'social_insurance', issuer: 'BHXH', ...extra,
   });
-  const request = (serviceId: string, categoryId: string, categoryName: string, documents: object[], over: { status?: string; skillStatus?: string } = {}) => ({
-    status: over.status ?? 'pending',
+  const request = (serviceId: string, categoryId: string, categoryName: string, documents: object[], over: { status?: string; skillStatus?: string; reason?: string } = {}) => ({
+    status: over.status ?? 'pending', rejectionReason: over.reason ?? null,
     technicianSkill: { serviceId, verificationStatus: over.skillStatus ?? 'pending', service: { categoryId, category: { name: categoryName } } }, documents,
   });
   const build = (requests: object[], onboardingStatus = 'approved') =>
@@ -244,16 +244,23 @@ describe('TechnicianSkillVerificationsService.listMyEvidence', () => {
     expect(JSON.stringify(list)).not.toContain('kyc/');
   });
 
-  it('marks a paper locked once its skills were reviewed, or while the profile waits for review', async () => {
-    const reviewed = build([request('s-ac', 'c-ac', 'Điều hòa', [doc('d1', 'kyc/a.jpg', 1)], { status: 'verified', skillStatus: 'verified' })]);
-    expect((await reviewed.listMyEvidence('u1'))[0].editable).toBe(false);
-    const mixed = build([
-      request('s-ac', 'c-ac', 'Điều hòa', [doc('d1', 'kyc/a.jpg', 1)], { status: 'verified', skillStatus: 'verified' }),
+  it('derives the status of a paper from the skills it sits on, locking it once any skill was approved or while the profile waits for review', async () => {
+    const first = async (requests: object[], onboarding?: string) => (await build(requests, onboarding).listMyEvidence('u1'))[0];
+    const approved = { status: 'verified', skillStatus: 'verified' };
+    expect(await first([request('s-ac', 'c-ac', 'Điều hòa', [doc('d1', 'kyc/a.jpg', 1)], approved)])).toMatchObject({ status: 'approved', editable: false });
+    // One approved skill locks the whole file, even with another skill of the same file still waiting.
+    expect(await first([
+      request('s-ac', 'c-ac', 'Điều hòa', [doc('d1', 'kyc/a.jpg', 1)], approved),
       request('s-fr', 'c-fr', 'Tủ lạnh', [doc('d2', 'kyc/a.jpg', 1)]),
-    ]);
-    expect((await mixed.listMyEvidence('u1'))[0].editable).toBe(true);
-    const inReview = build([request('s-ac', 'c-ac', 'Điều hòa', [doc('d1', 'kyc/a.jpg', 1)])], 'submitted');
-    expect((await inReview.listMyEvidence('u1'))[0].editable).toBe(false);
+    ])).toMatchObject({ status: 'approved', editable: false });
+    expect(await first([request('s-ac', 'c-ac', 'Điều hòa', [doc('d1', 'kyc/a.jpg', 1)])])).toMatchObject({ status: 'pending', editable: true });
+    expect(await first([request('s-ac', 'c-ac', 'Điều hòa', [doc('d1', 'kyc/a.jpg', 1)])], 'submitted')).toMatchObject({ status: 'in_review', editable: false });
+  });
+
+  it('keeps a paper of a rejected skill editable and carries the reason', async () => {
+    const rejected = { status: 'rejected', skillStatus: 'rejected', reason: 'Ảnh mờ' };
+    const [entry] = await build([request('s-ac', 'c-ac', 'Điều hòa', [doc('d1', 'kyc/a.jpg', 1)], rejected)]).listMyEvidence('u1');
+    expect(entry).toMatchObject({ status: 'rejected', editable: true, rejectionReason: 'Ảnh mờ' });
   });
 
   it('leaves out the certificate FixHome issued, and answers an empty list without a profile', async () => {
@@ -287,8 +294,9 @@ describe('TechnicianSkillVerificationsService.deleteMyEvidence / updateMyEvidenc
     const verificationRepo = { findOne: vi.fn().mockResolvedValue({ id: 'rq-new' }), find: vi.fn().mockResolvedValue([]) };
     const skillRepo = { find: vi.fn().mockResolvedValue(opts.skills ?? []) };
     const profileRepo = { findOne: vi.fn().mockResolvedValue({ id: 'p1', onboardingStatus: opts.onboardingStatus ?? 'in_progress' }) };
-    const service = new TechnicianSkillVerificationsService(verificationRepo as any, skillRepo as any, profileRepo as any, documentRepo as any, {} as any, storage as any);
-    return { service, documentRepo, storage };
+    const audit = { log: vi.fn() };
+    const service = new TechnicianSkillVerificationsService(verificationRepo as any, skillRepo as any, profileRepo as any, documentRepo as any, audit as any, storage as any);
+    return { service, documentRepo, storage, audit };
   }
 
   it('removes the paper from every skill it sits on, and the stored file once nothing points at it', async () => {
@@ -324,6 +332,26 @@ describe('TechnicianSkillVerificationsService.deleteMyEvidence / updateMyEvidenc
     expect(documentRepo.remove).toHaveBeenCalledWith([expect.objectContaining({ id: 'd2' })]);
     expect(documentRepo.update).toHaveBeenCalledWith(['d1'], expect.objectContaining({ evidenceType: 'social_insurance', issuer: 'BHXH', claimedYears: 5, referenceNumber: null }));
     expect(documentRepo.save).toHaveBeenCalledWith([expect.objectContaining({ skillVerificationId: 'rq-new', storageObjectPath: 'kyc/u1/a.jpg', issuer: 'BHXH' })]);
+  });
+
+  it('refuses to edit or delete a file that already helped approve a skill, even with another skill still waiting', async () => {
+    const rows = [row('d1', 's1', 'c1', { requestStatus: VerificationStatus.VERIFIED, skillStatus: VerificationStatus.VERIFIED }), row('d2', 's2', 'c2')];
+    const { service, documentRepo } = harness(rows, { skills: [{ id: 's2', verificationStatus: VerificationStatus.PENDING, isActive: true }] });
+    await expect(service.deleteMyEvidence('u1', 'd2')).rejects.toBeInstanceOf(ConflictException);
+    await expect(service.updateMyEvidence('u1', 'd2', { categoryIds: ['c2', 'c3'] } as any)).rejects.toBeInstanceOf(ConflictException);
+    expect(documentRepo.remove).not.toHaveBeenCalled();
+    expect(documentRepo.save).not.toHaveBeenCalled();
+  });
+
+  it('lets the technician delete a paper of a rejected skill and traces it', async () => {
+    const { service, audit } = harness([row('d1', 's1', 'c1', { requestStatus: VerificationStatus.REJECTED, skillStatus: VerificationStatus.REJECTED })]);
+    await expect(service.deleteMyEvidence('u1', 'd1')).resolves.toEqual({ removed: 1 });
+    expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'SKILL_EVIDENCE_DELETED', actorUserId: 'u1' }));
+  });
+
+  it('refuses an expiry date already in the past', async () => {
+    const { service } = harness([row('d1', 's1', 'c1')]);
+    await expect(service.updateMyEvidence('u1', 'd1', { categoryIds: ['c1'], evidenceType: 'social_insurance', expiresAt: '2020-01-01' } as any)).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('needs at least one skill waiting in the categories left', async () => {
