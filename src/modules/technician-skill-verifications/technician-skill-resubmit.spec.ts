@@ -77,55 +77,61 @@ describe('TechnicianSkillVerificationsService.resubmitSkill', () => {
   });
 });
 
-describe('TechnicianSkillVerificationsService.updateMyEvidence replaces the photo', () => {
-  const row = (id: string, skillId: string) => ({
-    id, storageObjectPath: `kyc/${TECH}/old.jpg`, fileName: 'old.jpg', fileSize: 10, mimeType: 'image/jpeg', issuedById: null,
-    skillVerification: { id: `rq-${skillId}`, technicianSkillId: skillId, status: VerificationStatus.REJECTED, technicianSkill: { id: skillId, technicianId: 'p1', verificationStatus: VerificationStatus.REJECTED, service: { categoryId: 'c1' } } },
+describe('TechnicianSkillVerificationsService.deleteMyEvidenceFromSkill takes a paper off one skill only', () => {
+  const row = (over: { requestStatus?: VerificationStatus; skillStatus?: VerificationStatus; technicianId?: string; serviceId?: string; issuedById?: string | null } = {}) => ({
+    id: 'd1', storageObjectPath: `kyc/${TECH}/a.jpg`, issuedById: over.issuedById ?? null, evidenceType: 'social_insurance',
+    skillVerification: { id: 'rq1', status: over.requestStatus ?? VerificationStatus.PENDING, technicianSkill: { id: 's1', serviceId: over.serviceId ?? 'svc-1', technicianId: over.technicianId ?? 'p1', verificationStatus: over.skillStatus ?? VerificationStatus.PENDING } },
   });
-  const photo = { storageObjectPath: `kyc/${TECH}/new.jpg`, fileName: 'new.jpg', fileSize: 20, mimeType: 'image/png' };
-  const dto = { categoryIds: ['c1'], evidenceType: 'social_insurance' };
 
-  function withSkills() {
-    const h = build({ rows: [row('d1', 's1')] });
-    (h.service as any).skillRepo.find.mockResolvedValue([{ id: 's1', verificationStatus: VerificationStatus.REJECTED, isActive: true, service: { name: 'x' } }]);
-    vi.spyOn(h.service, 'listMyEvidence').mockResolvedValue([]);
-    return h;
+  it('removes only that skill row, keeps the file while another skill still uses it, and traces it', async () => {
+    const { service, documents, storage, audit } = build({ rows: [row()], remaining: 1 });
+    await expect(service.deleteMyEvidenceFromSkill(TECH, 'svc-1', 'd1')).resolves.toEqual({ removed: 1 });
+    expect(documents.remove).toHaveBeenCalledWith(expect.objectContaining({ id: 'd1' }));
+    expect(storage.remove).not.toHaveBeenCalled();
+    expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'SKILL_EVIDENCE_DELETED' }));
+  });
+
+  it('removes the stored file once no skill uses it', async () => {
+    const { service, storage } = build({ rows: [row({ requestStatus: VerificationStatus.REJECTED, skillStatus: VerificationStatus.REJECTED })], remaining: 0 });
+    await service.deleteMyEvidenceFromSkill(TECH, 'svc-1', 'd1');
+    expect(storage.remove).toHaveBeenCalledWith([`kyc/${TECH}/a.jpg`]);
+  });
+
+  it('refuses a paper that approved the skill, a paper of another skill or technician, and a certificate FixHome issued', async () => {
+    const approved = build({ rows: [row({ requestStatus: VerificationStatus.VERIFIED, skillStatus: VerificationStatus.VERIFIED })] });
+    await expect(approved.service.deleteMyEvidenceFromSkill(TECH, 'svc-1', 'd1')).rejects.toBeInstanceOf(ConflictException);
+    const otherSkill = build({ rows: [row({ serviceId: 'svc-2' })] });
+    await expect(otherSkill.service.deleteMyEvidenceFromSkill(TECH, 'svc-1', 'd1')).rejects.toThrow('Verification document not found');
+    const foreign = build({ rows: [row({ technicianId: 'other' })] });
+    await expect(foreign.service.deleteMyEvidenceFromSkill(TECH, 'svc-1', 'd1')).rejects.toThrow('Verification document not found');
+    const issued = build({ rows: [row({ issuedById: 'admin-1' })] });
+    await expect(issued.service.deleteMyEvidenceFromSkill(TECH, 'svc-1', 'd1')).rejects.toThrow('Verification document not found');
+    for (const h of [approved, otherSkill, foreign, issued]) expect(h.documents.remove).not.toHaveBeenCalled();
+  });
+});
+
+describe('TechnicianSkillVerificationsService: a skill the technician switched off is not reviewed', () => {
+  function reviewHarness(isActive: boolean) {
+    const verification = { id: 'rq1', technicianSkillId: 's1', status: VerificationStatus.PENDING, technicianSkill: { id: 's1', isActive, technician: { userId: TECH } } };
+    const manager = { getRepository: () => ({ findOne: vi.fn().mockResolvedValue(verification), update: vi.fn().mockResolvedValue({ affected: 1 }) }) };
+    const verificationRepo = { findOne: vi.fn().mockResolvedValue(verification), manager: { transaction: (fn: (m: unknown) => unknown) => fn(manager) } };
+    const service = new TechnicianSkillVerificationsService(verificationRepo as any, {} as any, {} as any, {} as any, { logWithManagerStrict: vi.fn() } as any, { validateObjectPath: vi.fn(), objectExists: vi.fn().mockResolvedValue(true) } as any);
+    return service;
   }
 
-  it('stores the new file on the rows and removes the old one once nothing points at it', async () => {
-    const { service, documents, storage } = withSkills();
-    await service.updateMyEvidence(TECH, 'd1', { ...dto, ...photo } as any);
-    expect(storage.objectExists).toHaveBeenCalledWith(photo.storageObjectPath, TECH);
-    expect(documents.update).toHaveBeenCalledWith(['d1'], expect.objectContaining(photo));
-    expect(storage.remove).toHaveBeenCalledWith([`kyc/${TECH}/old.jpg`]);
+  it('answers 409 to reject and approve of a switched-off skill', async () => {
+    const off = reviewHarness(false);
+    await expect(off.reject('rq1', 'sm-1', { rejectionReason: 'Chưa đủ căn cứ' })).rejects.toBeInstanceOf(ConflictException);
+    await expect(off.approve('rq1', 'sm-1', { storageObjectPath: `kyc/${TECH}/c.pdf`, fileName: 'c.pdf', fileSize: 1, mimeType: 'application/pdf' })).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it('keeps the old file while another row still points at it', async () => {
-    const { service, storage } = build({ rows: [row('d1', 's1')], remaining: 1 }) as any;
-    service.skillRepo.find.mockResolvedValue([{ id: 's1', verificationStatus: VerificationStatus.REJECTED, isActive: true }]);
-    vi.spyOn(service, 'listMyEvidence').mockResolvedValue([]);
-    await service.updateMyEvidence(TECH, 'd1', { ...dto, ...photo } as any);
-    expect(storage.remove).not.toHaveBeenCalled();
-  });
-
-  it('refuses a photo that was never uploaded, one from another folder, and a half-sent file', async () => {
-    const ghost = withSkills();
-    ghost.storage.objectExists.mockResolvedValue(false);
-    await expect(ghost.service.updateMyEvidence(TECH, 'd1', { ...dto, ...photo } as any)).rejects.toBeInstanceOf(BadRequestException);
-    expect(ghost.documents.update).not.toHaveBeenCalled();
-    const foreign = withSkills();
-    await expect(foreign.service.updateMyEvidence(TECH, 'd1', { ...dto, ...photo, storageObjectPath: 'kyc/other/new.jpg' } as any)).rejects.toThrow('KYC prefix');
-    const half = withSkills();
-    await expect(half.service.updateMyEvidence(TECH, 'd1', { ...dto, storageObjectPath: photo.storageObjectPath } as any)).rejects.toThrow('đủ');
-    expect(half.documents.update).not.toHaveBeenCalled();
-  });
-
-  it('leaves the file alone when no new photo is sent', async () => {
-    const { service, documents, storage } = withSkills();
-    await service.updateMyEvidence(TECH, 'd1', dto as any);
-    expect(documents.update.mock.calls[0][1]).not.toHaveProperty('storageObjectPath');
-    expect(storage.objectExists).not.toHaveBeenCalled();
-    expect(storage.remove).not.toHaveBeenCalled();
+  it('keeps the request out of the managers queue', async () => {
+    const qb: any = {};
+    for (const method of ['leftJoinAndSelect', 'andWhere', 'orderBy', 'skip', 'take']) qb[method] = vi.fn(() => qb);
+    qb.getManyAndCount = vi.fn().mockResolvedValue([[], 0]);
+    const service = new TechnicianSkillVerificationsService({ createQueryBuilder: () => qb } as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    await service.findAll({ page: 1, limit: 10, skip: 0 } as any);
+    expect(qb.andWhere).toHaveBeenCalledWith('skill.isActive = true');
   });
 });
 
@@ -149,5 +155,45 @@ describe('TechnicianSkillVerificationsService review notices and history', () =>
     expect(notifications.createNotification).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'SKILL_VERIFICATION_APPROVED' }));
     notifications.createNotification.mockRejectedValue(new Error('db down'));
     expect(() => (service as any).notifyTechnician(verification, 'approved')).not.toThrow();
+  });
+});
+
+describe('TechnicianSkillVerificationsService: a new paper never reopens a refused skill', () => {
+  function attachHarness(skills: object[], refused: object | null) {
+    const documents = { create: vi.fn((v) => v), save: vi.fn() };
+    const verificationRepo = {
+      findOne: vi.fn(async ({ where }: { where: { status: VerificationStatus } }) => (where.status === VerificationStatus.REJECTED ? refused : null)),
+      create: vi.fn((v) => v),
+      save: vi.fn(async (v) => ({ id: 'rq-new', ...v })),
+      manager: { getRepository: () => ({ update: vi.fn(), create: vi.fn((v) => v), save: vi.fn() }) },
+    };
+    const notifications = { createManyNotifications: vi.fn(), createNotification: vi.fn() };
+    const service = new TechnicianSkillVerificationsService(
+      verificationRepo as any,
+      { find: vi.fn().mockResolvedValue(skills), findOne: vi.fn() } as any,
+      { findOne: vi.fn().mockResolvedValue({ id: 'p1' }) } as any,
+      documents as any,
+      { log: vi.fn() } as any,
+      { validateObjectPath: vi.fn(), objectExists: vi.fn().mockResolvedValue(true) } as any,
+      notifications as any,
+      {} as any,
+    );
+    return { service, documents, verificationRepo, notifications };
+  }
+  const dto = { categoryIds: ['c1'], storageObjectPath: `kyc/${TECH}/a.jpg`, fileName: 'a.jpg', fileSize: 10, mimeType: 'image/jpeg' };
+  const rejectedSkill = (id: string) => ({ id, serviceId: `svc-${id}`, isActive: true, verificationStatus: VerificationStatus.REJECTED });
+
+  it('puts the paper on the latest refused request of each refused skill, opens nothing and tells nobody', async () => {
+    const { service, documents, verificationRepo, notifications } = attachHarness([rejectedSkill('s1')], { id: 'rq-refused' });
+    await service.attachEvidenceToCategories(TECH, dto as any);
+    expect(documents.save).toHaveBeenCalledWith([expect.objectContaining({ skillVerificationId: 'rq-refused' })]);
+    expect(verificationRepo.save).not.toHaveBeenCalled();
+    expect(notifications.createManyNotifications).not.toHaveBeenCalled();
+  });
+
+  it('still opens a request for a skill that was never refused', async () => {
+    const { service, verificationRepo } = attachHarness([{ id: 's2', serviceId: 'svc-s2', isActive: true, verificationStatus: VerificationStatus.PENDING }], null);
+    await service.attachEvidenceToCategories(TECH, dto as any);
+    expect(verificationRepo.save).toHaveBeenCalledTimes(1);
   });
 });

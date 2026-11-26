@@ -85,6 +85,13 @@ const isApprovedRow = (request: TechnicianSkillVerification) =>
   request.status === VerificationStatus.VERIFIED ||
   request.technicianSkill?.verificationStatus === VerificationStatus.VERIFIED;
 
+/** A request of a skill the technician switched off is not reviewed; it comes back when the skill is switched on. */
+const assertSkillTaken = (request: TechnicianSkillVerification) => {
+  if (request.technicianSkill?.isActive === false) {
+    throw new ConflictException('Kỹ thuật viên đã tắt kỹ năng này, chưa thể duyệt hoặc từ chối.');
+  }
+};
+
 const assertNotExpired = (expiresAt: string | null | undefined) => {
   if (expiresAt && expiresAt < new Date().toISOString().slice(0, 10)) {
     throw new BadRequestException('expiresAt must not be in the past');
@@ -116,6 +123,25 @@ export class TechnicianSkillVerificationsService {
     @Optional() private readonly notifications?: NotificationsService,
     @Optional() @InjectRepository(User) private readonly userRepo?: Repository<User>,
   ) {}
+
+  /**
+   * The request a new paper is put on. A refused skill stays refused until the technician asks again (resubmitSkill): its
+   * new papers wait on the latest refused request, which resubmitSkill carries over, so adding one paper never sends
+   * every refused skill back to review. Any other skill gets (or keeps) its open request.
+   */
+  private async requestToAttachTo(skill: TechnicianSkill): Promise<TechnicianSkillVerification | null> {
+    if (skill.isActive && skill.verificationStatus === VerificationStatus.REJECTED) {
+      const open = await this.verificationRepo.findOne({ where: { technicianSkillId: skill.id, status: VerificationStatus.PENDING } });
+      if (!open) {
+        const refused = await this.verificationRepo.findOne({
+          where: { technicianSkillId: skill.id, status: VerificationStatus.REJECTED },
+          order: { submittedAt: 'DESC' },
+        });
+        if (refused) return refused;
+      }
+    }
+    return ensurePendingSkillVerification(this.verificationRepo, skill);
+  }
 
   /** Tells the technician how a skill review ended. Never fails the review: a notice that cannot be saved is dropped. */
   private notifyTechnician(verification: TechnicianSkillVerification, outcome: 'approved' | 'rejected') {
@@ -219,12 +245,9 @@ export class TechnicianSkillVerificationsService {
     await this.assertUploaded(dto.storageObjectPath, technicianUserId);
 
     const targets: { serviceId: string; request: TechnicianSkillVerification }[] = [];
-    const reopened: { id: string; name: string }[] = [];
     for (const skill of waiting) {
-      const wasRejected = skill.verificationStatus === VerificationStatus.REJECTED;
-      const request = await ensurePendingSkillVerification(this.verificationRepo, skill);
+      const request = await this.requestToAttachTo(skill);
       if (request) targets.push({ serviceId: skill.serviceId, request });
-      if (request && wasRejected) reopened.push({ id: request.id, name: skill.service?.name ?? 'dịch vụ' });
     }
     if (targets.length === 0) {
       throw new ConflictException('Các kỹ năng này chưa có yêu cầu xác minh để đính giấy tờ.');
@@ -244,7 +267,6 @@ export class TechnicianSkillVerificationsService {
         }),
       ),
     );
-    await this.notifyResubmitted(technicianUserId, reopened.map((r) => r.id), reopened.map((r) => r.name));
     await this.auditEvidence(technicianUserId, 'SKILL_EVIDENCE_ATTACHED', null, {
       evidenceType: dto.evidenceType ?? null,
       serviceIds: targets.map((target) => target.serviceId),
@@ -281,14 +303,12 @@ export class TechnicianSkillVerificationsService {
     });
     if (!skill) throw new NotFoundException('Skill not found');
 
-    const wasRejected = skill.verificationStatus === VerificationStatus.REJECTED;
-    const verification = await ensurePendingSkillVerification(this.verificationRepo, skill);
+    const verification = await this.requestToAttachTo(skill);
     if (!verification) {
       throw new ConflictException(
         'This skill has no pending verification request to attach evidence to',
       );
     }
-    if (wasRejected) await this.notifyResubmitted(technicianUserId, [verification.id], [skill.service?.name ?? 'dịch vụ']);
     // The path proves the owner, the bucket proves the upload: a path that was
     // never uploaded through the signed upload URL is refused before anything
     // is saved (storage unreachable is a 503 from objectExists).
@@ -464,15 +484,31 @@ export class TechnicianSkillVerificationsService {
     }
   }
 
-  /** A new photo for a paper: all four file fields or none, and the file must really be in the technician folder. */
-  private async checkedNewPhoto(technicianUserId: string, dto: UpdateCategoryEvidenceDto) {
-    const { storageObjectPath, fileName, fileSize, mimeType } = dto;
-    if (storageObjectPath === undefined && fileName === undefined && fileSize === undefined && mimeType === undefined) return null;
-    if (!storageObjectPath || !fileName || !fileSize || !mimeType) {
-      throw new BadRequestException('Đổi ảnh cần đủ storageObjectPath, fileName, fileSize và mimeType.');
+  /**
+   * Takes a paper off one skill only; the same file stays on the other skills it sits on and goes from storage once no row
+   * points at it. Same rules as deleting the whole paper: a skill already approved, or a profile waiting for review, refuses.
+   */
+  async deleteMyEvidenceFromSkill(technicianUserId: string, serviceId: string, documentId: string): Promise<{ removed: number }> {
+    const profile = await this.profileRepo.findOne({ where: { userId: technicianUserId } });
+    if (!profile) throw new NotFoundException('Technician profile not found');
+    if (profile.onboardingStatus === OnboardingStatus.SUBMITTED) {
+      throw new BadRequestException('Hồ sơ đang chờ xét duyệt, không thể chỉnh sửa lúc này.');
     }
-    await this.assertUploaded(storageObjectPath, technicianUserId);
-    return { storageObjectPath, fileName, fileSize, mimeType };
+    const document = await this.documentRepo.findOne({
+      where: { id: documentId },
+      relations: ['skillVerification', 'skillVerification.technicianSkill'],
+    });
+    const skill = document?.skillVerification?.technicianSkill;
+    if (!document || document.issuedById || skill?.technicianId !== profile.id || skill.serviceId !== serviceId) {
+      throw new NotFoundException('Verification document not found');
+    }
+    if (isApprovedRow(document.skillVerification!)) {
+      throw new ConflictException('Giấy tờ này đã dùng để duyệt kỹ năng, không thể xóa.');
+    }
+    await this.documentRepo.remove(document);
+    await this.removeFileIfUnused(document.storageObjectPath);
+    await this.auditEvidence(technicianUserId, 'SKILL_EVIDENCE_DELETED', { documentId, serviceId, evidenceType: document.evidenceType }, null);
+    return { removed: 1 };
   }
 
   /** Removes a paper from every skill it sits on; the stored file goes too once no row points at it. */
@@ -488,12 +524,11 @@ export class TechnicianSkillVerificationsService {
   async updateMyEvidence(technicianUserId: string, documentId: string, dto: UpdateCategoryEvidenceDto) {
     assertNotExpired(dto.expiresAt);
     const { profile, document, editable } = await this.editableEvidenceRows(technicianUserId, documentId);
-    const newFile = await this.checkedNewPhoto(technicianUserId, dto);
     const empty = {
       evidenceType: null, evidenceGroup: null, issuer: null, referenceNumber: null,
       issuedAt: null, expiresAt: null, claimedYears: null, reviewStatus: null,
     };
-    const patch = { ...empty, ...skillEvidenceMetadata(dto), ...newFile } as Partial<VerificationDocument>;
+    const patch = { ...empty, ...skillEvidenceMetadata(dto) } as Partial<VerificationDocument>;
 
     const skills = await this.skillRepo.find({
       where: { technicianId: profile.id, isActive: true, service: { categoryId: In(dto.categoryIds) } },
@@ -509,12 +544,9 @@ export class TechnicianSkillVerificationsService {
     const covered = new Set(keep.map((row) => row.skillVerification.technicianSkillId));
 
     const additions: { request: TechnicianSkillVerification }[] = [];
-    const reopened: { id: string; name: string }[] = [];
     for (const skill of targets.filter((s) => !covered.has(s.id))) {
-      const wasRejected = skill.verificationStatus === VerificationStatus.REJECTED;
-      const request = await ensurePendingSkillVerification(this.verificationRepo, skill);
+      const request = await this.requestToAttachTo(skill);
       if (request) additions.push({ request });
-      if (request && wasRejected) reopened.push({ id: request.id, name: skill.service?.name ?? 'dịch vụ' });
     }
 
     if (drop.length > 0) await this.documentRepo.remove(drop);
@@ -535,13 +567,11 @@ export class TechnicianSkillVerificationsService {
         ),
       );
     }
-    if (newFile) await this.removeFileIfUnused(document.storageObjectPath);
-    await this.notifyResubmitted(technicianUserId, reopened.map((x) => x.id), reopened.map((x) => x.name));
     await this.auditEvidence(
       technicianUserId,
       'SKILL_EVIDENCE_UPDATED',
       { documentId, evidenceType: document.evidenceType, issuer: document.issuer, claimedYears: document.claimedYears },
-      { evidenceType: dto.evidenceType ?? null, issuer: dto.issuer ?? null, claimedYears: dto.claimedYears ?? null, categoryIds: dto.categoryIds, photoReplaced: !!newFile },
+      { evidenceType: dto.evidenceType ?? null, issuer: dto.issuer ?? null, claimedYears: dto.claimedYears ?? null, categoryIds: dto.categoryIds },
     );
     return this.listMyEvidence(technicianUserId);
   }
@@ -563,6 +593,8 @@ export class TechnicianSkillVerificationsService {
     // A technician still going through onboarding is reviewed once, in the profile review; this list keeps the
     // skills added after the profile was approved.
     qb.andWhere('profile.verificationStatus = :approved', { approved: VerificationStatus.VERIFIED });
+    // A skill the technician switched off is not theirs to be reviewed: its request waits, out of the queue, until it is switched on again.
+    qb.andWhere('skill.isActive = true');
 
     if (query.status) {
       qb.andWhere('v.status = :status', { status: query.status });
@@ -617,6 +649,7 @@ export class TechnicianSkillVerificationsService {
         relations: ['technicianSkill', 'technicianSkill.technician', 'technicianSkill.technician.user'],
       });
       if (!verification) throw new NotFoundException('Skill verification request not found');
+      assertSkillTaken(verification);
 
       const technicianUserId = verification.technicianSkill.technician.userId;
       this.storageService.validateObjectPath(dto.storageObjectPath, technicianUserId);
@@ -675,8 +708,9 @@ export class TechnicianSkillVerificationsService {
   ): Promise<SkillVerificationResponseDto> {
     const reviewed = await this.verificationRepo.manager.transaction(async (manager) => {
       const verifications = manager.getRepository(TechnicianSkillVerification);
-      const verification = await verifications.findOne({ where: { id } });
+      const verification = await verifications.findOne({ where: { id }, relations: ['technicianSkill'] });
       if (!verification) throw new NotFoundException('Skill verification request not found');
+      assertSkillTaken(verification);
 
       const result = await verifications.update(
         { id, status: VerificationStatus.PENDING },

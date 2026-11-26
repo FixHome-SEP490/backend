@@ -25,7 +25,7 @@ export class TechnicianSkillEvidenceController {
   }
 
   @Patch(':documentId')
-  @ApiOperation({ summary: 'Technician: Change the details and the categories of a paper already sent; returns the papers' })
+  @ApiOperation({ deprecated: true, summary: 'Technician: Change the details and the categories of a paper already sent; returns the papers. Deprecated: the app deletes and sends a new paper instead' })
   async update(
     @CurrentUser('id') technicianId: string,
     @Param('documentId', ParseUUIDPipe) documentId: string,
