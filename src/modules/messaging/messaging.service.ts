@@ -457,6 +457,17 @@ export class MessagingService {
     return this.toMessageView(saved);
   }
 
+  /** One automated line in the thread recording how a call ended; the caller is its sender. */
+  async recordCallLog(conversationId: string, callerId: string, content: string): Promise<MessageView | null> {
+    const conversation = await this.conversationRepo.findOneBy({ id: conversationId });
+    if (!conversation) return null;
+    const saved = await this.messageRepo.save(
+      this.messageRepo.create({ conversationId, senderId: callerId, content, isAutomated: true }),
+    );
+    await this.touchConversation(conversation, saved.createdAt, content);
+    return this.toMessageView(saved);
+  }
+
   async sendMessage(
     conversationId: string,
     actor: ChatActor,

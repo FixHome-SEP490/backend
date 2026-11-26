@@ -42,6 +42,7 @@ describe('MessagingGateway voice call signalling', () => {
   let peerOf: ReturnType<typeof vi.fn>;
   /** Users with at least one socket connected. */
   let online: Set<string>;
+  let recordCallLog: ReturnType<typeof vi.fn>;
   let notifications: { createNotification: ReturnType<typeof vi.fn> };
 
   /** Every emit the gateway makes, so we can assert on the destination room. */
@@ -54,6 +55,7 @@ describe('MessagingGateway voice call signalling', () => {
     online = new Set([CUSTOMER.id, TECHNICIAN.id, OUTSIDER.id]);
     notifications = { createNotification: vi.fn(async () => ({})) };
 
+    recordCallLog = vi.fn(async (conversationId: string, callerId: string, content: string) => ({ id: 'm1', conversationId, senderId: callerId, content }));
     peerOf = vi.fn(async (conversationId: string, userId: string) => {
       if (conversationId !== CONVERSATION_ID) return null;
       if (userId === CUSTOMER.id) return TECHNICIAN.id;
@@ -62,7 +64,7 @@ describe('MessagingGateway voice call signalling', () => {
     });
 
     gateway = new MessagingGateway(
-      { resolveCallPeer: peerOf } as unknown as MessagingService,
+      { resolveCallPeer: peerOf, recordCallLog, participantIds: async () => [CUSTOMER.id, TECHNICIAN.id] } as unknown as MessagingService,
       registry,
       {} as never,
       { get: () => undefined, getOrThrow: () => 'secret' } as never,
@@ -281,6 +283,17 @@ describe('MessagingGateway voice call signalling', () => {
         [`user:${CUSTOMER.id}`, `user:${TECHNICIAN.id}`].sort(),
       );
       expect(ended[0].payload.reason).toBe('rejected');
+    });
+
+    it('writes the outcome of the call into the thread', async () => {
+      const callId = await placeCall();
+      gateway.onCallReject(makeSocket(TECHNICIAN), { callId });
+      await vi.waitFor(() => expect(recordCallLog).toHaveBeenCalledWith(CONVERSATION_ID, CUSTOMER.id, 'Cuộc gọi bị từ chối'));
+      expect(eventsNamed('message:new')).toHaveLength(1);
+
+      const answered = await answeredCall();
+      gateway.onCallEnd(makeSocket(TECHNICIAN), { callId: answered });
+      await vi.waitFor(() => expect(recordCallLog).toHaveBeenLastCalledWith(CONVERSATION_ID, CUSTOMER.id, expect.stringMatching(/^Cuộc gọi thoại · \d\d:\d\d$/)));
     });
 
     it('does not let the caller decline on the callee behalf', async () => {
