@@ -197,3 +197,41 @@ describe('TechnicianSkillVerificationsService: a new paper never reopens a refus
     expect(verificationRepo.save).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('TechnicianSkillVerificationsService.approve needs no certificate file', () => {
+  function approveHarness() {
+    const verification = {
+      id: 'rq1', technicianSkillId: 's1', status: VerificationStatus.PENDING, documents: [], rejectionReason: null,
+      technicianSkill: { id: 's1', isActive: true, technician: { userId: TECH, user: { id: TECH } }, service: { name: 'Sửa điều hòa' } },
+    };
+    const repo = {
+      findOne: vi.fn().mockResolvedValue(verification),
+      update: vi.fn().mockResolvedValue({ affected: 1 }),
+      create: vi.fn((v) => v),
+      save: vi.fn(),
+    };
+    const storage = { validateObjectPath: vi.fn(), objectExists: vi.fn().mockResolvedValue(true) };
+    const verificationRepo = { findOne: repo.findOne, manager: { transaction: (fn: (m: unknown) => unknown) => fn({ getRepository: () => repo }) } };
+    const notifications = { createNotification: vi.fn().mockResolvedValue({}) };
+    const service = new TechnicianSkillVerificationsService(verificationRepo as any, {} as any, {} as any, {} as any, { logWithManagerStrict: vi.fn() } as any, storage as any, notifications as any);
+    return { service, repo, storage };
+  }
+
+  it('approves with an empty body: no storage check, no certificate document', async () => {
+    const { service, repo, storage } = approveHarness();
+    await service.approve('rq1', 'sm-1', {});
+    expect(storage.objectExists).not.toHaveBeenCalled();
+    expect(repo.save).not.toHaveBeenCalled();
+    expect(repo.update).toHaveBeenCalledWith({ id: 'rq1', status: VerificationStatus.PENDING }, expect.objectContaining({ status: VerificationStatus.VERIFIED }));
+  });
+
+  it('still stores the issued certificate when one is sent, and refuses a half-sent one', async () => {
+    const { service, repo, storage } = approveHarness();
+    await service.approve('rq1', 'sm-1', { storageObjectPath: `kyc/${TECH}/c.pdf`, fileName: 'c.pdf', fileSize: 1, mimeType: 'application/pdf' });
+    expect(storage.objectExists).toHaveBeenCalled();
+    expect(repo.save).toHaveBeenCalledWith(expect.objectContaining({ issuedById: 'sm-1' }));
+    const half = approveHarness();
+    await expect(half.service.approve('rq1', 'sm-1', { storageObjectPath: `kyc/${TECH}/c.pdf` })).rejects.toBeInstanceOf(BadRequestException);
+    expect(half.repo.update).not.toHaveBeenCalled();
+  });
+});

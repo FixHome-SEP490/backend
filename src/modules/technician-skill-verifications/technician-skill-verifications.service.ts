@@ -28,6 +28,7 @@ import { User } from '../users/entities/user.entity';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { KycStorageService, KycSignedAccess, KycSignedUpload } from '../technician-verifications/kyc-storage.service';
 import {
+  ApproveSkillVerificationDto,
   AttachSkillEvidenceDto,
   QuerySkillVerificationsDto,
   RejectSkillVerificationDto,
@@ -708,19 +709,22 @@ export class TechnicianSkillVerificationsService {
   async approve(
     id: string,
     reviewerId: string,
-    dto: AttachSkillEvidenceDto,
+    dto: ApproveSkillVerificationDto = {},
   ): Promise<SkillVerificationResponseDto> {
-    // The issued certificate must be in the bucket too. Checked before the
+    const given = [dto.storageObjectPath, dto.fileName, dto.fileSize, dto.mimeType];
+    if (given.some(Boolean) && !given.every(Boolean)) {
+      throw new BadRequestException('storageObjectPath, fileName, fileSize and mimeType go together');
+    }
+    // The issued certificate, when sent, must be in the bucket too. Checked before the
     // transaction so no database connection waits on the storage call.
     const target = await this.verificationRepo.findOne({
       where: { id },
       relations: ['technicianSkill', 'technicianSkill.technician'],
     });
     if (!target) throw new NotFoundException('Skill verification request not found');
-    await this.assertUploaded(
-      dto.storageObjectPath,
-      target.technicianSkill.technician.userId,
-    );
+    if (dto.storageObjectPath) {
+      await this.assertUploaded(dto.storageObjectPath, target.technicianSkill.technician.userId);
+    }
 
     const reviewed = await this.verificationRepo.manager.transaction(async (manager) => {
       const verifications = manager.getRepository(TechnicianSkillVerification);
@@ -732,7 +736,7 @@ export class TechnicianSkillVerificationsService {
       assertSkillTaken(verification);
 
       const technicianUserId = verification.technicianSkill.technician.userId;
-      this.storageService.validateObjectPath(dto.storageObjectPath, technicianUserId);
+      if (dto.storageObjectPath) this.storageService.validateObjectPath(dto.storageObjectPath, technicianUserId);
 
       const result = await verifications.update(
         { id, status: VerificationStatus.PENDING },
@@ -742,17 +746,19 @@ export class TechnicianSkillVerificationsService {
         throw new ConflictException('Verification request is already processed');
       }
 
-      await manager.getRepository(VerificationDocument).save(
-        manager.getRepository(VerificationDocument).create({
-          skillVerificationId: id,
-          documentType: DocumentType.CERTIFICATE,
-          storageObjectPath: dto.storageObjectPath,
-          fileName: dto.fileName,
-          fileSize: dto.fileSize,
-          mimeType: dto.mimeType,
-          issuedById: reviewerId,
-        }),
-      );
+      if (dto.storageObjectPath && dto.fileName && dto.fileSize && dto.mimeType) {
+        await manager.getRepository(VerificationDocument).save(
+          manager.getRepository(VerificationDocument).create({
+            skillVerificationId: id,
+            documentType: DocumentType.CERTIFICATE,
+            storageObjectPath: dto.storageObjectPath,
+            fileName: dto.fileName,
+            fileSize: dto.fileSize,
+            mimeType: dto.mimeType,
+            issuedById: reviewerId,
+          }),
+        );
+      }
 
       const skillResult = await manager
         .getRepository(TechnicianSkill)

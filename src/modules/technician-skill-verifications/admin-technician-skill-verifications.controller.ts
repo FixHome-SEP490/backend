@@ -12,7 +12,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { TechnicianSkillVerificationsService } from './technician-skill-verifications.service';
-import { AttachSkillEvidenceDto, QuerySkillVerificationsDto, RejectSkillVerificationDto } from './dto';
+import { ApproveSkillVerificationDto, QuerySkillVerificationsDto, RejectSkillVerificationDto } from './dto';
 import { KycSignedAccessResponseDto, KycSignedUploadResponseDto, RequestKycUploadUrlDto } from '../technician-verifications/dto';
 import { JwtAuthGuard, RolesGuard } from '../../common/guards';
 import { CurrentUser, Roles } from '../../common/decorators';
@@ -63,12 +63,12 @@ export class AdminTechnicianSkillVerificationsController {
   @Roles(Role.SERVICE_MANAGER)
   @Patch(':id/approve')
   @ApiOperation({
-    summary: 'Admin: Approve a skill verification, attaching the certificate FixHome issued',
+    summary: 'Admin: Approve a skill verification; the certificate FixHome issued is optional',
   })
   async approve(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser('id') reviewerId: string,
-    @Body() dto: AttachSkillEvidenceDto,
+    @Body() dto: ApproveSkillVerificationDto,
   ) {
     return this.service.approve(id, reviewerId, dto);
   }
