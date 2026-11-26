@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-26 16:56 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
+> Cập nhật lần cuối: 2026-11-26 18:20 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: feat/warranty-same-technician
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -548,6 +548,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
+- 2026-11-26 18:20 (UTC+7) | Hgnv11 | feat/warranty-same-technician | PO 26/11: bảo hành do chính thợ làm đơn xử lý, UI không còn giao lại hay từ chối; khách đồng ý hoặc khiếu nại bảo hành thì SM nhận thông báo WARRANTY_CUSTOMER_RESPONSE_NEEDED; job quét tự đóng claim khách đã đồng ý nhưng SM chưa đóng sau warranty.customer_response_hours; close chỉ cho kết cục rejected khi kết luận là not_covered; không đổi migration; backend giữ nguyên assign/decline
 - 2026-11-26 16:56 (UTC+7) | Hgnv11 | dev | technician-skill-verifications: thêm POST technicians/me/services/:serviceId/verification/documents/reuse (gắn giấy tờ đã nộp sang kỹ năng khác, bỏ qua giấy tờ đã có, không nhận giấy tờ của người khác hoặc hết hạn); attachEvidence và attachEvidenceToCategories chặn giấy tờ trùng trên cùng một kỹ năng (cùng file, hoặc cùng loại và cùng số hiệu): 409 khi theo kỹ năng, bỏ qua kỹ năng đã có khi theo nhóm; GET technicians/me/skill-evidence trả thêm serviceIds. Không migration.
 - 2026-11-26 16:11 (UTC+7) | Hgnv11 | dev | PO 26/11: giấy tờ chỉ Xem/Xóa/Thêm mới: bỏ Đổi ảnh ở PATCH skill-evidence (PATCH sửa chi tiết còn cho app cũ, deprecated); thêm DELETE /technicians/me/services/:serviceId/verification/documents/:documentId gỡ giấy tờ khỏi một kỹ năng; hàng chờ SM chỉ hiện kỹ năng thợ đang bật, duyệt/từ chối kỹ năng đã tắt trả 409; không đổi migration
 - 2026-11-26 15:59 (UTC+7) | Hgnv11 | dev | PO 26/11: thêm giấy tờ cho kỹ năng bị từ chối không còn mở lại phiếu: giấy tờ chờ trên phiếu bị từ chối gần nhất, chỉ Gửi lại (resubmit) mới đưa kỹ năng về chờ duyệt và mang giấy tờ theo; không đổi migration

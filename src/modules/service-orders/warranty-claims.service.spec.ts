@@ -234,7 +234,7 @@ describe('WarrantyClaimsService.respond', () => {
   const awaiting = makeClaim({ status: WarrantyClaimStatus.AWAITING_CUSTOMER });
 
   it('records that the customer agreed without changing the claim status', async () => {
-    const { service, claimRepo } = makeService({ claim: awaiting });
+    const { service, claimRepo, notifier } = makeService({ claim: awaiting });
 
     await service.respond(ORDER_ID, 'claim-1', { decision: 'agree' }, CUSTOMER);
 
@@ -242,10 +242,11 @@ describe('WarrantyClaimsService.respond', () => {
       expect.objectContaining({ id: 'claim-1', status: WarrantyClaimStatus.AWAITING_CUSTOMER }),
       expect.objectContaining({ customerResponse: 'agreed' }),
     );
+    expect(notifier.toManagers).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'WARRANTY_CUSTOMER_RESPONSE_NEEDED', ORDER_ID);
   });
 
   it('turns a dispute into a warranty dispute case in one transaction', async () => {
-    const { service, txRepo, supportCases } = makeService({ claim: awaiting });
+    const { service, txRepo, supportCases, notifier } = makeService({ claim: awaiting });
 
     await service.respond(
       ORDER_ID,
@@ -269,6 +270,7 @@ describe('WarrantyClaimsService.respond', () => {
       expect.anything(),
     );
     expect(txRepo.update).toHaveBeenNthCalledWith(2, { id: 'claim-1' }, { escalatedSupportCaseId: 'case-9' });
+    expect(notifier.toManagers).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'WARRANTY_CUSTOMER_RESPONSE_NEEDED', ORDER_ID);
   });
 
   it('answers 404 for a claim that is not the caller\'s and 409 when it is not waiting', async () => {
