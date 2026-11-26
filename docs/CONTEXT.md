@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-26 16:56 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
+> Cập nhật lần cuối: 2026-11-26 17:21 (UTC+7) · Người cập nhật (git): ToanAltF4 · Nhánh: fix/part-returns-groups-302
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -548,6 +548,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
+- 2026-11-26 17:21 (UTC+7) | ToanAltF4 | fix/part-returns-groups-302 | BUG 302: GET /part-returns/mine nhận status (need_declare, awaiting_manager, completed, all) có phân trang, meta đủ số đếm ba nhóm từ một query; không có status trả như cũ
 - 2026-11-26 16:56 (UTC+7) | Hgnv11 | dev | technician-skill-verifications: thêm POST technicians/me/services/:serviceId/verification/documents/reuse (gắn giấy tờ đã nộp sang kỹ năng khác, bỏ qua giấy tờ đã có, không nhận giấy tờ của người khác hoặc hết hạn); attachEvidence và attachEvidenceToCategories chặn giấy tờ trùng trên cùng một kỹ năng (cùng file, hoặc cùng loại và cùng số hiệu): 409 khi theo kỹ năng, bỏ qua kỹ năng đã có khi theo nhóm; GET technicians/me/skill-evidence trả thêm serviceIds. Không migration.
 - 2026-11-26 16:11 (UTC+7) | Hgnv11 | dev | PO 26/11: giấy tờ chỉ Xem/Xóa/Thêm mới: bỏ Đổi ảnh ở PATCH skill-evidence (PATCH sửa chi tiết còn cho app cũ, deprecated); thêm DELETE /technicians/me/services/:serviceId/verification/documents/:documentId gỡ giấy tờ khỏi một kỹ năng; hàng chờ SM chỉ hiện kỹ năng thợ đang bật, duyệt/từ chối kỹ năng đã tắt trả 409; không đổi migration
 - 2026-11-26 15:59 (UTC+7) | Hgnv11 | dev | PO 26/11: thêm giấy tờ cho kỹ năng bị từ chối không còn mở lại phiếu: giấy tờ chờ trên phiếu bị từ chối gần nhất, chỉ Gửi lại (resubmit) mới đưa kỹ năng về chờ duyệt và mang giấy tờ theo; không đổi migration
