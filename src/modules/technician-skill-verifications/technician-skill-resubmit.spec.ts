@@ -160,7 +160,7 @@ describe('TechnicianSkillVerificationsService review notices and history', () =>
 
 describe('TechnicianSkillVerificationsService: a new paper never reopens a refused skill', () => {
   function attachHarness(skills: object[], refused: object | null) {
-    const documents = { create: vi.fn((v) => v), save: vi.fn() };
+    const documents = { create: vi.fn((v) => v), save: vi.fn(), find: vi.fn().mockResolvedValue([]) };
     const verificationRepo = {
       findOne: vi.fn(async ({ where }: { where: { status: VerificationStatus } }) => (where.status === VerificationStatus.REJECTED ? refused : null)),
       create: vi.fn((v) => v),

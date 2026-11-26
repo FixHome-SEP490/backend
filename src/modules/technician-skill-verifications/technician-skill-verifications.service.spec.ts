@@ -57,6 +57,7 @@ describe('TechnicianSkillVerificationsService evidence must be really uploaded',
     profileRepo = { findOne: vi.fn().mockResolvedValue({ id: 'profile-1', userId: TECH_USER }) };
     documentRepo = {
       create: vi.fn((doc) => doc),
+      find: vi.fn().mockResolvedValue([]),
       save: vi.fn(async (doc) => ({ id: 'doc-1', ...doc })),
     };
     storage = {
@@ -242,6 +243,9 @@ describe('TechnicianSkillVerificationsService.listMyEvidence', () => {
     expect(list.map((e) => e.documentId)).toEqual(['d3', 'd1']);
     expect(list[1]).toMatchObject({ serviceId: 's-ac', evidenceType: 'social_insurance', issuer: 'BHXH', categories: [{ id: 'c-ac', name: 'Điều hòa' }, { id: 'c-fr', name: 'Tủ lạnh' }] });
     expect(JSON.stringify(list)).not.toContain('kyc/');
+    // The skills a paper sits on, so the app can tell which papers a skill already holds.
+    expect(list[1].serviceIds).toEqual(['s-ac', 's-fr']);
+    expect(list[0].serviceIds).toEqual(['s-fr']);
   });
 
   it('derives the status of a paper from the skills it sits on, locking it once any skill was approved or while the profile waits for review', async () => {
