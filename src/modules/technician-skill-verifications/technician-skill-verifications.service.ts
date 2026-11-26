@@ -31,6 +31,7 @@ import {
   AttachSkillEvidenceDto,
   QuerySkillVerificationsDto,
   RejectSkillVerificationDto,
+  ReuseSkillEvidenceDto,
   SkillVerificationResponseDto,
   SubmitCategoryEvidenceDto,
   SubmitSkillEvidenceDto,
@@ -91,6 +92,14 @@ const assertSkillTaken = (request: TechnicianSkillVerification) => {
     throw new ConflictException('Kỹ thuật viên đã tắt kỹ năng này, chưa thể duyệt hoặc từ chối.');
   }
 };
+
+type PaperIdentity = Pick<VerificationDocument, 'storageObjectPath' | 'evidenceType' | 'referenceNumber'>;
+const normalizedNumber = (value: string | null | undefined) => (value ?? '').trim().toLowerCase();
+
+/** The same paper twice on one skill: the same stored file, or the same type with the same (non-empty) number. */
+const samePaper = (a: PaperIdentity, b: PaperIdentity) =>
+  (!!a.storageObjectPath && a.storageObjectPath === b.storageObjectPath) ||
+  (!!a.evidenceType && a.evidenceType === b.evidenceType && !!normalizedNumber(a.referenceNumber) && normalizedNumber(a.referenceNumber) === normalizedNumber(b.referenceNumber));
 
 const assertNotExpired = (expiresAt: string | null | undefined) => {
   if (expiresAt && expiresAt < new Date().toISOString().slice(0, 10)) {
@@ -244,12 +253,20 @@ export class TechnicianSkillVerificationsService {
     }
     await this.assertUploaded(dto.storageObjectPath, technicianUserId);
 
+    const paper = { storageObjectPath: dto.storageObjectPath, evidenceType: dto.evidenceType ?? null, referenceNumber: dto.referenceNumber ?? null };
     const targets: { serviceId: string; request: TechnicianSkillVerification }[] = [];
+    const duplicates: string[] = [];
     for (const skill of waiting) {
       const request = await this.requestToAttachTo(skill);
-      if (request) targets.push({ serviceId: skill.serviceId, request });
+      if (!request) continue;
+      if (await this.hasPaper(request.id, paper)) {
+        duplicates.push(skill.service?.name ?? 'dịch vụ');
+        continue;
+      }
+      targets.push({ serviceId: skill.serviceId, request });
     }
     if (targets.length === 0) {
+      if (duplicates.length > 0) throw new ConflictException(`Giấy tờ này đã có ở kỹ năng ${duplicates.join(', ')}.`);
       throw new ConflictException('Các kỹ năng này chưa có yêu cầu xác minh để đính giấy tờ.');
     }
 
@@ -272,6 +289,60 @@ export class TechnicianSkillVerificationsService {
       serviceIds: targets.map((target) => target.serviceId),
     });
     return { attachedSkills: targets.length, serviceIds: targets.map((target) => target.serviceId) };
+  }
+
+  /** Whether the request already holds this paper (same file, or same type and number). */
+  private async hasPaper(requestId: string, paper: PaperIdentity): Promise<boolean> {
+    const held = await this.documentRepo.find({ where: { skillVerificationId: requestId } });
+    return held.some((row) => samePaper(row, paper));
+  }
+
+  /**
+   * Puts papers the technician already sent on one more skill, without uploading again. A paper the skill already holds is
+   * skipped, not an error, so picking several papers never fails because of one that is there. The copies follow the same
+   * rules as a new upload (a refused skill keeps them waiting; an approved skill takes none).
+   */
+  async reuseMyEvidence(technicianUserId: string, serviceId: string, dto: ReuseSkillEvidenceDto): Promise<{ attached: number; skipped: number }> {
+    const profile = await this.profileRepo.findOne({ where: { userId: technicianUserId } });
+    if (!profile) throw new NotFoundException('Technician profile not found');
+    const skill = await this.skillRepo.findOne({ where: { technicianId: profile.id, serviceId }, relations: ['service'] });
+    if (!skill) throw new NotFoundException('Skill not found');
+
+    const sources = await this.documentRepo.find({ where: { id: In(dto.documentIds) }, relations: ['skillVerification', 'skillVerification.technicianSkill'] });
+    const owned = sources.filter((d) => !d.issuedById && d.skillVerification?.technicianSkill?.technicianId === profile.id);
+    if (owned.length !== dto.documentIds.length) throw new NotFoundException('Verification document not found');
+    for (const source of owned) assertNotExpired(source.expiresAt);
+
+    const request = await this.requestToAttachTo(skill);
+    if (!request) throw new ConflictException('This skill has no pending verification request to attach evidence to');
+    const held: PaperIdentity[] = await this.documentRepo.find({ where: { skillVerificationId: request.id } });
+    const fresh: VerificationDocument[] = [];
+    for (const source of owned) {
+      if (held.some((row) => samePaper(row, source))) continue;
+      held.push(source);
+      fresh.push(
+        this.documentRepo.create({
+          skillVerificationId: request.id,
+          documentType: DocumentType.CERTIFICATE,
+          storageObjectPath: source.storageObjectPath,
+          fileName: source.fileName,
+          fileSize: source.fileSize,
+          mimeType: source.mimeType,
+          issuedById: null,
+          evidenceType: source.evidenceType,
+          evidenceGroup: source.evidenceGroup,
+          issuer: source.issuer,
+          referenceNumber: source.referenceNumber,
+          issuedAt: source.issuedAt,
+          expiresAt: source.expiresAt,
+          claimedYears: source.claimedYears,
+          reviewStatus: SkillEvidenceReviewStatus.PENDING,
+        }),
+      );
+    }
+    if (fresh.length > 0) await this.documentRepo.save(fresh);
+    await this.auditEvidence(technicianUserId, 'SKILL_EVIDENCE_ATTACHED', null, { serviceId, reused: true, attached: fresh.length });
+    return { attached: fresh.length, skipped: owned.length - fresh.length };
   }
 
   /** Traces what the technician does to a paper after it was sent, so the reviewer can see changes; the file itself is not logged. */
@@ -308,6 +379,10 @@ export class TechnicianSkillVerificationsService {
       throw new ConflictException(
         'This skill has no pending verification request to attach evidence to',
       );
+    }
+    const paper = { storageObjectPath: dto.storageObjectPath, evidenceType: dto.evidenceType ?? null, referenceNumber: dto.referenceNumber ?? null };
+    if (await this.hasPaper(verification.id, paper)) {
+      throw new ConflictException(`Giấy tờ này đã có ở kỹ năng ${skill.service?.name ?? 'này'}.`);
     }
     // The path proves the owner, the bucket proves the upload: a path that was
     // never uploaded through the signed upload URL is refused before anything
@@ -388,6 +463,7 @@ export class TechnicianSkillVerificationsService {
         document: VerificationDocument;
         serviceId: string;
         categories: Map<string, string>;
+        serviceIds: Set<string>;
         approved: boolean;
         pending: boolean;
         rejectionReason: string | null;
@@ -402,6 +478,7 @@ export class TechnicianSkillVerificationsService {
           document,
           serviceId: request.technicianSkill.serviceId,
           categories: new Map<string, string>(),
+          serviceIds: new Set<string>(),
           approved: false,
           pending: false,
           rejectionReason: null,
@@ -410,13 +487,14 @@ export class TechnicianSkillVerificationsService {
         else if (request.status === VerificationStatus.PENDING) entry.pending = true;
         else if (request.status === VerificationStatus.REJECTED) entry.rejectionReason ??= request.rejectionReason ?? null;
         entry.categories.set(service.categoryId, service.category?.name ?? 'Khác');
+        entry.serviceIds.add(request.technicianSkill.serviceId);
         byFile.set(key, entry);
       }
     }
     const inReview = profile.onboardingStatus === OnboardingStatus.SUBMITTED;
     return [...byFile.values()]
       .sort((a, b) => a.document.createdAt.getTime() - b.document.createdAt.getTime())
-      .map(({ document: d, serviceId, categories, approved, pending, rejectionReason }) => {
+      .map(({ document: d, serviceId, serviceIds, categories, approved, pending, rejectionReason }) => {
         // Same rule as `editableEvidenceRows`: a paper used to approve any skill is locked, whatever else it sits on.
         const status = inReview ? 'in_review' : approved ? 'approved' : pending ? 'pending' : 'rejected';
         return {
@@ -425,6 +503,8 @@ export class TechnicianSkillVerificationsService {
         editable: status === 'pending' || status === 'rejected',
         documentId: d.id,
         serviceId,
+        // Every skill the paper sits on, so the app can tell which papers a skill already holds.
+        serviceIds: [...serviceIds],
         fileName: d.fileName,
         mimeType: d.mimeType,
         evidenceType: d.evidenceType ?? null,
