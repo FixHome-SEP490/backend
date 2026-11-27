@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-26 20:04 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: feat/sms-friendly-name
+> Cập nhật lần cuối: 2026-11-27 01:41 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -548,6 +548,7 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
+- 2026-11-27 01:41 (UTC+7) | Hgnv11 | dev | GET /visit-groups/:id/checkout: thiết bị state interrupted hoặc failed đã đặt lại (có InterruptionRebookSource hoặc RepairFailureRebookSource) trả thêm rebooked: true và rebookedTo {bookingId, visitGroupId} để client ẩn nút đặt lại (bản nháp đã dùng sẽ 403) và dẫn tới lịch mới; CHƯA deploy
 - 2026-11-26 20:04 (UTC+7) | Hgnv11 | feat/sms-friendly-name | SMS OTP gửi kèm CustomFriendlyName=FixHome để tin hiện tên FixHome thay vì tên service mẫu của Twilio trial; CHƯA KIỂM CHỨNG với Twilio thật, nếu trial bỏ qua tham số thì phải nâng cấp tài khoản để đổi tên service
 - 2026-11-26 19:48 (UTC+7) | Hgnv11 | dev | approve kỹ năng từng phiếu không bắt tệp chứng chỉ FixHome cấp nữa (body rỗng được, nếu gửi thì đủ bốn trường); web đổi hộp thoại duyệt thành xác nhận
 - 2026-11-26 18:20 (UTC+7) | Hgnv11 | feat/warranty-same-technician | PO 26/11: bảo hành do chính thợ làm đơn xử lý, UI không còn giao lại hay từ chối; khách đồng ý hoặc khiếu nại bảo hành thì SM nhận thông báo WARRANTY_CUSTOMER_RESPONSE_NEEDED; job quét tự đóng claim khách đã đồng ý nhưng SM chưa đóng sau warranty.customer_response_hours; close chỉ cho kết cục rejected khi kết luận là not_covered; không đổi migration; backend giữ nguyên assign/decline
@@ -588,4 +589,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-12 22:41 (UTC+7) | ToanAltF4 | fix/be-bugs-1211 | Sửa lỗi console 12/11: tìm không dấu (người dùng, dịch vụ, linh kiện, uy tín, ví thợ), W3 với tài khoản seed id không v4 (W-15), Chuẩn bị xong trên phiếu W3 trả 409 (W-6), preview + danh sách phiếu có tiến trình W3 có phí (W-16), thu nhập thợ trừ phần phí giao (W-17), đếm tab Hoạt động nhận excludeVisitGroups (M-4), tra cứu đơn mã chữ thường (M-27)
 - 2026-11-12 18:29 (UTC+7) | ToanAltF4 | perf/part-returns-allocation-mode | GET /part-returns/pending gắn warehouseAllocated cho từng dòng (một query cho cả trang), web không còn gọi warehouse-allocation từng phiếu
 - 2026-11-12 14:08 (UTC+7) | ToanAltF4 | fix/f3-unsourced-parts | F3: duyệt báo giá/chi phí phát sinh bị từ chối nguyên tử (PARTS_SOURCE_UNAVAILABLE) khi không kho nào đủ linh kiện FixHome; GET /quotations/:id/parts-sourcing; thợ được huỷ phiếu PRE_REPAIR thiếu kho
-- 2026-11-12 12:21 (UTC+7) | ToanAltF4 | perf/detail-warranty-returns | GET /bookings/:id đọc một lần khi booking không còn ghép thợ; đơn bị dừng sửa đọc bằng chứng một lần, song song; thêm GET /warranties/mine?orderIds= (khách) và GET /part-returns/by-orders?orderIds= (SM) để trang danh sách đọc gộp

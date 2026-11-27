@@ -3,8 +3,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { loadVisitCharge, sameAllocations, allocateFundedVisitCharge } from './visit-charge';
 
 // PO 21/10/2026: a visit is paid once, after every device has its result, for the devices repaired only.
-function manager(rows: { items: object[]; bookings: object[]; orders: object[]; invoices: object[] }) {
-  const byName: Record<string, object[]> = { VisitGroupItem: rows.items, Booking: rows.bookings, ServiceOrder: rows.orders, Invoice: rows.invoices };
+function manager(rows: { items: object[]; bookings: object[]; orders: object[]; invoices: object[]; rebooked?: string[] }) {
+  const source = (rows.rebooked ?? []).map((sourceBookingId) => ({ sourceBookingId, rebookId: 'r1', targetBookingId: `new-${sourceBookingId}` }));
+  const byName: Record<string, object[]> = { VisitGroupItem: rows.items, Booking: rows.bookings, ServiceOrder: rows.orders, Invoice: rows.invoices,
+    InterruptionRebookSource: source, RepairFailureRebookSource: [], InterruptionRebook: source.length ? [{ id: 'r1', targetVisitGroupId: 'vg-new' }] : [], RepairFailureRebook: [] };
   return {
     find: vi.fn(async (entity: { name: string }) => byName[entity.name]),
     findBy: vi.fn(async (entity: { name: string }) => byName[entity.name]),
@@ -27,6 +29,14 @@ describe('loadVisitCharge', () => {
     expect(charge.devices[1]).toMatchObject({ state: 'interrupted', amount: 700000, invoiceId: 'i2', paid: true, financialFollowupRequired: true });
     expect(charge.allocations.map(a => a.invoiceId)).toEqual(['i1', 'i3']);
     expect(rows).toEqual(before);
+  });
+
+  it('marks a stopped device rebooked once its draft is consumed, and only that one', async () => {
+    const charge = await loadVisitCharge(manager({ items: [item(1), item(2, 'interrupted'), item(3, 'interrupted')],
+      bookings: [booking(1), booking(2), booking(3)], orders: [order(1), order(2), order(3)],
+      invoices: [invoice(1, 200000)], rebooked: ['b2'] }) as never, 'g');
+    expect(charge.devices.map((d) => d.rebooked)).toEqual([undefined, true, undefined]);
+    expect(charge.devices[1].rebookedTo).toEqual({ bookingId: 'new-b2', visitGroupId: 'vg-new' });
   });
 
   it('holds an interrupted pending invoice without changing its old group allocation or provider split', async () => {

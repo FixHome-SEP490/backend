@@ -4,6 +4,8 @@ import { Booking } from '../bookings/entities/booking.entity';
 import { ServiceOrder } from '../service-orders/entities/service-order.entity';
 import { Invoice } from '../service-orders/entities/invoice.entity';
 import { assertShippingFinancialCutoverAllowed } from './invoice-shipping-snapshot';
+import { InterruptionRebook, InterruptionRebookSource } from '../bookings/entities/interruption-rebook.entity';
+import { RepairFailureRebook, RepairFailureRebookSource } from '../bookings/entities/repair-failure-rebook.entity';
 import { VisitGroupItem } from '../visit-groups/entities/visit-group-item.entity';
 import type { VisitPaymentAllocation } from '../visit-groups/entities/visit-group-payment.entity';
 import type { VoucherFundingAllocation } from '../vouchers/voucher-funding-allocation';
@@ -23,6 +25,10 @@ export interface VisitDeviceCharge {
   amount: number;
   paid: boolean;
   financialFollowupRequired?: boolean;
+  /** A stopped or failed device already booked again; its draft is consumed, so the customer is not offered it twice. */
+  rebooked?: boolean;
+  /** Where the new booking is: a visit when several devices were booked together, else the single booking. */
+  rebookedTo?: { bookingId: string; visitGroupId: string | null };
 }
 
 export interface VisitCharge {
@@ -53,6 +59,16 @@ export async function loadVisitCharge(manager: EntityManager, groupId: string, l
   const invoices = orderIds.length
     ? await manager.find(Invoice, { where: { serviceOrderId: In(orderIds) }, order: { id: 'ASC' }, ...(lock ? { lock: { mode: 'pessimistic_write' as const } } : {}) })
     : [];
+  const consumed = bookingIds.length
+    ? (await Promise.all([InterruptionRebookSource, RepairFailureRebookSource].map((source) => manager.findBy(source, { sourceBookingId: In(bookingIds) })))).flat()
+    : [];
+  const rebookIds = consumed.map((source) => source.rebookId);
+  const rebooks = rebookIds.length
+    ? (await Promise.all([InterruptionRebook, RepairFailureRebook].map((rebook) => manager.findBy(rebook, { id: In(rebookIds) })))).flat()
+    : [];
+  const groupOfRebook = new Map(rebooks.map((rebook) => [rebook.id, rebook.targetVisitGroupId]));
+  const rebookedTo = new Map(consumed.map((source) => [source.sourceBookingId,
+    { bookingId: source.targetBookingId, visitGroupId: groupOfRebook.get(source.rebookId) ?? null }]));
   const bookingById = new Map(bookings.map((booking) => [booking.id, booking]));
   const orderByBooking = new Map(orders.map((order) => [order.bookingId, order]));
   const invoiceByOrder = new Map(invoices.map((invoice) => [invoice.serviceOrderId, invoice]));
@@ -85,6 +101,7 @@ export async function loadVisitCharge(manager: EntityManager, groupId: string, l
       amount: charged,
       paid: (state === 'succeeded' || stopped) && invoice?.paymentStatus === PaymentStatus.PAID,
       ...(stopped && invoice ? { financialFollowupRequired: true } : {}),
+      ...((stopped || state === 'failed') && rebookedTo.has(item.bookingId) ? { rebooked: true, rebookedTo: rebookedTo.get(item.bookingId) } : {}),
     };
   });
   const allocations = devices
