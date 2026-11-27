@@ -71,12 +71,19 @@ export async function assertCashCustodyAllowsWithdrawal(manager: EntityManager, 
   }
 }
 
+/**
+ * A technician may keep unreturned parts for 1 day after the order completes (an unfinished order
+ * counts from its last update) before new work is refused. Shared by the single and bulk checks.
+ */
+export const PART_RETURN_OVERDUE_SQL = `c.tracking_only AND (c.state->>'outstandingQty')::int IS DISTINCT FROM 0
+  AND EXISTS (SELECT 1 FROM service_orders so WHERE so.id = c.service_order_id
+    AND COALESCE(so.completed_at, so.updated_at) <= now() - interval '1 day')`;
+
 /** All payment methods; no invoice, payment or cash declaration is required. */
 export async function hasPartReturnRestriction(manager: EntityManager, technicianId: string): Promise<boolean> {
   if (!partReturnsTrackingEnabled()) return hasCashCustodyRestriction(manager, technicianId);
   const rows: Array<{ blocked: boolean }> = await manager.query(`SELECT EXISTS (
-    SELECT 1 FROM part_custodies c WHERE c.technician_id = $1
-      AND c.tracking_only AND (c.state->>'outstandingQty')::int IS DISTINCT FROM 0
+    SELECT 1 FROM part_custodies c WHERE c.technician_id = $1 AND ${PART_RETURN_OVERDUE_SQL}
   ) AS blocked`, [technicianId]);
   if (typeof rows[0]?.blocked !== 'boolean') throw new ServiceUnavailableException('Chưa xác định được nghĩa vụ trả linh kiện.');
   return rows[0].blocked;
