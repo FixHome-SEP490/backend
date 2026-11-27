@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-27 18:24 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
+> Cập nhật lần cuối: 2026-11-27 01:41 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -93,10 +93,6 @@ Ba điều không đổi giữa các repo:
 Luật nghiệp vụ gốc nằm ở tài liệu dự án (bản chính thức của nhóm). Mâu thuẫn giữa code và tài liệu thì ghi vào mục 8 và hỏi PO, không tự quyết.
 
 ## 3. Trạng thái hiện tại
-
-### Bảo hành: linh kiện báo hỏng phải là hạng mục khách yêu cầu (27/11/2026)
-
-- `POST /warranty-claims/:id/propose` với `covered_part` chỉ nhận `faultyInvoiceItemIds` là dòng hóa đơn của bảo hành đang được yêu cầu (`warranty_coverages.invoice_item_id`); dòng khác trả lỗi 400 "Linh kiện bị hỏng phải là linh kiện khách yêu cầu bảo hành". Bảo hành không gắn dòng hóa đơn (`invoice_item_id` rỗng) giữ cách kiểm tra cũ. Test `warranty-claims-technician.service.spec.ts` PASS; chưa chạy e2e.
 
 W3 DEV gate follow-up 0016: whitelist nhận đúng tail `W3ZeroFeeInvoice1793466000016`; giữ prerequisite, prefix ledger, advisory lock, atomic pending migration/ledger và không chạy down. Gate đối chiếu toàn body sáu function 0016 từ migration trong image cùng language/return type/volatility/SECURITY INVOKER/config và quyền backend; từ chối helper thiếu, body/metadata drift, PUBLIC hoặc effective Data API EXECUTE. Marker chặn replay cả helper hoặc body bridge tồn tại mà thiếu ledger. Fixture default EXECUTE grants phát hiện ACL cũ của `w3_live_invoice_guard` được CREATE OR REPLACE giữ lại; 0016 chưa phát hành đã thêm REVOKE cho cả sáu entry point, không sửa 0015. Gate unit/PostgreSQL Docker 66/66 PASS; kiểm nâng từ prefix 0015 thật, rollback khi lỗi và legacy invoice không đổi. CI giữ full integration và thêm focused `0016` regression trước đó. Chưa commit/push/merge/deploy.
 
@@ -552,7 +548,6 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
-- 2026-11-27 18:24 (UTC+7) | Hgnv11 | dev | Đề xuất bảo hành lỗi linh kiện chỉ được chọn đúng dòng hóa đơn khách yêu cầu.
 - 2026-11-27 01:41 (UTC+7) | Hgnv11 | dev | GET /visit-groups/:id/checkout: thiết bị state interrupted hoặc failed đã đặt lại (có InterruptionRebookSource hoặc RepairFailureRebookSource) trả thêm rebooked: true và rebookedTo {bookingId, visitGroupId} để client ẩn nút đặt lại (bản nháp đã dùng sẽ 403) và dẫn tới lịch mới; CHƯA deploy
 - 2026-11-26 20:04 (UTC+7) | Hgnv11 | feat/sms-friendly-name | SMS OTP gửi kèm CustomFriendlyName=FixHome để tin hiện tên FixHome thay vì tên service mẫu của Twilio trial; CHƯA KIỂM CHỨNG với Twilio thật, nếu trial bỏ qua tham số thì phải nâng cấp tài khoản để đổi tên service
 - 2026-11-26 19:48 (UTC+7) | Hgnv11 | dev | approve kỹ năng từng phiếu không bắt tệp chứng chỉ FixHome cấp nữa (body rỗng được, nếu gửi thì đủ bốn trường); web đổi hộp thoại duyệt thành xác nhận
@@ -593,3 +588,4 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-13 00:34 (UTC+7) | ToanAltF4 | feat/admin-price-variants-1211 | ADMIN 47 API biến thể giá dịch vụ (GET/PATCH /admin/services/:id/price-variants, audit). TECH 42 ghi chú riêng của thợ: cột technician_assignments.private_note (migration 1794480000000), GET/PUT /service-orders/:id/my-note
 - 2026-11-12 22:41 (UTC+7) | ToanAltF4 | fix/be-bugs-1211 | Sửa lỗi console 12/11: tìm không dấu (người dùng, dịch vụ, linh kiện, uy tín, ví thợ), W3 với tài khoản seed id không v4 (W-15), Chuẩn bị xong trên phiếu W3 trả 409 (W-6), preview + danh sách phiếu có tiến trình W3 có phí (W-16), thu nhập thợ trừ phần phí giao (W-17), đếm tab Hoạt động nhận excludeVisitGroups (M-4), tra cứu đơn mã chữ thường (M-27)
 - 2026-11-12 18:29 (UTC+7) | ToanAltF4 | perf/part-returns-allocation-mode | GET /part-returns/pending gắn warehouseAllocated cho từng dòng (một query cho cả trang), web không còn gọi warehouse-allocation từng phiếu
+- 2026-11-12 14:08 (UTC+7) | ToanAltF4 | fix/f3-unsourced-parts | F3: duyệt báo giá/chi phí phát sinh bị từ chối nguyên tử (PARTS_SOURCE_UNAVAILABLE) khi không kho nào đủ linh kiện FixHome; GET /quotations/:id/parts-sourcing; thợ được huỷ phiếu PRE_REPAIR thiếu kho

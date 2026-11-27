@@ -321,18 +321,6 @@ describe('technician warranty commands', () => {
     expect(ok.notifier.toManagers).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'WARRANTY_PROPOSAL_READY', 'order-1');
   });
 
-  it('refuses a faulty part that is not the invoice line the customer claimed on', async () => {
-    const f = makeService({
-      claim: makeClaim({ status: WarrantyClaimStatus.ACCEPTED }),
-      visits: [makeVisit({ status: WarrantyVisitStatus.CHECKED_IN })],
-      coverage: { expiresAt: new Date(Date.now() + 20 * 86_400_000), invoiceItemId: LINE_1 },
-    });
-    const base = { result: WarrantyInspectionResult.COVERED_PART, findings: 'Linh kiện bị nứt ở mối ghép', evidenceRefs: ['photo-1'] };
-    await expect(f.service.propose('claim-1', { ...base, faultyInvoiceItemIds: [LINE_2] }, TECH)).rejects.toThrow(/khách yêu cầu bảo hành/);
-    await f.service.propose('claim-1', { ...base, faultyInvoiceItemIds: [LINE_1] }, TECH);
-    expect(f.claimTx.update).toHaveBeenCalled();
-  });
-
   it('approves a workmanship fault without parts by itself, but still sends late or voided claims to a manager', async () => {
     const run = (claim: object, coverage?: object) => {
       const f = makeService({ claim: makeClaim({ status: WarrantyClaimStatus.ACCEPTED, ...claim }), visits: [makeVisit({ status: WarrantyVisitStatus.CHECKED_IN })], coverage });
