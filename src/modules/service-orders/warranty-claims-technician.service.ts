@@ -209,7 +209,7 @@ export class WarrantyClaimsTechnicianService {
       throw invalid('Cần ít nhất một ảnh hoặc video của linh kiện hỏng khi kết luận lỗi linh kiện.');
     }
     const visit = await this.latestVisit(claim.id, technician.id, [WarrantyVisitStatus.CHECKED_IN]);
-    const faulty = dto.result === WarrantyInspectionResult.COVERED_PART ? await this.faultyPartLines(claim.serviceOrderId, dto.faultyInvoiceItemIds ?? [], dto.faultyQuantities) : null;
+    const faulty = dto.result === WarrantyInspectionResult.COVERED_PART ? await this.faultyPartLines(claim.serviceOrderId, claim.warrantyCoverageId, dto.faultyInvoiceItemIds ?? [], dto.faultyQuantities) : null;
 
     // A workmanship fault with no part costs FixHome nothing and runs against the technician's own interest:
     // the service manager has nothing to approve, so the claim goes straight to the re-service. Late or voided claims still need a manager.
@@ -278,7 +278,7 @@ export class WarrantyClaimsTechnicianService {
   }
 
   /** The faulty lines must be part lines of the original job's own invoice, so a technician cannot name a stranger's part. */
-  private async faultyPartLines(serviceOrderId: string, ids: string[], quantities?: Record<string, number>): Promise<{ ids: string[]; quantities: Record<string, number> | null }> {
+  private async faultyPartLines(serviceOrderId: string, coverageId: string, ids: string[], quantities?: Record<string, number>): Promise<{ ids: string[]; quantities: Record<string, number> | null }> {
     const unique = [...new Set(ids)];
     if (!unique.length) throw invalid('Chọn ít nhất một linh kiện bị hỏng.');
     const manager = this.claimRepo.manager;
@@ -286,6 +286,9 @@ export class WarrantyClaimsTechnicianService {
     const lines = invoice ? await manager.find(InvoiceItem, { where: { invoiceId: invoice.id, type: CostItemType.PARTS_EQUIPMENT } }) : [];
     const bought = new Map(lines.map((line) => [line.id, line.quantity]));
     if (unique.some((id) => !bought.has(id))) throw invalid('Linh kiện được chọn không thuộc đơn sửa chữa gốc.');
+    // The claim is about one invoice line: naming another part as faulty would grant a warranty nobody asked for.
+    const claimedLine = (await manager.findOneBy(WarrantyCoverage, { id: coverageId }))?.invoiceItemId;
+    if (claimedLine && unique.some((id) => id !== claimedLine)) throw invalid('Linh kiện bị hỏng phải là linh kiện khách yêu cầu bảo hành.');
     if (!quantities) return { ids: unique, quantities: null };
     const counted: Record<string, number> = {};
     for (const id of unique) {
