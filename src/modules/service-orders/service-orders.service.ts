@@ -1411,13 +1411,13 @@ export class ServiceOrdersService implements OnModuleInit, OnModuleDestroy {
       await this.auditLogService.logWithManager(manager, { actorUserId: actor.id, actorRole: actor.role, action: 'CUSTOMER_DELAY_DECISION', resourceType: 'service_order', resourceId: orderId, after: { decision, delayMinutes: order.delayNoticeMinutes } });
       return { order: await manager.findOneByOrFail(ServiceOrder, { id: orderId }), technicianId: assignment.technicianId, code: order.code };
     });
-    // Switch and cancel already notify through their own paths; only "wait" needs a word to the technician.
-    if (decision === 'wait' && result.technicianId && this.notificationsService) {
+    // Cancel already notifies the technician through its own path; "wait" and "switch" need a word to them (switch: the customer chose another technician).
+    if (decision !== 'cancel' && result.technicianId && this.notificationsService) {
       void this.notificationsService.createNotification({
         userId: result.technicianId,
-        title: 'Khách đồng ý đợi',
-        message: `Khách của đơn #${result.code} đồng ý đợi thêm. Hãy tới đúng giờ bạn đã báo.`,
-        type: 'DELAY_DECISION_WAIT',
+        ...(decision === 'wait'
+          ? { title: 'Khách đồng ý đợi', message: `Khách của đơn #${result.code} đồng ý đợi thêm. Hãy tới đúng giờ bạn đã báo.`, type: 'DELAY_DECISION_WAIT' }
+          : { title: 'Khách chọn thợ khác', message: `Khách của đơn #${result.code} đã chọn thợ khác vì bạn báo trễ. Đơn này không còn thuộc bạn.`, type: 'DELAY_DECISION_SWITCH' }),
         referenceId: orderId,
         referenceType: 'SERVICE_ORDER',
       });

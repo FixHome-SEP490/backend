@@ -191,11 +191,12 @@ describe('delay decision', () => {
   });
 
   it('switch runs the release as the technician and closes the case', async () => {
-    const { service, row, cases } = await noticed();
+    const { service, row, cases, notify } = await noticed();
     await service.decideDelay('o-1', 'switch', customer);
     expect(row.delayDecision).toBe('switch');
     expect(cases[0].resolutionCode).toBe('delay_switch');
     expect(service['releaseCheckedOrder']).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), { id: 'tech-1', role: Role.TECHNICIAN }, 'SO-1');
+    expect(notify.mock.calls[0][0]).toMatchObject({ userId: 'tech-1', type: 'DELAY_DECISION_SWITCH' });
   });
 
   it('cancel waives the customer penalty and closes the case', async () => {
