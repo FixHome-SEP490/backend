@@ -168,6 +168,9 @@ describe.skipIf(process.env.CI !== 'true')('W2 real PostgreSQL / JWT / custody a
     const receipt = issued.body.data.qrToken;
     expect((await f.balance()).every(r => r.on_hand === 0 && r.reserved === 0)).toBe(true);
     const restriction = load('modules/part-requests/part-custody.policy', 'hasPartReturnRestriction');
+    // Unreturned parts only block new work after the 1-day grace period.
+    expect(await restriction(db.manager, f.tech.id)).toBe(false);
+    await db.query(`UPDATE service_orders SET updated_at = now() - interval '2 days' WHERE id = $1`, [f.order.id]);
     expect(await restriction(db.manager, f.tech.id)).toBe(true);
     expect((await repo('PartRequest').findOneByOrFail({ id: f.req.id })).receivedAt).toBeNull();
     expect((await call('post', `${f.base}/warehouse-handover`, f.sm, body).expect(200)).body.data.qrToken).toBeNull();
