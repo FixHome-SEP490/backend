@@ -23,6 +23,7 @@ import { LegacyManualReviewEvent, LegacyManualReviewRecord, PartCustodyActor, Pa
 import { LegacyManualReviewDto } from './dto/legacy-manual-review.dto';
 import { custodyActivation, custodyTrackingEnabled, lockCustodyTechnician, partReturnsTrackingEnabled } from './part-custody.policy';
 import { PartReturnDiscrepancyDto, PartReturnDto } from './dto/part-return.dto';
+import { MY_RETURN_GROUPS, MyReturnGroupFilter, RETURN_GROUP_SQL } from './part-return-groups';
 
 type Usage = { usedQty?: number; expectedVersion?: number; idempotencyKey?: string; usageStatus?: PartUsageStatus };
 
@@ -175,6 +176,48 @@ export class PartCustodyService {
     ) as Array<{ total: number | string }>;
     const total = Number(rows?.[0]?.total ?? 0);
     return Number.isSafeInteger(total) && total > 0 ? total : 0;
+  }
+
+  /**
+   * Technician's "Linh kiện cần trả" page, one group at a time (BUG DETECTOR 302): the rows of
+   * `status`, paged, plus the counters of every group from ONE aggregate query. Quantities are part
+   * units: completed counts the units issued (as completedQty always did), the open groups the
+   * units still held (outstandingQty); `rows` is custody lines, `orders` the jobs touched.
+   */
+  async mineByGroup(actor: PartCustodyActor, status: MyReturnGroupFilter, page: number, pageSize: number) {
+    if (actor.role !== Role.TECHNICIAN) throw new ForbiddenException();
+    const manager = this.dataSource.manager;
+    await this.requireActive(manager);
+    const counted = await manager.query(
+      `SELECT COALESCE(x.g, 'all') AS g, COALESCE(SUM(x.qty), 0)::int AS qty, COUNT(*)::int AS rows,
+          COUNT(DISTINCT x.order_id)::int AS orders
+        FROM (SELECT ${RETURN_GROUP_SQL} AS g, (CASE WHEN ${RETURN_GROUP_SQL} = 'completed' THEN (c.state->>'issuedQty')::int ELSE (c.state->>'outstandingQty')::int END) AS qty, c.service_order_id AS order_id
+          FROM part_custodies c WHERE c.technician_id = $1) x
+        GROUP BY GROUPING SETS ((x.g), ())`,
+      [actor.id],
+    ) as Array<{ g: string; qty: number | string; rows: number | string; orders: number | string }>;
+    const groups = Object.fromEntries([...MY_RETURN_GROUPS, 'exception', 'all'].map(g => {
+      const row = counted.find(r => r.g === g);
+      return [g, { qty: Number(row?.qty ?? 0), rows: Number(row?.rows ?? 0), orders: Number(row?.orders ?? 0) }];
+    })) as Record<MyReturnGroupFilter | 'exception', { qty: number; rows: number; orders: number }>;
+    const total = groups[status].rows;
+    const query = manager.createQueryBuilder(PartCustody, 'c').where('c.technicianId = :technicianId', { technicianId: actor.id });
+    if (status !== 'all') query.andWhere(`${RETURN_GROUP_SQL} = :group`, { group: status });
+    const rows = total > (page - 1) * pageSize
+      ? await query
+        .orderBy(`CASE ${RETURN_GROUP_SQL} WHEN 'exception' THEN 0 WHEN 'need_declare' THEN 1 WHEN 'awaiting_manager' THEN 2 ELSE 3 END`, 'ASC')
+        .addOrderBy('c.handedOverAt', 'DESC').addOrderBy('c.id', 'ASC')
+        .skip((page - 1) * pageSize).take(pageSize).getMany()
+      : [];
+    return {
+      data: rows.map(row => this.view(row)),
+      meta: {
+        status, page, pageSize, total,
+        needDeclareQty: groups.need_declare.qty, awaitingManagerQty: groups.awaiting_manager.qty,
+        completedQty: groups.completed.qty, exceptionQty: groups.exception.qty,
+        groups,
+      },
+    };
   }
 
   /**

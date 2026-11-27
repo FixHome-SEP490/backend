@@ -2,6 +2,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -12,7 +13,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { TechnicianSkillVerificationsService } from './technician-skill-verifications.service';
-import { SubmitSkillEvidenceDto } from './dto';
+import { ReuseSkillEvidenceDto, SubmitSkillEvidenceDto } from './dto';
 import { KycSignedAccessResponseDto, KycSignedUploadResponseDto, RequestKycUploadUrlDto } from '../technician-verifications/dto';
 import { JwtAuthGuard, RolesGuard } from '../../common/guards';
 import { CurrentUser, Roles } from '../../common/decorators';
@@ -33,6 +34,16 @@ export class TechnicianSkillVerificationsController {
     @Param('serviceId', ParseUUIDPipe) serviceId: string,
   ) {
     return this.service.getMySkillVerification(technicianId, serviceId);
+  }
+
+  @Post('resubmit')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Technician: Ask for a new review of a skill FixHome refused; the papers already sent go with it' })
+  async resubmit(
+    @CurrentUser('id') technicianId: string,
+    @Param('serviceId', ParseUUIDPipe) serviceId: string,
+  ) {
+    return this.service.resubmitSkill(technicianId, serviceId);
   }
 
   @Post('documents/upload-url')
@@ -56,6 +67,27 @@ export class TechnicianSkillVerificationsController {
     @Body() dto: SubmitSkillEvidenceDto,
   ) {
     return this.service.attachEvidence(technicianId, serviceId, dto);
+  }
+
+  @Post('documents/reuse')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Technician: Put papers already sent on this skill too, without uploading again (a paper it already holds is skipped)' })
+  async reuseDocuments(
+    @CurrentUser('id') technicianId: string,
+    @Param('serviceId', ParseUUIDPipe) serviceId: string,
+    @Body() dto: ReuseSkillEvidenceDto,
+  ) {
+    return this.service.reuseMyEvidence(technicianId, serviceId, dto);
+  }
+
+  @Delete('documents/:documentId')
+  @ApiOperation({ summary: 'Technician: Take a paper off this skill only (the other skills keep it)' })
+  async removeDocument(
+    @CurrentUser('id') technicianId: string,
+    @Param('serviceId', ParseUUIDPipe) serviceId: string,
+    @Param('documentId', ParseUUIDPipe) documentId: string,
+  ) {
+    return this.service.deleteMyEvidenceFromSkill(technicianId, serviceId, documentId);
   }
 
   @Get('documents/:documentId/access')

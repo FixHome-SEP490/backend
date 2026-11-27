@@ -5,3 +5,5 @@ export * from './update-category-evidence.dto';
 export * from './reject-skill-verification.dto';
 export * from './query-skill-verifications.dto';
 export * from './skill-verification-response.dto';
+export * from './reuse-skill-evidence.dto';
+export * from './approve-skill-verification.dto';

@@ -41,7 +41,7 @@ describe('TechnicianSkillVerificationsService.attachEvidenceToCategories', () =>
       create: vi.fn((v) => v),
       save: vi.fn(async (v) => ({ id: `req-${v.technicianSkillId}`, ...v })),
     };
-    documentRepo = { create: vi.fn((d) => d), save: vi.fn(async (d) => d) };
+    documentRepo = { create: vi.fn((d) => d), save: vi.fn(async (d) => d), find: vi.fn().mockResolvedValue([]) };
     storage = {
       validateObjectPath: vi.fn((path: string, owner: string) => {
         if (!path.startsWith(`kyc/${owner}/`)) throw new BadRequestException('storageObjectPath must belong to the technician KYC prefix');
@@ -53,7 +53,7 @@ describe('TechnicianSkillVerificationsService.attachEvidenceToCategories', () =>
       skillRepo,
       { findOne: vi.fn().mockResolvedValue({ id: 'profile-1', userId: TECH_USER }) } as any,
       documentRepo,
-      { logWithManagerStrict: vi.fn() } as any,
+      { logWithManagerStrict: vi.fn(), log: vi.fn() } as any,
       storage,
     );
   });
@@ -65,6 +65,7 @@ describe('TechnicianSkillVerificationsService.attachEvidenceToCategories', () =>
     });
     expect(skillRepo.find).toHaveBeenCalledWith({
       where: expect.objectContaining({ technicianId: 'profile-1', isActive: true }),
+      relations: ['service'],
     });
     const rows = documentRepo.save.mock.calls[0][0];
     expect(rows).toHaveLength(2);

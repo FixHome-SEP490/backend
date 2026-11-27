@@ -190,6 +190,12 @@ export class WarrantyClaimsService {
       if (result.affected !== 1) {
         throw new BusinessException(ErrorCodes.CONFLICT, 'Bạn đã phản hồi yêu cầu bảo hành này.');
       }
+      await this.notifier.toManagers(
+        'Khách hàng đã đồng ý kết quả bảo hành',
+        'Khách hàng đã đồng ý với kết quả xử lý. Vui lòng đóng yêu cầu bảo hành.',
+        'WARRANTY_CUSTOMER_RESPONSE_NEEDED',
+        claim.serviceOrderId,
+      );
     } else {
       await this.claimRepo.manager.transaction(async (manager) => {
         const repo = manager.getRepository(WarrantyClaim);
@@ -214,6 +220,12 @@ export class WarrantyClaimsService {
         );
         await repo.update({ id: claim.id }, { escalatedSupportCaseId: supportCase.id });
       });
+      await this.notifier.toManagers(
+        'Khách hàng khiếu nại kết quả bảo hành',
+        'Khách hàng không đồng ý với kết quả bảo hành và đã mở khiếu nại. Vui lòng xem xét.',
+        'WARRANTY_CUSTOMER_RESPONSE_NEEDED',
+        claim.serviceOrderId,
+      );
     }
     return this.viewById(claim.id);
   }

@@ -282,8 +282,8 @@ export class WarrantyClaimsManagerService {
     const customerAgreed =
       claim.status === WarrantyClaimStatus.AWAITING_CUSTOMER && claim.customerResponse === 'agreed';
     if (!dto.note && (!customerAgreed || unfixed)) throw invalid('Cần nhập ghi chú khi đóng yêu cầu này.');
-    if (unfixed && claim.finalResult === WarrantyInspectionResult.NOT_COVERED) {
-      throw invalid('Yêu cầu không thuộc bảo hành không thể đóng với kết cục không khắc phục được.');
+    if (dto.outcome !== 'rejected' && claim.finalResult === WarrantyInspectionResult.NOT_COVERED) {
+      throw invalid('Yêu cầu không thuộc bảo hành chỉ có thể đóng với kết cục từ chối.');
     }
 
     let refund: number | null = null;

@@ -21,9 +21,11 @@ import { CommissionDue } from '../service-orders/entities/commission-due.entity'
 import { maxLaborWarrantyDays } from '../service-orders/labor-warranty';
 import {
   CommissionDueStatus,
+  OnboardingStatus,
   ServicePricingMode,
   VerificationStatus,
 } from '../../shared/enums';
+import { ensurePendingSkillVerification } from './skill-verification-request';
 import { ServicesService } from '../services/services.service';
 import { Service } from '../services/entities/service.entity';
 import {
@@ -253,12 +255,20 @@ export class TechniciansService {
       );
     }
 
+    // Once the profile is approved the level is FixHome's estimate from the evidence, not the technician's to set.
+    const levelLocked =
+      profile.onboardingStatus === OnboardingStatus.APPROVED ||
+      skill?.verificationStatus === VerificationStatus.VERIFIED;
+    if (levelLocked && dto.level !== undefined && dto.level.trim() !== skill?.level) {
+      throw new BadRequestException('Cấp độ do FixHome xác định, bạn không tự đổi được.');
+    }
+
     if (!skill) {
       skill = this.skillRepo.create({
         technicianId: profile.id,
         serviceId,
         level:
-          dto.level !== undefined ? dto.level.trim() : 'INTERMEDIATE',
+          dto.level !== undefined && !levelLocked ? dto.level.trim() : 'INTERMEDIATE',
         isActive: dto.isActive !== undefined ? dto.isActive : true,
       });
     }
@@ -291,20 +301,13 @@ export class TechniciansService {
     if (!this.skillVerificationRepo || !skill.isActive) return;
     if (skill.verificationStatus === VerificationStatus.VERIFIED) return;
 
-    const hasOpenVerification = await this.skillVerificationRepo.exists({
-      where: [
-        { technicianSkillId: skill.id, status: VerificationStatus.PENDING },
-        { technicianSkillId: skill.id, status: VerificationStatus.VERIFIED },
-      ],
+    const alreadyConfirmed = await this.skillVerificationRepo.exists({
+      where: { technicianSkillId: skill.id, status: VerificationStatus.VERIFIED },
     });
-    if (hasOpenVerification) return;
+    if (alreadyConfirmed) return;
 
-    await this.skillVerificationRepo.save(
-      this.skillVerificationRepo.create({
-        technicianSkillId: skill.id,
-        status: VerificationStatus.PENDING,
-      }),
-    );
+    // The shared helper reuses an open request, carries a rejected skill's papers over to a new one and puts the skill back in review.
+    await ensurePendingSkillVerification(this.skillVerificationRepo, skill);
     if (skill.verificationStatus !== VerificationStatus.PENDING) {
       skill.verificationStatus = VerificationStatus.PENDING;
       await this.skillRepo.update(skill.id, {

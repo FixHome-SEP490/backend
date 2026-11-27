@@ -10,7 +10,8 @@ export const RINGING_TIMEOUT_MS = 45_000;
  * In-memory bookkeeping for calls that are happening right now.
  *
  * Deliberately not a database table: a call has no meaning once it is over, and
- * the feature is explicitly scoped to peer-to-peer audio with no history. A
+ * the feature is explicitly scoped to peer-to-peer audio. Only its outcome is kept,
+ * as one automated line in the thread (see MessagingGateway.logCall). A
  * server restart therefore drops every in-flight call, which is correct — the
  * media connection dies with it anyway.
  *
@@ -93,6 +94,7 @@ export class CallRegistryService {
     if (!call || call.state !== 'ringing') return undefined;
     this.clearTimer(callId);
     call.state = 'connected';
+    call.connectedAt = Date.now();
     return call;
   }
 
