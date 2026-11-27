@@ -15,7 +15,7 @@ import { distanceToBooking, servesArea, technicianOrigin } from './technician-lo
 import { TechnicianServiceArea } from '../technicians/entities/technician-service-area.entity';
 import { Wallet } from '../wallet/entities/wallet.entity';
 import { SystemConfig } from '../system-config/entities/system-config.entity';
-import { hasPartReturnRestriction, partReturnsTrackingEnabled } from '../part-requests/part-custody.policy';
+import { hasPartReturnRestriction, PART_RETURN_OVERDUE_SQL, partReturnsTrackingEnabled } from '../part-requests/part-custody.policy';
 import { groupServiceIds } from './visit-group-guard';
 import { InterruptionRebookSource } from './entities/interruption-rebook.entity';
 
@@ -105,7 +105,7 @@ export async function loadEligibilityBulk(
     manager.query(`SELECT DISTINCT technician_id AS id FROM booking_invitations WHERE booking_id = $1 AND status = 'declined'`, [booking.id]),
     manager.find(InterruptionRebookSource, { where: { targetBookingId: booking.id } }),
     partReturnsTrackingEnabled()
-      ? manager.query(`SELECT DISTINCT c.technician_id AS id FROM part_custodies c WHERE c.technician_id = ANY($1::uuid[]) AND c.tracking_only AND (c.state->>'outstandingQty')::int IS DISTINCT FROM 0`, [userIds])
+      ? manager.query(`SELECT DISTINCT c.technician_id AS id FROM part_custodies c WHERE c.technician_id = ANY($1::uuid[]) AND ${PART_RETURN_OVERDUE_SQL}`, [userIds])
       : Promise.resolve(null),
     manager.find(TechnicianSkill, { where: { technicianId: In(profileIds), serviceId: In(serviceIds), isActive: true, verificationStatus: VerificationStatus.VERIFIED } }),
     manager.find(CommissionDue, { where: { technicianId: In(userIds), status: CommissionDueStatus.PENDING } }),
@@ -199,7 +199,7 @@ export async function technicianEligibility(
   if (!keeping && (bulk ? bulk.interrupted.has(technicianId) : await manager.count(InterruptionRebookSource, { where: { targetBookingId: booking.id, previousTechnicianId: technicianId } }))) {
     return fail('Previous technician is excluded from this interrupted booking');
   }
-  if (!keeping && (bulk?.partRestricted ? bulk.partRestricted.has(technicianId) : await hasPartReturnRestriction(manager, technicianId))) return fail('Cần quản lý xác nhận đã nhận đủ linh kiện FixHome trước khi nhận việc mới.');
+  if (!keeping && (bulk?.partRestricted ? bulk.partRestricted.has(technicianId) : await hasPartReturnRestriction(manager, technicianId))) return fail('Cần trả linh kiện FixHome và được quản lý xác nhận đã nhận (quá hạn 1 ngày) trước khi nhận việc mới.');
   const preload = keeping ? options?.preload : bulk?.preloads.get(technicianId);
   const user = preload ? preload.user : await manager.findOneBy(User, { id: technicianId });
   if (!user || user.role !== Role.TECHNICIAN || user.status !== AccountStatus.ACTIVE) return fail('Technician account is not active');
