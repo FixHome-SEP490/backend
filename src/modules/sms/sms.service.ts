@@ -27,8 +27,8 @@ export class SmsService {
   }
 
   async sendOtp(phone: string): Promise<void> {
-    // A trial account cannot rename its Verify service, so the brand name goes with every request.
-    await this.call('Verifications', { To: this.toE164(phone), Channel: 'sms', CustomFriendlyName: 'FixHome' });
+    // CustomFriendlyName is refused (403) on this Twilio account; the brand comes from the Verify service name.
+    await this.call('Verifications', { To: this.toE164(phone), Channel: 'sms' });
   }
 
   /** true when Twilio approves the code; false when it is wrong, expired or already used. */
