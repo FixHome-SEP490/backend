@@ -33,9 +33,9 @@ function build(over: { profile?: Record<string, unknown>; kyc?: Record<string, u
     })),
   };
   const skillVerificationRepo = {
-    findOne: vi.fn().mockResolvedValue(null),
+    find: vi.fn().mockResolvedValue([]),
     create: vi.fn((v) => v),
-    save: vi.fn(async (v) => ({ id: 'req-new', ...v })),
+    save: vi.fn(async (list: object[]) => list.map((v, i) => ({ id: `req-${i}`, ...v }))),
   };
   const service = new TechnicianOnboardingService(
     profileRepo as never,
@@ -129,13 +129,13 @@ describe('technician onboarding skill verification requests', () => {
     const { service, skillVerificationRepo } = build({ profile: { onboardingStatus: OnboardingStatus.IN_PROGRESS }, skills: [waiting, confirmed] });
     await service.saveSkills(userId, dto as never);
     expect(skillVerificationRepo.save).toHaveBeenCalledTimes(1);
-    expect(skillVerificationRepo.save).toHaveBeenCalledWith(expect.objectContaining({ technicianSkillId: 's1', status: VerificationStatus.PENDING }));
+    expect(skillVerificationRepo.save).toHaveBeenCalledWith([expect.objectContaining({ technicianSkillId: 's1', status: VerificationStatus.PENDING })]);
   });
 
   it('does not open a second request when one is already pending', async () => {
     const waiting = { id: 's1', serviceId: 'svc-1', isActive: true, verificationStatus: VerificationStatus.PENDING };
     const { service, skillVerificationRepo } = build({ profile: { onboardingStatus: OnboardingStatus.IN_PROGRESS }, skills: [waiting] });
-    skillVerificationRepo.findOne.mockResolvedValue({ id: 'req-1', technicianSkillId: 's1', status: VerificationStatus.PENDING });
+    skillVerificationRepo.find.mockResolvedValue([{ id: 'req-1', technicianSkillId: 's1', status: VerificationStatus.PENDING }]);
     await service.saveSkills(userId, dto as never);
     expect(skillVerificationRepo.save).not.toHaveBeenCalled();
   });

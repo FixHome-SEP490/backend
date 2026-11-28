@@ -29,11 +29,10 @@ describe('the same paper is not stored twice on one skill', () => {
     const documents = {
       create: vi.fn((v) => v),
       save: vi.fn(),
-      find: vi.fn(async ({ where }: { where: { skillVerificationId: string } }) => heldByRequest[where.skillVerificationId] ?? []),
+      find: vi.fn(async () => Object.entries(heldByRequest).flatMap(([id, rows]) => rows.map((row) => ({ ...row, skillVerificationId: id })))),
     };
-    let n = 0;
     const service = new TechnicianSkillVerificationsService(
-      { findOne: vi.fn(async () => ({ id: `rq${++n}` })), find: vi.fn(), create: vi.fn(), save: vi.fn() } as any,
+      { find: vi.fn(async () => skills.map((s: any, i) => ({ id: `rq${i + 1}`, technicianSkillId: s.id }))), create: vi.fn(), save: vi.fn() } as any,
       { find: vi.fn().mockResolvedValue(skills) } as any,
       { findOne: vi.fn().mockResolvedValue({ id: 'p1' }) } as any,
       documents as any,

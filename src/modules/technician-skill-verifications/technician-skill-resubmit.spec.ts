@@ -164,7 +164,8 @@ describe('TechnicianSkillVerificationsService: a new paper never reopens a refus
     const verificationRepo = {
       findOne: vi.fn(async ({ where }: { where: { status: VerificationStatus } }) => (where.status === VerificationStatus.REJECTED ? refused : null)),
       create: vi.fn((v) => v),
-      save: vi.fn(async (v) => ({ id: 'rq-new', ...v })),
+      find: vi.fn().mockResolvedValue([]),
+      save: vi.fn(async (list: object[]) => list.map((v) => ({ id: 'rq-new', ...v }))),
       manager: { getRepository: () => ({ update: vi.fn(), create: vi.fn((v) => v), save: vi.fn() }) },
     };
     const notifications = { createManyNotifications: vi.fn(), createNotification: vi.fn() };

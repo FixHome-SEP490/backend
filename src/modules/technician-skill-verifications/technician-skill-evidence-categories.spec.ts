@@ -38,8 +38,9 @@ describe('TechnicianSkillVerificationsService.attachEvidenceToCategories', () =>
     skillRepo = { find: vi.fn(async () => skills) };
     verificationRepo = {
       findOne: vi.fn().mockResolvedValue(null),
+      find: vi.fn().mockResolvedValue([]),
       create: vi.fn((v) => v),
-      save: vi.fn(async (v) => ({ id: `req-${v.technicianSkillId}`, ...v })),
+      save: vi.fn(async (list: any[]) => list.map((v) => ({ id: `req-${v.technicianSkillId}`, ...v }))),
     };
     documentRepo = { create: vi.fn((d) => d), save: vi.fn(async (d) => d), find: vi.fn().mockResolvedValue([]) };
     storage = {
@@ -84,7 +85,10 @@ describe('TechnicianSkillVerificationsService.attachEvidenceToCategories', () =>
   });
 
   it('reuses a pending request instead of opening a new one', async () => {
-    verificationRepo.findOne.mockImplementation(async ({ where }: any) => ({ id: `old-${where.technicianSkillId}` }));
+    verificationRepo.find.mockResolvedValue([
+      { id: "old-sk-ac", technicianSkillId: "sk-ac" },
+      { id: "old-sk-fridge", technicianSkillId: "sk-fridge" },
+    ]);
     await service.attachEvidenceToCategories(TECH_USER, dto() as any);
     expect(verificationRepo.save).not.toHaveBeenCalled();
     expect(documentRepo.save.mock.calls[0][0].map((r: any) => r.skillVerificationId)).toEqual(['old-sk-ac', 'old-sk-fridge']);

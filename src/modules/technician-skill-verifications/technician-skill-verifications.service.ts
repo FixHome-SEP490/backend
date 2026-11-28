@@ -12,7 +12,7 @@ import { TechnicianSkillVerification } from '../technicians/entities/technician-
 import { TechnicianSkill } from '../technicians/entities/technician-skill.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { VerificationDocument } from '../technician-verifications/entities/verification-document.entity';
-import { ensurePendingSkillVerification } from '../technicians/skill-verification-request';
+import { ensurePendingSkillVerification, ensurePendingSkillVerifications } from '../technicians/skill-verification-request';
 import {
   AccountStatus,
   DocumentType,
@@ -257,10 +257,21 @@ export class TechnicianSkillVerificationsService {
     const paper = { storageObjectPath: dto.storageObjectPath, evidenceType: dto.evidenceType ?? null, referenceNumber: dto.referenceNumber ?? null };
     const targets: { serviceId: string; request: TechnicianSkillVerification }[] = [];
     const duplicates: string[] = [];
-    for (const skill of waiting) {
+    // Refused skills keep their own rule (requestToAttachTo); every other skill is settled in a few queries together.
+    const requests = await ensurePendingSkillVerifications(
+      this.verificationRepo,
+      waiting.filter((skill) => skill.verificationStatus !== VerificationStatus.REJECTED),
+    );
+    for (const skill of waiting.filter((s) => s.verificationStatus === VerificationStatus.REJECTED)) {
       const request = await this.requestToAttachTo(skill);
+      if (request) requests.set(skill.id, request);
+    }
+    const requestIds = [...requests.values()].map((request) => request.id);
+    const held = requestIds.length ? await this.documentRepo.find({ where: { skillVerificationId: In(requestIds) } }) : [];
+    for (const skill of waiting) {
+      const request = requests.get(skill.id);
       if (!request) continue;
-      if (await this.hasPaper(request.id, paper)) {
+      if (held.some((row) => row.skillVerificationId === request.id && samePaper(row, paper))) {
         duplicates.push(skill.service?.name ?? 'dịch vụ');
         continue;
       }

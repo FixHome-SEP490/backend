@@ -12,7 +12,7 @@ import { In, Repository } from 'typeorm';
 import { TechnicianProfile } from './entities/technician-profile.entity';
 import { TechnicianSkill } from './entities/technician-skill.entity';
 import { TechnicianSkillVerification } from './entities/technician-skill-verification.entity';
-import { ensurePendingSkillVerification } from './skill-verification-request';
+import { ensurePendingSkillVerifications } from './skill-verification-request';
 import { TechnicianServiceArea } from './entities/technician-service-area.entity';
 import { User } from '../users/entities/user.entity';
 import { Service } from '../services/entities/service.entity';
@@ -403,9 +403,10 @@ export class TechnicianOnboardingService {
     // Every skill waiting for review gets a pending request so the technician can attach evidence right after saving.
     if (this.skillVerificationRepo) {
       const current = await this.skillRepo.find({ where: { technicianId: profile.id } });
-      for (const skill of current.filter((s) => s.verificationStatus === VerificationStatus.PENDING)) {
-        await ensurePendingSkillVerification(this.skillVerificationRepo, skill);
-      }
+      await ensurePendingSkillVerifications(
+        this.skillVerificationRepo,
+        current.filter((s) => s.verificationStatus === VerificationStatus.PENDING),
+      );
     }
 
     // Update profile

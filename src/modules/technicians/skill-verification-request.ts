@@ -1,5 +1,5 @@
 // src/modules/technicians/skill-verification-request.ts
-import { QueryFailedError, Repository } from 'typeorm';
+import { In, QueryFailedError, Repository } from 'typeorm';
 import { VerificationStatus } from '../../shared/enums';
 import { VerificationDocument } from '../technician-verifications/entities/verification-document.entity';
 import { TechnicianSkill } from './entities/technician-skill.entity';
@@ -80,4 +80,49 @@ export async function ensurePendingSkillVerification(
     }
     throw error;
   }
+}
+
+/**
+ * ensurePendingSkillVerification for many skills in a constant number of queries (one read, one insert, one update)
+ * instead of several per skill. Returns the open request by skill id; skills that need none are absent.
+ */
+export async function ensurePendingSkillVerifications(
+  verifications: Repository<TechnicianSkillVerification>,
+  skills: Pick<TechnicianSkill, 'id' | 'isActive' | 'verificationStatus'>[],
+): Promise<Map<string, TechnicianSkillVerification>> {
+  const result = new Map<string, TechnicianSkillVerification>();
+  const eligible = skills.filter((s) => s.isActive && s.verificationStatus !== VerificationStatus.VERIFIED);
+  if (eligible.length === 0) return result;
+
+  const open = await verifications.find({
+    where: { technicianSkillId: In(eligible.map((s) => s.id)), status: VerificationStatus.PENDING },
+  });
+  for (const request of open) result.set(request.technicianSkillId, request);
+
+  const missing = eligible.filter((s) => !result.has(s.id));
+  if (missing.length > 0) {
+    try {
+      const created = await verifications.save(
+        missing.map((s) => verifications.create({ technicianSkillId: s.id, status: VerificationStatus.PENDING })),
+      );
+      for (const request of created) result.set(request.technicianSkillId, request);
+      for (const s of missing) {
+        if (s.verificationStatus === VerificationStatus.REJECTED) await carryOverPapers(verifications, s.id, result.get(s.id)!.id);
+      }
+    } catch (error) {
+      if (!(error instanceof QueryFailedError && (error.driverError as { code?: string } | undefined)?.code === UNIQUE_VIOLATION)) throw error;
+      // A concurrent caller opened one of them and the whole insert rolled back: settle each skill on its own.
+      for (const s of missing) {
+        const request = await ensurePendingSkillVerification(verifications, s);
+        if (request) result.set(s.id, request);
+      }
+    }
+  }
+
+  const rejected = eligible.filter((s) => s.verificationStatus === VerificationStatus.REJECTED);
+  if (rejected.length > 0) {
+    await verifications.manager.getRepository(TechnicianSkill).update(rejected.map((s) => s.id), { verificationStatus: VerificationStatus.PENDING });
+    for (const s of rejected) s.verificationStatus = VerificationStatus.PENDING;
+  }
+  return result;
 }
