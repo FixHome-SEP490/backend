@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, IsNull, Not, Repository } from 'typeorm';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants/error-codes';
 import {
@@ -272,7 +272,9 @@ export class WarrantyClaimsManagerService {
       WarrantyClaimStatus.DISPUTED,
       WarrantyClaimStatus.IN_PROGRESS,
     ]);
-    if (claim.status === WarrantyClaimStatus.DISPUTED && claim.reviewedByManagerId === manager.id) {
+    // A second pair of eyes on a dispute, unless there is no other manager to give it.
+    if (claim.status === WarrantyClaimStatus.DISPUTED && claim.reviewedByManagerId === manager.id
+      && await this.userRepo.count({ where: { role: Role.SERVICE_MANAGER, status: AccountStatus.ACTIVE, isActive: true, id: Not(manager.id) } }) > 0) {
       throw new BusinessException(
         ErrorCodes.RBAC_FORBIDDEN,
         'Yêu cầu bị phản đối cần do một quản lý khác xem xét lại.',

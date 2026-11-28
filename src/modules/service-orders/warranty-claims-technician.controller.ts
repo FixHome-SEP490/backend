@@ -24,7 +24,6 @@ import {
   AcceptWarrantyClaimDto,
   CheckInWarrantyVisitDto,
   CompleteWarrantyReServiceDto,
-  DeclineWarrantyClaimDto,
   ProposeWarrantyInspectionDto,
   StaffWarrantyClaimDto,
 } from './dto/warranty-claim.dto';
@@ -94,17 +93,6 @@ export class WarrantyClaimsTechnicianController {
     @Req() req: Req,
   ) {
     return { data: await this.service.reschedule(claimId, dto, req.user) };
-  }
-
-  @Post(':claimId/decline')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Technician: cannot take the claim; the service manager reassigns it' })
-  async decline(
-    @Param('claimId', ParseUUIDPipe) claimId: string,
-    @Body() dto: DeclineWarrantyClaimDto,
-    @Req() req: Req,
-  ) {
-    return { data: await this.service.decline(claimId, dto, req.user) };
   }
 
   @Post(':claimId/check-in')

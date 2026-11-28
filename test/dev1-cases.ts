@@ -1937,7 +1937,7 @@ export function registerDev1Cases(context: () => Context) {
       expect(legacyLedger.map((t: any) => t.type)).toEqual(['ONLINE_EARNING']);
     });
 
-    it('reads a coverage past its end date as expired and still takes a claim on it (found 01/11/2026, TC-WAR-003)', async () => {
+    it('reads a coverage past its end date as expired and refuses a claim on it (found 01/11/2026, TC-WAR-003; PO 27/11/2026 no claim after expiry)', async () => {
       const f = await fixture(), db = context().db;
       const { order, invoice } = await completedOrder(f);
       await db.query('INSERT INTO customer_wallets (user_id, balance) VALUES ($1, $2)', [f.owner.user.id, 1000000]);
@@ -1952,10 +1952,9 @@ export function registerDev1Cases(context: () => Context) {
       }
       // Read only: the stored row is not rewritten by a GET.
       expect((await db.query('SELECT status FROM warranty_coverages WHERE id = $1', [coverage.id]))[0].status).toBe('active');
-      // A claim after expiry is still saved, flagged for the manager (TC-WAR-003).
+      // A claim after expiry is refused (PO 27/11/2026).
       const claim = await post(`/service-orders/${order.id}/warranty-claims`, f.owner, { warrantyCoverageId: coverage.id, description: 'Vòi lại rỉ nước sau ba tháng' });
-      expect(claim.status, JSON.stringify(claim.body)).toBe(201);
-      expect(unwrap(claim.body)).toMatchObject({ status: 'submitted', submittedAfterExpiry: true });
+      expect(claim.status, JSON.stringify(claim.body)).toBe(422);
 
       // A voided coverage stays voided whatever its end date.
       await db.query("UPDATE warranty_coverages SET status = 'voided' WHERE id = $1", [coverage.id]);

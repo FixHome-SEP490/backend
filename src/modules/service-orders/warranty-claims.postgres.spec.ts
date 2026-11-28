@@ -281,7 +281,7 @@ describe.skipIf(process.env.WARRANTY_CLAIMS_ISOLATED_PG !== '1')('warranty claim
     await observer.getRepository(WarrantyCoverage).update(f.coverages[0].id, {
       status: WarrantyStatus.ACTIVE, expiresAt: new Date(Date.now() - 86400000),
     });
-    await expect(services[0].create(f.order.id, f.dto(), f.customer)).resolves.toMatchObject({ submittedAfterExpiry: true });
-    expect(await counts(f.order.id)).toEqual({ claims: 1, notices: 1 });
+    await expect(services[0].create(f.order.id, f.dto(), f.customer)).rejects.toMatchObject({ status: 422 });
+    expect(await counts(f.order.id)).toEqual({ claims: 0, notices: 0 });
   });
 });

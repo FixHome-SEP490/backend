@@ -9,14 +9,12 @@ import {
   Role,
   WarrantyClaimStatus,
   WarrantyCustomerPrompt,
-  WarrantyDeclineReason,
   WarrantyInspectionResult,
   WarrantyStatus,
   WarrantyNotCoveredReason,
   WarrantyVisitStatus,
 } from '../../shared/enums';
 import {
-  DeclineWarrantyClaimDto,
   ProposeWarrantyInspectionDto,
 } from './dto/warranty-claim.dto';
 import { WarrantyClaimsTechnicianController } from './warranty-claims-technician.controller';
@@ -61,7 +59,6 @@ const makeService = (options: { claim?: unknown; visits?: unknown[]; profile?: u
       transaction: vi.fn(async (cb: any) =>
         cb({ getRepository: (entity: { name: string }) => (entity.name === 'WarrantyVisit' ? visitTx : claimTx) }),
       ),
-      // The technician's own records a decline reason is checked against.
       findOneBy: vi.fn(async (entity: { name: string }) => {
         switch (entity.name) {
           case 'TechnicianProfile':
@@ -158,57 +155,6 @@ describe('technician warranty commands', () => {
 
     await expect(service.accept('claim-1', { scheduledAt: FUTURE }, TECH)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
     expect(visitTx.save).not.toHaveBeenCalled();
-  });
-
-  it('declining unassigns the claim, records who declined and why, and alerts the managers', async () => {
-    const { service, claimRepo, notifier } = makeService();
-
-    await service.decline('claim-1', { reasonCode: WarrantyDeclineReason.BUSY }, TECH);
-
-    expect(claimRepo.update).toHaveBeenCalledWith(
-      { id: 'claim-1', status: WarrantyClaimStatus.SUBMITTED, technicianId: TECH.id },
-      expect.objectContaining({
-        technicianId: null,
-        declinedByTechnicianId: TECH.id,
-        declineReasonCode: WarrantyDeclineReason.BUSY,
-        declinedAt: expect.any(Date),
-        declineReview: 'pending',
-      }),
-    );
-    expect(notifier.toManagers).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'WARRANTY_REASSIGN_NEEDED', 'order-1');
-  });
-
-  it('verifies on-leave and out-of-area declines against the technician records; anything else waits for a manager', async () => {
-    const reviewOf = async (reason: WarrantyDeclineReason, options: Parameters<typeof makeService>[0] = {}) => {
-      const { service, claimRepo } = makeService(options);
-      await service.decline('claim-1', { reasonCode: reason, ...(reason === WarrantyDeclineReason.OTHER ? { note: 'Có việc gia đình đột xuất.' } : {}) }, TECH);
-      return claimRepo.update.mock.calls[0][1].declineReview;
-    };
-    const paused = { id: 'prof-1', isAvailable: false, workSuspendedUntil: null, serviceRadiusKm: 10 };
-    const suspended = { id: 'prof-1', isAvailable: true, workSuspendedUntil: new Date(Date.now() + 86_400_000), serviceRadiusKm: 10 };
-    const faraway = { latitudeSnapshot: 21.03, longitudeSnapshot: 105.85, provinceSnapshot: '01', districtSnapshot: '001' };
-
-    expect(await reviewOf(WarrantyDeclineReason.ON_LEAVE, { profile: paused })).toBe('valid');
-    expect(await reviewOf(WarrantyDeclineReason.ON_LEAVE, { profile: suspended })).toBe('valid');
-    expect(await reviewOf(WarrantyDeclineReason.ON_LEAVE)).toBe('pending');
-    expect(await reviewOf(WarrantyDeclineReason.OUT_OF_AREA, { booking: faraway })).toBe('valid');
-    expect(await reviewOf(WarrantyDeclineReason.OUT_OF_AREA)).toBe('pending');
-    expect(await reviewOf(WarrantyDeclineReason.BUSY)).toBe('pending');
-    expect(await reviewOf(WarrantyDeclineReason.OTHER)).toBe('pending');
-    expect(await reviewOf(WarrantyDeclineReason.ON_LEAVE, { profile: null })).toBe('pending');
-  });
-
-  it('refuses an unverifiable decline in the last day of the coverage but lets a verified one through', async () => {
-    const lastDay = { expiresAt: new Date(Date.now() + 3_600_000) };
-
-    const busy = makeService({ coverage: lastDay });
-    await expect(busy.service.decline('claim-1', { reasonCode: WarrantyDeclineReason.BUSY }, TECH))
-      .rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
-    expect(busy.claimRepo.update).not.toHaveBeenCalled();
-
-    const onLeave = makeService({ coverage: lastDay, profile: { id: 'prof-1', isAvailable: false, workSuspendedUntil: null, serviceRadiusKm: 10 } });
-    await onLeave.service.decline('claim-1', { reasonCode: WarrantyDeclineReason.ON_LEAVE }, TECH);
-    expect(onLeave.claimRepo.update).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ declineReview: 'valid' }));
   });
 
   it('checks in only once and records the position', async () => {
@@ -454,15 +400,6 @@ describe('technician warranty commands', () => {
 });
 
 describe('technician warranty DTOs and routing', () => {
-  it('requires a reason note when declining with "other"', async () => {
-    const errors = await validate(
-      Object.assign(new DeclineWarrantyClaimDto(), { reasonCode: WarrantyDeclineReason.OTHER }),
-    );
-    expect(errors.map((e) => e.property)).toContain('note');
-    const busy = await validate(Object.assign(new DeclineWarrantyClaimDto(), { reasonCode: WarrantyDeclineReason.BUSY }));
-    expect(busy).toHaveLength(0);
-  });
-
   it('requires a reason code and an evidence list for a not-covered proposal', async () => {
     const errors = await validate(
       Object.assign(new ProposeWarrantyInspectionDto(), {

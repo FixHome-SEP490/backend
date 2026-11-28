@@ -59,6 +59,7 @@ const makeService = (options: { claim?: unknown; visits?: unknown[]; technician?
   };
   const visitRepo = { find: vi.fn().mockResolvedValue(options.visits ?? [makeVisit()]) };
   const userRepo = {
+    count: vi.fn().mockResolvedValue(1),
     findOne: vi.fn().mockResolvedValue('technician' in options ? options.technician : { id: 'tech-2', role: Role.TECHNICIAN }),
     find: vi.fn().mockResolvedValue([
       { id: 'tech-1', fullName: 'Kỹ thuật viên A' },
@@ -446,11 +447,16 @@ describe('manager reject and close', () => {
     });
   });
 
-  it('sends a disputed claim to a different manager than the one who reviewed it', async () => {
+  it('sends a disputed claim to a different manager than the one who reviewed it, unless there is none', async () => {
     const same = makeService({ claim: makeClaim({ status: WarrantyClaimStatus.DISPUTED, reviewedByManagerId: 'sm-1' }) });
     await expect(
       same.service.close('claim-1', { outcome: 'resolved', note: 'Đã xem lại bằng chứng của hai bên.' }, SM),
     ).rejects.toMatchObject({ response: { code: ErrorCodes.RBAC_FORBIDDEN } });
+
+    const sole = makeService({ claim: makeClaim({ status: WarrantyClaimStatus.DISPUTED, reviewedByManagerId: 'sm-1' }) });
+    sole.userRepo.count.mockResolvedValue(0);
+    await sole.service.close('claim-1', { outcome: 'resolved', note: 'Chỉ có một quản lý nên tự đóng.' }, SM);
+    expect(sole.claimRepo.update).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ status: WarrantyClaimStatus.RESOLVED }));
 
     const other = makeService({ claim: makeClaim({ status: WarrantyClaimStatus.DISPUTED, reviewedByManagerId: 'sm-1' }) });
     await other.service.close('claim-1', { outcome: 'resolved', note: 'Đã xem lại bằng chứng của hai bên.' }, { id: 'sm-2', role: Role.SERVICE_MANAGER });

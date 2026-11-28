@@ -8,8 +8,8 @@ import { ErrorCodes } from '../../shared/constants/error-codes';
 import {
   Role,
   ServiceOrderStatus,
-  SupportCaseType,
   WarrantyClaimStatus,
+  WarrantyCustomerPrompt,
   WarrantyStatus,
 } from '../../shared/enums';
 import {
@@ -97,7 +97,7 @@ const makeService = (options: {
   const userRepo = {
     findOne: vi.fn().mockImplementation(async ({ where }: any) => ('technicianActive' in options && !options.technicianActive ? null : { id: where.id })),
   };
-  const supportCases = { openCase: vi.fn().mockResolvedValue({ id: 'case-9' }) };
+  const partRequests = { settleWarrantyRequest: vi.fn().mockResolvedValue(undefined) };
   const notifier = { toUser: vi.fn().mockResolvedValue(undefined), toManagers: vi.fn().mockResolvedValue(undefined) };
   const dataSource = {
     manager,
@@ -114,10 +114,10 @@ const makeService = (options: {
   const service = new WarrantyClaimsService(
     dataSource as any,
     claimRepo as any,
-    supportCases as any,
+    partRequests as any,
     notifier as any,
   );
-  return { service, claimRepo, coverageRepo, assignmentRepo, supportCases, notifier, txRepo, manager };
+  return { service, claimRepo, coverageRepo, assignmentRepo, partRequests, notifier, txRepo, manager };
 };
 
 const createDto = (overrides = {}) =>
@@ -152,14 +152,15 @@ describe('WarrantyClaimsService.create', () => {
     expect(JSON.stringify(view)).not.toContain('0900');
   });
 
-  it('still accepts a claim on an expired coverage but flags it for the manager', async () => {
+  it('refuses a claim on a coverage that has expired', async () => {
     const { service, claimRepo } = makeService({
       coverage: { id: COVERAGE_ID, serviceOrderId: ORDER_ID, status: WarrantyStatus.ACTIVE, expiresAt: PAST },
     });
 
-    await service.create(ORDER_ID, createDto(), CUSTOMER);
-
-    expect(claimRepo.save).toHaveBeenCalledWith(expect.objectContaining({ submittedAfterExpiry: true }));
+    await expect(service.create(ORDER_ID, createDto(), CUSTOMER)).rejects.toMatchObject({
+      response: { code: ErrorCodes.VALIDATION_FAILED },
+    });
+    expect(claimRepo.save).not.toHaveBeenCalled();
   });
 
   it('keeps the claim unassigned when no technician can be found', async () => {
@@ -233,20 +234,45 @@ describe('WarrantyClaimsService.create', () => {
 describe('WarrantyClaimsService.respond', () => {
   const awaiting = makeClaim({ status: WarrantyClaimStatus.AWAITING_CUSTOMER });
 
-  it('records that the customer agreed without changing the claim status', async () => {
-    const { service, claimRepo, notifier } = makeService({ claim: awaiting });
+  const asking = (prompt: WarrantyCustomerPrompt | null) => makeClaim({ status: WarrantyClaimStatus.AWAITING_CUSTOMER, awaitingPrompt: prompt });
+
+  it('closes the claim as fixed when the customer confirms the finished work, and settles the part request', async () => {
+    const { service, txRepo, partRequests, notifier } = makeService({ claim: asking(WarrantyCustomerPrompt.COMPLETION) });
 
     await service.respond(ORDER_ID, 'claim-1', { decision: 'agree' }, CUSTOMER);
 
-    expect(claimRepo.update).toHaveBeenCalledWith(
+    expect(txRepo.update).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'claim-1', status: WarrantyClaimStatus.AWAITING_CUSTOMER }),
-      expect.objectContaining({ customerResponse: 'agreed' }),
+      expect.objectContaining({ status: WarrantyClaimStatus.RESOLVED, outcomeCode: 'fixed', customerResponse: 'agreed' }),
     );
+    expect(partRequests.settleWarrantyRequest).toHaveBeenCalledWith(expect.anything(), 'claim-1');
+    expect(notifier.toUser).toHaveBeenCalledWith('tech-1', expect.any(String), expect.any(String), 'WARRANTY_DECISION_MADE', ORDER_ID);
+    expect(notifier.toManagers).not.toHaveBeenCalled();
+  });
+
+  it('closes the claim as rejected when the customer accepts a not-covered conclusion', async () => {
+    const { service, txRepo } = makeService({ claim: asking(WarrantyCustomerPrompt.CONCLUSION) });
+
+    await service.respond(ORDER_ID, 'claim-1', { decision: 'agree' }, CUSTOMER);
+
+    expect(txRepo.update).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ status: WarrantyClaimStatus.REJECTED, outcomeCode: 'rejected', customerResponse: 'agreed' }),
+    );
+  });
+
+  it('leaves the close to a manager when the claim has no recorded question', async () => {
+    const { service, txRepo, partRequests, notifier } = makeService({ claim: asking(null) });
+
+    await service.respond(ORDER_ID, 'claim-1', { decision: 'agree' }, CUSTOMER);
+
+    expect(txRepo.update).toHaveBeenCalledWith(expect.anything(), { customerResponse: 'agreed', customerRespondedAt: expect.any(Date) });
+    expect(partRequests.settleWarrantyRequest).not.toHaveBeenCalled();
     expect(notifier.toManagers).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'WARRANTY_CUSTOMER_RESPONSE_NEEDED', ORDER_ID);
   });
 
-  it('turns a dispute into a warranty dispute case in one transaction', async () => {
-    const { service, txRepo, supportCases, notifier } = makeService({ claim: awaiting });
+  it('turns a dispute into a disputed claim that keeps the customer reason, with no separate case', async () => {
+    const { service, claimRepo, notifier } = makeService({ claim: awaiting });
 
     await service.respond(
       ORDER_ID,
@@ -255,21 +281,14 @@ describe('WarrantyClaimsService.respond', () => {
       CUSTOMER,
     );
 
-    expect(txRepo.update).toHaveBeenNthCalledWith(
-      1,
+    expect(claimRepo.update).toHaveBeenCalledWith(
       expect.objectContaining({ status: WarrantyClaimStatus.AWAITING_CUSTOMER }),
-      expect.objectContaining({ status: WarrantyClaimStatus.DISPUTED, customerResponse: 'disputed' }),
-    );
-    expect(supportCases.openCase).toHaveBeenCalledWith(
       expect.objectContaining({
-        caseType: SupportCaseType.WARRANTY_DISPUTE,
-        serviceOrderId: ORDER_ID,
-        customerId: CUSTOMER.id,
-        technicianId: 'tech-1',
+        status: WarrantyClaimStatus.DISPUTED,
+        customerResponse: 'disputed',
+        customerResponseNote: 'Lỗi vẫn do linh kiện kỹ thuật viên đã thay',
       }),
-      expect.anything(),
     );
-    expect(txRepo.update).toHaveBeenNthCalledWith(2, { id: 'claim-1' }, { escalatedSupportCaseId: 'case-9' });
     expect(notifier.toManagers).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'WARRANTY_CUSTOMER_RESPONSE_NEEDED', ORDER_ID);
   });
 
@@ -293,12 +312,41 @@ describe('WarrantyClaimsService.respond', () => {
   });
 
   it('does not answer twice when a concurrent response wins the race', async () => {
-    const { service, claimRepo } = makeService({ claim: awaiting });
-    claimRepo.update.mockResolvedValueOnce({ affected: 0 });
-
+    const agree = makeService({ claim: asking(WarrantyCustomerPrompt.COMPLETION) });
+    agree.txRepo.update.mockResolvedValueOnce({ affected: 0 });
     await expect(
-      service.respond(ORDER_ID, 'claim-1', { decision: 'agree' }, CUSTOMER),
+      agree.service.respond(ORDER_ID, 'claim-1', { decision: 'agree' }, CUSTOMER),
     ).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+    expect(agree.partRequests.settleWarrantyRequest).not.toHaveBeenCalled();
+
+    const dispute = makeService({ claim: awaiting });
+    dispute.claimRepo.update.mockResolvedValueOnce({ affected: 0 });
+    await expect(
+      dispute.service.respond(ORDER_ID, 'claim-1', { decision: 'dispute', note: 'Lỗi vẫn còn nguyên như cũ' }, CUSTOMER),
+    ).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+  });
+});
+
+describe('WarrantyClaimsService.cancel', () => {
+  it('withdraws a claim nobody accepted yet and tells the technician', async () => {
+    const { service, claimRepo, notifier } = makeService();
+
+    await service.cancel(ORDER_ID, 'claim-1', CUSTOMER);
+
+    expect(claimRepo.update).toHaveBeenCalledWith(
+      { id: 'claim-1', status: WarrantyClaimStatus.SUBMITTED },
+      expect.objectContaining({ status: WarrantyClaimStatus.REJECTED, outcomeCode: 'rejected', resolvedAt: expect.any(Date) }),
+    );
+    expect(notifier.toUser).toHaveBeenCalledWith('tech-1', expect.any(String), expect.any(String), 'WARRANTY_DECISION_MADE', ORDER_ID);
+  });
+
+  it("answers 404 for a claim that is not the caller's and 409 once the technician took it", async () => {
+    const foreign = makeService({ claim: makeClaim({ customerId: 'someone-else' }) });
+    await expect(foreign.service.cancel(ORDER_ID, 'claim-1', CUSTOMER)).rejects.toMatchObject({ response: { code: ErrorCodes.NOT_FOUND } });
+
+    const taken = makeService();
+    taken.claimRepo.update.mockResolvedValueOnce({ affected: 0 });
+    await expect(taken.service.cancel(ORDER_ID, 'claim-1', CUSTOMER)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
   });
 });
 
@@ -336,7 +384,7 @@ describe('warranty claim DTO validation and routing', () => {
   });
 
   it('limits submit and respond to customers', () => {
-    for (const handler of [WarrantyClaimsController.prototype.create, WarrantyClaimsController.prototype.respond]) {
+    for (const handler of [WarrantyClaimsController.prototype.create, WarrantyClaimsController.prototype.respond, WarrantyClaimsController.prototype.cancel]) {
       expect(Reflect.getMetadata(ROLES_KEY, handler)).toEqual([Role.CUSTOMER]);
     }
   });

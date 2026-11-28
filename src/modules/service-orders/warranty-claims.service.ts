@@ -5,13 +5,13 @@ import { BusinessException } from '../../common/exceptions/business.exception';
 import { ErrorCodes } from '../../shared/constants/error-codes';
 import {
   AccountStatus,
-  SupportCaseType,
   ServiceOrderStatus,
   WARRANTY_CLAIM_ACTIVE_STATUSES,
   WarrantyClaimStatus,
+  WarrantyCustomerPrompt,
   WarrantyStatus,
 } from '../../shared/enums';
-import { SupportCasesService } from '../support-cases/support-cases.service';
+import { PartRequestsService } from '../part-requests/part-requests.service';
 import { User } from '../users/entities/user.entity';
 import {
   CreateWarrantyClaimDto,
@@ -35,7 +35,7 @@ export class WarrantyClaimsService {
     private readonly dataSource: DataSource,
     @InjectRepository(WarrantyClaim)
     private readonly claimRepo: Repository<WarrantyClaim>,
-    private readonly supportCasesService: SupportCasesService,
+    private readonly partRequests: PartRequestsService,
     private readonly notifier: WarrantyNotifier,
   ) {}
 
@@ -67,6 +67,9 @@ export class WarrantyClaimsService {
       }
       if (coverage.status === WarrantyStatus.VOIDED) {
         throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hạng mục này đã bị hủy bảo hành.');
+      }
+      if (new Date(coverage.expiresAt).getTime() <= Date.now()) {
+        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hạng mục này đã hết hạn bảo hành.');
       }
 
       const claims = manager.getRepository(WarrantyClaim);
@@ -101,8 +104,7 @@ export class WarrantyClaimsService {
         description: dto.description,
         evidenceRefs: dto.evidenceRefs?.length ? dto.evidenceRefs : null,
         status: WarrantyClaimStatus.SUBMITTED,
-        // Expiry is judged at submission time, not when the technician arrives.
-        submittedAfterExpiry: new Date(coverage.expiresAt).getTime() <= now.getTime(),
+        submittedAfterExpiry: false,
         submittedAt: now,
       }));
     });
@@ -183,50 +185,69 @@ export class WarrantyClaimsService {
 
     const now = new Date();
     if (dto.decision === 'agree') {
+      // Agreeing closes the claim the way the question implies; without a known question a manager closes it.
+      const prompt = claim.awaitingPrompt;
+      const fixed = prompt === WarrantyCustomerPrompt.COMPLETION;
+      await this.claimRepo.manager.transaction(async (manager) => {
+        const result = await manager.getRepository(WarrantyClaim).update(
+          { id: claim.id, status: WarrantyClaimStatus.AWAITING_CUSTOMER, customerResponse: IsNull() },
+          prompt
+            ? {
+                status: fixed ? WarrantyClaimStatus.RESOLVED : WarrantyClaimStatus.REJECTED,
+                outcomeCode: fixed ? 'fixed' : 'rejected',
+                customerResponse: 'agreed', customerRespondedAt: now,
+                awaitingPrompt: null, awaitingSince: null, resolvedAt: now,
+              }
+            : { customerResponse: 'agreed', customerRespondedAt: now },
+        );
+        if (result.affected !== 1) {
+          throw new BusinessException(ErrorCodes.CONFLICT, 'Bạn đã phản hồi yêu cầu bảo hành này.');
+        }
+        if (prompt) await this.partRequests.settleWarrantyRequest(manager, claim.id);
+      });
+      if (prompt) {
+        await this.notifier.toUser(claim.technicianId, 'Yêu cầu bảo hành đã đóng', 'Khách hàng đã đồng ý, yêu cầu bảo hành đã đóng.', 'WARRANTY_DECISION_MADE', claim.serviceOrderId);
+      } else {
+        await this.notifier.toManagers(
+          'Khách hàng đã đồng ý kết quả bảo hành',
+          'Khách hàng đã đồng ý với kết quả xử lý. Vui lòng đóng yêu cầu bảo hành.',
+          'WARRANTY_CUSTOMER_RESPONSE_NEEDED',
+          claim.serviceOrderId,
+        );
+      }
+    } else {
       const result = await this.claimRepo.update(
         { id: claim.id, status: WarrantyClaimStatus.AWAITING_CUSTOMER, customerResponse: IsNull() },
-        { customerResponse: 'agreed', customerRespondedAt: now },
+        { status: WarrantyClaimStatus.DISPUTED, customerResponse: 'disputed', customerRespondedAt: now, customerResponseNote: dto.note as string },
       );
       if (result.affected !== 1) {
         throw new BusinessException(ErrorCodes.CONFLICT, 'Bạn đã phản hồi yêu cầu bảo hành này.');
       }
       await this.notifier.toManagers(
-        'Khách hàng đã đồng ý kết quả bảo hành',
-        'Khách hàng đã đồng ý với kết quả xử lý. Vui lòng đóng yêu cầu bảo hành.',
-        'WARRANTY_CUSTOMER_RESPONSE_NEEDED',
-        claim.serviceOrderId,
-      );
-    } else {
-      await this.claimRepo.manager.transaction(async (manager) => {
-        const repo = manager.getRepository(WarrantyClaim);
-        const result = await repo.update(
-          { id: claim.id, status: WarrantyClaimStatus.AWAITING_CUSTOMER, customerResponse: IsNull() },
-          { status: WarrantyClaimStatus.DISPUTED, customerResponse: 'disputed', customerRespondedAt: now },
-        );
-        if (result.affected !== 1) {
-          throw new BusinessException(ErrorCodes.CONFLICT, 'Bạn đã phản hồi yêu cầu bảo hành này.');
-        }
-        const supportCase = await this.supportCasesService.openCase(
-          {
-            caseType: SupportCaseType.WARRANTY_DISPUTE,
-            reason: dto.note as string,
-            bookingId: order.bookingId,
-            serviceOrderId: order.id,
-            customerId: customer.id,
-            technicianId: claim.technicianId,
-            createdByUserId: customer.id,
-          },
-          manager,
-        );
-        await repo.update({ id: claim.id }, { escalatedSupportCaseId: supportCase.id });
-      });
-      await this.notifier.toManagers(
         'Khách hàng khiếu nại kết quả bảo hành',
-        'Khách hàng không đồng ý với kết quả bảo hành và đã mở khiếu nại. Vui lòng xem xét.',
+        'Khách hàng không đồng ý với kết quả bảo hành. Vui lòng xem lý do và xử lý yêu cầu.',
         'WARRANTY_CUSTOMER_RESPONSE_NEEDED',
         claim.serviceOrderId,
       );
     }
+    return this.viewById(claim.id);
+  }
+
+  /** The customer withdraws a claim nobody has started on yet. */
+  async cancel(orderId: string, claimId: string, customer: OrderActor): Promise<WarrantyClaimViewDto> {
+    await authorizeOrder(this.dataSource.manager, orderId, customer, 'customer');
+    const claim = await this.claimRepo.findOne({ where: { id: claimId, serviceOrderId: orderId } });
+    if (!claim || claim.customerId !== customer.id) {
+      throw new BusinessException(ErrorCodes.NOT_FOUND, 'Không tìm thấy yêu cầu bảo hành.');
+    }
+    const result = await this.claimRepo.update(
+      { id: claim.id, status: WarrantyClaimStatus.SUBMITTED },
+      { status: WarrantyClaimStatus.REJECTED, outcomeCode: 'rejected', resolutionNotes: 'Khách hàng đã hủy yêu cầu.', resolvedAt: new Date() },
+    );
+    if (result.affected !== 1) {
+      throw new BusinessException(ErrorCodes.CONFLICT, 'Yêu cầu bảo hành đã được tiếp nhận, không thể hủy.');
+    }
+    await this.notifier.toUser(claim.technicianId, 'Yêu cầu bảo hành đã hủy', 'Khách hàng đã hủy yêu cầu bảo hành.', 'WARRANTY_DECISION_MADE', claim.serviceOrderId);
     return this.viewById(claim.id);
   }
 

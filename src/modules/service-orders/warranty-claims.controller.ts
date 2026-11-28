@@ -93,4 +93,21 @@ export class WarrantyClaimsController {
   ) {
     return { data: await this.claimsService.respond(id, claimId, dto, req.user) };
   }
+
+  @Post('service-orders/:id/warranty-claims/:claimId/cancel')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionGuard)
+  @Roles(Role.CUSTOMER)
+  @RequirePermission('order:read_related')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Customer: withdraw a warranty claim the technician has not accepted yet' })
+  @ApiOkResponse({ type: WarrantyClaimViewDto })
+  @ApiNotFoundResponse({ description: 'Claim not found' })
+  @ApiConflictResponse({ description: 'The claim was already accepted or closed' })
+  async cancel(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('claimId', ParseUUIDPipe) claimId: string,
+    @Req() req: Req,
+  ) {
+    return { data: await this.claimsService.cancel(id, claimId, req.user) };
+  }
 }

@@ -26,7 +26,6 @@ import { PaginationDto } from '../../../shared/dto';
 import {
   WarrantyClaimStatus,
   WarrantyCustomerPrompt,
-  WarrantyDeclineReason,
   WarrantyInspectionResult,
   WarrantyNotCoveredReason,
 } from '../../../shared/enums';
@@ -175,20 +174,6 @@ export class AcceptWarrantyClaimDto {
   @ApiProperty({ format: 'date-time', description: 'Inspection time the technician agrees with the customer' })
   @IsDateString()
   scheduledAt: string;
-}
-
-export class DeclineWarrantyClaimDto {
-  @ApiProperty({ enum: WarrantyDeclineReason })
-  @IsEnum(WarrantyDeclineReason)
-  reasonCode: WarrantyDeclineReason;
-
-  @ApiPropertyOptional({ description: 'Required when the reason is "other"' })
-  @ValidateIf((o: DeclineWarrantyClaimDto) => o.reasonCode === WarrantyDeclineReason.OTHER || o.note !== undefined)
-  @IsString()
-  @Transform(trim)
-  @MinLength(WARRANTY_CLAIM_MIN_TEXT_LENGTH)
-  @MaxLength(WARRANTY_CLAIM_MAX_TEXT_LENGTH)
-  note?: string;
 }
 
 export class CheckInWarrantyVisitDto {

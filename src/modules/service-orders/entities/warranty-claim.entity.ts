@@ -61,6 +61,10 @@ export class WarrantyClaim extends BaseEntity {
   @Column({ name: 'customer_responded_at', type: 'timestamptz', nullable: true })
   customerRespondedAt: Date | null;
 
+  /** What the customer wrote when disputing the result. */
+  @Column({ name: 'customer_response_note', type: 'text', nullable: true })
+  customerResponseNote: string | null;
+
   @Column({ name: 'escalated_support_case_id', type: 'uuid', nullable: true })
   escalatedSupportCaseId: string | null;
 

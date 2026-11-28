@@ -42,7 +42,7 @@ export const CONFIG_SEED: ConfigSeedItem[] = [
   { key: 'commission.rate_bps', value: '1000', valueType: 'int', description: 'Commission rate in basis points (1000 = 10% labor). Must be snapshotted at invoice finalization.' },
   { key: 'additional_cost.approval_ttl_minutes', value: '60', valueType: 'int', description: 'Additional cost approval timeout (minutes)' },
   { key: 'warranty.default_days', value: '30', valueType: 'int', description: 'Default warranty period in days' },
-  { key: 'warranty.tech_response_hours', value: '48', valueType: 'int', description: 'Hours a technician has to accept or decline a warranty claim' },
+  { key: 'warranty.tech_response_hours', value: '48', valueType: 'int', description: 'Hours a technician has to accept a warranty claim before a manager is told' },
   { key: 'warranty.inspection_hours', value: '72', valueType: 'int', description: 'Hours a technician has to check in after accepting a warranty claim' },
   { key: 'warranty.faulty_return_days', value: '7', valueType: 'int', description: 'Days a technician has to bring a faulty warranty part back after receiving the replacement; overdue charges the new part' },
   { key: 'warranty.faulty_return_reminder_hours', value: '24', valueType: 'int', description: 'Hours before the faulty part deadline when the technician is reminded' },

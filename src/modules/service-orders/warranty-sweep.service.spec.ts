@@ -36,15 +36,16 @@ const make = (options: { found?: unknown[]; locked?: unknown; visits?: unknown[]
 };
 
 describe('technician who never answers', () => {
-  it('takes the claim back, remembers who was silent and asks a manager to reassign and judge', async () => {
+  it('keeps the technician on the claim, flags the silence for a manager and nudges the technician', async () => {
     const { service, tx, notifier } = make();
 
     await service.sweepUnresponded(NOW);
 
-    expect(tx.update).toHaveBeenCalledWith(expect.anything(), 'claim-1', expect.objectContaining({
-      technicianId: null, declinedByTechnicianId: 'tech-1', declineReasonCode: 'no_response', declineReview: 'pending', declinedAt: NOW,
-    }));
+    expect(tx.update).toHaveBeenCalledWith(expect.anything(), 'claim-1', {
+      declinedByTechnicianId: 'tech-1', declineReasonCode: 'no_response', declineReview: 'pending', declinedAt: NOW,
+    });
     expect(notifier.toManagers).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'WARRANTY_REASSIGN_NEEDED', 'order-1');
+    expect(notifier.toUser).toHaveBeenCalledWith('tech-1', expect.any(String), expect.any(String), 'WARRANTY_CLAIM_SUBMITTED', 'order-1');
   });
 
   it('uses the configured window', async () => {
@@ -58,11 +59,34 @@ describe('technician who never answers', () => {
     for (const locked of [
       claim({ status: WarrantyClaimStatus.ACCEPTED }),
       claim({ technicianId: null }),
+      claim({ declineReview: 'pending' }),
       claim({ updatedAt: ago(1) }),
       null,
     ]) {
       const { service, tx, notifier } = make({ locked });
       await service.sweepUnresponded(NOW);
+      expect(tx.update).not.toHaveBeenCalled();
+      expect(notifier.toManagers).not.toHaveBeenCalled();
+    }
+  });
+});
+
+describe('claim stuck in re-service', () => {
+  const working = (overrides: Record<string, unknown> = {}) => claim({ status: WarrantyClaimStatus.IN_PROGRESS, updatedAt: ago(200), ...overrides });
+
+  it('reminds the managers once', async () => {
+    const { service, tx, notifier } = make({ found: [working()], locked: working() });
+
+    await service.sweepStalled(NOW);
+
+    expect(tx.update).toHaveBeenCalledWith(expect.anything(), 'claim-1', { lastReminderAt: NOW });
+    expect(notifier.toManagers).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips a claim already reminded, moved on or touched while it waited for the lock', async () => {
+    for (const locked of [working({ lastReminderAt: ago(1) }), claim({ status: WarrantyClaimStatus.AWAITING_CUSTOMER }), working({ updatedAt: ago(1) }), null]) {
+      const { service, tx, notifier } = make({ locked });
+      await service.sweepStalled(NOW);
       expect(tx.update).not.toHaveBeenCalled();
       expect(notifier.toManagers).not.toHaveBeenCalled();
     }

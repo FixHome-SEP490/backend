@@ -20,6 +20,8 @@ import { WarrantyNotifier } from './warranty-notifier.service';
 
 const BATCH = 20;
 const HOUR_MS = 3_600_000;
+// ponytail: fixed 7 days; make it a system_configs key if the ops team wants to tune it.
+const REWORK_HOURS = 168;
 
 /**
  * Deadlines of the warranty flow (PO 04/11/2026): a technician who does not answer or show is
@@ -52,6 +54,7 @@ export class WarrantySweepService implements OnModuleInit, OnModuleDestroy {
     const steps: Array<[string, (at: Date) => Promise<void>]> = [
       ['unresponded', (at) => this.sweepUnresponded(at)],
       ['unassigned', (at) => this.sweepUnassigned(at)],
+      ['stalled re-service', (at) => this.sweepStalled(at)],
       ['no-show', (at) => this.sweepNoShow(at)],
       ['customer silent', (at) => this.sweepCustomerSilent(at)],
       ['expired coverage', (at) => this.sweepExpiredCoverage(at)],
@@ -68,28 +71,33 @@ export class WarrantySweepService implements OnModuleInit, OnModuleDestroy {
     return this.config.getInt(key, fallback);
   }
 
-  /** Accepted nothing within the window: take the claim back and let a manager reassign and judge. */
+  /** Accepted nothing within the window: the technician keeps the claim (no second technician); a manager judges the silence once. */
   async sweepUnresponded(now: Date): Promise<void> {
     const cutoff = new Date(now.getTime() - (await this.hours('warranty.tech_response_hours', 48)) * HOUR_MS);
     const due = await this.dataSource.getRepository(WarrantyClaim).find({
-      where: { status: WarrantyClaimStatus.SUBMITTED, technicianId: Not(IsNull()), updatedAt: LessThan(cutoff) },
+      where: { status: WarrantyClaimStatus.SUBMITTED, technicianId: Not(IsNull()), declineReview: IsNull(), updatedAt: LessThan(cutoff) },
       take: BATCH,
     });
     for (const { id } of due) {
-      const taken = await this.dataSource.transaction(async (tx) => {
+      const flagged = await this.dataSource.transaction(async (tx) => {
         const claim = await tx.findOne(WarrantyClaim, { where: { id }, lock: { mode: 'pessimistic_write' } });
-        if (!claim || claim.status !== WarrantyClaimStatus.SUBMITTED || !claim.technicianId || claim.updatedAt >= cutoff) return null;
+        if (!claim || claim.status !== WarrantyClaimStatus.SUBMITTED || !claim.technicianId || claim.declineReview || claim.updatedAt >= cutoff) return null;
         await tx.update(WarrantyClaim, claim.id, {
-          technicianId: null, declinedByTechnicianId: claim.technicianId, declineReasonCode: 'no_response',
-          declinedAt: now, declineReview: 'pending', lastReminderAt: null,
+          declinedByTechnicianId: claim.technicianId, declineReasonCode: 'no_response',
+          declinedAt: now, declineReview: 'pending',
         });
         return claim;
       });
-      if (taken) {
+      if (flagged) {
         await this.notifier.toManagers(
           'Kỹ thuật viên chưa phản hồi bảo hành',
-          'Kỹ thuật viên không nhận yêu cầu bảo hành đúng hạn. Vui lòng phân công lại và xem xét trách nhiệm.',
-          'WARRANTY_REASSIGN_NEEDED', taken.serviceOrderId,
+          'Kỹ thuật viên chưa nhận yêu cầu bảo hành đúng hạn. Vui lòng nhắc kỹ thuật viên và xem xét trách nhiệm.',
+          'WARRANTY_REASSIGN_NEEDED', flagged.serviceOrderId,
+        );
+        await this.notifier.toUser(
+          flagged.technicianId, 'Yêu cầu bảo hành đang chờ bạn',
+          'Bạn chưa nhận yêu cầu bảo hành đã giao. Vui lòng nhận và hẹn lịch kiểm tra sớm.',
+          'WARRANTY_CLAIM_SUBMITTED', flagged.serviceOrderId,
         );
       }
     }
@@ -163,6 +171,30 @@ export class WarrantySweepService implements OnModuleInit, OnModuleDestroy {
         await this.notifier.toManagers(
           'Yêu cầu bảo hành chưa có kỹ thuật viên',
           'Một yêu cầu bảo hành đang chờ phân công kỹ thuật viên quá hạn.',
+          'WARRANTY_REASSIGN_NEEDED', claim.serviceOrderId,
+        );
+      }
+    }
+  }
+
+  /** A re-service approved but never reported done would otherwise wait forever: remind the managers once. */
+  async sweepStalled(now: Date): Promise<void> {
+    const cutoff = new Date(now.getTime() - REWORK_HOURS * HOUR_MS);
+    const due = await this.dataSource.getRepository(WarrantyClaim).find({
+      where: { status: WarrantyClaimStatus.IN_PROGRESS, lastReminderAt: IsNull(), updatedAt: LessThan(cutoff) },
+      take: BATCH,
+    });
+    for (const { id } of due) {
+      const claim = await this.dataSource.transaction(async (tx) => {
+        const row = await tx.findOne(WarrantyClaim, { where: { id }, lock: { mode: 'pessimistic_write' } });
+        if (!row || row.status !== WarrantyClaimStatus.IN_PROGRESS || row.lastReminderAt || row.updatedAt >= cutoff) return null;
+        await tx.update(WarrantyClaim, row.id, { lastReminderAt: now });
+        return row;
+      });
+      if (claim) {
+        await this.notifier.toManagers(
+          'Yêu cầu bảo hành chưa hoàn tất',
+          'Một yêu cầu bảo hành đã được duyệt nhưng kỹ thuật viên chưa báo hoàn tất quá hạn. Vui lòng nhắc kỹ thuật viên hoặc xử lý yêu cầu.',
           'WARRANTY_REASSIGN_NEEDED', claim.serviceOrderId,
         );
       }

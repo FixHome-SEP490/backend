@@ -33,6 +33,7 @@ export interface WarrantyClaimDetailDto extends StaffWarrantyClaimDto {
       customerRespondedAt: Date | null;
       awaitingSince: Date | null;
       escalatedSupportCaseId: string | null;
+      customerResponseNote: string | null;
     };
     declined: { by: Person; at: Date | null; reasonCode: string | null; note: string | null } | null;
     originalJob: {
@@ -134,6 +135,7 @@ export class WarrantyClaimDetailService {
           customerRespondedAt: claim.customerRespondedAt ?? null,
           awaitingSince: claim.awaitingSince ?? null,
           escalatedSupportCaseId: claim.escalatedSupportCaseId ?? null,
+          customerResponseNote: claim.customerResponseNote ?? null,
         },
         declined: claim.declinedAt || claim.declinedByTechnicianId
           ? { by: person(claim.declinedByTechnicianId), at: claim.declinedAt ?? null, reasonCode: claim.declineReasonCode ?? null, note: claim.declineNote ?? null }
