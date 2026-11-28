@@ -54,7 +54,8 @@ describe('CheckinFaceService', () => {
     const call = (over: object) => service.verify({ orderId: ORDER, userId: USER, token, plain: buf, challengePhoto: buf, ...over });
     await expect(call({ orderId: 'other' })).rejects.toThrow(/hết hạn/);
     await expect(call({ userId: 'other' })).rejects.toThrow(/hết hạn/);
-    await expect(call({ token: token.slice(0, -2) + 'AA' })).rejects.toThrow(/hết hạn/);
+    // The signature ends with 'AA' once in 4096 tokens; then 'AA' was no forgery and CI failed (PR #246).
+    await expect(call({ token: token.slice(0, -2) + (token.endsWith('AA') ? 'BB' : 'AA') })).rejects.toThrow(/hết hạn/);
     await expect(call({ challengePhoto: undefined })).rejects.toThrow(/hết hạn/);
     service.now = () => Date.now() + 6 * 60 * 1000;
     await expect(call({})).rejects.toThrow(/hết hạn/);
