@@ -617,6 +617,97 @@ describe('Member 1 HTTP, PostgreSQL and migration gates', () => {
     expect(reset.user.customized).toBe(false);
     await as(narrowed).get('/dashboard/operations').expect(200);
   });
+  it('counts the reputation stat cards over every account in one call, filters the list by card and obeys the per-account permission (BUG 318)', async () => {
+    const manager = async (): Promise<Session> => {
+      const user = await db.getRepository('User').save({
+        email: `${randomUUID()}@example.test`, passwordHash: 'CI_ONLY_NON_LOGIN_CREDENTIAL',
+        fullName: 'BUG 318 manager', role: 'service_manager', status: 'active', isActive: true,
+      });
+      return {
+        user: { id: user.id, email: user.email },
+        accessToken: jwt.sign({ sub: user.id, role: 'service_manager' }, { secret: accessSecret, expiresIn: '15m' }),
+        refreshToken: '',
+      };
+    };
+    const [narrowed, other] = [await manager(), await manager()];
+    const get = (s: Session, p: string, query: Record<string, string> = {}) =>
+      http().get(`/api/v1${p}`).query(query).set('Authorization', bearer(s));
+    const stats = async (role?: string) => (await get(other, '/reputation/stats', role ? { role } : {}).expect(200)).body.data;
+    const account = async (role: 'customer' | 'technician', points: number, opts: { status?: string; banHours?: number } = {}) => {
+      const id = randomUUID();
+      const ban = opts.banHours === undefined ? null : new Date(Date.now() + opts.banHours * 3600_000);
+      await db.query(
+        `INSERT INTO users (id, email, password_hash, full_name, role, status, reputation_points, booking_suspended_until)
+         VALUES ($1, $2, 'unused-hash', 'BUG 318 account', $3, $4, $5, $6)`,
+        [id, `${id}@example.test`, role, opts.status ?? 'active', points, role === 'customer' ? ban : null],
+      );
+      if (role === 'technician') await db.query('INSERT INTO technician_profiles (user_id, work_suspended_until) VALUES ($1, $2)', [id, ban]);
+      return id;
+    };
+
+    const before = await stats();
+    const beforeTech = await stats('technician');
+    const suspendedCustomer = await account('customer', 60, { banHours: 72 }); // deducted, low, suspended
+    await account('customer', 90); // deducted
+    const lockedCustomer = await account('customer', 0, { status: 'locked', banHours: 720 }); // deducted, low, locked, never suspended
+    const expiredBan = await account('customer', 50, { banHours: -1 }); // deducted, low: the ban has run out
+    const suspendedTech = await account('technician', 30, { banHours: 168 }); // deducted, low, suspended
+    await account('technician', 100); // none
+    await account('technician', 100, { banHours: -5 }); // a job ban that has passed counts as nothing
+
+    const after = await stats();
+    const delta = (a: any, b: any) => ({
+      roles: { all: a.roles.all - b.roles.all, customer: a.roles.customer - b.roles.customer, technician: a.roles.technician - b.roles.technician },
+      total: a.total - b.total, deducted: a.deducted - b.deducted, low: a.low - b.low, suspended: a.suspended - b.suspended, locked: a.locked - b.locked,
+    });
+    expect(delta(after, before)).toEqual({ roles: { all: 7, customer: 4, technician: 3 }, total: 7, deducted: 5, low: 4, suspended: 2, locked: 1 });
+    const afterTech = await stats('technician');
+    expect(delta(afterTech, beforeTech)).toEqual({ roles: { all: 7, customer: 4, technician: 3 }, total: 3, deducted: 1, low: 1, suspended: 1, locked: 0 });
+
+    // The whole table, not one page: the same numbers counted straight from the database.
+    const [direct] = await db.query(`
+      SELECT COUNT(*)::int AS "all",
+             COUNT(*) FILTER (WHERE u.reputation_points < 100)::int AS deducted,
+             COUNT(*) FILTER (WHERE u.reputation_points < 70)::int AS low,
+             COUNT(*) FILTER (WHERE u.status <> 'locked' AND CASE WHEN u.role = 'customer' THEN u.booking_suspended_until ELSE tp.work_suspended_until END > now())::int AS suspended,
+             COUNT(*) FILTER (WHERE u.status = 'locked')::int AS locked
+        FROM users u LEFT JOIN technician_profiles tp ON tp.user_id = u.id
+       WHERE u.role IN ('customer', 'technician')`);
+    expect({ all: after.roles.all, deducted: after.deducted, low: after.low, suspended: after.suspended, locked: after.locked }).toEqual(direct);
+    expect(after.total).toBe(after.roles.all);
+    expect(after.roles.customer + after.roles.technician).toBe(after.roles.all);
+    expect((await get(other, '/reputation', { pageSize: '1' }).expect(200)).body.meta.total).toBe(after.roles.all);
+
+    // A card filters the list with the same rule, so its number is the list total.
+    const ids = async (query: Record<string, string>) => {
+      const body = (await get(other, '/reputation', { pageSize: '100', ...query }).expect(200)).body;
+      return { total: body.meta.total as number, ids: (body.data as Array<{ id: string }>).map((r) => r.id) };
+    };
+    const suspended = await ids({ state: 'suspended' });
+    expect(suspended.total).toBe(after.suspended);
+    expect(suspended.ids).toEqual(expect.arrayContaining([suspendedCustomer, suspendedTech]));
+    expect(suspended.ids).not.toContain(lockedCustomer);
+    expect(suspended.ids).not.toContain(expiredBan);
+    expect((await ids({ state: 'locked' })).total).toBe(after.locked);
+    expect((await ids({ state: 'low' })).total).toBe(after.low);
+    expect((await ids({ state: 'deducted', role: 'technician' })).total).toBe(afterTech.deducted);
+    expect((await ids({ state: 'locked', role: 'customer' })).ids).toContain(lockedCustomer);
+    await get(other, '/reputation', { state: 'all' }).expect(400);
+    await get(other, '/reputation/stats', { role: 'admin' }).expect(400);
+
+    // Only staff with strike:read_all; the admin can take it from one service manager account (BUG 261).
+    await get(customer, '/reputation/stats').expect(403);
+    await get(technician, '/reputation/stats').expect(403);
+    await get(admin, '/reputation/stats').expect(200);
+    const base = `/api/v1/admin/rbac/service-manager/accounts/${narrowed.user.id}/permissions`;
+    await get(narrowed, '/reputation/stats').expect(200);
+    await http().put(`${base}/strike:read_all`).set('Authorization', bearer(admin)).send({ granted: false }).expect(200);
+    await get(narrowed, '/reputation/stats').expect(403);
+    await get(narrowed, '/reputation').expect(403);
+    await get(other, '/reputation/stats').expect(200);
+    await http().delete(base).set('Authorization', bearer(admin)).expect(200);
+    await get(narrowed, '/reputation/stats').expect(200);
+  });
   it('filters the audit log and strikes by a seeded account id whose version nibble is 0', async () => {
     // Shared database seed accounts look like a0000000-0000-0000-0000-000000000001 (bug 31).
     const legacyId = `a0000000-0000-0000-0000-${randomUUID().replace(/-/g, '').slice(0, 12)}`;

@@ -10,6 +10,11 @@ import { startBackgroundJob } from '../../common/background-job';
 import { ReputationEvent } from './entities/reputation-event.entity';
 import { clampPoints, penaltyFor, REPUTATION_START, suspensionEnd } from './reputation-rules';
 import { andWhereTextMatches } from '../../shared/utils/list-search';
+import { REPUTATION_STATES, REPUTATION_STATE_WHERE, toReputationStats, type ReputationState, type ReputationStats } from './reputation-stats';
+
+function isReputationState(value: unknown): value is ReputationState {
+  return typeof value === 'string' && (REPUTATION_STATES as readonly string[]).includes(value);
+}
 
 export interface ReputationViolation {
   userId: string;
@@ -214,7 +219,7 @@ export class ReputationService implements OnModuleInit, OnModuleDestroy {
     return changed.length;
   }
 
-  async list(query: { role?: string; search?: string; page?: number; pageSize?: number }) {
+  async list(query: { role?: string; search?: string; state?: string; page?: number; pageSize?: number }) {
     const page = Math.max(1, Number(query.page) || 1);
     const pageSize = Math.min(100, Math.max(1, Number(query.pageSize) || 20));
     const qb = this.userRepo.createQueryBuilder('u')
@@ -223,12 +228,34 @@ export class ReputationService implements OnModuleInit, OnModuleDestroy {
         'u.reputationPoints AS "reputationPoints"', 'u.bookingSuspendedUntil AS "bookingSuspendedUntil"', 'tp.workSuspendedUntil AS "workSuspendedUntil"'])
       .where('u.role IN (:...roles)', { roles: query.role === 'customer' || query.role === 'technician' ? [query.role] : ['customer', 'technician'] });
     andWhereTextMatches(qb, ['u.fullName', 'u.email', 'u.phoneNumber'], query.search);
+    if (isReputationState(query.state)) qb.andWhere(`(${REPUTATION_STATE_WHERE[query.state]})`);
     const total = await qb.getCount();
     const data = await qb.orderBy('u.reputationPoints', 'ASC').addOrderBy('u.fullName', 'ASC').offset((page - 1) * pageSize).limit(pageSize).getRawMany();
     return {
       data: data.map((r) => ({ ...r, reputationPoints: Number(r.reputationPoints) })),
       meta: { page, limit: pageSize, total, totalPages: Math.ceil(total / pageSize) },
     };
+  }
+
+  /**
+   * Stat cards and role filter counts of the Service Manager page (BUG 318), over
+   * every customer and technician account, not the page on screen, in one
+   * aggregate query. The cards follow the role filter; the role counts never do.
+   */
+  async stats(query: { role?: string }): Promise<ReputationStats> {
+    const scope = query.role === 'customer' || query.role === 'technician' ? [query.role] : ['customer', 'technician'];
+    const qb = this.userRepo.createQueryBuilder('u')
+      .leftJoin(TechnicianProfile, 'tp', 'tp.userId = u.id')
+      .select('COUNT(*)', 'all')
+      .addSelect(`COUNT(*) FILTER (WHERE u.role = 'customer')`, 'customer')
+      .addSelect(`COUNT(*) FILTER (WHERE u.role = 'technician')`, 'technician')
+      .addSelect('COUNT(*) FILTER (WHERE u.role IN (:...scope))', 'total')
+      .where('u.role IN (:...roles)', { roles: ['customer', 'technician'] })
+      .setParameter('scope', scope);
+    for (const state of REPUTATION_STATES) {
+      qb.addSelect(`COUNT(*) FILTER (WHERE u.role IN (:...scope) AND (${REPUTATION_STATE_WHERE[state]}))`, state);
+    }
+    return toReputationStats(await qb.getRawOne());
   }
 
   /** The customer's or technician's own score for the profile page: points, when they reset, any running ban and why the score moved. */
