@@ -39,7 +39,7 @@ export class WarrantyFaultyPerItem1795100000000 implements MigrationInterface {
         faulty_result_note = CASE WHEN r.faulty_inspection_result IN ('installation','manufacturer') THEN r.faulty_inspection_note END,
         faulty_result_evidence = CASE WHEN r.faulty_inspection_result IN ('installation','manufacturer') THEN r.faulty_inspection_evidence END
       FROM part_requests r
-      WHERE r.id = i.part_request_id AND r.request_type = 'warranty'
+      WHERE r.id = i.part_request_id AND r.request_type::text = 'warranty'
     `);
   }
 
