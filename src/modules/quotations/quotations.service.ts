@@ -379,10 +379,10 @@ export class QuotationsService {
       if (this.notificationsService && cost.technicianId) {
         void this.notificationsService.createNotification({
           userId: cost.technicianId,
-          title: target === AdditionalCostStatus.APPROVED ? 'Khách hàng đã duyệt chi phí phát sinh' : 'Khách hàng từ chối chi phí phát sinh',
+          title: target === AdditionalCostStatus.APPROVED ? 'Khách đã đồng ý đề xuất của bạn' : 'Khách đã từ chối đề xuất của bạn',
           message: target === AdditionalCostStatus.APPROVED
-            ? `Khách hàng đã phê duyệt yêu cầu chi phí phát sinh cho đơn #${order.code}. Bạn có thể tiếp tục công việc.`
-            : `Khách hàng đã từ chối yêu cầu chi phí phát sinh cho đơn #${order.code}.`,
+            ? `Khách đã đồng ý đề xuất chi phí phát sinh cho đơn #${order.code}. Bạn có thể sửa thêm phần phát sinh.`
+            : `Khách đã từ chối đề xuất chi phí phát sinh cho đơn #${order.code}. Bạn tiếp tục công việc theo phạm vi đã chốt.`,
           type: target === AdditionalCostStatus.APPROVED ? 'ADDITIONAL_COST_APPROVED' : 'ADDITIONAL_COST_REJECTED',
           referenceId: order.id,
           referenceType: 'SERVICE_ORDER',

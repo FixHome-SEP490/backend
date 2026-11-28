@@ -7,8 +7,8 @@ import { technicianEligibility } from './technician-eligibility';
 
 vi.mock('./technician-eligibility', () => ({ technicianEligibility: vi.fn() }));
 
-function scenario(count: number, greeting?: { send: ReturnType<typeof vi.fn> }) {
-  const booking = { id: 'booking-1', status: BookingStatus.MATCHING, preferredStartAt: new Date(Date.now() + 3600000) };
+function scenario(count: number, greeting?: { send: ReturnType<typeof vi.fn> }, notifier?: { createNotification: ReturnType<typeof vi.fn> }) {
+  const booking = { id: 'booking-1', customerId: 'customer-1', status: BookingStatus.MATCHING, preferredStartAt: new Date(Date.now() + 3600000) };
   const invitations = Array.from({ length: count }, (_, i) => ({
     id: `invitation-${i + 1}`, bookingId: booking.id, technicianId: `tech-${i + 1}`,
     priorityOrder: i + 1, status: InvitationStatus.PENDING,
@@ -31,6 +31,7 @@ function scenario(count: number, greeting?: { send: ReturnType<typeof vi.fn> }) 
     }),
     findOneBy: vi.fn(async (entity: { name?: string }, query: { bookingId?: string; status?: InvitationStatus; serviceOrderId?: string; technicianId?: string; isActive?: boolean }) => {
       if (entity.name === 'ServiceOrder') return serviceOrder;
+      if (entity.name === 'Booking') return booking;
       if (entity.name === 'TechnicianAssignment') return assignments.find(a => a.serviceOrderId === query.serviceOrderId && a.technicianId === query.technicianId && a.isActive === query.isActive) ?? null;
       return invitations.find(i => i.bookingId === query.bookingId && i.status === query.status) ?? null;
     }),
@@ -86,7 +87,7 @@ function scenario(count: number, greeting?: { send: ReturnType<typeof vi.fn> }) 
     repo as never, {} as never,
     { query: async () => [], transaction: async (fn: (m: typeof manager) => unknown) => fn(manager) } as never,
     { getInt: vi.fn(async () => 30) } as never, audit as never, messaging as never,
-    undefined, greeting as never,
+    notifier as never, greeting as never,
   );
   vi.mocked(technicianEligibility).mockResolvedValue({ eligible: true });
   const actor = (n: number) => ({ id: `tech-${n}`, role: Role.TECHNICIAN });
@@ -95,6 +96,17 @@ function scenario(count: number, greeting?: { send: ReturnType<typeof vi.fn> }) 
 }
 
 beforeEach(() => { vi.clearAllMocks(); });
+
+describe('decline tells the customer', () => {
+  it('says the next technician was invited', async () => {
+    const notifier = { createNotification: vi.fn(async () => undefined) };
+    const s = scenario(2, undefined, notifier);
+    s.invitations[1].status = InvitationStatus.STANDBY;
+    s.invitations[1].expiresAt = null;
+    await s.service.respond('invitation-1', 'DECLINE', s.actor(1));
+    expect(notifier.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: 'customer-1', type: 'INVITATION_DECLINED' }));
+  });
+});
 
 describe('BE-MATCH first valid Accept is the only winner', () => {
   it('lets a single selected technician accept the only PENDING invitation and creates one ServiceOrder', async () => {

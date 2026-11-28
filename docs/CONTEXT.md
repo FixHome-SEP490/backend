@@ -1,6 +1,6 @@
 # Context repo backend — FixHome
 
-> Cập nhật lần cuối: 2026-11-27 23:47 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
+> Cập nhật lần cuối: 2026-11-28 09:12 (UTC+7) · Người cập nhật (git): Hgnv11 · Nhánh: dev
 
 ## 0. Quy tắc cập nhật file này (bắt buộc)
 
@@ -360,6 +360,7 @@ W3 physical: GET `/part-requests/:id/delivery-physical/preview` chỉ CUSTOMER s
 - Chẩn đoán AI (`POST /ai/diagnoses`) bắt buộc `description` có chữ (BRX-064), sai trả 400.
 - Lỗi nghiệp vụ trả `error.code`: kỹ thuật viên không đủ điều kiện nhận việc là `TECHNICIAN_NOT_ELIGIBLE` (409) kèm lý do; chỉ tài khoản bị khoá hay tạm ngưng mới là `WORK_SUSPENDED` (403).
 - Thông báo mới: `ORDER_DEPARTURE_WARNING` (đến giờ hẹn mà kỹ thuật viên chưa xuất phát), `BOOKING_MATCHING_EXHAUSTED` (hết kỹ thuật viên trong danh sách).
+- Thông báo cho bên còn lại (không đổi trạng thái đơn): thợ từ chối lời mời mà booking còn `MATCHING` thì khách nhận `INVITATION_DECLINED` (hết thợ thì vẫn chỉ có `BOOKING_MATCHING_EXHAUSTED`); khách hủy booking thì mỗi thợ đang giữ lời mời `PENDING` nhận `BOOKING_CANCELLED` (lời mời `STANDBY` chưa được báo nên không báo); khách mở hồ sơ hỗ trợ thì thợ trên đơn nhận `SUPPORT_CASE_COUNTERPARTY`, thợ mở thì khách nhận (riêng `technician_delay` giữ nội bộ cho quản lý); yêu cầu dừng/đổi thợ của khách (`POST …/:id/stop-replace-request`) thì thợ giữ đơn nhận `CUSTOMER_STOP_REPLACE_REQUEST` cùng lúc với các quản lý. Không thêm trigger realtime cho `support_cases`: thông báo đi qua bảng `notifications` nên bên kia nhận `notification:new`.
 - Socket.IO namespace `/chat`, xác thực bằng `auth: { token }`. Server phát `connect:ready`, `message:new`, `message:updated`, `message:deleted`, `conversation:updated`, `typing`, `order:updated`, `order:location`, `booking:updated`, `invitation:updated`, `notification:new`, `wallet:updated`, `realtime:resync` (PO 18/10/2026, xem mục 3; mang id, trạng thái và phần đã đổi, client chỉ đọc lại phần đó qua REST), và các sự kiện gọi thoại `call:*`. Client gửi `conversation:join`, `conversation:leave`, `typing`, `call:*`.
 - Chat (PO 18/10/2026): `POST /conversations/:id/attachments`, `GET /messages/:id/attachment`, `ConversationView.closedReason`, mã lỗi `CONVERSATION_CLOSED` (409). Video booking: `POST /media/booking-video-upload`, `photoUploadIds` tối đa 7 (5 ảnh, 2 video), 422 `VIDEO_TOO_LONG` khi dài hơn 60 giây. Xem video: `GET .../stream` trả link xem 15 phút (mục 3). Xem trước lời mời có thêm `description`, `aiSummary`, `media`, `pricingMode`, `fixedUnitPrice`, `distanceBand`.
 - Đăng nhập Google cho mobile: `GET /auth/google/start?redirect=...` rồi `POST /auth/google/exchange` với mã dùng một lần; redirect phải nằm trong `GOOGLE_ALLOWED_APP_REDIRECTS`.
@@ -548,6 +549,8 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - `README.md`, `CONTRIBUTING.md`, `docs/AI-TECHNICAL-GUIDE.md` còn vài đoạn cũ (Postgres chạy local, nhánh `develop`, vòng đời có `PENDING_CONFIRMATION`); khi lệch, file này và code là chuẩn.
 
 ## 9. Nhật ký cập nhật context
+- 2026-11-28 09:12 (UTC+7) | Hgnv11 | dev | Thông báo ADDITIONAL_COST_APPROVED/REJECTED đổi lời thành "Khách đã đồng ý/từ chối đề xuất của bạn" để mobile hiện thẳng trên màn hình thợ.
+- 2026-11-28 08:41 (UTC+7) | Hgnv11 | dev | Thợ từ chối thì khách có thông báo, khách hủy booking thì thợ đang giữ lời mời có thông báo, hồ sơ hỗ trợ và yêu cầu dừng/đổi thợ báo cho bên còn lại.
 - 2026-11-27 23:47 (UTC+7) | Hgnv11 | dev | PO 27/11: thợ không được từ chối bảo hành (bỏ POST /warranty-claims/:id/decline); thợ im lặng 48h giữ claim và chỉ bị gắn cờ cho SM; claim in_progress quá 168h nhắc SM; không nhận claim sau expires_at; khách đồng ý thì claim tự resolved/rejected, phản đối chỉ chuyển disputed và lưu customer_response_note (migration 1795000000000, CHƯA chạy trên DB chung, phải chạy trước khi deploy), không mở support case; thêm POST /service-orders/:id/warranty-claims/:claimId/cancel; SM duyệt claim vẫn đóng được ca disputed khi không còn SM khác; web/mobile CHƯA kiểm: phải bỏ nút từ chối và nút đóng sau khi khách đồng ý, hiển thị lý do phản đối
 - 2026-11-27 23:15 (UTC+7) | Hgnv11 | dev | Khách chọn "đổi thợ" sau báo trễ thì thợ bị đổi nhận thông báo DELAY_DECISION_SWITCH.
 - 2026-11-27 20:37 (UTC+7) | Hgnv11 | dev | chặn nhận việc vì linh kiện FixHome chưa trả chỉ áp dụng khi quá 1 ngày sau khi đơn hoàn tất (trước đây chặn ngay khi còn nợ, không hạn); không migration; CHƯA KIỂM CHỨNG trên PostgreSQL thật, CHƯA deploy
@@ -587,5 +590,3 @@ Owner xác nhận lịch sử tài khoản/đơn là demo; fixture cô lập có
 - 2026-11-13 15:19 (UTC+7) | ToanAltF4 | fix/stop-replace-close-rebook | GET /service-orders/:id/part-requests có w3DeliveryStage (trang thợ/khách biết phiếu W3 đã giao)
 - 2026-11-13 15:16 (UTC+7) | ToanAltF4 | fix/stop-replace-close-rebook | BUG 148: SM kết thúc đơn để khách đặt lại được cả khi báo giá đã duyệt (đơn về 0đ, không hoá đơn); vẫn chặn khi có hoá đơn/thanh toán/voucher/linh kiện
 - 2026-11-13 11:11 (UTC+7) | ToanAltF4 | fix/voucher-per-customer | BUG 62: voucher_campaigns.per_customer_limit (1-100, mặc định 1), khách lưu lại mã sau khi đã dùng tới hết số lần; bỏ unique index một-lần (kiểm trong service dưới khoá chiến dịch). Preview W3 có tiến trình cho đường 0đ
-- 2026-11-13 01:26 (UTC+7) | ToanAltF4 | fix/private-note-deploy | Deploy DEV: thêm bước technician-private-note-dev-release cho migration 1794480000000 (TECH 42)
-- 2026-11-13 00:34 (UTC+7) | ToanAltF4 | feat/admin-price-variants-1211 | ADMIN 47 API biến thể giá dịch vụ (GET/PATCH /admin/services/:id/price-variants, audit). TECH 42 ghi chú riêng của thợ: cột technician_assignments.private_note (migration 1794480000000), GET/PUT /service-orders/:id/my-note

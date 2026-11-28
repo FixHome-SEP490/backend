@@ -1021,7 +1021,9 @@ export class BookingsService {
   }
 
   async cancelBooking(bookingId: string, reason: string, customer: { id: string }): Promise<Booking> {
-    return this.dataSource.transaction(async (manager) => {
+    // Technicians holding an open invitation: told after the commit, the invitation just disappears from their list otherwise.
+    let invitedTechnicianIds: string[] = [];
+    const cancelled = await this.dataSource.transaction(async (manager) => {
       const booking = await manager.findOne(Booking, {
         where: { id: bookingId, customerId: customer.id },
         lock: { mode: 'pessimistic_write' },
@@ -1035,6 +1037,7 @@ export class BookingsService {
       ) {
         throw new BusinessException(ErrorCodes.ORDER_INVALID_TRANSITION, 'Cancel the assigned ServiceOrder instead');
       }
+      invitedTechnicianIds = (await manager.find(BookingInvitation, { where: { bookingId, status: InvitationStatus.PENDING }, select: { technicianId: true } })).map(i => i.technicianId);
       await manager
         .createQueryBuilder()
         .update(BookingInvitation)
@@ -1055,6 +1058,19 @@ export class BookingsService {
       });
       return manager.save(booking);
     });
+    if (this.notificationsService) {
+      for (const userId of invitedTechnicianIds) {
+        void this.notificationsService.createNotification({
+          userId,
+          title: 'Khách đã hủy yêu cầu',
+          message: 'Khách đã hủy yêu cầu đặt lịch mà bạn được mời nhận. Lời mời không còn hiệu lực.',
+          type: 'BOOKING_CANCELLED',
+          referenceId: bookingId,
+          referenceType: 'BOOKING',
+        }).catch(() => undefined);
+      }
+    }
+    return cancelled;
   }
 
   /** An owned failed repair is the only source accepted by the final confirmation. */

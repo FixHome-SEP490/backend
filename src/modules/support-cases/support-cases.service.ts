@@ -208,6 +208,12 @@ export class SupportCasesService {
           referenceId: supportCase.id, referenceType: 'SUPPORT_CASE',
         })));
       }
+      // The technician is held from completing the order, so they must hear why.
+      await manager.insert(Notification, {
+        userId: assignment.technicianId, title: 'Khách yêu cầu dừng sửa hoặc đổi thợ',
+        message: `Khách của đơn #${order.code} đã yêu cầu dừng sửa hoặc đổi thợ. Đơn tạm thời chưa hoàn tất được, quản lý dịch vụ sẽ liên hệ.`,
+        type: 'CUSTOMER_STOP_REPLACE_REQUEST', referenceId: supportCase.id, referenceType: 'SUPPORT_CASE',
+      });
       return supportCase;
     });
   }
@@ -388,6 +394,18 @@ export class SupportCasesService {
       isUrgent ? 'SUPPORT_CASE_URGENT' : 'SUPPORT_CASE_OPENED',
       created.id,
     );
+    // The other side of the order hears about it too (the delay report stays internal to managers).
+    const counterpart = actor.role === Role.CUSTOMER ? created.technicianId : created.customerId;
+    if (counterpart && created.caseType !== SupportCaseType.TECHNICIAN_DELAY && this.notificationsService) {
+      await this.notificationsService.createManyNotifications([{
+        userId: counterpart,
+        title: actor.role === Role.CUSTOMER ? 'Khách đã gửi khiếu nại về đơn' : 'Kỹ thuật viên đã báo vấn đề về đơn',
+        message: 'Quản lý dịch vụ đang xem xét và sẽ liên hệ nếu cần.',
+        type: 'SUPPORT_CASE_COUNTERPARTY',
+        referenceId: created.id,
+        referenceType: 'SUPPORT_CASE',
+      }]).catch((error) => this.logger.warn(`Support case counterpart notice failed: ${(error as Error).message}`));
+    }
     return created;
   }
 

@@ -288,6 +288,17 @@ export class InvitationsService implements OnModuleInit, OnModuleDestroy {
         invitation.respondedAt = new Date();
         await manager.save(invitation);
         await this.activateNext(manager, booking);
+        // Still searching (the exhausted case has its own notice in activateNext): tell the customer the next technician was invited.
+        if (this.notificationsService && booking.customerId && (await manager.findOneBy(Booking, { id: booking.id }))?.status === BookingStatus.MATCHING) {
+          void this.notificationsService.createNotification({
+            userId: booking.customerId,
+            title: 'Một kỹ thuật viên đã từ chối',
+            message: 'Kỹ thuật viên bạn chọn đã từ chối lời mời. FixHome đã mời kỹ thuật viên tiếp theo trong danh sách của bạn.',
+            type: 'INVITATION_DECLINED',
+            referenceId: booking.id,
+            referenceType: 'BOOKING',
+          }).catch(() => undefined);
+        }
         return { invitation };
       }
       await manager.findOne(User, { where: { id: technician.id }, lock: { mode: 'pessimistic_write' } });

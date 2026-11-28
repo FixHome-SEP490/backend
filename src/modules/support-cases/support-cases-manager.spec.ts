@@ -208,6 +208,10 @@ describe('queue ordering and notifications', () => {
       expect.objectContaining({ userId: 'sm-1', type: 'SUPPORT_CASE_URGENT', referenceType: 'SUPPORT_CASE' }),
       expect.objectContaining({ userId: 'sm-2' }),
     ]);
+    // The technician on the order hears about the customer's case too.
+    expect(urgent.notifications.createManyNotifications).toHaveBeenCalledWith([
+      expect.objectContaining({ userId: 'tech-1', type: 'SUPPORT_CASE_COUNTERPARTY' }),
+    ]);
 
     const failing = makeService();
     failing.notifications.createManyNotifications.mockRejectedValueOnce(new Error('down'));
