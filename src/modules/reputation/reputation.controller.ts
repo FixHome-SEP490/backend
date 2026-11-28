@@ -6,7 +6,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../shared/enums';
-import { AdjustReputationDto, QueryReputationDto } from './dto/reputation.dto';
+import { AdjustReputationDto, QueryReputationDto, QueryReputationStatsDto } from './dto/reputation.dto';
 import { ReputationService } from './reputation.service';
 
 type Req = { user: { id: string; role: string } };
@@ -24,6 +24,13 @@ export class ReputationController {
   @ApiOperation({ summary: 'SM / Admin: customers and technicians by reputation points, lowest first' })
   list(@Query() query: QueryReputationDto) {
     return this.service.list(query);
+  }
+
+  @Get('stats')
+  @RequirePermission('strike:read_all')
+  @ApiOperation({ summary: 'SM / Admin: account counts for the stat cards and the role filter, over all accounts (BUG 318)' })
+  stats(@Query() query: QueryReputationStatsDto) {
+    return this.service.stats(query);
   }
 
   @Get('me')

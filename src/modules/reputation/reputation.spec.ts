@@ -5,6 +5,7 @@ import { User } from '../users/entities/user.entity';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { clampPoints, penaltyFor, suspensionEnd } from './reputation-rules';
 import { ReputationService } from './reputation.service';
+import { REPUTATION_STATES, REPUTATION_STATE_WHERE, toReputationStats } from './reputation-stats';
 
 describe('reputation tiers (PO 08/10/2026)', () => {
   it('bans by the score after the change', () => {
@@ -242,5 +243,83 @@ describe('ReputationService.mine', () => {
 
   it('staff have no score', async () => {
     await expect(mineSetup({ id: 'a1', role: Role.ADMIN }).mine('a1')).rejects.toThrow('Chỉ khách hàng');
+  });
+});
+
+/** Chainable stand-in for TypeORM's SelectQueryBuilder that records what the service builds. */
+function recordingQb(raw: Record<string, unknown> | undefined, rows: unknown[] = []) {
+  const calls = { selects: [] as Array<[string, string | undefined]>, wheres: [] as string[], params: {} as Record<string, unknown>, count: 0 };
+  const qb: Record<string, unknown> = {};
+  const chain = (fn: (...args: any[]) => void) => (...args: any[]) => { fn(...args); return qb; };
+  Object.assign(qb, {
+    leftJoin: chain(() => undefined),
+    select: chain((s: string | string[], alias?: string) => { for (const x of [s].flat()) calls.selects.push([x, alias]); }),
+    addSelect: chain((s: string, alias?: string) => { calls.selects.push([s, alias]); }),
+    where: chain((w: string, p?: Record<string, unknown>) => { calls.wheres.push(w); Object.assign(calls.params, p); }),
+    andWhere: chain((w: string, p?: Record<string, unknown>) => { calls.wheres.push(w); Object.assign(calls.params, p); }),
+    setParameter: chain((k: string, v: unknown) => { calls.params[k] = v; }),
+    orderBy: chain(() => undefined), addOrderBy: chain(() => undefined), offset: chain(() => undefined), limit: chain(() => undefined),
+    getRawOne: vi.fn(async () => raw),
+    getCount: vi.fn(async () => { calls.count += 1; return rows.length; }),
+    getRawMany: vi.fn(async () => rows),
+  });
+  const userRepo = { createQueryBuilder: vi.fn(() => qb) };
+  const service = new ReputationService({} as never, userRepo as never, {} as never, {} as never);
+  return { service, calls, userRepo };
+}
+
+describe('reputation stat cards (BUG 318)', () => {
+  it('turns the bigint strings of one aggregate row into numbers, a missing row into zeros', () => {
+    expect(toReputationStats({ all: '12', customer: '7', technician: '5', total: '5', deducted: '3', low: '2', suspended: '1', locked: '1' }))
+      .toEqual({ roles: { all: 12, customer: 7, technician: 5 }, total: 5, deducted: 3, low: 2, suspended: 1, locked: 1 });
+    expect(toReputationStats(undefined)).toEqual({ roles: { all: 0, customer: 0, technician: 0 }, total: 0, deducted: 0, low: 0, suspended: 0, locked: 0 });
+    expect(toReputationStats({ all: 'x', locked: null }).roles.all).toBe(0);
+  });
+
+  it('reads the states from the score and ban columns the penalty rules write', () => {
+    expect(REPUTATION_STATE_WHERE.deducted).toBe('u.reputationPoints < 100');
+    expect(REPUTATION_STATE_WHERE.low).toBe('u.reputationPoints < 70');
+    // A locked account counts as locked, never also as suspended; each role reads its own ban.
+    expect(REPUTATION_STATE_WHERE.suspended).toContain(`u.status <> 'locked'`);
+    expect(REPUTATION_STATE_WHERE.suspended).toContain(`u.role = 'customer' AND u.bookingSuspendedUntil > now()`);
+    expect(REPUTATION_STATE_WHERE.suspended).toContain(`u.role = 'technician' AND tp.workSuspendedUntil > now()`);
+    expect(REPUTATION_STATE_WHERE.locked).toBe(`u.status = 'locked'`);
+    // penaltyFor bans below 70: the "low" card starts exactly at the first ban.
+    expect(penaltyFor(69).kind).toBe('suspend');
+    expect(penaltyFor(70).kind).toBe('none');
+  });
+
+  it('counts every state in a single query; the cards follow the role, the role counts do not', async () => {
+    const s = recordingQb({ all: '9', customer: '6', technician: '3', total: '3', deducted: '2', low: '1', suspended: '1', locked: '0' });
+    const stats = await s.service.stats({ role: 'technician' });
+    expect(s.userRepo.createQueryBuilder).toHaveBeenCalledTimes(1);
+    expect(stats).toEqual({ roles: { all: 9, customer: 6, technician: 3 }, total: 3, deducted: 2, low: 1, suspended: 1, locked: 0 });
+    expect(s.calls.params).toMatchObject({ scope: ['technician'], roles: ['customer', 'technician'] });
+    const aliases = s.calls.selects.map(([, alias]) => alias);
+    expect(aliases).toEqual(['all', 'customer', 'technician', 'total', ...REPUTATION_STATES]);
+    for (const state of REPUTATION_STATES) {
+      const expr = s.calls.selects.find(([, alias]) => alias === state)![0];
+      expect(expr).toContain('u.role IN (:...scope)');
+      expect(expr).toContain(REPUTATION_STATE_WHERE[state]);
+    }
+    expect(s.calls.selects.find(([, a]) => a === 'customer')![0]).not.toContain('scope');
+  });
+
+  it('counts both roles when no role is chosen, or an unknown one is sent', async () => {
+    for (const role of [undefined, 'admin']) {
+      const s = recordingQb({});
+      await s.service.stats({ role });
+      expect(s.calls.params.scope).toEqual(['customer', 'technician']);
+    }
+  });
+
+  it('filters the list by a card state with the same predicate, and ignores an unknown state', async () => {
+    const s = recordingQb(undefined, [{ id: 'u1', reputationPoints: '60' }]);
+    const page = await s.service.list({ state: 'suspended' });
+    expect(s.calls.wheres).toContain(`(${REPUTATION_STATE_WHERE.suspended})`);
+    expect(page.data[0].reputationPoints).toBe(60);
+    const other = recordingQb(undefined, []);
+    await other.service.list({ state: 'bogus' });
+    expect(other.calls.wheres.some((w) => w.includes('reputationPoints') || w.includes('locked'))).toBe(false);
   });
 });

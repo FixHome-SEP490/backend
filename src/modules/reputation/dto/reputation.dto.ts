@@ -1,6 +1,14 @@
 import { ApiPropertyOptional, ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min, MinLength, NotEquals } from 'class-validator';
+import { REPUTATION_STATES, type ReputationState } from '../reputation-stats';
+
+export class QueryReputationStatsDto {
+  @ApiPropertyOptional({ enum: ['customer', 'technician'] })
+  @IsOptional()
+  @IsIn(['customer', 'technician'])
+  role?: 'customer' | 'technician';
+}
 
 export class QueryReputationDto {
   @ApiPropertyOptional({ enum: ['customer', 'technician'] })
@@ -13,6 +21,11 @@ export class QueryReputationDto {
   @IsString()
   @MaxLength(100)
   search?: string;
+
+  @ApiPropertyOptional({ enum: REPUTATION_STATES, description: 'deducted: dưới 100 điểm, low: dưới 70, suspended: đang tạm khoá, locked: đã khoá tài khoản' })
+  @IsOptional()
+  @IsIn(REPUTATION_STATES)
+  state?: ReputationState;
 
   @ApiPropertyOptional({ default: 1 })
   @IsOptional()
