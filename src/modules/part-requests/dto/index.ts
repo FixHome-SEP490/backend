@@ -109,24 +109,63 @@ export class MarkReadyDto {
   note?: string;
 }
 
-// ── SM: inspect the faulty part of a warranty request ──
+// ── SM: count in, ship and judge the faulty parts of a warranty request, line by line ──
 
-export const FAULTY_INSPECTION_RESULTS = ['manufacturer', 'installation', 'undetermined'] as const;
-export type FaultyInspectionResult = (typeof FAULTY_INSPECTION_RESULTS)[number];
+export class FaultyReceiptItemDto {
+  @ApiProperty({ format: 'uuid' })
+  @IsUUID()
+  itemId: string;
 
-export class FaultyInspectionDto {
-  @ApiProperty({ enum: FAULTY_INSPECTION_RESULTS, description: 'manufacturer and undetermined: FixHome pays the new part; installation: the technician pays' })
-  @IsIn(FAULTY_INSPECTION_RESULTS)
-  result: FaultyInspectionResult;
+  @ApiProperty({ minimum: 1, maximum: 999, description: 'Units that arrived now (added to what was already counted in)' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(999)
+  quantity: number;
+}
 
-  @ApiPropertyOptional({ minLength: 10, maxLength: 2000, description: 'Required for installation' })
+export class FaultyReceiptDto {
+  @ApiProperty({ type: [FaultyReceiptItemDto], minItems: 1, maxItems: 50 })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => FaultyReceiptItemDto)
+  items: FaultyReceiptItemDto[];
+
+  @ApiPropertyOptional({ maxLength: 500 })
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @MaxLength(500)
+  note?: string;
+}
+
+export class FaultyItemIdsDto {
+  @ApiProperty({ type: [String], minItems: 1, maxItems: 50 })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(50)
+  @IsUUID(undefined, { each: true })
+  itemIds: string[];
+}
+
+export const FAULTY_MANUFACTURER_RESULTS = ['accepted', 'rejected'] as const;
+export type FaultyManufacturerResult = (typeof FAULTY_MANUFACTURER_RESULTS)[number];
+
+export class FaultyResultDto extends FaultyItemIdsDto {
+  @ApiProperty({ enum: FAULTY_MANUFACTURER_RESULTS, description: 'accepted: manufacturer fault, FixHome pays; rejected: installation fault, the technician pays the received units' })
+  @IsIn(FAULTY_MANUFACTURER_RESULTS)
+  result: FaultyManufacturerResult;
+
+  @ApiPropertyOptional({ minLength: 10, maxLength: 2000, description: 'Required for rejected' })
   @IsOptional()
   @IsString()
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @Length(10, 2000)
   note?: string;
 
-  @ApiPropertyOptional({ type: [String], maxItems: 10, description: 'Photos of the faulty part; required for installation' })
+  @ApiPropertyOptional({ type: [String], maxItems: 10, description: "The manufacturer's reply; at least one required for rejected" })
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(10)

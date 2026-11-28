@@ -76,7 +76,11 @@ export interface WarrantyClaimDetailDto extends StaffWarrantyClaimDto {
       faultyReturnNote: string | null;
       faultyReturnEvidence: string[] | null;
       faultyReturnChargedAt: Date | null;
-      items: { id: string; name: string; quantity: number; unitPrice: number; usageStatus: string }[];
+      items: {
+        id: string; name: string; quantity: number; unitPrice: number; usageStatus: string;
+        /** Where the faulty units of this line are, and how many the warehouse counted in. */
+        faultyStatus: string | null; faultyReceivedQty: number; faultyResultNote: string | null; faultyResultEvidence: string[] | null;
+      }[];
     } | null;
     otherClaims: { id: string; status: string; submittedAt: Date; itemDescription: string }[];
   };
@@ -176,7 +180,10 @@ export class WarrantyClaimDetailService {
               faultyReturnNote: request.faultyReturnNote ?? null,
               faultyReturnEvidence: request.faultyReturnEvidence ?? null,
               faultyReturnChargedAt: request.faultyReturnChargedAt ?? null,
-              items: requestItems.map((i) => ({ id: i.id, name: i.partNameSnapshot, quantity: i.quantity, unitPrice: Number(i.unitPriceSnapshot), usageStatus: i.usageStatus })),
+              items: requestItems.map((i) => ({ id: i.id, name: i.partNameSnapshot, quantity: i.quantity, unitPrice: Number(i.unitPriceSnapshot), usageStatus: i.usageStatus,
+                faultyStatus: i.faultyStatus ?? null, faultyReceivedQty: i.faultyReceivedQty ?? 0,
+                faultyResultNote: i.faultyResultNote ?? null, faultyResultEvidence: i.faultyResultEvidence ?? null,
+              })),
             }
           : null,
         otherClaims: others.map((c) => ({ id: c.id, status: c.status, submittedAt: c.submittedAt, itemDescription: lineLabel(c.warrantyCoverageId) })),

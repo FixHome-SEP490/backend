@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { describe, expect, it, vi } from 'vitest';
 import { ErrorCodes } from '../../shared/constants/error-codes';
 import {
+  FaultyPartStatus,
   FulfillmentMethod,
   PartRequestStatus,
   PartRequestType,
@@ -31,6 +32,7 @@ const make = (options: { claimStatus?: WarrantyClaimStatus; requestStatus?: Part
   const item: any = {
     id: 'it-1', partRequestId: 'pr-1', partCatalogId: 'part-9', partSource: PartSource.FIXHOME,
     usageStatus: PartUsageStatus.PENDING, quantity: 1, unitPriceSnapshot: 400_000,
+    faultyStatus: FaultyPartStatus.AWAITING, faultyReceivedQty: 0,
   };
   const request: any = {
     id: 'pr-1', serviceOrderId: 'order-1', technicianId: TECH.id, requestType: PartRequestType.WARRANTY,
@@ -52,8 +54,8 @@ const make = (options: { claimStatus?: WarrantyClaimStatus; requestStatus?: Part
     create: vi.fn((_entity: unknown, value: object) => ({ id: 'pr-new', ...value })),
   };
   const cost = {
-    startReturnClock: vi.fn().mockResolvedValue(undefined), chargeForInstallation: vi.fn().mockResolvedValue(undefined),
-    refundUnreturned: vi.fn().mockResolvedValue(undefined), creditReturned: vi.fn().mockResolvedValue(undefined),
+    startReturnClock: vi.fn().mockResolvedValue(undefined), refundReceived: vi.fn().mockResolvedValue(undefined),
+    chargeRejected: vi.fn().mockResolvedValue(undefined), creditReturned: vi.fn().mockResolvedValue(undefined),
   };
   const audit = { logWithManager: vi.fn().mockResolvedValue(undefined) };
   const service = new PartRequestsService(
@@ -123,10 +125,7 @@ describe('createWarrantyRequest', () => {
   });
 });
 
-describe('bringing the faulty part back and inspecting it', () => {
-  const dto = (overrides: Record<string, unknown> = {}) => ({ result: 'manufacturer', ...overrides }) as any;
-  const installation = { result: 'installation', note: 'Đấu sai cực dây nguồn, chân cắm cháy.', evidenceRefs: ['photo-1'] };
-  const returned = (f: ReturnType<typeof make>) => { f.request.faultyReturnedAt = new Date(); return f; };
+describe('bringing the faulty part back, counting it in and the manufacturer verdict', () => {
 
   it('hands over the replacement without waiting for the faulty part: the manager does not inspect first', async () => {
     const f = make({ requestStatus: PartRequestStatus.REQUESTED });
@@ -168,47 +167,82 @@ describe('bringing the faulty part back and inspecting it', () => {
     await expect(f.service.returnFaultyPart('pr-1', {}, TECH)).resolves.toMatchObject({ faultyReturnedAt: expect.any(Date) });
   });
 
-  it('inspects only after the faulty part is back', async () => {
+  it('counts faulty units in line by line: a partial count keeps the line open, the rest completes it', async () => {
     const f = make({ requestStatus: PartRequestStatus.RECEIVED });
+    f.item.quantity = 2;
 
-    await expect(f.service.recordFaultyInspection('pr-1', dto(), SM)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
-    expect(f.request.faultyInspectionResult).toBeUndefined();
+    await f.service.receiveFaultyParts('pr-1', { items: [{ itemId: 'it-1', quantity: 1 }] }, SM);
+    expect(f.item).toMatchObject({ faultyReceivedQty: 1, faultyStatus: FaultyPartStatus.PARTIAL });
+
+    await f.service.receiveFaultyParts('pr-1', { items: [{ itemId: 'it-1', quantity: 1 }] }, SM);
+    expect(f.item).toMatchObject({ faultyReceivedQty: 2, faultyStatus: FaultyPartStatus.RECEIVED });
+    expect(f.cost.refundReceived).toHaveBeenCalledTimes(2);
+    expect(f.audit.logWithManager).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'WARRANTY_FAULTY_PART_RECEIVED' }));
   });
 
-  it('decides who pays: installation is the technician, manufacturer and undetermined are FixHome', async () => {
-    for (const [result, charged] of [['installation', true], ['manufacturer', false], ['undetermined', false]] as const) {
-      const f = returned(make({ requestStatus: PartRequestStatus.RECEIVED, charge: !charged }));
-      await f.service.recordFaultyInspection('pr-1', result === 'installation' ? installation as any : dto({ result }), SM);
-      expect(f.request).toMatchObject({ faultyInspectionResult: result, chargeTechnician: charged, faultyInspectedBy: SM.id });
-      expect(f.cost.chargeForInstallation).toHaveBeenCalledWith(expect.anything(), f.request);
-      expect(f.cost.refundUnreturned).toHaveBeenCalledWith(expect.anything(), f.request);
-      expect(f.audit.logWithManager).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'WARRANTY_FAULTY_PART_INSPECTED' }));
+  it('refuses counting in more than is missing, a foreign line, and a line already sent to the manufacturer', async () => {
+    const f = make({ requestStatus: PartRequestStatus.RECEIVED });
+    f.item.quantity = 2;
+    await expect(f.service.receiveFaultyParts('pr-1', { items: [{ itemId: 'it-1', quantity: 3 }] }, SM)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+    await expect(f.service.receiveFaultyParts('pr-1', { items: [{ itemId: 'nope', quantity: 1 }] }, SM)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+    expect(f.item.faultyReceivedQty).toBe(0);
+
+    f.item.faultyStatus = FaultyPartStatus.SENT_TO_MANUFACTURER;
+    await expect(f.service.receiveFaultyParts('pr-1', { items: [{ itemId: 'it-1', quantity: 1 }] }, SM)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+  });
+
+  it('counts in only after the technician received the replacement', async () => {
+    const f = make({ requestStatus: PartRequestStatus.READY });
+    await expect(f.service.receiveFaultyParts('pr-1', { items: [{ itemId: 'it-1', quantity: 1 }] }, SM)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+  });
+
+  it('sends only counted-in lines to the manufacturer', async () => {
+    const f = make({ requestStatus: PartRequestStatus.RECEIVED });
+    await expect(f.service.sendFaultyToManufacturer('pr-1', { itemIds: ['it-1'] }, SM)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
+
+    Object.assign(f.item, { faultyReceivedQty: 1, faultyStatus: FaultyPartStatus.RECEIVED });
+    await f.service.sendFaultyToManufacturer('pr-1', { itemIds: ['it-1'] }, SM);
+    expect(f.item).toMatchObject({ faultyStatus: FaultyPartStatus.SENT_TO_MANUFACTURER, faultySentAt: expect.any(Date) });
+  });
+
+  it('records the manufacturer verdict: accepted charges nobody, rejected charges the technician for the received units', async () => {
+    for (const result of ['accepted', 'rejected'] as const) {
+      const f = make({ requestStatus: PartRequestStatus.RECEIVED, charge: false });
+      Object.assign(f.item, { faultyReceivedQty: 1, faultyStatus: FaultyPartStatus.SENT_TO_MANUFACTURER });
+      const dto = result === 'rejected'
+        ? { itemIds: ['it-1'], result, note: 'Hãng báo chân cắm cháy do đấu sai.', evidenceRefs: ['mail-1'] }
+        : { itemIds: ['it-1'], result };
+      await f.service.recordManufacturerResult('pr-1', dto as any, SM);
+      expect(f.item.faultyStatus).toBe(result === 'rejected' ? FaultyPartStatus.MANUFACTURER_REJECTED : FaultyPartStatus.MANUFACTURER_ACCEPTED);
+      expect(f.item.faultyResolvedBy).toBe(SM.id);
+      expect(f.cost.chargeRejected).toHaveBeenCalledTimes(result === 'rejected' ? 1 : 0);
+      expect(f.request.chargeTechnician).toBe(result === 'rejected');
     }
   });
 
-  it('refuses an installation verdict without a written reason and a photo, and bad input', async () => {
-    for (const bad of [{ result: 'installation' }, { ...installation, note: 'ngắn' }, { ...installation, evidenceRefs: [] }]) {
-      const f = returned(make({ requestStatus: PartRequestStatus.RECEIVED }));
-      await expect(f.service.recordFaultyInspection('pr-1', bad as any, SM)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
-      expect(f.request.faultyInspectionResult).toBeUndefined();
+  it('refuses a rejection without a written reason and the reply, a line not yet sent, and a second verdict', async () => {
+    for (const bad of [{ note: 'ngắn', evidenceRefs: ['a'] }, { note: 'Đấu sai cực dây nguồn.', evidenceRefs: [] }, {}]) {
+      const f = make({ requestStatus: PartRequestStatus.RECEIVED });
+      Object.assign(f.item, { faultyReceivedQty: 1, faultyStatus: FaultyPartStatus.SENT_TO_MANUFACTURER });
+      await expect(f.service.recordManufacturerResult('pr-1', { itemIds: ['it-1'], result: 'rejected', ...bad } as any, SM)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+      expect(f.item.faultyStatus).toBe(FaultyPartStatus.SENT_TO_MANUFACTURER);
     }
-  });
+    const unsent = make({ requestStatus: PartRequestStatus.RECEIVED });
+    await expect(unsent.service.recordManufacturerResult('pr-1', { itemIds: ['it-1'], result: 'accepted' } as any, SM)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
 
-  it('records the result once: it moves money, so a change goes through a support case', async () => {
-    const f = returned(make({ requestStatus: PartRequestStatus.RECEIVED }));
-    await f.service.recordFaultyInspection('pr-1', dto(), SM);
-
-    await expect(f.service.recordFaultyInspection('pr-1', installation as any, SM)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
-    expect(f.request.faultyInspectionResult).toBe('manufacturer');
+    const once = make({ requestStatus: PartRequestStatus.RECEIVED });
+    Object.assign(once.item, { faultyReceivedQty: 1, faultyStatus: FaultyPartStatus.SENT_TO_MANUFACTURER });
+    await once.service.recordManufacturerResult('pr-1', { itemIds: ['it-1'], result: 'accepted' } as any, SM);
+    await expect(once.service.recordManufacturerResult('pr-1', { itemIds: ['it-1'], result: 'rejected', note: 'Đấu sai cực dây nguồn.', evidenceRefs: ['a'] } as any, SM)).rejects.toMatchObject({ response: { code: ErrorCodes.CONFLICT } });
   });
 
   it('is for service managers and warranty requests only', async () => {
-    const tech = returned(make({ requestStatus: PartRequestStatus.RECEIVED }));
-    await expect(tech.service.recordFaultyInspection('pr-1', dto(), TECH)).rejects.toThrow(/Service Manager/);
+    const tech = make({ requestStatus: PartRequestStatus.RECEIVED });
+    await expect(tech.service.receiveFaultyParts('pr-1', { items: [{ itemId: 'it-1', quantity: 1 }] }, TECH)).rejects.toThrow(/Service Manager/);
 
-    const ordinary = returned(make({ requestStatus: PartRequestStatus.RECEIVED }));
+    const ordinary = make({ requestStatus: PartRequestStatus.RECEIVED });
     ordinary.request.requestType = PartRequestType.ADDITIONAL;
-    await expect(ordinary.service.recordFaultyInspection('pr-1', dto(), SM)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
+    await expect(ordinary.service.receiveFaultyParts('pr-1', { items: [{ itemId: 'it-1', quantity: 1 }] }, SM)).rejects.toMatchObject({ response: { code: ErrorCodes.VALIDATION_FAILED } });
   });
 });
 
@@ -220,7 +254,7 @@ describe('handover and use of a warranty part after the order completed', () => 
 
     expect(saved.status).toBe(PartRequestStatus.RECEIVED);
     expect(cost.startReturnClock).toHaveBeenCalledWith(expect.anything(), request);
-    expect(cost.chargeForInstallation).not.toHaveBeenCalled();
+    expect(cost.chargeRejected).not.toHaveBeenCalled();
   });
 
   it('refuses another technician, a customer and a closed claim', async () => {

@@ -11,6 +11,7 @@ import {
   WarrantyVisitStatus,
 } from '../../shared/enums';
 import { PartRequest } from '../part-requests/entities/part-request.entity';
+import { PartRequestItem } from '../part-requests/entities/part-request-item.entity';
 import { PartRequestsService } from '../part-requests/part-requests.service';
 import { BusinessConfigService } from '../system-config/business-config.service';
 import { WarrantyClaim } from './entities/warranty-claim.entity';
@@ -113,20 +114,23 @@ export class WarrantySweepService implements OnModuleInit, OnModuleDestroy {
     const open = await this.dataSource.getRepository(PartRequest).find({
       where: {
         requestType: PartRequestType.WARRANTY, status: In([PartRequestStatus.RECEIVED, PartRequestStatus.COMPLETED]),
-        faultyReturnedAt: IsNull(), faultyReturnChargedAt: IsNull(), faultyReturnDueAt: Not(IsNull()),
+        faultyReturnChargedAt: IsNull(), faultyReturnDueAt: Not(IsNull()),
       },
       take: BATCH,
     });
     for (const { id } of open) {
       const outcome = await this.dataSource.transaction(async (tx) => {
         const row = await tx.findOne(PartRequest, { where: { id }, lock: { mode: 'pessimistic_write' } });
-        if (!row || row.faultyReturnedAt || row.faultyReturnChargedAt || !row.faultyReturnDueAt) return null;
+        if (!row || row.faultyReturnChargedAt || !row.faultyReturnDueAt) return null;
+        // Only the manager counting units in stops the clock; the technician's hand-in does not.
+        row.items = await tx.find(PartRequestItem, { where: { partRequestId: id } });
+        if (!row.items.some((item) => item.faultyReceivedQty < item.quantity)) return null;
         const due = new Date(row.faultyReturnDueAt).getTime();
         if (due <= now.getTime()) {
           await this.cost.chargeUnreturned(tx, row);
           return { kind: 'overdue' as const, row };
         }
-        if (!row.faultyReturnRemindedAt && due - now.getTime() <= reminderHours * HOUR_MS) {
+        if (!row.faultyReturnedAt && !row.faultyReturnRemindedAt && due - now.getTime() <= reminderHours * HOUR_MS) {
           await tx.update(PartRequest, row.id, { faultyReturnRemindedAt: now });
           return { kind: 'reminder' as const, row };
         }
@@ -142,7 +146,7 @@ export class WarrantySweepService implements OnModuleInit, OnModuleDestroy {
       } else {
         await this.notifier.toUser(
           outcome.row.technicianId, 'Đã trừ ví vì chưa nộp linh kiện hỏng',
-          'Quá hạn nộp linh kiện hỏng nên giá linh kiện thay thế đã bị trừ. Nộp về kho và được kiểm tra không do lắp đặt sẽ được hoàn lại.',
+          'Quá hạn nộp linh kiện hỏng nên giá phần chưa được kho nhận đã bị trừ. Kho nhận linh kiện sẽ hoàn lại phần tương ứng.',
           'WARRANTY_FAULTY_PART_OVERDUE', outcome.row.serviceOrderId,
         );
         await this.notifier.toManagers(

@@ -1,7 +1,7 @@
 // src/modules/part-requests/entities/part-request-item.entity.ts
 import { Entity, Column, ManyToOne, JoinColumn } from 'typeorm';
 import { BaseEntity } from '../../../database/base.entity';
-import { PartSource, PartUsageStatus } from '../../../shared/enums';
+import { FaultyPartStatus, PartSource, PartUsageStatus } from '../../../shared/enums';
 import { PartRequest } from './part-request.entity';
 
 @Entity('part_request_items')
@@ -44,4 +44,29 @@ export class PartRequestItem extends BaseEntity {
 
   @Column({ type: 'text', nullable: true })
   note?: string | null;
+
+  // Warranty requests only: the faulty units of this line, counted in by the manager.
+  @Column({ name: 'faulty_status', type: 'varchar', length: 30, nullable: true })
+  faultyStatus?: FaultyPartStatus | null;
+
+  @Column({ name: 'faulty_received_qty', type: 'int', default: 0 })
+  faultyReceivedQty: number;
+
+  @Column({ name: 'faulty_received_at', type: 'timestamptz', nullable: true })
+  faultyReceivedAt?: Date | null;
+
+  @Column({ name: 'faulty_sent_at', type: 'timestamptz', nullable: true })
+  faultySentAt?: Date | null;
+
+  @Column({ name: 'faulty_result_note', type: 'text', nullable: true })
+  faultyResultNote?: string | null;
+
+  @Column({ name: 'faulty_result_evidence', type: 'jsonb', nullable: true })
+  faultyResultEvidence?: string[] | null;
+
+  @Column({ name: 'faulty_resolved_at', type: 'timestamptz', nullable: true })
+  faultyResolvedAt?: Date | null;
+
+  @Column({ name: 'faulty_resolved_by', type: 'uuid', nullable: true })
+  faultyResolvedBy?: string | null;
 }

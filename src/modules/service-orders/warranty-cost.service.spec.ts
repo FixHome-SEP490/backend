@@ -117,24 +117,23 @@ describe('settleUnfixed', () => {
 });
 
 describe('a part caused by the technician', () => {
-  it('is charged at its selling price once the manager finds an installation fault, once', async () => {
+  it('is charged for the received units once the manufacturer rejects the claim, once', async () => {
     const { service, manager, walletService } = make();
+    const line = { id: 'it-1', quantity: 2, unitPriceSnapshot: 150_000, faultyReceivedQty: 1 } as any;
 
-    await service.chargeForInstallation(manager, request());
+    await service.chargeRejected(manager, request(), line);
 
     expect(walletService.mutateBalance).toHaveBeenCalledWith(expect.objectContaining({
-      walletId: 'wallet-of-tech-2', type: WalletTransactionType.ADJUSTMENT, debit: true, amount: 400_000,
-      allowNegative: true, idempotencyKey: 'WARRANTY_PART:pr-1', referenceId: 'claim-1',
+      walletId: 'wallet-of-tech-2', type: WalletTransactionType.ADJUSTMENT, debit: true, amount: 150_000,
+      allowNegative: true, idempotencyKey: 'WARRANTY_PART_REJECT:it-1', referenceId: 'claim-1',
     }));
-    expect(manager.update).toHaveBeenCalledWith(expect.anything(), 'pr-1', { faultyReturnChargedAt: expect.any(Date) });
   });
 
-  it('is never charged for a fault that is not the installation, a non-warranty request, or a part that costs nothing', async () => {
+  it('is never charged for a rejection on a non-warranty request, or for a line nothing was received of', async () => {
     const { service, manager, walletService } = make();
 
-    await service.chargeForInstallation(manager, request({ chargeTechnician: false }));
-    await service.chargeForInstallation(manager, request({ requestType: PartRequestType.ADDITIONAL }));
-    await service.chargeForInstallation(manager, request({ items: [{ id: 'it-1', quantity: 1, unitPriceSnapshot: 0 }] }));
+    await service.chargeRejected(manager, request({ requestType: PartRequestType.ADDITIONAL }), { id: 'it-1', quantity: 1, unitPriceSnapshot: 1000, faultyReceivedQty: 1 } as any);
+    await service.chargeRejected(manager, request(), { id: 'it-1', quantity: 1, unitPriceSnapshot: 1000, faultyReceivedQty: 0 } as any);
 
     expect(walletService.mutateBalance).not.toHaveBeenCalled();
   });
@@ -155,32 +154,42 @@ describe('a part caused by the technician', () => {
     expect(other.manager.update).not.toHaveBeenCalled();
   });
 
-  it('is charged when the faulty part is overdue, under the same key as an installation charge so it never doubles', async () => {
+  it('charges only the units the warehouse has not counted in when the deadline passes', async () => {
     const { service, manager, walletService } = make();
+    const row = request({ items: [
+      { id: 'it-1', quantity: 2, unitPriceSnapshot: 150_000, faultyReceivedQty: 1 },
+      { id: 'it-2', quantity: 1, unitPriceSnapshot: 100_000, faultyReceivedQty: 1 },
+    ] });
 
-    await service.chargeUnreturned(manager, request({ chargeTechnician: false }));
+    await service.chargeUnreturned(manager, row);
 
     expect(walletService.mutateBalance).toHaveBeenCalledWith(expect.objectContaining({
-      debit: true, amount: 400_000, allowNegative: true, idempotencyKey: 'WARRANTY_PART:pr-1',
+      debit: true, amount: 150_000, allowNegative: true, idempotencyKey: 'WARRANTY_PART:pr-1',
     }));
+    expect(manager.update).toHaveBeenCalledWith(expect.anything(), 'pr-1', { faultyReturnChargedAt: expect.any(Date) });
   });
 
-  it('gives an overdue charge back, once, when the manager finds it was not the installation', async () => {
+  it('charges nothing at the deadline when every unit was counted in', async () => {
     const { service, manager, walletService } = make();
-    const charged = request({ chargeTechnician: false, faultyReturnChargedAt: new Date() });
 
-    await service.refundUnreturned(manager, charged);
+    await service.chargeUnreturned(manager, request({ items: [{ id: 'it-1', quantity: 2, unitPriceSnapshot: 150_000, faultyReceivedQty: 2 }] }));
+
+    expect(walletService.mutateBalance).not.toHaveBeenCalled();
+  });
+
+  it('gives back the price of units counted in after the overdue charge, once per count-in', async () => {
+    const { service, manager, walletService } = make();
+    const line = { id: 'it-1', quantity: 2, unitPriceSnapshot: 150_000, faultyReceivedQty: 1 } as any;
+
+    await service.refundReceived(manager, request({ faultyReturnChargedAt: new Date() }), line, 1);
 
     expect(walletService.mutateBalance).toHaveBeenCalledWith(expect.objectContaining({
-      type: WalletTransactionType.ADJUSTMENT, amount: 400_000, idempotencyKey: 'WARRANTY_PART_REFUND:pr-1',
+      type: WalletTransactionType.ADJUSTMENT, amount: 150_000, idempotencyKey: 'WARRANTY_PART_RECEIVED:it-1:1',
     }));
     expect(walletService.mutateBalance.mock.calls[0][0].debit).toBeUndefined();
 
-    const installation = make();
-    await installation.service.refundUnreturned(installation.manager, request({ chargeTechnician: true, faultyReturnChargedAt: new Date() }));
     const neverCharged = make();
-    await neverCharged.service.refundUnreturned(neverCharged.manager, request({ chargeTechnician: false }));
-    expect(installation.walletService.mutateBalance).not.toHaveBeenCalled();
+    await neverCharged.service.refundReceived(neverCharged.manager, request(), line, 1);
     expect(neverCharged.walletService.mutateBalance).not.toHaveBeenCalled();
   });
 

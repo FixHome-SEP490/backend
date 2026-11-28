@@ -11,6 +11,7 @@ import {
   PartRequestType,
   FulfillmentMethod,
   PartUsageStatus,
+  FaultyPartStatus,
   PartSource,
   Role,
   ServiceOrderStatus,
@@ -53,7 +54,9 @@ import {
   ReceivePartRequestDto,
   UpdateItemUsageDto,
   MarkReadyDto,
-  FaultyInspectionDto,
+  FaultyItemIdsDto,
+  FaultyReceiptDto,
+  FaultyResultDto,
   FaultyReturnDto,
   MarkDeliveringDto,
   QueryPartRequestsDto,
@@ -87,7 +90,7 @@ export class PartRequestsService {
     try {
       const notifier = this.moduleRef?.get(WarrantyNotifier, { strict: false });
       await notifier?.toManagers(
-        'Kỹ thuật viên đã nộp linh kiện hỏng', 'Một yêu cầu bảo hành có linh kiện hỏng đã nộp về kho, cần kiểm tra.',
+        'Kỹ thuật viên đã nộp linh kiện hỏng', 'Một yêu cầu bảo hành có linh kiện hỏng đã nộp về kho, cần xác nhận đã nhận.',
         'WARRANTY_FAULTY_PART_RETURNED', request.serviceOrderId,
       );
     } catch { /* the notice is a convenience; the return is already recorded */ }
@@ -178,8 +181,8 @@ export class PartRequestsService {
   /**
    * Free FixHome parts for a warranty re-service (PO 04/11/2026). Created in the approval
    * transaction; the claim's technician collects them with the usual READY and QR handover.
-   * Who pays the part is decided later by the manager's inspection of the faulty part, which must
-   * precede READY. Staff approve; there is no price on the customer's side.
+   * Who pays the part is decided later by the manufacturer's verdict on the faulty part. Staff approve;
+   * there is no price on the customer's side.
    */
   async createWarrantyRequest(
     manager: EntityManager,
@@ -204,14 +207,14 @@ export class PartRequestsService {
       if (!part) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Approved part is no longer active in FixHome catalog');
       rows.push({
         partCatalogId, partSource: PartSource.FIXHOME, partNameSnapshot: part.name, quantity,
-        unitPriceSnapshot: Number(part.sellingPrice), usageStatus: PartUsageStatus.PENDING,
+        unitPriceSnapshot: Number(part.sellingPrice), usageStatus: PartUsageStatus.PENDING, faultyStatus: FaultyPartStatus.AWAITING,
       });
     }
     const request = await manager.save(PartRequest, manager.create(PartRequest, {
       serviceOrderId: claim.serviceOrderId, technicianId: claim.technicianId, requestType: PartRequestType.WARRANTY,
       fulfillmentMethod: FulfillmentMethod.PICKUP, shippingFee: 0, status: PartRequestStatus.REQUESTED,
       warrantyClaimId: claim.id, chargeTechnician: false,
-      reason: 'Warranty part: faulty part must be inspected before it is issued',
+      reason: 'Warranty part: the faulty part is returned and sent to the manufacturer',
     }));
     request.items = await manager.save(PartRequestItem, rows.map((row) => ({ ...row, partRequestId: request.id })) as PartRequestItem[]);
     await this.auditLogService.logWithManager(manager, {
@@ -263,44 +266,132 @@ export class PartRequestsService {
     return this.visible(result.request, actor);
   }
 
+  /** The line's status once its units are counted in. */
+  private static countedIn(item: PartRequestItem): FaultyPartStatus {
+    return item.faultyReceivedQty >= item.quantity ? FaultyPartStatus.RECEIVED : FaultyPartStatus.PARTIAL;
+  }
+
+  private pickFaultyLines(request: PartRequest, ids: string[]): PartRequestItem[] {
+    const lines = [...new Set(ids)].map((id) => request.items.find((item) => item.id === id));
+    if (lines.some((line) => !line)) throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Dòng linh kiện không thuộc yêu cầu này.');
+    return lines as PartRequestItem[];
+  }
+
   /**
-   * What the manager found on the faulty part (PO 04/11/2026). Installation fault: the technician pays
-   * the new part; manufacturer fault and undetermined: FixHome pays. The part must be back first, and the
-   * result is recorded once: it moves money, so a change goes through a support case.
+   * The manager counts faulty units in at the warehouse (PO 28/11/2026), line by line and as often as
+   * needed. This, not the technician's hand-in, stops the overdue charge: units counted in after a charge
+   * give their price back.
    */
-  async recordFaultyInspection(requestId: string, dto: FaultyInspectionDto, actor: { id: string; role: string }): Promise<PartRequest> {
+  async receiveFaultyParts(requestId: string, dto: FaultyReceiptDto, actor: { id: string; role: string }): Promise<PartRequest> {
     if (actor.role !== Role.SERVICE_MANAGER) throw new ForbiddenException('Service Manager role required');
-    return this.dataSource.transaction(async (manager: EntityManager) => {
+    const result = await this.dataSource.transaction(async (manager: EntityManager) => {
       const request = await this.lockWarrantyForFaultyPart(manager, requestId, actor);
-      if (!request.faultyReturnedAt) {
-        throw new BusinessException(ErrorCodes.CONFLICT, 'Kỹ thuật viên chưa nộp linh kiện hỏng về kho nên chưa kiểm tra được.');
+      if (![PartRequestStatus.RECEIVED, PartRequestStatus.COMPLETED].includes(request.status)) {
+        throw new BusinessException(ErrorCodes.CONFLICT, 'Kỹ thuật viên chưa nhận linh kiện thay thế nên chưa có linh kiện hỏng để nhận.');
       }
-      if (request.faultyInspectionResult) {
-        throw new BusinessException(ErrorCodes.CONFLICT, 'Đã ghi kết quả kiểm tra linh kiện hỏng. Muốn đổi, hãy xử lý qua hồ sơ hỗ trợ.');
+      const lines = this.pickFaultyLines(request, dto.items.map((entry) => entry.itemId));
+      const summary: Array<{ itemId: string; quantity: number }> = [];
+      for (const entry of dto.items) {
+        const item = lines.find((line) => line.id === entry.itemId)!;
+        if (item.faultyStatus !== FaultyPartStatus.AWAITING && item.faultyStatus !== FaultyPartStatus.PARTIAL) {
+          throw new BusinessException(ErrorCodes.CONFLICT, `${item.partNameSnapshot}: đã nhận đủ hoặc đã gửi hãng.`);
+        }
+        if (item.faultyReceivedQty + entry.quantity > item.quantity) {
+          throw new BusinessException(ErrorCodes.VALIDATION_FAILED, `${item.partNameSnapshot}: chỉ còn thiếu ${item.quantity - item.faultyReceivedQty}.`);
+        }
+        item.faultyReceivedQty += entry.quantity;
+        item.faultyStatus = PartRequestsService.countedIn(item);
+        item.faultyReceivedAt = new Date();
+        await manager.save(PartRequestItem, item);
+        await this.warrantyCost()?.refundReceived(manager, request, item, entry.quantity);
+        summary.push({ itemId: item.id, quantity: entry.quantity });
       }
-      const note = dto.note?.trim() ?? '';
-      const evidence = dto.evidenceRefs?.map((ref) => ref.trim()).filter(Boolean) ?? [];
-      if (dto.result === 'installation' && (note.length < 10 || !evidence.length)) {
-        throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Kết luận do lắp đặt cần ghi chú và ít nhất một ảnh linh kiện hỏng.');
-      }
-      request.faultyInspectionResult = dto.result;
-      request.faultyInspectionNote = note || null;
-      request.faultyInspectionEvidence = evidence.length ? evidence : null;
-      request.faultyInspectedAt = new Date();
-      request.faultyInspectedBy = actor.id;
-      request.chargeTechnician = dto.result === 'installation';
-      const saved = await manager.save(PartRequest, request);
-      // Installation fault: the technician pays (once, even if the overdue charge already took it).
-      // Any other result: a charge taken only for being late is given back.
-      await this.warrantyCost()?.chargeForInstallation(manager, saved);
-      await this.warrantyCost()?.refundUnreturned(manager, saved);
       await this.auditLogService.logWithManager(manager, {
-        actorUserId: actor.id, actorRole: actor.role, action: 'WARRANTY_FAULTY_PART_INSPECTED',
-        resourceType: 'part_request', resourceId: requestId,
-        after: { result: dto.result, chargeTechnician: saved.chargeTechnician },
+        actorUserId: actor.id, actorRole: actor.role, action: 'WARRANTY_FAULTY_PART_RECEIVED',
+        resourceType: 'part_request', resourceId: requestId, after: { items: summary, note: dto.note?.trim() || null },
       });
-      return saved;
+      return request;
     });
+    await this.notifyTechnician(result, 'Kho đã nhận linh kiện hỏng', 'Quản lý dịch vụ đã xác nhận nhận linh kiện hỏng của bạn.');
+    return this.visible(result, actor);
+  }
+
+  /** Counted-in lines go to the manufacturer, which judges them. A line sent on is closed to further count-ins. */
+  async sendFaultyToManufacturer(requestId: string, dto: FaultyItemIdsDto, actor: { id: string; role: string }): Promise<PartRequest> {
+    if (actor.role !== Role.SERVICE_MANAGER) throw new ForbiddenException('Service Manager role required');
+    const result = await this.dataSource.transaction(async (manager: EntityManager) => {
+      const request = await this.lockWarrantyForFaultyPart(manager, requestId, actor);
+      const lines = this.pickFaultyLines(request, dto.itemIds);
+      for (const item of lines) {
+        if (item.faultyReceivedQty < 1 || ![FaultyPartStatus.PARTIAL, FaultyPartStatus.RECEIVED].includes(item.faultyStatus as FaultyPartStatus)) {
+          throw new BusinessException(ErrorCodes.CONFLICT, `${item.partNameSnapshot}: cần nhận linh kiện hỏng về kho trước khi gửi hãng.`);
+        }
+        item.faultyStatus = FaultyPartStatus.SENT_TO_MANUFACTURER;
+        item.faultySentAt = new Date();
+        await manager.save(PartRequestItem, item);
+      }
+      await this.auditLogService.logWithManager(manager, {
+        actorUserId: actor.id, actorRole: actor.role, action: 'WARRANTY_FAULTY_PART_SENT',
+        resourceType: 'part_request', resourceId: requestId, after: { itemIds: lines.map((line) => line.id) },
+      });
+      return request;
+    });
+    return this.visible(result, actor);
+  }
+
+  /**
+   * The manufacturer's verdict (PO 28/11/2026); the manager records it and never judges the part.
+   * Accepted: a manufacturer fault, FixHome pays. Rejected: the fault came from the installation and the
+   * technician pays the received units. Recorded once per line: it moves money, so a change goes through
+   * a support case.
+   */
+  async recordManufacturerResult(requestId: string, dto: FaultyResultDto, actor: { id: string; role: string }): Promise<PartRequest> {
+    if (actor.role !== Role.SERVICE_MANAGER) throw new ForbiddenException('Service Manager role required');
+    const note = dto.note?.trim() ?? '';
+    const evidence = dto.evidenceRefs?.map((ref) => ref.trim()).filter(Boolean) ?? [];
+    if (dto.result === 'rejected' && (note.length < 10 || !evidence.length)) {
+      throw new BusinessException(ErrorCodes.VALIDATION_FAILED, 'Hãng từ chối cần ghi chú và ít nhất một ảnh phản hồi của hãng.');
+    }
+    const result = await this.dataSource.transaction(async (manager: EntityManager) => {
+      const request = await this.lockWarrantyForFaultyPart(manager, requestId, actor);
+      const lines = this.pickFaultyLines(request, dto.itemIds);
+      for (const item of lines) {
+        if (item.faultyStatus !== FaultyPartStatus.SENT_TO_MANUFACTURER) {
+          throw new BusinessException(ErrorCodes.CONFLICT, `${item.partNameSnapshot}: chưa gửi hãng hoặc đã có kết quả. Muốn đổi, hãy xử lý qua hồ sơ hỗ trợ.`);
+        }
+        item.faultyStatus = dto.result === 'rejected' ? FaultyPartStatus.MANUFACTURER_REJECTED : FaultyPartStatus.MANUFACTURER_ACCEPTED;
+        item.faultyResultNote = note || null;
+        item.faultyResultEvidence = evidence.length ? evidence : null;
+        item.faultyResolvedAt = new Date();
+        item.faultyResolvedBy = actor.id;
+        await manager.save(PartRequestItem, item);
+        if (dto.result === 'rejected') await this.warrantyCost()?.chargeRejected(manager, request, item);
+      }
+      if (dto.result === 'rejected') {
+        request.chargeTechnician = true;
+        await manager.save(PartRequest, request);
+      }
+      await this.auditLogService.logWithManager(manager, {
+        actorUserId: actor.id, actorRole: actor.role, action: 'WARRANTY_FAULTY_PART_RESOLVED',
+        resourceType: 'part_request', resourceId: requestId, after: { result: dto.result, itemIds: lines.map((line) => line.id) },
+      });
+      return request;
+    });
+    await this.notifyTechnician(
+      result,
+      dto.result === 'rejected' ? 'Hãng từ chối linh kiện hỏng' : 'Hãng chấp nhận linh kiện hỏng',
+      dto.result === 'rejected'
+        ? 'Hãng kết luận lỗi do lắp đặt, giá linh kiện đã nhận được trừ vào ví.'
+        : 'Hãng xác nhận lỗi nhà sản xuất, bạn không bị trừ ví.',
+    );
+    return this.visible(result, actor);
+  }
+
+  private async notifyTechnician(request: PartRequest, title: string, message: string): Promise<void> {
+    try {
+      const notifier = this.moduleRef?.get(WarrantyNotifier, { strict: false });
+      await notifier?.toUser(request.technicianId, title, message, 'WARRANTY_FAULTY_PART_UPDATED', request.serviceOrderId);
+    } catch { /* the notice is a convenience; the change is already recorded */ }
   }
 
   /** The claim closed: a received request is settled, anything not yet handed over is cancelled. */

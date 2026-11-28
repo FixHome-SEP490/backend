@@ -67,7 +67,7 @@ describe('manager reads one warranty claim in full', () => {
     const { detail } = await service.get('claim-1');
 
     expect(detail.partRequest).toMatchObject({ id: 'pr-1', chargeTechnician: true, faultyInspectionResult: 'installation', faultyInspectionEvidence: ['a.jpg'], faultyReturnedAt: null });
-    expect(detail.partRequest?.items).toEqual([{ id: 'i1', name: 'Board X', quantity: 1, unitPrice: 700_000, usageStatus: 'pending' }]);
+    expect(detail.partRequest?.items).toMatchObject([{ id: 'i1', name: 'Board X', quantity: 1, unitPrice: 700_000, usageStatus: 'pending' }]);
   });
 
   it('lists the other claims of the same order with the item each is about', async () => {

@@ -114,7 +114,7 @@ export class WarrantyClaimReadService {
                 id: r.id, status: r.status, faultyReturnDueAt: r.faultyReturnDueAt ?? null, faultyReturnedAt: r.faultyReturnedAt ?? null,
                 faultyReturnChargedAt: r.faultyReturnChargedAt ?? null, faultyInspectionResult: r.faultyInspectionResult ?? null,
                 chargeTechnician: r.chargeTechnician,
-                items: requestItems.filter((i) => i.partRequestId === r.id).map((i) => ({ id: i.id, name: i.partNameSnapshot, quantity: i.quantity, usageStatus: i.usageStatus })),
+                items: requestItems.filter((i) => i.partRequestId === r.id).map((i) => ({ id: i.id, name: i.partNameSnapshot, quantity: i.quantity, usageStatus: i.usageStatus, faultyStatus: i.faultyStatus ?? null, faultyReceivedQty: i.faultyReceivedQty ?? 0 })),
               };
             })()
           : null,

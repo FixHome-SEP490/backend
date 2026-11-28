@@ -35,7 +35,9 @@ import {
   ReceivePartRequestDto,
   UpdateItemUsageDto,
   MarkReadyDto,
-  FaultyInspectionDto,
+  FaultyItemIdsDto,
+  FaultyReceiptDto,
+  FaultyResultDto,
   FaultyReturnDto,
   MarkDeliveringDto,
   QueryPartRequestsDto,
@@ -278,19 +280,46 @@ export class PartRequestsController {
     return { data };
   }
 
-  @Post('part-requests/:id/faulty-inspection')
+  @Post('part-requests/:id/faulty-receipt')
   @Roles(Role.SERVICE_MANAGER)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Service Manager: record what the faulty part of a warranty request shows',
-    description: 'After the technician brought the faulty part back. The result decides who pays the replacement; recorded once.',
+    summary: 'Service Manager: confirm how many units of each faulty part line arrived at the warehouse',
+    description: 'Per line and quantity; may be called again for the rest. Counting a unit in stops its overdue charge and gives back a charge already taken.',
   })
-  async faultyInspection(
+  async faultyReceipt(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: FaultyInspectionDto,
+    @Body() dto: FaultyReceiptDto,
     @Req() req: { user: { id: string; role: string } },
   ) {
-    return { data: await this.partRequestsService.recordFaultyInspection(id, dto, req.user) };
+    return { data: await this.partRequestsService.receiveFaultyParts(id, dto, req.user) };
+  }
+
+  @Post('part-requests/:id/faulty-shipment')
+  @Roles(Role.SERVICE_MANAGER)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Service Manager: send the counted-in faulty part lines to the manufacturer' })
+  async faultyShipment(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FaultyItemIdsDto,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    return { data: await this.partRequestsService.sendFaultyToManufacturer(id, dto, req.user) };
+  }
+
+  @Post('part-requests/:id/faulty-result')
+  @Roles(Role.SERVICE_MANAGER)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Service Manager: record the manufacturer's verdict on faulty part lines",
+    description: 'Rejected means the fault came from the installation: the technician pays the received units. Recorded once per line.',
+  })
+  async faultyResult(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FaultyResultDto,
+    @Req() req: { user: { id: string; role: string } },
+  ) {
+    return { data: await this.partRequestsService.recordManufacturerResult(id, dto, req.user) };
   }
 
   @Post('part-requests/:id/faulty-return')

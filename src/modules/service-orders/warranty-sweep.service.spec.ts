@@ -14,8 +14,9 @@ const claim = (overrides: Record<string, unknown> = {}) => ({
 });
 
 /** `found` is what the candidate query returns; `locked` is what the row looks like once locked (it may have changed). */
-const make = (options: { found?: unknown[]; locked?: unknown; visits?: unknown[]; requests?: unknown[]; config?: Record<string, number> } = {}) => {
+const make = (options: { found?: unknown[]; locked?: unknown; visits?: unknown[]; requests?: unknown[]; items?: unknown[]; config?: Record<string, number> } = {}) => {
   const tx = {
+    find: vi.fn(async () => options.items ?? [{ quantity: 1, faultyReceivedQty: 0 }]),
     findOne: vi.fn(async () => ('locked' in options ? options.locked : claim())),
     update: vi.fn().mockResolvedValue({ affected: 1 }),
   };
@@ -275,12 +276,24 @@ describe('faulty part that must come back', () => {
     expect(notifier.toManagers).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'WARRANTY_FAULTY_PART_OVERDUE', 'order-1');
   });
 
-  it('leaves a part that came back or was charged while it waited for the lock', async () => {
-    for (const locked of [part({ faultyReturnDueAt: ago(2), faultyReturnedAt: ago(1) }), part({ faultyReturnDueAt: ago(2), faultyReturnChargedAt: ago(1) }), null]) {
+  it('leaves a part that was charged while it waited for the lock', async () => {
+    for (const locked of [part({ faultyReturnDueAt: ago(2), faultyReturnChargedAt: ago(1) }), null]) {
       const { service, cost, notifier } = make({ requests: [part({ faultyReturnDueAt: ago(2) })], locked });
       await service.sweepFaultyReturn(NOW);
       expect(cost.chargeUnreturned).not.toHaveBeenCalled();
       expect(notifier.toUser).not.toHaveBeenCalled();
     }
+  });
+
+  it('keeps the clock running after the technician reports the hand-in: only the manager counting every unit in stops it', async () => {
+    const reported = part({ faultyReturnDueAt: ago(2), faultyReturnedAt: ago(3) });
+    const open = make({ requests: [reported], locked: reported });
+    await open.service.sweepFaultyReturn(NOW);
+    expect(open.cost.chargeUnreturned).toHaveBeenCalledWith(expect.anything(), reported);
+
+    const counted = make({ requests: [reported], locked: reported, items: [{ quantity: 2, faultyReceivedQty: 2 }] });
+    await counted.service.sweepFaultyReturn(NOW);
+    expect(counted.cost.chargeUnreturned).not.toHaveBeenCalled();
+    expect(counted.notifier.toUser).not.toHaveBeenCalled();
   });
 });

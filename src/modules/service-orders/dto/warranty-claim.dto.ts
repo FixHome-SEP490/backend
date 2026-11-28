@@ -336,7 +336,7 @@ export class StaffWarrantyClaimDto extends WarrantyClaimViewDto {
     faultyInspectionResult: string | null;
     chargeTechnician: boolean;
     /** The replacement parts and whether the technician has recorded them as used or returned. */
-    items: { id: string; name: string; quantity: number; usageStatus: string }[];
+    items: { id: string; name: string; quantity: number; usageStatus: string; faultyStatus: string | null; faultyReceivedQty: number }[];
   } | null;
 }
 
