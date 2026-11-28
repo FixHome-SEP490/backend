@@ -172,6 +172,33 @@ export class MailService {
     await this.sendMail(to, `[FixHome] Mã xác thực email: ${otp}`, html);
   }
 
+  async sendOfficeVisitBooked(
+    to: string,
+    visit: { officeName: string; officeAddress: string; officePhone: string | null; when: string },
+    recipientName?: string,
+  ): Promise<void> {
+    const name = recipientName ? recipientName.trim() : 'Quý khách';
+    const phone = visit.officePhone ? `<p style="margin: 4px 0;">Điện thoại: <strong>${visit.officePhone}</strong></p>` : '';
+    const html = `
+      <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 540px; margin: 0 auto; padding: 24px; color: #333;">
+        <h2 style="color: #1e3a8a; margin: 0 0 16px;">FixHome</h2>
+        <p>Xin chào <strong>${name}</strong>,</p>
+        <p>FixHome đã ghi nhận lịch hẹn gặp trực tiếp của bạn:</p>
+        <div style="background: #eff6ff; border-left: 4px solid #3b82f6; padding: 12px 16px; border-radius: 6px;">
+          <p style="margin: 4px 0;">Thời gian: <strong>${visit.when}</strong></p>
+          <p style="margin: 4px 0;">Trụ sở: <strong>${visit.officeName}</strong></p>
+          <p style="margin: 4px 0;">Địa chỉ: ${visit.officeAddress}</p>
+          ${phone}
+        </div>
+        <p style="margin-top: 16px; background: #fef2f2; border-left: 4px solid #ef4444; padding: 12px 16px; border-radius: 6px;">
+          ⚠️ <strong>Lưu ý quan trọng:</strong> Vui lòng mang theo <strong>giấy tờ tùy thân và bản công chứng bằng cấp, chứng chỉ</strong> để FixHome đối chiếu hồ sơ.
+        </p>
+        <p style="font-size: 13px; color: #64748b;">Nếu cần đổi giờ, bạn có thể đặt lại lịch trong ứng dụng FixHome.</p>
+      </div>
+    `;
+    await this.sendMail(to, '[FixHome] Xác nhận lịch hẹn lên trụ sở', html);
+  }
+
   private async sendMail(to: string, subject: string, html: string): Promise<void> {
     if (!this.transporter) {
       // No pretend sends (PO 07/10/2026): the user would wait for an OTP that never comes.

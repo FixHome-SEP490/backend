@@ -154,7 +154,7 @@ export const FAULTY_MANUFACTURER_RESULTS = ['accepted', 'rejected'] as const;
 export type FaultyManufacturerResult = (typeof FAULTY_MANUFACTURER_RESULTS)[number];
 
 export class FaultyResultDto extends FaultyItemIdsDto {
-  @ApiProperty({ enum: FAULTY_MANUFACTURER_RESULTS, description: 'accepted: manufacturer fault, FixHome pays; rejected: installation fault, the technician pays the received units' })
+  @ApiProperty({ enum: FAULTY_MANUFACTURER_RESULTS, description: 'accepted: manufacturer fault, the manufacturer covers it under warranty; rejected: installation fault, the technician pays the received units' })
   @IsIn(FAULTY_MANUFACTURER_RESULTS)
   result: FaultyManufacturerResult;
 

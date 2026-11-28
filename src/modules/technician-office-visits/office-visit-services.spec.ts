@@ -49,7 +49,7 @@ function visitsHarness(opts: { profile?: Record<string, unknown>; existing?: Rec
     audit as never,
     notifications as never,
   );
-  return { service, visitRepo, notifications };
+  return { service, visitRepo, notifications, visitsWithManager };
 }
 
 describe('OfficeVisitsService.book', () => {
@@ -60,6 +60,15 @@ describe('OfficeVisitsService.book', () => {
     const view = await service.book(technicianId, { officeId: office.id, scheduledAt: '2026-11-09T07:00:00.000Z' }); // 14:00 giờ Việt Nam
     expect(visitRepo.update).toHaveBeenCalledWith({ technicianId, status: OfficeVisitStatus.SCHEDULED }, { status: OfficeVisitStatus.CANCELLED });
     expect(view).toMatchObject({ officeId: office.id, scheduledAt: '2026-11-09T07:00:00.000Z', status: OfficeVisitStatus.SCHEDULED });
+  });
+
+  it('emails the technician the appointment after booking', async () => {
+    const mail = { sendOfficeVisitBooked: vi.fn().mockResolvedValue(undefined) };
+    const { service, visitsWithManager } = visitsHarness();
+    (visitsWithManager.manager as { findOne?: unknown }).findOne = vi.fn().mockResolvedValue({ id: technicianId, fullName: 'Thợ A', email: 'tech@example.com' });
+    (service as unknown as { mail: unknown }).mail = mail;
+    await service.book(technicianId, { officeId: office.id, scheduledAt: '2026-11-09T07:00:00.000Z' });
+    await vi.waitFor(() => expect(mail.sendOfficeVisitBooked).toHaveBeenCalledWith('tech@example.com', expect.objectContaining({ officeName: office.name }), 'Thợ A'));
   });
 
   it('refuses before the identity is confirmed', async () => {

@@ -341,7 +341,7 @@ export class PartRequestsService {
 
   /**
    * The manufacturer's verdict (PO 28/11/2026); the manager records it and never judges the part.
-   * Accepted: a manufacturer fault, FixHome pays. Rejected: the fault came from the installation and the
+   * Accepted: a manufacturer fault, the manufacturer covers it under warranty. Rejected: the fault came from the installation and the
    * technician pays the received units. Recorded once per line: it moves money, so a change goes through
    * a support case.
    */

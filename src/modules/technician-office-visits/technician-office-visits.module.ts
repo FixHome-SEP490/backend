@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { MailModule } from '../mail/mail.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { TechnicianProfile } from '../technicians/entities/technician-profile.entity';
 import { TechnicianSkill } from '../technicians/entities/technician-skill.entity';
@@ -21,6 +22,7 @@ import { ProfileReviewService } from './profile-review.service';
   imports: [
     TypeOrmModule.forFeature([VisitOffice, OfficeVisit, TechnicianProfile, TechnicianSkill, TechnicianSkillVerification, TechnicianVerification, Wallet]),
     NotificationsModule,
+    MailModule,
   ],
   controllers: [TechnicianOfficeVisitController, AdminVisitOfficesController, AdminOfficeVisitsController, AdminProfileReviewsController],
   providers: [OfficeVisitsService, ProfileReviewService],

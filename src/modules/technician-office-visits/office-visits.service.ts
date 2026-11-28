@@ -15,6 +15,7 @@ import { startBackgroundJob } from '../../common/background-job';
 import { AccountStatus, OnboardingStatus, Role, VerificationStatus } from '../../shared/enums';
 import { VN_OFFSET_MS } from '../../shared/utils/vn-time';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import { MailService } from '../mail/mail.service';
 import { Notification } from '../notifications/entities/notification.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { BusinessConfigService } from '../system-config/business-config.service';
@@ -49,6 +50,7 @@ export class OfficeVisitsService implements OnModuleInit, OnModuleDestroy {
     private readonly config: BusinessConfigService,
     private readonly audit: AuditLogService,
     @Optional() private readonly notifications?: NotificationsService,
+    @Optional() private readonly mail?: MailService,
   ) {}
 
   onModuleInit(): void {
@@ -207,7 +209,22 @@ export class OfficeVisitsService implements OnModuleInit, OnModuleDestroy {
     });
     void this.notifyManagersOfBooking(userId, result as OfficeVisit).catch((error: unknown) =>
       this.logger.warn(`office visit booking notice failed: ${error instanceof Error ? error.message : String(error)}`));
+    void this.emailTechnicianOfBooking(userId, result as OfficeVisit).catch((error: unknown) =>
+      this.logger.warn(`office visit booking email failed: ${error instanceof Error ? error.message : String(error)}`));
     return this.view(result as OfficeVisit);
+  }
+
+  /** Gửi thợ email xác nhận lịch kèm nhắc mang bản công chứng bằng cấp. Lỗi mail không làm hỏng việc đặt lịch. */
+  private async emailTechnicianOfBooking(technicianId: string, visit: OfficeVisit): Promise<void> {
+    if (!this.mail) return;
+    const technician = await this.visits.manager.findOne(User, { where: { id: technicianId }, select: { id: true, fullName: true, email: true } });
+    if (!technician?.email) return;
+    await this.mail.sendOfficeVisitBooked(technician.email, {
+      officeName: visit.office.name,
+      officeAddress: visit.office.address,
+      officePhone: visit.office.phone ?? null,
+      when: visit.scheduledAt.toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false }),
+    }, technician.fullName);
   }
 
   /** Quản lý dịch vụ đang hoạt động nhận thông báo khi có lịch hẹn mới hoặc đổi lịch. */
